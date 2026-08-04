@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     embedding_base_url: str
     embedding_api_key: str
     embedding_model: str
+    embedding_dimension: int
 
     milvus_uri: str = "http://localhost:19530"
     milvus_collection: str = "faq_chunks"

@@ -28,6 +28,7 @@ async def test_build_llm_registry_from_settings_uses_configured_endpoint():
         embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         embedding_api_key="settings-embed-key",
         embedding_model="text-embedding-v3",
+        embedding_dimension=1024,
     )
 
     registry = build_llm_registry_from_settings(settings, client=client)
