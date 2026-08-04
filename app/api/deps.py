@@ -13,6 +13,7 @@ from app.providers.factory import (
     build_llm_registry_from_settings,
 )
 from app.providers.registry import ProviderRegistry
+from app.retrieval.factory import build_vector_store_from_settings
 from app.retrieval.vector_store import VectorStore
 
 __all__ = [
@@ -42,7 +43,7 @@ def get_llm_registry(
     return build_llm_registry_from_settings(settings)
 
 
-def get_vector_store() -> VectorStore:
-    raise NotImplementedError(
-        "尚未接入真实向量库（Milvus），请通过 dependency_overrides 注入"
-    )
+def get_vector_store(
+    settings: Settings = Depends(get_settings),
+) -> VectorStore:
+    return build_vector_store_from_settings(settings)
