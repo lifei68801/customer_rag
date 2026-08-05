@@ -213,6 +213,8 @@ def build_agent_graph(
             assistant_output=final_text,
             llm_registry=llm_registry,
             llm_provider_name=llm_provider_name,
+            embedding_registry=embedding_registry,
+            embedding_provider_name=embedding_provider_name,
         )
         return {}
 

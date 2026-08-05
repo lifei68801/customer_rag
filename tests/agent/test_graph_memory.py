@@ -1,7 +1,7 @@
 import aiosqlite
 
 from app.agent.graph import build_agent_graph
-from app.memory.memory_store import upsert_memory_item
+from app.memory.memory_store import list_active_memory_items, upsert_memory_item
 from app.memory.schema import ensure_schema
 from app.memory.session_window import get_recent_turns
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
@@ -118,3 +118,43 @@ async def test_memory_enabled_saves_turn_and_injects_context():
     turns = await get_recent_turns(conn, tenant_id="t1", session_id="s1", limit=10)
     assert [t["role"] for t in turns] == ["user", "assistant"]
     assert turns[1]["content"] == "重启路由器即可解决。"
+
+
+async def test_memory_enabled_stores_embedding_for_newly_added_facts():
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(
+            [
+                "重启路由器即可解决。",  # responder 的回答
+                '{"is_safe": true}',  # OutputSafety 语义审查
+                '{"facts": ["客户使用企业版套餐"]}',  # 事实抽取
+                '{"actions": [{"event": "ADD", "target_memory_id": "", '
+                '"text": "客户使用企业版套餐", "reason": "首次提及"}]}',  # 冲突决策
+            ]
+        )
+    )
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+    )
+
+    await graph.ainvoke(
+        {
+            "question": "网络连不上怎么办？",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
+    assert len(items) == 1
+    assert items[0]["embedding"] == [1.0, 0.0]

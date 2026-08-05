@@ -84,6 +84,35 @@ async def test_list_active_memory_items_scoped_to_tenant():
     assert [i["text"] for i in items] == ["租户1的u1"]
 
 
+async def test_upsert_with_embedding_round_trips_through_list():
+    conn = await _connect()
+
+    await upsert_memory_item(
+        conn,
+        memory_id="m1",
+        tenant_id="t1",
+        user_id="u1",
+        text="客户使用企业版套餐",
+        embedding=[0.1, 0.2, 0.3],
+    )
+
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
+
+    assert items[0]["embedding"] == [0.1, 0.2, 0.3]
+
+
+async def test_upsert_without_embedding_leaves_it_none():
+    conn = await _connect()
+
+    await upsert_memory_item(
+        conn, memory_id="m1", tenant_id="t1", user_id="u1", text="没有向量的记忆"
+    )
+
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
+
+    assert items[0]["embedding"] is None
+
+
 async def test_append_history_records_an_audit_row():
     conn = await _connect()
 

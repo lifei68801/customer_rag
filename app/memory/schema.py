@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS memory_items (
     text TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     confidence REAL NOT NULL DEFAULT 0.8,
+    embedding_json TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
