@@ -1,5 +1,8 @@
+from app.graphrag.ontology import Term
 from app.ingestion.pipeline import ingest_directory, ingest_markdown_file
+from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
+from app.providers.registry import ProviderRegistry
 from app.retrieval.vector_store import InMemoryVectorStore
 
 
@@ -33,6 +36,106 @@ async def test_ingest_markdown_file_chunks_embeds_and_upserts(tmp_path):
     texts = {record.text for record in results}
     assert "网络断开时请先重启路由器。" in texts
     assert "登录失败请检查账号密码。" in texts
+
+
+async def test_ingest_markdown_file_skips_graph_extraction_when_not_configured(
+    tmp_path,
+):
+    """向后兼容：不传图谱相关参数时行为与阶段2完全一致，不做任何图谱写入。"""
+    md_file = tmp_path / "network.md"
+    md_file.write_text("## 网络故障\n网络断开时请先重启路由器。\n", encoding="utf-8")
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    count = await ingest_markdown_file(
+        md_file,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+    )
+
+    assert count == 1
+
+
+class FixedLLMProvider:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        return ProviderResult(text=self._text)
+
+
+class FakeGraphClient:
+    def __init__(self) -> None:
+        self.written: list[dict] = []
+
+    async def merge_relation(
+        self, *, subject_standard_name, object_standard_name, relation_type
+    ) -> None:
+        self.written.append(
+            {
+                "subject": subject_standard_name,
+                "object": object_standard_name,
+                "relation_type": relation_type,
+            }
+        )
+
+
+async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_path):
+    md_file = tmp_path / "network.md"
+    md_file.write_text(
+        "## 网络故障\n网关超时示例通常与示例认证模块相关\n", encoding="utf-8"
+    )
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        FixedLLMProvider(
+            '{"relations": [{"subject": "网关超时示例", '
+            '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+        ),
+    )
+    terms = [
+        Term(
+            standard_name="示例错误码E502",
+            aliases=["网关超时示例"],
+            term_type="error_code",
+            product_line="示例产品线",
+        ),
+        Term(
+            standard_name="示例登录模块",
+            aliases=["示例认证模块"],
+            term_type="module",
+            product_line="示例产品线",
+        ),
+    ]
+    graph_client = FakeGraphClient()
+
+    await ingest_markdown_file(
+        md_file,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        graph_llm_registry=llm_registry,
+        graph_llm_provider_name="llm",
+        graph_terms=terms,
+        graph_client=graph_client,
+    )
+
+    assert graph_client.written == [
+        {
+            "subject": "示例错误码E502",
+            "object": "示例登录模块",
+            "relation_type": "RELATED_TO",
+        }
+    ]
 
 
 async def test_ingest_directory_processes_markdown_and_pdf_but_skips_other_extensions(
