@@ -35,14 +35,26 @@ async def test_ingest_markdown_file_chunks_embeds_and_upserts(tmp_path):
     assert "登录失败请检查账号密码。" in texts
 
 
-async def test_ingest_directory_processes_only_markdown_files(tmp_path):
+async def test_ingest_directory_processes_markdown_and_pdf_but_skips_other_extensions(
+    tmp_path,
+):
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.pdfgen import canvas
+
+    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+
     (tmp_path / "a.md").write_text(
         "## 主题A\n内容A。\n", encoding="utf-8"
     )
-    (tmp_path / "b.md").write_text(
-        "## 主题B\n内容B。\n", encoding="utf-8"
-    )
     (tmp_path / "notes.txt").write_text("不应被处理", encoding="utf-8")
+
+    pdf_path = tmp_path / "b.pdf"
+    c = canvas.Canvas(str(pdf_path))
+    c.setFont("STSong-Light", 12)
+    c.drawString(100, 750, "内容B。")
+    c.showPage()
+    c.save()
 
     embedding_registry = EmbeddingRegistry()
     embedding_registry.register("fake-embedding", FakeEmbeddingProvider())

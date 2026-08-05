@@ -2,21 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.ingestion.chunking import chunk_markdown
+from app.ingestion.chunking import Chunk, chunk_markdown
+from app.ingestion.pdf_parser import parse_pdf
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
 from app.retrieval.vector_store import VectorRecord, VectorStore
 
 
-async def ingest_markdown_file(
+async def _embed_and_upsert(
+    chunks: list[Chunk],
     path: Path,
     *,
     embedding_registry: EmbeddingRegistry,
     embedding_provider_name: str,
     vector_store: VectorStore,
 ) -> int:
-    """读取单个 Markdown 文件，分块、向量化并写入向量库，返回写入的 chunk 数。"""
-    text = path.read_text(encoding="utf-8")
-    chunks = chunk_markdown(text, source=str(path))
     if not chunks:
         return 0
 
@@ -41,6 +40,43 @@ async def ingest_markdown_file(
     return len(records)
 
 
+async def ingest_markdown_file(
+    path: Path,
+    *,
+    embedding_registry: EmbeddingRegistry,
+    embedding_provider_name: str,
+    vector_store: VectorStore,
+) -> int:
+    """读取单个 Markdown 文件，分块、向量化并写入向量库，返回写入的 chunk 数。"""
+    text = path.read_text(encoding="utf-8")
+    chunks = chunk_markdown(text, source=str(path))
+    return await _embed_and_upsert(
+        chunks,
+        path,
+        embedding_registry=embedding_registry,
+        embedding_provider_name=embedding_provider_name,
+        vector_store=vector_store,
+    )
+
+
+async def ingest_pdf_file(
+    path: Path,
+    *,
+    embedding_registry: EmbeddingRegistry,
+    embedding_provider_name: str,
+    vector_store: VectorStore,
+) -> int:
+    """读取单个 PDF 文件（逐页分块），向量化并写入向量库，返回写入的 chunk 数。"""
+    chunks = parse_pdf(path)
+    return await _embed_and_upsert(
+        chunks,
+        path,
+        embedding_registry=embedding_registry,
+        embedding_provider_name=embedding_provider_name,
+        vector_store=vector_store,
+    )
+
+
 async def ingest_directory(
     directory: Path,
     *,
@@ -48,11 +84,18 @@ async def ingest_directory(
     embedding_provider_name: str,
     vector_store: VectorStore,
 ) -> int:
-    """遍历目录下所有 .md 文件并逐个摄取，返回写入的 chunk 总数。"""
+    """遍历目录下所有 .md/.pdf 文件并逐个摄取，返回写入的 chunk 总数。"""
     total = 0
     for md_file in sorted(directory.glob("*.md")):
         total += await ingest_markdown_file(
             md_file,
+            embedding_registry=embedding_registry,
+            embedding_provider_name=embedding_provider_name,
+            vector_store=vector_store,
+        )
+    for pdf_file in sorted(directory.glob("*.pdf")):
+        total += await ingest_pdf_file(
+            pdf_file,
             embedding_registry=embedding_registry,
             embedding_provider_name=embedding_provider_name,
             vector_store=vector_store,
