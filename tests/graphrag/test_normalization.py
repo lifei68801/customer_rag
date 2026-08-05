@@ -23,9 +23,10 @@ _TERMS = [
 class FakeGraphClient:
     def __init__(self) -> None:
         self.written: list[dict] = []
+        self.deleted_sources: list[str] = []
 
     async def merge_relation(
-        self, *, subject_standard_name, object_standard_name, relation_type
+        self, *, subject_standard_name, object_standard_name, relation_type, source
     ) -> None:
         if relation_type not in {"RELATED_TO", "BELONGS_TO_MODULE"}:
             raise ValueError("不允许的关系类型")
@@ -34,8 +35,12 @@ class FakeGraphClient:
                 "subject": subject_standard_name,
                 "object": object_standard_name,
                 "relation_type": relation_type,
+                "source": source,
             }
         )
+
+    async def delete_relations_by_source(self, source: str) -> None:
+        self.deleted_sources.append(source)
 
 
 async def test_writes_relation_when_both_sides_resolve_via_alias():
@@ -45,7 +50,7 @@ async def test_writes_relation_when_both_sides_resolve_via_alias():
     ]
 
     written = await normalize_and_write_relations(
-        relations, terms=_TERMS, graph_client=graph_client
+        relations, terms=_TERMS, graph_client=graph_client, source="a.md"
     )
 
     assert written == 1
@@ -54,6 +59,7 @@ async def test_writes_relation_when_both_sides_resolve_via_alias():
             "subject": "错误码E502",
             "object": "登录模块",
             "relation_type": "RELATED_TO",
+            "source": "a.md",
         }
     ]
 
@@ -69,7 +75,7 @@ async def test_drops_relation_when_one_side_unresolved():
     ]
 
     written = await normalize_and_write_relations(
-        relations, terms=_TERMS, graph_client=graph_client
+        relations, terms=_TERMS, graph_client=graph_client, source="a.md"
     )
 
     assert written == 0
@@ -84,7 +90,7 @@ async def test_drops_relation_with_invalid_relation_type_without_crashing_batch(
     ]
 
     written = await normalize_and_write_relations(
-        relations, terms=_TERMS, graph_client=graph_client
+        relations, terms=_TERMS, graph_client=graph_client, source="a.md"
     )
 
     assert written == 1
@@ -103,7 +109,11 @@ async def test_enqueues_unresolved_candidate_for_review_when_review_conn_provide
     ]
 
     written = await normalize_and_write_relations(
-        relations, terms=_TERMS, graph_client=graph_client, review_conn=review_conn
+        relations,
+        terms=_TERMS,
+        graph_client=graph_client,
+        source="a.md",
+        review_conn=review_conn,
     )
 
     assert written == 0
@@ -123,7 +133,11 @@ async def test_enqueues_invalid_relation_type_for_review_when_review_conn_provid
     ]
 
     written = await normalize_and_write_relations(
-        relations, terms=_TERMS, graph_client=graph_client, review_conn=review_conn
+        relations,
+        terms=_TERMS,
+        graph_client=graph_client,
+        source="a.md",
+        review_conn=review_conn,
     )
 
     assert written == 0
@@ -144,7 +158,7 @@ async def test_does_not_enqueue_when_review_conn_not_provided():
     ]
 
     written = await normalize_and_write_relations(
-        relations, terms=_TERMS, graph_client=graph_client
+        relations, terms=_TERMS, graph_client=graph_client, source="a.md"
     )
 
     assert written == 0

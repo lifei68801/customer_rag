@@ -16,6 +16,7 @@ async def extract_and_write_graph_relations(
     llm_provider_name: str,
     terms: list[Term],
     graph_client: GraphWriteClientProtocol,
+    source: str,
     review_conn: aiosqlite.Connection | None = None,
     extract_timeout_sec: float = 2.0,
 ) -> int:
@@ -25,9 +26,15 @@ async def extract_and_write_graph_relations(
     调用方需要显式提供 llm_registry/terms/graph_client 才会执行；不提供
     则摄取流程只做向量化写入，与阶段2的行为保持完全兼容。
 
+    写入前先删掉 source 这个文档之前写过的全部关系边（delete_relations_
+    by_source），再重新抽取写入——和 vector_store.delete_by_source() 同样
+    的道理：文档内容变更后，旧版本抽取出的关系不会永久残留在图谱里。
+    对全新文档这是无害的空操作。
+
     review_conn 同样可选：提供时，未能对齐术语表的候选关系会进入人工
     待审核队列而不是直接丢弃（见 normalize_and_write_relations）。
     """
+    await graph_client.delete_relations_by_source(source)
     total_written = 0
     for chunk in chunks:
         relations = await extract_candidate_relations(
@@ -37,6 +44,10 @@ async def extract_and_write_graph_relations(
             timeout_sec=extract_timeout_sec,
         )
         total_written += await normalize_and_write_relations(
-            relations, terms=terms, graph_client=graph_client, review_conn=review_conn
+            relations,
+            terms=terms,
+            graph_client=graph_client,
+            source=source,
+            review_conn=review_conn,
         )
     return total_written

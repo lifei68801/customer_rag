@@ -61,17 +61,22 @@ class FakeGraphClient:
     def __init__(self) -> None:
         self.written: list[dict] = []
         self.synced_terms: list[Term] = []
+        self.deleted_sources: list[str] = []
 
     async def merge_relation(
-        self, *, subject_standard_name, object_standard_name, relation_type
+        self, *, subject_standard_name, object_standard_name, relation_type, source
     ) -> None:
         self.written.append(
             {
                 "subject": subject_standard_name,
                 "object": object_standard_name,
                 "relation_type": relation_type,
+                "source": source,
             }
         )
+
+    async def delete_relations_by_source(self, source: str) -> None:
+        self.deleted_sources.append(source)
 
     async def sync_terms(self, terms: list[Term]) -> None:
         self.synced_terms.extend(terms)

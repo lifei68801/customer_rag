@@ -60,14 +60,26 @@ async def test_merge_relation_sends_expected_query_and_parameters():
         subject_standard_name="错误码E502",
         object_standard_name="登录模块",
         relation_type="RELATED_TO",
+        source="a.md",
     )
 
     assert session.last_parameters == {
         "subject_name": "错误码E502",
         "object_name": "登录模块",
+        "source": "a.md",
     }
     assert "RELATED_TO" in session.last_query
     assert "MERGE" in session.last_query
+
+
+async def test_delete_relations_by_source_sends_expected_query_and_parameters():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.delete_relations_by_source("a.md")
+
+    assert session.last_parameters == {"source": "a.md"}
+    assert "DELETE" in session.last_query
 
 
 async def test_merge_relation_rejects_unrecognized_relation_type():
@@ -79,6 +91,7 @@ async def test_merge_relation_rejects_unrecognized_relation_type():
             subject_standard_name="a",
             object_standard_name="b",
             relation_type="DROP TABLE",
+            source="a.md",
         )
         assert False, "应拒绝非法关系类型"
     except ValueError:

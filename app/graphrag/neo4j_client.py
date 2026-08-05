@@ -13,6 +13,14 @@ RETURN related.standard_name AS related_name, type(r) AS relation_type
 # 用白名单杜绝把未经校验的 LLM 抽取结果拼进 Cypher 语句。
 _ALLOWED_RELATION_TYPES = frozenset({"RELATED_TO", "BELONGS_TO_MODULE", "ALIAS_OF"})
 
+# 关系边有向（MERGE (a)-[:TYPE]->(b)），按有向模式匹配删除保证每条边只
+# 命中一次；r.source 只有 merge_relation 写入的抽取关系才有，sync_term/
+# sync_terms 写入的 ALIAS_OF 边没有这个属性，天然不会被误删。
+_DELETE_RELATIONS_BY_SOURCE_QUERY = """
+MATCH ()-[r]->() WHERE r.source = $source
+DELETE r
+"""
+
 # 别名节点用 alias_name 属性而不是 standard_name——避免和 _SUBGRAPH_QUERY
 # 按 standard_name 精确匹配标准节点的查询模式产生歧义（别名节点本身不该被
 # 当成标准节点查到）。
@@ -64,8 +72,15 @@ class Neo4jGraphClient:
         subject_standard_name: str,
         object_standard_name: str,
         relation_type: str,
+        source: str,
     ) -> None:
-        """幂等写入一条术语间关系（MERGE，不存在则创建，存在则不重复）。"""
+        """幂等写入一条术语间关系（MERGE，不存在则创建，存在则不重复）。
+
+        source 记录这条边是从哪个文档抽取出来的，写在边的属性上——
+        重新摄取同一文档前先按 source 删掉它写过的旧边（见
+        delete_relations_by_source），避免文档内容变更后旧关系永久
+        残留在图谱里，和 vector_store.delete_by_source() 是同一个思路。
+        """
         if relation_type not in _ALLOWED_RELATION_TYPES:
             raise ValueError(
                 f"不允许的关系类型: {relation_type!r}，"
@@ -74,7 +89,8 @@ class Neo4jGraphClient:
         query = (
             "MERGE (a:Term {standard_name: $subject_name}) "
             "MERGE (b:Term {standard_name: $object_name}) "
-            f"MERGE (a)-[:{relation_type}]->(b)"
+            f"MERGE (a)-[r:{relation_type}]->(b) "
+            "SET r.source = $source"
         )
         async with self._driver.session() as session:
             await session.run(
@@ -82,8 +98,14 @@ class Neo4jGraphClient:
                 {
                     "subject_name": subject_standard_name,
                     "object_name": object_standard_name,
+                    "source": source,
                 },
             )
+
+    async def delete_relations_by_source(self, source: str) -> None:
+        """删除某个文档抽取出的全部关系边，重新摄取该文档前调用。"""
+        async with self._driver.session() as session:
+            await session.run(_DELETE_RELATIONS_BY_SOURCE_QUERY, {"source": source})
 
     async def sync_term(self, term: Term) -> None:
         """把术语表里的一个标准术语同步进图谱：写入/更新标准节点的

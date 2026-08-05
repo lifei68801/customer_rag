@@ -108,17 +108,22 @@ class FixedLLMProvider:
 class FakeGraphClient:
     def __init__(self) -> None:
         self.written: list[dict] = []
+        self.deleted_sources: list[str] = []
 
     async def merge_relation(
-        self, *, subject_standard_name, object_standard_name, relation_type
+        self, *, subject_standard_name, object_standard_name, relation_type, source
     ) -> None:
         self.written.append(
             {
                 "subject": subject_standard_name,
                 "object": object_standard_name,
                 "relation_type": relation_type,
+                "source": source,
             }
         )
+
+    async def delete_relations_by_source(self, source: str) -> None:
+        self.deleted_sources.append(source)
 
 
 async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_path):
@@ -173,6 +178,7 @@ async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_p
             "subject": "示例错误码E502",
             "object": "示例登录模块",
             "relation_type": "RELATED_TO",
+            "source": str(md_file),
         }
     ]
 

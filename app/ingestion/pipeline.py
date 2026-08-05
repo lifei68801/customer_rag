@@ -53,6 +53,7 @@ async def _embed_and_upsert(
 async def _maybe_extract_graph_relations(
     chunks: list[Chunk],
     *,
+    source: str,
     graph_llm_registry: ProviderRegistry | None,
     graph_llm_provider_name: str | None,
     graph_terms: list[Term] | None,
@@ -77,6 +78,7 @@ async def _maybe_extract_graph_relations(
         llm_provider_name=graph_llm_provider_name,
         terms=graph_terms,
         graph_client=graph_client,
+        source=source,
         review_conn=graph_review_conn,
     )
 
@@ -111,6 +113,7 @@ async def _ingest_chunks(
     )
     await _maybe_extract_graph_relations(
         chunks,
+        source=str(path),
         graph_llm_registry=graph_llm_registry,
         graph_llm_provider_name=graph_llm_provider_name,
         graph_terms=graph_terms,
