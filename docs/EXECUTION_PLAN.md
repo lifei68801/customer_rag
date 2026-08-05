@@ -190,12 +190,22 @@ flowchart LR
 
 ## 3. 里程碑 X：多租户接入（触发式，非固定阶段序号）
 
-架构文档第9节的多租户隔离设计**不绑定在固定的阶段序号上**，而是由业务事件触发：当确定要接入第二个客户/产品线时启动，具体内容包括：
-- Milvus collection/partition 按租户隔离；
-- Neo4j 节点/关系统一打 `tenant_id`，所有 Cypher 查询模板强制带租户过滤；
-- 认证层注入 `tenant_id`，业务代码不可绕过。
+架构文档第9节的多租户隔离设计**不绑定在固定的阶段序号上**，而是由业务事件触发：当确定要接入第二个客户/产品线时启动。
 
-**为什么不预先固定顺序**：如果第一个客户上线后短期内没有第二个客户接入计划，提前做多租户隔离是过度工程；但一旦有明确的第二客户时间线，这项工作必须在其上线前完成，且需要覆盖到阶段3-6已经交付的所有存储组件（Milvus/Neo4j/关系库），改造范围会随着已上线功能增多而增加——建议在规划第二个客户接入时间点时，把这一项风险提前告知业务方。
+**当前状态（已启动，非空白）**：
+- ✅ Milvus：单 collection + `tenant_id` 标量字段过滤（非 collection/partition 级隔离），`VectorRecord`/`VectorStore.search()` 强制要求 `tenant_id`。
+- ✅ BM25Index：`search()` 按 `tenant_id` 过滤，IDF/avgdl 只在租户子集内计算。
+- ✅ hybrid_search / answer_question / Agent State / `/qa` `/agent/chat`：`tenant_id` 全链路必填，缺失即报错而非静默降级。
+- ✅ 记忆模块（SQLite）：`conversation_turns`/`memory_items`/`memory_history` 均加 `tenant_id` 列并按其过滤。
+- ✅ 摄取流水线：`ingest_directory` 等要求 `tenant_id`，每条写入记录打标签。
+- ✅ 评测框架：`run_eval_suite`/CLI 要求 `tenant_id`。
+
+**尚未做的（明确列出，不要误认为已完成）**：
+- ❌ Neo4j 节点/关系尚未打 `tenant_id`，图谱查询目前不区分租户（`Term.product_line` 字段存在但未接入过滤逻辑）。
+- ❌ `tenant_id` 目前直接来自 API 请求体（客户端自报），尚未接入认证层（网关/JWT）强制注入——业务代码目前是可以被绕过的，生产上线前必须补上。
+- ❌ Milvus 的 `tenant_id` 是 dynamic field 不是带索引的标量字段，租户/数据量大了会退化成全表扫描再过滤（见 `collection_init.py` 内注释）。
+
+**为什么不预先固定顺序**：如果第一个客户上线后短期内没有第二个客户接入计划，提前做多租户隔离是过度工程；但一旦有明确的第二客户时间线，上面"尚未做的"三项必须在其上线前补齐。
 
 ---
 
