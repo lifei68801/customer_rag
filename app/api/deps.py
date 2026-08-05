@@ -23,12 +23,19 @@ from app.graphrag.factory import build_graph_client_from_settings, load_terms_fr
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.memory.factory import build_memory_conn_from_settings
+from app.providers.asr import ASRProvider
+from app.providers.tts import TTSProvider
+from app.providers.voice_factory import (
+    build_asr_provider_from_settings,
+    build_tts_provider_from_settings,
+)
 
 import aiosqlite
 
 __all__ = [
     "DEFAULT_EMBEDDING_PROVIDER_NAME",
     "DEFAULT_LLM_PROVIDER_NAME",
+    "get_asr_provider",
     "get_bm25_index",
     "get_embedding_registry",
     "get_graph_client",
@@ -37,6 +44,7 @@ __all__ = [
     "get_rerank_provider",
     "get_settings",
     "get_terms",
+    "get_tts_provider",
     "get_vector_store",
 ]
 
@@ -126,3 +134,15 @@ async def get_memory_conn(
             if _memory_conn_cache is None:
                 _memory_conn_cache = await build_memory_conn_from_settings(settings)
     return _memory_conn_cache
+
+
+def get_asr_provider(
+    settings: Settings = Depends(get_settings),
+) -> ASRProvider | None:
+    return build_asr_provider_from_settings(settings)
+
+
+def get_tts_provider(
+    settings: Settings = Depends(get_settings),
+) -> TTSProvider | None:
+    return build_tts_provider_from_settings(settings)
