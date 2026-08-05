@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import AsyncIterator
 
+import aiosqlite
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
@@ -22,6 +23,10 @@ router = APIRouter()
 
 class AgentChatRequest(BaseModel):
     question: str
+    # 单租户 MVP 阶段先用简单默认值；多租户里程碑触发时，这里是
+    # 认证层注入 tenant_id/user_id 的接入点（见执行计划里程碑X）。
+    session_id: str = "default"
+    user_id: str = "anonymous"
 
 
 @router.post("/agent/chat")
@@ -34,6 +39,7 @@ async def agent_chat_endpoint(
     rerank_provider: RerankProvider | None = Depends(deps.get_rerank_provider),
     graph_client: Neo4jGraphClient | None = Depends(deps.get_graph_client),
     terms: list[Term] = Depends(deps.get_terms),
+    memory_conn: aiosqlite.Connection = Depends(deps.get_memory_conn),
 ) -> StreamingResponse:
     """Agent 推理入口，SSE 传输。
 
@@ -53,10 +59,17 @@ async def agent_chat_endpoint(
         rerank_provider=rerank_provider,
         terms=terms,
         graph_client=graph_client,
+        memory_conn=memory_conn,
     )
 
     async def event_stream() -> AsyncIterator[str]:
-        result = await graph.ainvoke({"question": payload.question})
+        result = await graph.ainvoke(
+            {
+                "question": payload.question,
+                "session_id": payload.session_id,
+                "user_id": payload.user_id,
+            }
+        )
         body = json.dumps(
             {
                 "text": result.get("final_text", ""),

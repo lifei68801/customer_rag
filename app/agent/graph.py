@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import aiosqlite
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -10,6 +11,9 @@ from app.agent.state import AgentState
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.term_guard import build_term_guard_context
+from app.memory.consolidation import run_memory_consolidation
+from app.memory.context_injection import inject_memory_context
+from app.memory.session_window import append_turn
 from app.providers.base import ProviderCapability, ProviderRequest
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
@@ -38,9 +42,10 @@ def build_agent_graph(
     terms: list[Term] | None = None,
     graph_client: Neo4jGraphClient | None = None,
     banned_terms: list[str] | None = None,
+    memory_conn: aiosqlite.Connection | None = None,
     top_k: int = 3,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
-    """构建 Agent 推理状态图：InputSafety -> TermGuard -> 检索 -> Responder/Fallback -> OutputSafety。
+    """构建 Agent 推理状态图：InputSafety -> TermGuard -> 检索 -> Responder/Fallback -> OutputSafety -> MemorySave。
 
     范围说明（有意简化，非疏漏）：架构文档设想的 Planner 是"LLM 自主决策
     多轮调用 vector_search_tool/graph_query_tool"，这需要 provider 层支持
@@ -50,6 +55,13 @@ def build_agent_graph(
     这一简单信号路由到 Responder 或 Fallback。真正的 LLM 驱动工具选择
     和多轮循环（含最大迭代次数保护）留待 provider 层具备 function-calling
     能力后再实现，不在此冒充。
+
+    memory_conn 为可选项：不传则完全跳过记忆召回/写入，图的行为与
+    阶段4完全一致；传入则在 Responder 前注入长期记忆+近期会话上下文，
+    并在 OutputSafety 后同步保存本轮对话+做一次记忆 consolidation。
+    这里的"同步"是简化——架构文档设计的异步 consolidation 队列（不
+    阻塞主响应）未实现，当前会让 consolidation 的 LLM 调用延迟计入
+    本轮响应总耗时。
     """
 
     async def input_safety_node(state: AgentState) -> dict[str, Any]:
@@ -66,6 +78,16 @@ def build_agent_graph(
             state["question"], terms=terms, graph_client=graph_client
         )
         return {"term_guard_context": context}
+
+    async def memory_recall_node(state: AgentState) -> dict[str, Any]:
+        if memory_conn is None:
+            return {"memory_context_messages": []}
+        messages = await inject_memory_context(
+            memory_conn,
+            session_id=state.get("session_id", ""),
+            user_id=state.get("user_id", ""),
+        )
+        return {"memory_context_messages": messages}
 
     async def retrieval_node(state: AgentState) -> dict[str, Any]:
         records = await hybrid_search(
@@ -93,9 +115,13 @@ def build_agent_graph(
         if term_guard_context:
             context = f"{term_guard_context}\n\n{context}"
         prompt = _PROMPT_TEMPLATE.format(context=context, question=state["question"])
+        messages = [
+            *state.get("memory_context_messages", []),
+            {"role": "user", "content": prompt},
+        ]
         result = await llm_registry.run(
             ProviderCapability.LLM,
-            ProviderRequest(messages=[{"role": "user", "content": prompt}]),
+            ProviderRequest(messages=messages),
             provider_name=llm_provider_name,
         )
         return {"answer_text": result.text, "fallback_triggered": False}
@@ -118,6 +144,36 @@ def build_agent_graph(
             return {"is_output_safe": False, "final_text": _UNSAFE_OUTPUT_MESSAGE}
         return {"is_output_safe": True, "final_text": answer}
 
+    async def memory_save_node(state: AgentState) -> dict[str, Any]:
+        if memory_conn is None:
+            return {}
+        session_id = state.get("session_id", "")
+        user_id = state.get("user_id", "")
+        final_text = state.get("final_text", "")
+        await append_turn(
+            memory_conn,
+            session_id=session_id,
+            user_id=user_id,
+            role="user",
+            content=state["question"],
+        )
+        await append_turn(
+            memory_conn,
+            session_id=session_id,
+            user_id=user_id,
+            role="assistant",
+            content=final_text,
+        )
+        await run_memory_consolidation(
+            memory_conn,
+            user_id=user_id,
+            user_input=state["question"],
+            assistant_output=final_text,
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
+        )
+        return {}
+
     def route_after_input_safety(state: AgentState) -> str:
         return "term_guard" if state.get("is_input_safe", True) else "output_safety"
 
@@ -127,11 +183,13 @@ def build_agent_graph(
     graph: StateGraph[AgentState] = StateGraph(AgentState)
     graph.add_node("input_safety", input_safety_node)
     graph.add_node("term_guard", term_guard_node)
+    graph.add_node("memory_recall", memory_recall_node)
     graph.add_node("retrieval", retrieval_node)
     graph.add_node("responder", responder_node)
     graph.add_node("fallback", fallback_node)
     graph.add_node("create_ticket", create_ticket_node)
     graph.add_node("output_safety", output_safety_node)
+    graph.add_node("memory_save", memory_save_node)
 
     graph.add_edge(START, "input_safety")
     graph.add_conditional_edges(
@@ -139,7 +197,8 @@ def build_agent_graph(
         route_after_input_safety,
         {"term_guard": "term_guard", "output_safety": "output_safety"},
     )
-    graph.add_edge("term_guard", "retrieval")
+    graph.add_edge("term_guard", "memory_recall")
+    graph.add_edge("memory_recall", "retrieval")
     graph.add_conditional_edges(
         "retrieval",
         route_after_retrieval,
@@ -148,6 +207,7 @@ def build_agent_graph(
     graph.add_edge("responder", "output_safety")
     graph.add_edge("fallback", "create_ticket")
     graph.add_edge("create_ticket", "output_safety")
-    graph.add_edge("output_safety", END)
+    graph.add_edge("output_safety", "memory_save")
+    graph.add_edge("memory_save", END)
 
     return graph.compile()

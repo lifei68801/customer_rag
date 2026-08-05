@@ -1,9 +1,11 @@
 import json
 
+import aiosqlite
 from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.main import app
+from app.memory.schema import ensure_schema
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
@@ -56,6 +58,17 @@ def test_agent_chat_streams_final_answer_as_sse():
     )
     vector_store = asyncio.run(_fake_vector_store())
 
+    async def _override_get_memory_conn() -> aiosqlite.Connection:
+        # 必须在 FastAPI 实际处理请求的那个事件循环内创建 aiosqlite 连接，
+        # 不能像 vector_store 那样提前用 asyncio.run() 在外部建好再传入——
+        # aiosqlite.Connection 内部有个绑定到"创建时那个循环"的后台线程，
+        # asyncio.run() 一返回该循环就关闭了，之后从 TestClient 的新循环里
+        # 使用这个连接会导致回调发不出去，直接死锁（且 CPU 占用是 0，
+        # 因为它是在等一个永远不会完成的 future，不是死循环）。
+        conn = await aiosqlite.connect(":memory:")
+        await ensure_schema(conn)
+        return conn
+
     app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
     app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
@@ -63,6 +76,7 @@ def test_agent_chat_streams_final_answer_as_sse():
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
     app.dependency_overrides[deps.get_terms] = lambda: []
     app.dependency_overrides[deps.get_graph_client] = lambda: None
+    app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
     try:
         client = TestClient(app)
         with client.stream(

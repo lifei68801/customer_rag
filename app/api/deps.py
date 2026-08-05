@@ -22,6 +22,9 @@ from app.retrieval.vector_store import VectorStore
 from app.graphrag.factory import build_graph_client_from_settings, load_terms_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
+from app.memory.factory import build_memory_conn_from_settings
+
+import aiosqlite
 
 __all__ = [
     "DEFAULT_EMBEDDING_PROVIDER_NAME",
@@ -30,6 +33,7 @@ __all__ = [
     "get_embedding_registry",
     "get_graph_client",
     "get_llm_registry",
+    "get_memory_conn",
     "get_rerank_provider",
     "get_settings",
     "get_terms",
@@ -41,6 +45,8 @@ _bm25_index_lock = asyncio.Lock()
 _graph_client_cache: Neo4jGraphClient | None = None
 _graph_client_lock = asyncio.Lock()
 _terms_cache: list[Term] | None = None
+_memory_conn_cache: aiosqlite.Connection | None = None
+_memory_conn_lock = asyncio.Lock()
 
 
 @lru_cache
@@ -108,3 +114,15 @@ def get_terms(settings: Settings = Depends(get_settings)) -> list[Term]:
     if _terms_cache is None:
         _terms_cache = load_terms_from_settings(settings)
     return _terms_cache
+
+
+async def get_memory_conn(
+    settings: Settings = Depends(get_settings),
+) -> aiosqlite.Connection:
+    """进程内单例 SQLite 连接，避免每次请求都新建连接。"""
+    global _memory_conn_cache
+    if _memory_conn_cache is None:
+        async with _memory_conn_lock:
+            if _memory_conn_cache is None:
+                _memory_conn_cache = await build_memory_conn_from_settings(settings)
+    return _memory_conn_cache

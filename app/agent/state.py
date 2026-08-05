@@ -7,9 +7,12 @@ from app.retrieval.vector_store import VectorRecord
 
 class AgentState(TypedDict, total=False):
     question: str
+    session_id: str
+    user_id: str
     is_input_safe: bool
     input_unsafe_terms: list[str]
     term_guard_context: str | None
+    memory_context_messages: list[dict[str, str]]
     retrieved_records: list[VectorRecord]
     used_sources: list[str]
     answer_text: str
