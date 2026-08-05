@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # 对话记忆存储（会话滑窗+长期记忆条目），SQLite 文件路径。
     memory_db_path: str = "data/memory.sqlite3"
 
+    # 增量摄取的变更追踪+任务队列存储，SQLite 文件路径。
+    ingestion_db_path: str = "data/ingestion.sqlite3"
+
     # 语音：ASR/TTS 均为可选项，三项配置任一缺失则对应功能不可用。
     asr_base_url: str | None = None
     asr_api_key: str | None = None
