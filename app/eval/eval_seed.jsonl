@@ -1,0 +1,5 @@
+# !!! 占位示例数据，非真实业务内容 !!!
+# 下面几条只是为了让 eval runner 的代码链路在没有真实评测集时也能跑通演示，
+# 必须由业务/产品/客服团队协作产出真实问答对后替换，不能带着这份文件上生产。
+{"question": "网络连不上怎么办？", "expected_answer": "请先重启路由器", "expected_sources": ["faq/network.md"]}
+{"question": "登录失败提示密码错误怎么处理？", "expected_answer": "请检查账号密码是否正确，或使用找回密码功能", "expected_sources": ["faq/login.md"]}
