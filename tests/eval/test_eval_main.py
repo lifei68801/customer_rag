@@ -47,6 +47,7 @@ async def test_main_runs_eval_suite_using_injected_registry_and_store(tmp_path):
             id="faq/network.md",
             vector=[1.0, 0.0],
             text="网络断开时请先重启路由器。",
+            tenant_id="t1",
             metadata={},
         )
     ]
@@ -73,6 +74,7 @@ async def test_main_runs_eval_suite_using_injected_registry_and_store(tmp_path):
 
     report = await main(
         dataset_path=dataset_path,
+        tenant_id="t1",
         settings=_settings(),
         embedding_registry=embedding_registry,
         vector_store=vector_store,

@@ -66,6 +66,7 @@ async def run_eval_suite(
     bm25_index: BM25Index,
     llm_registry: ProviderRegistry,
     llm_provider_name: str,
+    tenant_id: str,
     rerank_provider: RerankProvider | None = None,
     query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
@@ -73,6 +74,9 @@ async def run_eval_suite(
     top_k: int = 3,
 ) -> EvalReport:
     """对评测集里的每个用例真正跑一遍检索+生成，汇总 RAGAS 类指标。
+
+    整个评测集只针对一个 tenant_id 跑——评测的是"这个租户的知识库
+    回答得好不好"，不存在跨租户混跑的场景。
 
     Faithfulness/Answer Relevancy 是 LLM 裁判打分，会真实调用一次 LLM
     （非 answer_question 生成阶段那次），因此跑一个完整评测集的耗时和
@@ -88,6 +92,7 @@ async def run_eval_suite(
             bm25_index=bm25_index,
             llm_registry=llm_registry,
             llm_provider_name=llm_provider_name,
+            tenant_id=tenant_id,
             rerank_provider=rerank_provider,
             query_rewrite_enabled=query_rewrite_enabled,
             terms=terms,
@@ -146,6 +151,7 @@ def _fmt(value: float | None) -> str:
 async def main(
     *,
     dataset_path: Path,
+    tenant_id: str,
     settings: Settings | None = None,
     embedding_registry: EmbeddingRegistry | None = None,
     vector_store: VectorStore | None = None,
@@ -159,8 +165,8 @@ async def main(
     """评测集运行脚本入口：加载 JSONL 评测集，跑一遍检索+生成，输出 RAGAS 类指标汇总。
 
     用法：
-      python -m app.eval.runner --dataset app/eval/eval_seed.jsonl
-      python -m app.eval.runner --dataset app/eval/eval_seed.jsonl --use-graph
+      python -m app.eval.runner --dataset app/eval/eval_seed.jsonl --tenant-id t1
+      python -m app.eval.runner --dataset app/eval/eval_seed.jsonl --tenant-id t1 --use-graph
     """
     resolved_settings = settings or Settings()
     cases = load_eval_cases(dataset_path)
@@ -193,6 +199,7 @@ async def main(
         bm25_index=index,
         llm_registry=llm,
         llm_provider_name=DEFAULT_LLM_PROVIDER_NAME,
+        tenant_id=tenant_id,
         rerank_provider=rerank,
         terms=resolved_terms,
         graph_client=resolved_graph_client,
@@ -209,6 +216,7 @@ async def main(
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="运行评测集，输出 RAGAS 类指标汇总")
     parser.add_argument("--dataset", required=True, type=Path, help="评测集 JSONL 文件路径")
+    parser.add_argument("--tenant-id", required=True, help="本次评测针对的租户/产品线标识")
     parser.add_argument(
         "--use-graph",
         action="store_true",
@@ -219,4 +227,10 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    asyncio.run(main(dataset_path=args.dataset, use_graph=args.use_graph))
+    asyncio.run(
+        main(
+            dataset_path=args.dataset,
+            tenant_id=args.tenant_id,
+            use_graph=args.use_graph,
+        )
+    )

@@ -43,12 +43,14 @@ async def test_eval_seed_dataset_runs_end_to_end_with_fake_providers():
             id="faq/network.md",
             vector=[1.0, 0.0],
             text="网络断开时请先重启路由器。",
+            tenant_id="t1",
             metadata={},
         ),
         VectorRecord(
             id="faq/login.md",
             vector=[1.0, 0.0],
             text="登录失败请检查账号密码是否正确，或使用找回密码功能。",
+            tenant_id="t1",
             metadata={},
         ),
     ]
@@ -78,6 +80,7 @@ async def test_eval_seed_dataset_runs_end_to_end_with_fake_providers():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tenant_id="t1",
         query_rewrite_enabled=False,
     )
 
