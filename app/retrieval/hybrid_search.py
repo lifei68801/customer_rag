@@ -18,6 +18,7 @@ async def hybrid_search(
     bm25_index: BM25Index,
     llm_registry: ProviderRegistry,
     llm_provider_name: str,
+    tenant_id: str,
     rerank_provider: RerankProvider | None = None,
     query_rewrite_enabled: bool = True,
     query_rewrite_timeout_sec: float = 1.0,
@@ -51,17 +52,20 @@ async def hybrid_search(
             provider_name=embedding_provider_name,
         )
         vector_hits = await vector_store.search(
-            embed_result.vectors[0], top_k=vector_top_k
+            embed_result.vectors[0], top_k=vector_top_k, tenant_id=tenant_id
         )
         ranked_id_lists.append([record.id for record in vector_hits])
         for record in vector_hits:
             candidates[record.id] = record
 
-    bm25_hits = bm25_index.search(question, top_k=bm25_top_k)
+    bm25_hits = bm25_index.search(question, top_k=bm25_top_k, tenant_id=tenant_id)
     ranked_id_lists.append([hit.id for hit in bm25_hits])
     for hit in bm25_hits:
         candidates.setdefault(
-            hit.id, VectorRecord(id=hit.id, vector=[], text=hit.text, metadata={})
+            hit.id,
+            VectorRecord(
+                id=hit.id, vector=[], text=hit.text, tenant_id=tenant_id, metadata={}
+            ),
         )
 
     fused = reciprocal_rank_fusion(*ranked_id_lists)

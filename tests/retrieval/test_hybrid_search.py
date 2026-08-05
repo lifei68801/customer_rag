@@ -25,12 +25,14 @@ async def _build_store_and_index() -> tuple[InMemoryVectorStore, BM25Index]:
             id="vector_hit",
             vector=[1.0, 0.0],
             text="这是语义上很接近的内容，但不含关键词。",
+            tenant_id="t1",
             metadata={},
         ),
         VectorRecord(
             id="bm25_hit",
             vector=[0.0, 0.0],  # 向量检索故意让它排不进去
             text="错误码 E502 表示网关超时",
+            tenant_id="t1",
             metadata={},
         ),
     ]
@@ -62,11 +64,38 @@ async def test_hybrid_search_surfaces_bm25_only_hit_via_fusion():
         llm_provider_name="llm",
         query_rewrite_enabled=False,
         final_top_k=2,
+        tenant_id="t1",
     )
 
     result_ids = {record.id for record in results}
     assert "bm25_hit" in result_ids
     assert "vector_hit" in result_ids
+
+
+async def test_hybrid_search_does_not_leak_another_tenants_records():
+    store, bm25 = await _build_store_and_index()
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        "fake-embedding",
+        FixedEmbeddingProvider({"E502 错误码是什么意思": [1.0, 0.0]}),
+    )
+    llm_registry = ProviderRegistry()
+
+    results = await hybrid_search(
+        "E502 错误码是什么意思",
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=store,
+        bm25_index=bm25,
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        query_rewrite_enabled=False,
+        final_top_k=2,
+        tenant_id="t2",
+    )
+
+    assert results == []
 
 
 async def test_hybrid_search_uses_rerank_order_when_provided():
@@ -105,6 +134,7 @@ async def test_hybrid_search_uses_rerank_order_when_provided():
         query_rewrite_enabled=False,
         rerank_provider=FakeRerankProvider(),
         final_top_k=2,
+        tenant_id="t1",
     )
 
     assert results[-1].id == "bm25_hit"

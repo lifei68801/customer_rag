@@ -30,12 +30,14 @@ async def test_answer_question_uses_retrieved_context_in_the_prompt():
             id="faq/network.md",
             vector=[1.0, 0.0],
             text="网络断开时，请先重启路由器。",
+            tenant_id="t1",
             metadata={},
         ),
         VectorRecord(
             id="faq/login.md",
             vector=[0.0, 1.0],
             text="登录失败请检查账号密码。",
+            tenant_id="t1",
             metadata={},
         ),
     ]
@@ -58,6 +60,7 @@ async def test_answer_question_uses_retrieved_context_in_the_prompt():
         llm_provider_name="fake-llm",
         query_rewrite_enabled=False,
         top_k=1,
+        tenant_id="t1",
     )
 
     assert result.text == "按资料所述，重启路由器即可解决。"
@@ -81,6 +84,7 @@ async def test_answer_question_injects_term_guard_context_when_term_matched():
             id="faq/network.md",
             vector=[1.0, 0.0],
             text="网络断开时，请先重启路由器。",
+            tenant_id="t1",
             metadata={},
         ),
     ]
@@ -114,6 +118,7 @@ async def test_answer_question_injects_term_guard_context_when_term_matched():
         terms=terms,
         graph_client=FakeGraphClient(),
         top_k=1,
+        tenant_id="t1",
     )
 
     assert llm_provider.last_request is not None

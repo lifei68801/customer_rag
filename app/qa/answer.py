@@ -31,6 +31,7 @@ async def answer_question(
     bm25_index: BM25Index,
     llm_registry: ProviderRegistry,
     llm_provider_name: str,
+    tenant_id: str,
     rerank_provider: RerankProvider | None = None,
     query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
@@ -54,6 +55,7 @@ async def answer_question(
         rerank_provider=rerank_provider,
         query_rewrite_enabled=query_rewrite_enabled,
         final_top_k=top_k,
+        tenant_id=tenant_id,
     )
     retrieved_context = "\n\n".join(record.text for record in records)
     prompt_context = retrieved_context
