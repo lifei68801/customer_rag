@@ -75,7 +75,12 @@ async def test_memory_enabled_saves_turn_and_injects_context():
     conn = await aiosqlite.connect(":memory:")
     await ensure_schema(conn)
     await upsert_memory_item(
-        conn, memory_id="m1", tenant_id="t1", user_id="u1", text="客户使用企业版套餐"
+        conn,
+        memory_id="m1",
+        tenant_id="t1",
+        user_id="u1",
+        text="客户使用企业版套餐",
+        embedding=[1.0, 0.0],
     )
 
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (

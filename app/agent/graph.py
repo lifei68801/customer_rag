@@ -103,6 +103,9 @@ def build_agent_graph(
             tenant_id=state["tenant_id"],
             session_id=state.get("session_id", ""),
             user_id=state.get("user_id", ""),
+            question=state["question"],
+            embedding_registry=embedding_registry,
+            embedding_provider_name=embedding_provider_name,
         )
         return {"memory_context_messages": messages}
 
