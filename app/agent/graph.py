@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agent.create_ticket_tool import create_ticket
+from app.agent.planner import route_after_planner, run_planner_turn, run_tool_calls
 from app.agent.state import AgentState
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
@@ -28,6 +29,12 @@ _PROMPT_TEMPLATE = "根据以下资料回答问题。\n资料：\n{context}\n\n�
 _UNSAFE_INPUT_MESSAGE = "您的问题包含无法处理的敏感内容，请修改后重新提问。"
 _UNSAFE_OUTPUT_MESSAGE = "抱歉，生成的回答未通过安全审查，已为您转接人工客服。"
 _FALLBACK_MESSAGE = "抱歉，暂时没有找到确切答案，已为您转接人工客服处理。"
+_PLANNER_SYSTEM_PROMPT = (
+    "你是客服问答助手。可以调用 vector_search_tool 检索知识库、"
+    "graph_query_tool 查询专有名词的标准名称及关联关系。"
+    "有足够信息时直接给出最终答案，不要编造资料中没有的内容；"
+    "信息不足以回答时也不要编造。"
+)
 
 
 def build_agent_graph(
@@ -45,17 +52,25 @@ def build_agent_graph(
     banned_terms: list[str] | None = None,
     memory_conn: aiosqlite.Connection | None = None,
     top_k: int = 3,
+    enable_autonomous_planning: bool = False,
+    max_tool_call_rounds: int = 3,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
-    """构建 Agent 推理状态图：InputSafety -> TermGuard -> 检索 -> Responder/Fallback -> OutputSafety -> MemorySave。
+    """构建 Agent 推理状态图。
 
-    范围说明（有意简化，非疏漏）：架构文档设想的 Planner 是"LLM 自主决策
-    多轮调用 vector_search_tool/graph_query_tool"，这需要 provider 层支持
-    真正的 function-calling（发送 tools schema、解析 tool_calls），目前
-    provider 层尚未实现这一能力。本实现把 Planner 简化为确定性流程：
-    TermGuard 强制注入 + 始终执行一次混合检索，再按"是否检索到结果"
-    这一简单信号路由到 Responder 或 Fallback。真正的 LLM 驱动工具选择
-    和多轮循环（含最大迭代次数保护）留待 provider 层具备 function-calling
-    能力后再实现，不在此冒充。
+    enable_autonomous_planning=False（默认）：InputSafety -> TermGuard ->
+    MemoryRecall -> 检索 -> Responder/Fallback -> OutputSafety -> MemorySave。
+    检索固定跑一次，按"是否检索到结果"这一确定性信号路由——这是阶段4
+    落地时的简化实现，保留作为默认值，是新 Planner 路径出问题时的回退。
+
+    enable_autonomous_planning=True：InputSafety -> TermGuard -> MemoryRecall
+    -> Planner -> ToolCall（循环回 Planner，最多 max_tool_call_rounds 轮）
+    -> Responder/Fallback -> OutputSafety -> MemorySave。LLM 自主决定调用
+    vector_search_tool/graph_query_tool 还是直接回答，真正的 ReAct 风格
+    多轮工具决策，对应架构文档 §3.2 的完整设计。详见
+    docs/AGENT_PLANNER_DESIGN.md。
+
+    两种模式下 TermGuard 强制注入都不受影响——TermGuard 是独立于 Planner
+    的安全网，不因为换了推理路径就失效。
 
     memory_conn 为可选项：不传则完全跳过记忆召回/写入，图的行为与
     阶段4完全一致；传入则在 Responder 前注入长期记忆+近期会话上下文，
@@ -201,6 +216,46 @@ def build_agent_graph(
         )
         return {}
 
+    async def planner_node(state: AgentState) -> dict[str, Any]:
+        messages = state.get("planner_messages")
+        if not messages:
+            messages = [{"role": "system", "content": _PLANNER_SYSTEM_PROMPT}]
+            term_guard_context = state.get("term_guard_context")
+            if term_guard_context:
+                messages.append({"role": "system", "content": term_guard_context})
+            messages.extend(state.get("memory_context_messages", []))
+            messages.append({"role": "user", "content": state["question"]})
+        return await run_planner_turn(
+            {**state, "planner_messages": messages},
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
+            max_tool_call_rounds=max_tool_call_rounds,
+        )
+
+    async def tool_call_node(state: AgentState) -> dict[str, Any]:
+        return await run_tool_calls(
+            state,
+            embedding_registry=embedding_registry,
+            embedding_provider_name=embedding_provider_name,
+            vector_store=vector_store,
+            bm25_index=bm25_index,
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
+            rerank_provider=rerank_provider,
+            query_rewrite_enabled=query_rewrite_enabled,
+            terms=terms,
+            graph_client=graph_client,
+        )
+
+    async def planner_responder_node(state: AgentState) -> dict[str, Any]:
+        # Planner 最后一轮返回的文本已经是基于全部工具结果生成的答案，这里
+        # 只做格式化/字段补全，不再发起第二次 LLM 调用（省一次调用的钱），
+        # 见 docs/AGENT_PLANNER_DESIGN.md §6.2。
+        return {
+            "answer_text": state.get("answer_text", ""),
+            "fallback_triggered": False,
+        }
+
     def route_after_input_safety(state: AgentState) -> str:
         return "term_guard" if state.get("is_input_safe", True) else "output_safety"
 
@@ -211,8 +266,6 @@ def build_agent_graph(
     graph.add_node("input_safety", input_safety_node)
     graph.add_node("term_guard", term_guard_node)
     graph.add_node("memory_recall", memory_recall_node)
-    graph.add_node("retrieval", retrieval_node)
-    graph.add_node("responder", responder_node)
     graph.add_node("fallback", fallback_node)
     graph.add_node("create_ticket", create_ticket_node)
     graph.add_node("output_safety", output_safety_node)
@@ -225,16 +278,38 @@ def build_agent_graph(
         {"term_guard": "term_guard", "output_safety": "output_safety"},
     )
     graph.add_edge("term_guard", "memory_recall")
-    graph.add_edge("memory_recall", "retrieval")
-    graph.add_conditional_edges(
-        "retrieval",
-        route_after_retrieval,
-        {"responder": "responder", "fallback": "fallback"},
-    )
-    graph.add_edge("responder", "output_safety")
     graph.add_edge("fallback", "create_ticket")
     graph.add_edge("create_ticket", "output_safety")
     graph.add_edge("output_safety", "memory_save")
     graph.add_edge("memory_save", END)
+
+    if enable_autonomous_planning:
+        graph.add_node("planner", planner_node)
+        graph.add_node("tool_call", tool_call_node)
+        graph.add_node("planner_responder", planner_responder_node)
+
+        graph.add_edge("memory_recall", "planner")
+        graph.add_conditional_edges(
+            "planner",
+            route_after_planner,
+            {
+                "tool_call": "tool_call",
+                "responder": "planner_responder",
+                "fallback": "fallback",
+            },
+        )
+        graph.add_edge("tool_call", "planner")
+        graph.add_edge("planner_responder", "output_safety")
+    else:
+        graph.add_node("retrieval", retrieval_node)
+        graph.add_node("responder", responder_node)
+
+        graph.add_edge("memory_recall", "retrieval")
+        graph.add_conditional_edges(
+            "retrieval",
+            route_after_retrieval,
+            {"responder": "responder", "fallback": "fallback"},
+        )
+        graph.add_edge("responder", "output_safety")
 
     return graph.compile()
