@@ -260,10 +260,25 @@ stateDiagram-v2
 `content` 有值就误判为"这是最终答案"——`route_after_planner` 的判断依据
 始终是 `tool_calls` 是否存在，不是 `content` 是否为空），无需改动。
 
+### 补充：`deepseek-v4-flash` 模型验证（2026-08-05）
+
+同一套三场景换成 `deepseek-v4-flash` 重跑，全部通过，还跑出一个比 `deepseek-chat`
+更有价值的真实案例：
+
+- 场景1这次只请求了单个工具（不是并行），且 `content` 为空字符串——同一个厂商
+  不同模型在"content 是否为空"、"是否并行调用"这两点上表现不一致，进一步印证
+  §3.2 不能依赖 `content` 是否为空来做路由判断，只能依赖 `tool_calls` 是否存在。
+- 场景3（回填场景1的检索结果后发起第二轮）里，模型**没有直接给出最终答案，
+  而是又发起了一次 `vector_search_tool` 调用**（换了更具体的检索词再查一次）。
+  这个脚本本身没有再继续下一轮，所以看到的是"又要调用工具"而不是"最终答案"——
+  但这恰好是一个真实证据：确实存在需要 2 轮以上工具调用才能给出答案的真实
+  模型行为，不是本设计凭空假设的场景，`max_tool_call_rounds` 默认值给到 3
+  是有必要的余量，不是过度设计。
+
 **尚未做、需要在真正打开开关前完成的事**（不要误认为已经生产就绪）：
-- 只验证了 DeepSeek 一家；Qwen/智谱 GLM/Kimi 仍未做过真实冒烟测试，不能假设
-  它们的 tool-calling 行为（尤其是 parallel function calling 支持与否）和
-  DeepSeek 一致。
+- 只验证了 DeepSeek 家的两个模型；Qwen/智谱 GLM/Kimi 仍未做过真实冒烟测试，
+  不能假设它们的 tool-calling 行为（尤其是 parallel function calling 支持
+  与否、`content` 是否为空）和这两个模型一致。
 - `Settings.agent_enable_autonomous_planning` 默认仍是 `False`，第8步没做意味着没有
   真实数据支撑"该不该打开"这个决定。
 - Prompt injection（§4.3）只是指出了风险，没有专门的检测/防护机制。
