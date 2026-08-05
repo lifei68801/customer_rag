@@ -11,6 +11,7 @@ from starlette.responses import StreamingResponse
 
 from app.agent.graph import build_agent_graph
 from app.api import deps
+from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.providers.embedding import EmbeddingRegistry
@@ -48,6 +49,7 @@ async def agent_chat_endpoint(
     terms: list[Term] = Depends(deps.get_terms),
     memory_conn: aiosqlite.Connection = Depends(deps.get_memory_conn),
     tts_provider: TTSProvider | None = Depends(deps.get_tts_provider),
+    settings: Settings = Depends(deps.get_settings),
 ) -> StreamingResponse:
     """Agent 推理入口，SSE 传输。
 
@@ -61,7 +63,16 @@ async def agent_chat_endpoint(
     没有和 Responder 的 token 流式生成过程流水线化（因为上面那条也没
     做），所以"首包延迟"目前等于"完整回答生成完+全部句子合成完"，
     不是架构文档 7.3 节设想的"边生成边合成"。
+
+    Agent 自主规划（见 docs/AGENT_PLANNER_DESIGN.md）由
+    settings.agent_enable_autonomous_planning 总控，但语音请求
+    （voice_response=True）无论这个开关怎么配置都强制走确定性路径——
+    Planner 多轮 LLM 往返和语音首包延迟的硬性要求直接冲突，不能让
+    Planner 自己判断该不该省时间。
     """
+    enable_autonomous_planning = (
+        settings.agent_enable_autonomous_planning and not payload.voice_response
+    )
     graph = build_agent_graph(
         embedding_registry=embedding_registry,
         embedding_provider_name=deps.DEFAULT_EMBEDDING_PROVIDER_NAME,
@@ -73,6 +84,8 @@ async def agent_chat_endpoint(
         terms=terms,
         graph_client=graph_client,
         memory_conn=memory_conn,
+        enable_autonomous_planning=enable_autonomous_planning,
+        max_tool_call_rounds=settings.agent_max_tool_call_rounds,
     )
 
     async def event_stream() -> AsyncIterator[str]:
@@ -82,7 +95,11 @@ async def agent_chat_endpoint(
                 "tenant_id": payload.tenant_id,
                 "session_id": payload.session_id,
                 "user_id": payload.user_id,
-            }
+            },
+            # LangGraph 默认 recursion_limit=25；Planner<->ToolCall 循环每轮
+            # 占 2 个节点步骤，留足余量防止状态内轮次计数器万一有 bug 时
+            # 直接被 LangGraph 自身的保护机制拦住，而不是无限循环耗尽资源。
+            config={"recursion_limit": settings.agent_max_tool_call_rounds * 2 + 20},
         )
         final_text = result.get("final_text", "")
 

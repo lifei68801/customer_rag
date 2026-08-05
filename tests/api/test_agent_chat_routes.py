@@ -4,6 +4,7 @@ import aiosqlite
 from fastapi.testclient import TestClient
 
 from app.api import deps
+from app.config.settings import Settings
 from app.main import app
 from app.memory.schema import ensure_schema
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
@@ -11,6 +12,22 @@ from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, Embeddi
 from app.providers.registry import ProviderRegistry
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
+
+
+def _settings(**overrides) -> Settings:
+    defaults = dict(
+        llm_base_url="https://api.deepseek.com/v1",
+        llm_api_key="k",
+        llm_model="deepseek-chat",
+        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        embedding_api_key="k",
+        embedding_model="text-embedding-v3",
+        embedding_dimension=2,
+        milvus_uri="http://localhost:19530",
+        milvus_collection="faq_chunks",
+    )
+    defaults.update(overrides)
+    return Settings(**defaults)
 
 
 class FakeEmbeddingProvider:
@@ -79,6 +96,7 @@ def test_agent_chat_streams_final_answer_as_sse():
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
     app.dependency_overrides[deps.get_tts_provider] = lambda: None
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
     try:
         client = TestClient(app)
         with client.stream(
@@ -133,6 +151,7 @@ def test_agent_chat_synthesizes_voice_when_requested():
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
     app.dependency_overrides[deps.get_tts_provider] = lambda: FakeTTSProvider()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
     try:
         client = TestClient(app)
         with client.stream(
@@ -151,3 +170,102 @@ def test_agent_chat_synthesizes_voice_when_requested():
     payload = json.loads(body[len("data: ") :].strip())
     assert payload["audio_segments_base64"]
     assert len(payload["audio_segments_base64"]) >= 1
+
+
+class ScriptedLLMProvider:
+    def __init__(self, responses: list[ProviderResult]) -> None:
+        self._responses = list(responses)
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        return self._responses.pop(0)
+
+
+def _empty_dependency_overrides(*, llm_provider, settings, voice_response: bool = False):
+    """空知识库场景：静态路径必然因检索为空触发 Fallback（固定话术，不调 LLM
+    做回答），Planner 路径可以直接不调工具、用 LLM 的文本直接作答——用这个差异
+    作为"到底走了哪条路径"的判定依据，不需要打桩 build_agent_graph 本身。
+    """
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider())
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, llm_provider)
+    vector_store = InMemoryVectorStore()
+    bm25_index = BM25Index()
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_bm25_index] = lambda: bm25_index
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
+    # memory 关闭：这几个测试只关心 Planner/静态路径怎么选，跟记忆无关，
+    # 关掉能避免额外的、跟测试意图无关的 LLM 调用（事实抽取）。
+    app.dependency_overrides[deps.get_memory_conn] = lambda: None
+    app.dependency_overrides[deps.get_tts_provider] = lambda: None
+    app.dependency_overrides[deps.get_settings] = lambda: settings
+
+
+def test_agent_chat_uses_planner_path_when_enabled_and_not_voice():
+    llm_provider = ScriptedLLMProvider(
+        [
+            ProviderResult(text="这是通用问题，无需检索资料。"),  # Planner 决策：直接作答
+            ProviderResult(text='{"is_safe": true}'),  # OutputSafety 语义审查
+        ]
+    )
+    _empty_dependency_overrides(
+        llm_provider=llm_provider,
+        settings=_settings(agent_enable_autonomous_planning=True),
+    )
+    try:
+        client = TestClient(app)
+        with client.stream(
+            "POST", "/agent/chat", json={"question": "你好", "tenant_id": "t1"}
+        ) as response:
+            body = "".join(response.iter_text())
+    finally:
+        app.dependency_overrides.clear()
+
+    payload = json.loads(body[len("data: ") :].strip())
+    assert payload["text"] == "这是通用问题，无需检索资料。"
+
+
+def test_agent_chat_forces_static_path_for_voice_even_when_planner_enabled():
+    llm_provider = ScriptedLLMProvider(
+        [ProviderResult(text="不应该被用到，静态路径检索为空时不会调用LLM。")]
+    )
+    _empty_dependency_overrides(
+        llm_provider=llm_provider,
+        settings=_settings(agent_enable_autonomous_planning=True),
+    )
+    try:
+        client = TestClient(app)
+        with client.stream(
+            "POST",
+            "/agent/chat",
+            json={"question": "你好", "tenant_id": "t1", "voice_response": True},
+        ) as response:
+            body = "".join(response.iter_text())
+    finally:
+        app.dependency_overrides.clear()
+
+    payload = json.loads(body[len("data: ") :].strip())
+    assert "人工" in payload["text"] or "转" in payload["text"]
+
+
+def test_agent_chat_uses_static_path_when_planner_disabled_by_default():
+    llm_provider = ScriptedLLMProvider(
+        [ProviderResult(text="不应该被用到，静态路径检索为空时不会调用LLM。")]
+    )
+    _empty_dependency_overrides(llm_provider=llm_provider, settings=_settings())
+    try:
+        client = TestClient(app)
+        with client.stream(
+            "POST", "/agent/chat", json={"question": "你好", "tenant_id": "t1"}
+        ) as response:
+            body = "".join(response.iter_text())
+    finally:
+        app.dependency_overrides.clear()
+
+    payload = json.loads(body[len("data: ") :].strip())
+    assert "人工" in payload["text"] or "转" in payload["text"]

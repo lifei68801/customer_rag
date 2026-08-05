@@ -43,3 +43,10 @@ class Settings(BaseSettings):
     tts_base_url: str | None = None
     tts_api_key: str | None = None
     tts_model: str | None = None
+
+    # Agent 自主规划（Planner<->ToolCall 循环）总开关，默认关闭——关闭时用
+    # 确定性检索路径，是 Planner 路径出问题时的回退（见
+    # docs/AGENT_PLANNER_DESIGN.md）。语音请求无论这里怎么配置都强制走
+    # 确定性路径，避免多轮 LLM 往返和首包延迟的硬性要求冲突。
+    agent_enable_autonomous_planning: bool = False
+    agent_max_tool_call_rounds: int = 3
