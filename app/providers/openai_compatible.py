@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import httpx
 
-from app.providers.base import ProviderRequest, ProviderResult
+from app.providers.base import ProviderRequest, ProviderResult, ToolCall
 from app.providers.embedding import EmbeddingRequest, EmbeddingResult
 
 
@@ -32,19 +32,40 @@ class _OpenAICompatibleClient:
 
 class OpenAICompatibleChatProvider(_OpenAICompatibleClient):
     async def complete(self, request: ProviderRequest) -> ProviderResult:
+        payload: dict = {
+            "model": self._model,
+            "messages": request.messages,
+            **request.options,
+        }
+        if request.tools:
+            payload["tools"] = request.tools
+        if request.tool_choice:
+            payload["tool_choice"] = request.tool_choice
+
         response = await self._client.post(
             f"{self._base_url}/chat/completions",
             headers=self._headers(),
-            json={
-                "model": self._model,
-                "messages": request.messages,
-                **request.options,
-            },
+            json=payload,
         )
         response.raise_for_status()
         body = response.json()
-        text = body["choices"][0]["message"]["content"]
-        return ProviderResult(text=text, raw=body)
+        message = body["choices"][0]["message"]
+        # 纯工具调用轮次里 content 通常是 None，不能再假设它必是字符串。
+        text = message.get("content") or ""
+
+        tool_calls: list[ToolCall] | None = None
+        raw_tool_calls = message.get("tool_calls")
+        if raw_tool_calls:
+            tool_calls = [
+                ToolCall(
+                    id=tc["id"],
+                    name=tc["function"]["name"],
+                    arguments=tc["function"]["arguments"],
+                )
+                for tc in raw_tool_calls
+            ]
+
+        return ProviderResult(text=text, raw=body, tool_calls=tool_calls)
 
 
 class OpenAICompatibleEmbeddingProvider(_OpenAICompatibleClient):
