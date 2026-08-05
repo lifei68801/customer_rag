@@ -234,8 +234,11 @@ stateDiagram-v2
 6. ✅ `build_agent_graph()` 加 `enable_autonomous_planning`/`max_tool_call_rounds` 参数，
    接入新拓扑，`False` 时保证现有全部测试原样通过。
 7. ✅ `agent_routes.py` 接入 `recursion_limit` 外层护栏 + 语音请求的降级策略（§8）。
-8. ⬜（可选，视优先级，尚未开始）打通评测框架对 Agent graph 的执行路径，用真实评测
-   数据决定是否把 `Settings.agent_enable_autonomous_planning` 默认值翻转为 `True`。
+8. ✅ 打通评测框架对 Agent graph 的执行路径：`run_eval_suite_via_agent_graph()` +
+   `compare_planner_modes()` + `--compare-planner` CLI。代码路径已就绪，但**还没有
+   拿真实知识库+真实 embedding/LLM 凭证跑过一次真实对比**——这一步需要一个真实
+   Milvus 实例、真实摄取过的文档、真实 embedding API key，本环境目前都没有配好，
+   仍然是"翻转默认值"这个决定缺的最后一块数据支撑。
 
 ### 真实厂商 API 冒烟测试结果（DeepSeek，2026-08-05）
 
@@ -285,5 +288,6 @@ stateDiagram-v2
 
 ---
 
-*第1-7步已实施完成（2026-08-05）；DeepSeek 真实 API 冒烟测试已通过（2026-08-05）；
-第8步（评测框架接入）、其余三家厂商的冒烟测试待办。*
+*第1-8步全部已实施完成（2026-08-05）；DeepSeek 两个模型的真实 API 冒烟测试已通过
+（2026-08-05）。尚未做的：拿真实知识库+真实凭证跑一次 `--compare-planner` 得到
+真实对比数据、其余三家厂商（Qwen/GLM/Kimi）的冒烟测试。*
