@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import aiosqlite
+
 from app.graphrag.llm_extractor import extract_candidate_relations
 from app.graphrag.normalization import GraphWriteClientProtocol, normalize_and_write_relations
 from app.graphrag.ontology import Term
@@ -14,6 +16,7 @@ async def extract_and_write_graph_relations(
     llm_provider_name: str,
     terms: list[Term],
     graph_client: GraphWriteClientProtocol,
+    review_conn: aiosqlite.Connection | None = None,
     extract_timeout_sec: float = 2.0,
 ) -> int:
     """摄取时的图谱构建：逐 chunk 做 LLM 关系抽取 + 术语表归一化 + 写入 Neo4j。
@@ -21,6 +24,9 @@ async def extract_and_write_graph_relations(
     这是可选步骤（未接入 ingest_markdown_file/ingest_pdf_file 的默认路径），
     调用方需要显式提供 llm_registry/terms/graph_client 才会执行；不提供
     则摄取流程只做向量化写入，与阶段2的行为保持完全兼容。
+
+    review_conn 同样可选：提供时，未能对齐术语表的候选关系会进入人工
+    待审核队列而不是直接丢弃（见 normalize_and_write_relations）。
     """
     total_written = 0
     for chunk in chunks:
@@ -31,6 +37,6 @@ async def extract_and_write_graph_relations(
             timeout_sec=extract_timeout_sec,
         )
         total_written += await normalize_and_write_relations(
-            relations, terms=terms, graph_client=graph_client
+            relations, terms=terms, graph_client=graph_client, review_conn=review_conn
         )
     return total_written

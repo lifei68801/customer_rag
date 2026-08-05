@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import aiosqlite
+
 from app.graphrag.normalization import GraphWriteClientProtocol
 from app.graphrag.ontology import Term
 from app.ingestion.chunking import Chunk, chunk_markdown
@@ -53,8 +55,13 @@ async def _maybe_extract_graph_relations(
     graph_llm_provider_name: str | None,
     graph_terms: list[Term] | None,
     graph_client: GraphWriteClientProtocol | None,
+    graph_review_conn: aiosqlite.Connection | None,
 ) -> None:
-    """图谱抽取为可选步骤，四项参数任一缺失则直接跳过，不影响向量化写入路径。"""
+    """图谱抽取为可选步骤，四项必需参数任一缺失则直接跳过，不影响向量化写入路径。
+
+    graph_review_conn 独立于这四项之外是可选项：未能对齐术语表的候选
+    关系会转入人工待审核队列而非直接丢弃（见 normalize_and_write_relations）。
+    """
     if not (
         graph_llm_registry
         and graph_llm_provider_name
@@ -68,6 +75,7 @@ async def _maybe_extract_graph_relations(
         llm_provider_name=graph_llm_provider_name,
         terms=graph_terms,
         graph_client=graph_client,
+        review_conn=graph_review_conn,
     )
 
 
@@ -82,6 +90,7 @@ async def ingest_markdown_file(
     graph_llm_provider_name: str | None = None,
     graph_terms: list[Term] | None = None,
     graph_client: GraphWriteClientProtocol | None = None,
+    graph_review_conn: aiosqlite.Connection | None = None,
 ) -> int:
     """读取单个 Markdown 文件，分块、向量化并写入向量库，返回写入的 chunk 数。
 
@@ -90,6 +99,7 @@ async def ingest_markdown_file(
 
     图谱相关四个参数均为可选：全部提供时额外做 LLM 关系抽取+归一化+
     写入 Neo4j，缺一则跳过，与阶段2的纯向量化摄取行为完全兼容。
+    graph_review_conn 额外可选：提供时未对齐术语表的候选进人工待审核队列。
     """
     text = path.read_text(encoding="utf-8")
     chunks = chunk_markdown(text, source=str(path))
@@ -107,6 +117,7 @@ async def ingest_markdown_file(
         graph_llm_provider_name=graph_llm_provider_name,
         graph_terms=graph_terms,
         graph_client=graph_client,
+        graph_review_conn=graph_review_conn,
     )
     return count
 
@@ -122,6 +133,7 @@ async def ingest_pdf_file(
     graph_llm_provider_name: str | None = None,
     graph_terms: list[Term] | None = None,
     graph_client: GraphWriteClientProtocol | None = None,
+    graph_review_conn: aiosqlite.Connection | None = None,
 ) -> int:
     """读取单个 PDF 文件（逐页分块），向量化并写入向量库，返回写入的 chunk 数。"""
     chunks = parse_pdf(path)
@@ -139,6 +151,7 @@ async def ingest_pdf_file(
         graph_llm_provider_name=graph_llm_provider_name,
         graph_terms=graph_terms,
         graph_client=graph_client,
+        graph_review_conn=graph_review_conn,
     )
     return count
 
@@ -154,6 +167,7 @@ async def ingest_directory(
     graph_llm_provider_name: str | None = None,
     graph_terms: list[Term] | None = None,
     graph_client: GraphWriteClientProtocol | None = None,
+    graph_review_conn: aiosqlite.Connection | None = None,
 ) -> int:
     """遍历目录下所有 .md/.pdf 文件并逐个摄取，返回写入的 chunk 总数。
 
@@ -171,6 +185,7 @@ async def ingest_directory(
             graph_llm_provider_name=graph_llm_provider_name,
             graph_terms=graph_terms,
             graph_client=graph_client,
+            graph_review_conn=graph_review_conn,
         )
     for pdf_file in sorted(directory.glob("*.pdf")):
         total += await ingest_pdf_file(
@@ -183,5 +198,6 @@ async def ingest_directory(
             graph_llm_provider_name=graph_llm_provider_name,
             graph_terms=graph_terms,
             graph_client=graph_client,
+            graph_review_conn=graph_review_conn,
         )
     return total

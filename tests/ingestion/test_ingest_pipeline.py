@@ -1,4 +1,7 @@
+import aiosqlite
+
 from app.graphrag.ontology import Term
+from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
 from app.ingestion.pipeline import ingest_directory, ingest_markdown_file
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
@@ -167,6 +170,58 @@ async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_p
             "relation_type": "RELATED_TO",
         }
     ]
+
+
+async def test_ingest_markdown_file_sends_unresolved_candidates_to_review_queue(
+    tmp_path,
+):
+    md_file = tmp_path / "network.md"
+    md_file.write_text(
+        "## 网络故障\n网关超时示例通常与不存在的实体相关\n", encoding="utf-8"
+    )
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        FixedLLMProvider(
+            '{"relations": [{"subject": "网关超时示例", '
+            '"object": "不存在的实体", "relation_type": "RELATED_TO"}]}'
+        ),
+    )
+    terms = [
+        Term(
+            standard_name="示例错误码E502",
+            aliases=["网关超时示例"],
+            term_type="error_code",
+            product_line="示例产品线",
+        ),
+    ]
+    graph_client = FakeGraphClient()
+    review_conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(review_conn)
+
+    await ingest_markdown_file(
+        md_file,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        tenant_id="t1",
+        graph_llm_registry=llm_registry,
+        graph_llm_provider_name="llm",
+        graph_terms=terms,
+        graph_client=graph_client,
+        graph_review_conn=review_conn,
+    )
+
+    assert graph_client.written == []
+    pending = await list_pending_reviews(review_conn)
+    assert len(pending) == 1
+    assert pending[0]["object_candidate"] == "不存在的实体"
 
 
 async def test_ingest_directory_processes_markdown_and_pdf_but_skips_other_extensions(

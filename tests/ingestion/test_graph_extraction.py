@@ -1,4 +1,7 @@
+import aiosqlite
+
 from app.graphrag.ontology import Term
+from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
 from app.ingestion.graph_extraction import extract_and_write_graph_relations
 from app.ingestion.chunking import Chunk
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
@@ -73,3 +76,34 @@ async def test_extracts_normalizes_and_writes_relations_from_chunks():
             "relation_type": "RELATED_TO",
         }
     ]
+
+
+async def test_unresolved_candidate_goes_to_review_queue_when_review_conn_provided():
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        FixedLLMProvider(
+            '{"relations": [{"subject": "网关超时示例", '
+            '"object": "不存在的实体", "relation_type": "RELATED_TO"}]}'
+        ),
+    )
+    graph_client = FakeGraphClient()
+    review_conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(review_conn)
+    chunks = [Chunk(text="网关超时示例通常与不存在的实体相关", heading_path=[], source="a.md")]
+
+    written = await extract_and_write_graph_relations(
+        chunks,
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        terms=_TERMS,
+        graph_client=graph_client,
+        review_conn=review_conn,
+    )
+
+    assert written == 0
+    assert graph_client.written == []
+    pending = await list_pending_reviews(review_conn)
+    assert len(pending) == 1
+    assert pending[0]["object_candidate"] == "不存在的实体"
