@@ -34,10 +34,13 @@ async def test_ingest_pdf_file_chunks_embeds_and_upserts(tmp_path):
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
+        tenant_id="t1",
     )
 
     assert count == 2
-    results = await vector_store.search(query_vector=[0.1, 0.2], top_k=2)
+    results = await vector_store.search(
+        query_vector=[0.1, 0.2], top_k=2, tenant_id="t1"
+    )
     texts = {record.text for record in results}
     assert "网络断开时请先重启路由器。" in texts
     assert "登录失败请检查账号密码。" in texts

@@ -34,6 +34,7 @@ async def test_main_ingests_directory_using_injected_registry_and_store(tmp_path
 
     total = await main(
         directory=tmp_path,
+        tenant_id="t1",
         settings=_settings(),
         embedding_registry=embedding_registry,
         vector_store=vector_store,

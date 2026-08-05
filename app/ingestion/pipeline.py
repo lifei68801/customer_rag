@@ -19,6 +19,7 @@ async def _embed_and_upsert(
     embedding_registry: EmbeddingRegistry,
     embedding_provider_name: str,
     vector_store: VectorStore,
+    tenant_id: str,
 ) -> int:
     if not chunks:
         return 0
@@ -33,6 +34,7 @@ async def _embed_and_upsert(
             id=f"{path}#{i}",
             vector=vector,
             text=chunk.text,
+            tenant_id=tenant_id,
             metadata={
                 "source": chunk.source,
                 "heading_path": "/".join(chunk.heading_path),
@@ -75,12 +77,16 @@ async def ingest_markdown_file(
     embedding_registry: EmbeddingRegistry,
     embedding_provider_name: str,
     vector_store: VectorStore,
+    tenant_id: str,
     graph_llm_registry: ProviderRegistry | None = None,
     graph_llm_provider_name: str | None = None,
     graph_terms: list[Term] | None = None,
     graph_client: GraphWriteClientProtocol | None = None,
 ) -> int:
     """读取单个 Markdown 文件，分块、向量化并写入向量库，返回写入的 chunk 数。
+
+    tenant_id 是必填项：每条写入的 VectorRecord 都会打上这个租户标签，
+    决定了后续检索时哪些租户能看到这批数据。
 
     图谱相关四个参数均为可选：全部提供时额外做 LLM 关系抽取+归一化+
     写入 Neo4j，缺一则跳过，与阶段2的纯向量化摄取行为完全兼容。
@@ -93,6 +99,7 @@ async def ingest_markdown_file(
         embedding_registry=embedding_registry,
         embedding_provider_name=embedding_provider_name,
         vector_store=vector_store,
+        tenant_id=tenant_id,
     )
     await _maybe_extract_graph_relations(
         chunks,
@@ -110,6 +117,7 @@ async def ingest_pdf_file(
     embedding_registry: EmbeddingRegistry,
     embedding_provider_name: str,
     vector_store: VectorStore,
+    tenant_id: str,
     graph_llm_registry: ProviderRegistry | None = None,
     graph_llm_provider_name: str | None = None,
     graph_terms: list[Term] | None = None,
@@ -123,6 +131,7 @@ async def ingest_pdf_file(
         embedding_registry=embedding_registry,
         embedding_provider_name=embedding_provider_name,
         vector_store=vector_store,
+        tenant_id=tenant_id,
     )
     await _maybe_extract_graph_relations(
         chunks,
@@ -140,12 +149,16 @@ async def ingest_directory(
     embedding_registry: EmbeddingRegistry,
     embedding_provider_name: str,
     vector_store: VectorStore,
+    tenant_id: str,
     graph_llm_registry: ProviderRegistry | None = None,
     graph_llm_provider_name: str | None = None,
     graph_terms: list[Term] | None = None,
     graph_client: GraphWriteClientProtocol | None = None,
 ) -> int:
-    """遍历目录下所有 .md/.pdf 文件并逐个摄取，返回写入的 chunk 总数。"""
+    """遍历目录下所有 .md/.pdf 文件并逐个摄取，返回写入的 chunk 总数。
+
+    一次调用只摄取给一个租户；不同租户的文档要分开跑摄取脚本。
+    """
     total = 0
     for md_file in sorted(directory.glob("*.md")):
         total += await ingest_markdown_file(
@@ -153,6 +166,7 @@ async def ingest_directory(
             embedding_registry=embedding_registry,
             embedding_provider_name=embedding_provider_name,
             vector_store=vector_store,
+            tenant_id=tenant_id,
             graph_llm_registry=graph_llm_registry,
             graph_llm_provider_name=graph_llm_provider_name,
             graph_terms=graph_terms,
@@ -164,6 +178,7 @@ async def ingest_directory(
             embedding_registry=embedding_registry,
             embedding_provider_name=embedding_provider_name,
             vector_store=vector_store,
+            tenant_id=tenant_id,
             graph_llm_registry=graph_llm_registry,
             graph_llm_provider_name=graph_llm_provider_name,
             graph_terms=graph_terms,

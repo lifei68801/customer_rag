@@ -28,14 +28,43 @@ async def test_ingest_markdown_file_chunks_embeds_and_upserts(tmp_path):
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
+        tenant_id="t1",
     )
 
     assert count == 2
-    results = await vector_store.search(query_vector=[0.1, 0.2], top_k=2)
+    results = await vector_store.search(
+        query_vector=[0.1, 0.2], top_k=2, tenant_id="t1"
+    )
     assert len(results) == 2
     texts = {record.text for record in results}
     assert "网络断开时请先重启路由器。" in texts
     assert "登录失败请检查账号密码。" in texts
+
+
+async def test_ingest_markdown_file_tags_records_with_the_ingesting_tenant(tmp_path):
+    md_file = tmp_path / "network.md"
+    md_file.write_text("## 网络故障\n网络断开时请先重启路由器。\n", encoding="utf-8")
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    await ingest_markdown_file(
+        md_file,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        tenant_id="t1",
+    )
+
+    same_tenant = await vector_store.search(
+        query_vector=[0.1, 0.2], top_k=10, tenant_id="t1"
+    )
+    other_tenant = await vector_store.search(
+        query_vector=[0.1, 0.2], top_k=10, tenant_id="t2"
+    )
+    assert len(same_tenant) == 1
+    assert len(other_tenant) == 0
 
 
 async def test_ingest_markdown_file_skips_graph_extraction_when_not_configured(
@@ -54,6 +83,7 @@ async def test_ingest_markdown_file_skips_graph_extraction_when_not_configured(
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
+        tenant_id="t1",
     )
 
     assert count == 1
@@ -123,6 +153,7 @@ async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_p
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
+        tenant_id="t1",
         graph_llm_registry=llm_registry,
         graph_llm_provider_name="llm",
         graph_terms=terms,
@@ -168,9 +199,12 @@ async def test_ingest_directory_processes_markdown_and_pdf_but_skips_other_exten
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
+        tenant_id="t1",
     )
 
     assert total == 2
-    results = await vector_store.search(query_vector=[0.1, 0.2], top_k=10)
+    results = await vector_store.search(
+        query_vector=[0.1, 0.2], top_k=10, tenant_id="t1"
+    )
     texts = {record.text for record in results}
     assert texts == {"内容A。", "内容B。"}

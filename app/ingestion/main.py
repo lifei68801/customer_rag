@@ -24,6 +24,7 @@ from app.retrieval.vector_store import VectorStore
 async def main(
     *,
     directory: Path,
+    tenant_id: str,
     build_graph: bool = False,
     settings: Settings | None = None,
     embedding_registry: EmbeddingRegistry | None = None,
@@ -34,9 +35,11 @@ async def main(
 ) -> int:
     """批量摄取脚本入口：分块→向量化→写入向量库，可选同步构建知识图谱。
 
+    一次调用只摄取给一个租户（--tenant-id），不同租户的文档要分开跑。
+
     用法：
-      python -m app.ingestion.main --dir path/to/docs
-      python -m app.ingestion.main --dir path/to/docs --build-graph
+      python -m app.ingestion.main --dir path/to/docs --tenant-id t1
+      python -m app.ingestion.main --dir path/to/docs --tenant-id t1 --build-graph
     """
     resolved_settings = settings or Settings()
     registry = embedding_registry or build_embedding_registry_from_settings(
@@ -64,18 +67,20 @@ async def main(
         embedding_registry=registry,
         embedding_provider_name=DEFAULT_EMBEDDING_PROVIDER_NAME,
         vector_store=store,
+        tenant_id=tenant_id,
         graph_llm_registry=resolved_graph_llm_registry,
         graph_llm_provider_name=DEFAULT_LLM_PROVIDER_NAME if build_graph else None,
         graph_terms=resolved_graph_terms,
         graph_client=resolved_graph_client,
     )
-    print(f"已摄取 {total} 个 chunk，来自目录: {directory}")
+    print(f"已摄取 {total} 个 chunk，来自目录: {directory}（租户: {tenant_id}）")
     return total
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="批量摄取文档到向量库")
     parser.add_argument("--dir", required=True, type=Path, help="待摄取的文档目录")
+    parser.add_argument("--tenant-id", required=True, help="本次摄取归属的租户/产品线标识")
     parser.add_argument(
         "--build-graph",
         action="store_true",
@@ -86,4 +91,6 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    asyncio.run(main(directory=args.dir, build_graph=args.build_graph))
+    asyncio.run(
+        main(directory=args.dir, tenant_id=args.tenant_id, build_graph=args.build_graph)
+    )
