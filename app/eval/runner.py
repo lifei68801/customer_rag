@@ -7,6 +7,7 @@ from pathlib import Path
 
 from langgraph.graph.state import CompiledStateGraph
 
+from app.agent.graph import build_agent_graph
 from app.config.settings import Settings
 from app.eval.dataset import EvalCase, load_eval_cases
 from app.eval.llm_judged_metrics import score_answer_relevancy, score_faithfulness
@@ -49,6 +50,12 @@ class EvalReport:
     average_faithfulness: float | None
     average_answer_relevancy: float | None
     average_terminology_accuracy: float | None
+
+
+@dataclass(frozen=True)
+class PlannerComparisonReport:
+    planner_disabled: EvalReport
+    planner_enabled: EvalReport
 
 
 def _average(values: list[float | None]) -> float | None:
@@ -230,8 +237,89 @@ async def run_eval_suite_via_agent_graph(
     return _build_report(case_results)
 
 
+async def compare_planner_modes(
+    cases: list[EvalCase],
+    *,
+    tenant_id: str,
+    embedding_registry: EmbeddingRegistry,
+    embedding_provider_name: str,
+    vector_store: VectorStore,
+    bm25_index: BM25Index,
+    llm_registry: ProviderRegistry,
+    llm_provider_name: str,
+    rerank_provider: RerankProvider | None = None,
+    query_rewrite_enabled: bool = True,
+    terms: list[Term] | None = None,
+    graph_client: GraphClientProtocol | None = None,
+    top_k: int = 3,
+    max_tool_call_rounds: int = 3,
+) -> PlannerComparisonReport:
+    """分别用 enable_autonomous_planning=False/True 构建两个 Agent graph，
+    各跑一遍同一份评测集，用完全相同的打分口径对比两种模式的效果。
+
+    这是 docs/AGENT_PLANNER_DESIGN.md 第8步"用真实评测数据决定是否把
+    Settings.agent_enable_autonomous_planning 默认值翻转为 True"的落地
+    入口——两个 graph 除了这一个开关，其余构建参数完全一致，保证对比
+    的唯一变量就是 Planner 开关本身。
+    """
+    common_kwargs = dict(
+        embedding_registry=embedding_registry,
+        embedding_provider_name=embedding_provider_name,
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name=llm_provider_name,
+        rerank_provider=rerank_provider,
+        query_rewrite_enabled=query_rewrite_enabled,
+        terms=terms,
+        graph_client=graph_client,
+        top_k=top_k,
+    )
+
+    planner_disabled_graph = build_agent_graph(
+        **common_kwargs, enable_autonomous_planning=False
+    )
+    planner_enabled_graph = build_agent_graph(
+        **common_kwargs,
+        enable_autonomous_planning=True,
+        max_tool_call_rounds=max_tool_call_rounds,
+    )
+
+    planner_disabled_report = await run_eval_suite_via_agent_graph(
+        cases,
+        graph=planner_disabled_graph,
+        tenant_id=tenant_id,
+        llm_registry=llm_registry,
+        llm_provider_name=llm_provider_name,
+        terms=terms,
+    )
+    planner_enabled_report = await run_eval_suite_via_agent_graph(
+        cases,
+        graph=planner_enabled_graph,
+        tenant_id=tenant_id,
+        llm_registry=llm_registry,
+        llm_provider_name=llm_provider_name,
+        terms=terms,
+    )
+
+    return PlannerComparisonReport(
+        planner_disabled=planner_disabled_report,
+        planner_enabled=planner_enabled_report,
+    )
+
+
 def _fmt(value: float | None) -> str:
     return f"{value:.3f}" if value is not None else "N/A（无有效评分）"
+
+
+def _print_report(report: EvalReport, *, label: str | None = None) -> None:
+    if label:
+        print(f"--- {label} ---")
+    print(f"评测用例数: {len(report.case_results)}")
+    print(f"Context Recall 平均分: {_fmt(report.average_context_recall)}")
+    print(f"Faithfulness 平均分: {_fmt(report.average_faithfulness)}")
+    print(f"Answer Relevancy 平均分: {_fmt(report.average_answer_relevancy)}")
+    print(f"专有名词准确率平均分: {_fmt(report.average_terminology_accuracy)}")
 
 
 async def main(
@@ -244,15 +332,24 @@ async def main(
     bm25_index: BM25Index | None = None,
     llm_registry: ProviderRegistry | None = None,
     rerank_provider: RerankProvider | None = None,
+    query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
     graph_client: Neo4jGraphClient | None = None,
     use_graph: bool = False,
-) -> EvalReport:
+    compare_planner: bool = False,
+    max_tool_call_rounds: int = 3,
+) -> EvalReport | PlannerComparisonReport:
     """评测集运行脚本入口：加载 JSONL 评测集，跑一遍检索+生成，输出 RAGAS 类指标汇总。
 
     用法：
       python -m app.eval.runner --dataset app/eval/eval_seed.jsonl --tenant-id t1
       python -m app.eval.runner --dataset app/eval/eval_seed.jsonl --tenant-id t1 --use-graph
+      python -m app.eval.runner --dataset app/eval/eval_seed.jsonl --tenant-id t1 --compare-planner
+
+    --compare-planner：不跑 answer_question() 直连路径，改为分别用
+    enable_autonomous_planning=False/True 构建两个 Agent graph 各跑一遍，
+    输出两组指标供对比——这是决定要不要把
+    Settings.agent_enable_autonomous_planning 默认值翻转为 True 的数据来源。
     """
     resolved_settings = settings or Settings()
     cases = load_eval_cases(dataset_path)
@@ -277,6 +374,26 @@ async def main(
             resolved_settings
         )
 
+    if compare_planner:
+        comparison = await compare_planner_modes(
+            cases,
+            tenant_id=tenant_id,
+            embedding_registry=registry,
+            embedding_provider_name=DEFAULT_EMBEDDING_PROVIDER_NAME,
+            vector_store=store,
+            bm25_index=index,
+            llm_registry=llm,
+            llm_provider_name=DEFAULT_LLM_PROVIDER_NAME,
+            rerank_provider=rerank,
+            query_rewrite_enabled=query_rewrite_enabled,
+            terms=resolved_terms,
+            graph_client=resolved_graph_client,
+            max_tool_call_rounds=max_tool_call_rounds,
+        )
+        _print_report(comparison.planner_disabled, label="Planner 关闭（确定性路径）")
+        _print_report(comparison.planner_enabled, label="Planner 开启（自主规划路径）")
+        return comparison
+
     report = await run_eval_suite(
         cases,
         embedding_registry=registry,
@@ -287,15 +404,11 @@ async def main(
         llm_provider_name=DEFAULT_LLM_PROVIDER_NAME,
         tenant_id=tenant_id,
         rerank_provider=rerank,
+        query_rewrite_enabled=query_rewrite_enabled,
         terms=resolved_terms,
         graph_client=resolved_graph_client,
     )
-
-    print(f"评测用例数: {len(report.case_results)}")
-    print(f"Context Recall 平均分: {_fmt(report.average_context_recall)}")
-    print(f"Faithfulness 平均分: {_fmt(report.average_faithfulness)}")
-    print(f"Answer Relevancy 平均分: {_fmt(report.average_answer_relevancy)}")
-    print(f"专有名词准确率平均分: {_fmt(report.average_terminology_accuracy)}")
+    _print_report(report)
     return report
 
 
@@ -308,6 +421,20 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="启用 TermGuard/术语表专有名词准确率评测（需先配置好术语表与 Neo4j）",
     )
+    parser.add_argument(
+        "--compare-planner",
+        action="store_true",
+        help=(
+            "对比 Agent 自主规划开/关两种模式的评测指标（分别构建两个 Agent graph "
+            "跑同一份评测集），而不是走 answer_question() 直连路径"
+        ),
+    )
+    parser.add_argument(
+        "--max-tool-call-rounds",
+        type=int,
+        default=3,
+        help="--compare-planner 时 Planner 开启一侧的最大工具调用轮次上限",
+    )
     return parser.parse_args()
 
 
@@ -318,5 +445,7 @@ if __name__ == "__main__":
             dataset_path=args.dataset,
             tenant_id=args.tenant_id,
             use_graph=args.use_graph,
+            compare_planner=args.compare_planner,
+            max_tool_call_rounds=args.max_tool_call_rounds,
         )
     )

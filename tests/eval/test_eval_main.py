@@ -84,3 +84,62 @@ async def test_main_runs_eval_suite_using_injected_registry_and_store(tmp_path):
 
     assert len(report.case_results) == 1
     assert report.average_context_recall == 1.0
+
+
+async def test_main_compares_planner_modes_when_requested(tmp_path):
+    dataset_path = tmp_path / "seed.jsonl"
+    dataset_path.write_text(
+        '{"question": "网络连不上怎么办？", "expected_answer": "重启路由器", '
+        '"expected_sources": ["faq/network.md"]}\n',
+        encoding="utf-8",
+    )
+
+    records = [
+        VectorRecord(
+            id="faq/network.md",
+            vector=[1.0, 0.0],
+            text="网络断开时请先重启路由器。",
+            tenant_id="t1",
+            metadata={},
+        )
+    ]
+    vector_store = InMemoryVectorStore()
+    await vector_store.upsert(records)
+    bm25_index = BM25Index()
+    bm25_index.index(records)
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("qwen-embedding", FakeEmbeddingProvider())
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "qwen",
+        ScriptedLLMProvider(
+            [
+                "静态路径回答。",
+                '{"is_safe": true}',
+                '{"score": 0.9}',
+                '{"score": 0.8}',
+                "Planner路径回答。",
+                '{"is_safe": true}',
+                '{"score": 0.7}',
+                '{"score": 0.6}',
+            ]
+        ),
+    )
+
+    report = await main(
+        dataset_path=dataset_path,
+        tenant_id="t1",
+        settings=_settings(),
+        embedding_registry=embedding_registry,
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        query_rewrite_enabled=False,
+        compare_planner=True,
+    )
+
+    assert report.planner_disabled.case_results[0].answer == "静态路径回答。"
+    assert report.planner_enabled.case_results[0].answer == "Planner路径回答。"
