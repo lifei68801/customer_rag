@@ -20,3 +20,11 @@ jobs:
 
       - name: Run tests
         run: pytest -v
+
+      - name: Run eval smoke test
+        run: pytest tests/eval/test_smoke.py -v
+        # 用 fake/scripted provider 跑一遍随仓库发布的占位评测集
+        # (app/eval/eval_seed.jsonl)，验证评测流水线本身没被破坏——
+        # 不依赖真实厂商 API，也不代表客服机器人的真实回答质量。
+        # 已经被上面 "Run tests" 覆盖，这里单独列出是为了在 CI 里
+        # 给出一条可读的、专门针对评测流水线健康度的独立信号。
