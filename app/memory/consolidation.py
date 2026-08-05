@@ -12,6 +12,7 @@ from app.providers.registry import ProviderRegistry
 async def run_memory_consolidation(
     conn: aiosqlite.Connection,
     *,
+    tenant_id: str,
     user_id: str,
     user_input: str,
     assistant_output: str,
@@ -38,7 +39,9 @@ async def run_memory_consolidation(
     if not facts:
         return []
 
-    existing_memories = await list_active_memory_items(conn, user_id=user_id)
+    existing_memories = await list_active_memory_items(
+        conn, tenant_id=tenant_id, user_id=user_id
+    )
     actions = await resolve_memory_actions(
         new_facts=facts,
         existing_memories=existing_memories,
@@ -46,4 +49,6 @@ async def run_memory_consolidation(
         llm_provider_name=llm_provider_name,
         timeout_sec=conflict_resolve_timeout_sec,
     )
-    return await apply_memory_actions(conn, user_id=user_id, actions=actions)
+    return await apply_memory_actions(
+        conn, tenant_id=tenant_id, user_id=user_id, actions=actions
+    )

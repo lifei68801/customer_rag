@@ -40,6 +40,7 @@ async def test_run_memory_consolidation_adds_new_fact_end_to_end():
 
     applied = await run_memory_consolidation(
         conn,
+        tenant_id="t1",
         user_id="u1",
         user_input="我们公司用的是企业版套餐",
         assistant_output="好的，已记录",
@@ -54,7 +55,7 @@ async def test_run_memory_consolidation_adds_new_fact_end_to_end():
             "text": "客户使用企业版套餐",
         }
     ]
-    items = await list_active_memory_items(conn, user_id="u1")
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
     assert [i["text"] for i in items] == ["客户使用企业版套餐"]
 
 
@@ -67,6 +68,7 @@ async def test_run_memory_consolidation_no_facts_extracted_writes_nothing():
 
     applied = await run_memory_consolidation(
         conn,
+        tenant_id="t1",
         user_id="u1",
         user_input="你好",
         assistant_output="您好，有什么可以帮您",
@@ -75,5 +77,5 @@ async def test_run_memory_consolidation_no_facts_extracted_writes_nothing():
     )
 
     assert applied == []
-    items = await list_active_memory_items(conn, user_id="u1")
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
     assert items == []

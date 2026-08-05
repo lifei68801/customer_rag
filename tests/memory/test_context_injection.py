@@ -14,16 +14,23 @@ async def _connect():
 
 async def test_injects_recent_turns_and_active_memory_items():
     conn = await _connect()
-    await append_turn(conn, session_id="s1", user_id="u1", role="user", content="你好")
     await append_turn(
-        conn, session_id="s1", user_id="u1", role="assistant", content="您好"
+        conn, tenant_id="t1", session_id="s1", user_id="u1", role="user", content="你好"
+    )
+    await append_turn(
+        conn,
+        tenant_id="t1",
+        session_id="s1",
+        user_id="u1",
+        role="assistant",
+        content="您好",
     )
     await upsert_memory_item(
-        conn, memory_id="m1", user_id="u1", text="客户使用企业版套餐"
+        conn, memory_id="m1", tenant_id="t1", user_id="u1", text="客户使用企业版套餐"
     )
 
     messages = await inject_memory_context(
-        conn, session_id="s1", user_id="u1", recent_turn_limit=10
+        conn, tenant_id="t1", session_id="s1", user_id="u1", recent_turn_limit=10
     )
 
     assert any("客户使用企业版套餐" in m["content"] for m in messages if m["role"] == "system")
@@ -36,11 +43,17 @@ async def test_compacts_turns_beyond_preserve_limit():
     conn = await _connect()
     for i in range(10):
         await append_turn(
-            conn, session_id="s1", user_id="u1", role="user", content=f"msg{i}"
+            conn,
+            tenant_id="t1",
+            session_id="s1",
+            user_id="u1",
+            role="user",
+            content=f"msg{i}",
         )
 
     messages = await inject_memory_context(
         conn,
+        tenant_id="t1",
         session_id="s1",
         user_id="u1",
         recent_turn_limit=10,

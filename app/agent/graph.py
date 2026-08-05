@@ -85,6 +85,7 @@ def build_agent_graph(
             return {"memory_context_messages": []}
         messages = await inject_memory_context(
             memory_conn,
+            tenant_id=state["tenant_id"],
             session_id=state.get("session_id", ""),
             user_id=state.get("user_id", ""),
         )
@@ -175,6 +176,7 @@ def build_agent_graph(
         final_text = state.get("final_text", "")
         await append_turn(
             memory_conn,
+            tenant_id=state["tenant_id"],
             session_id=session_id,
             user_id=user_id,
             role="user",
@@ -182,6 +184,7 @@ def build_agent_graph(
         )
         await append_turn(
             memory_conn,
+            tenant_id=state["tenant_id"],
             session_id=session_id,
             user_id=user_id,
             role="assistant",
@@ -189,6 +192,7 @@ def build_agent_graph(
         )
         await run_memory_consolidation(
             memory_conn,
+            tenant_id=state["tenant_id"],
             user_id=user_id,
             user_input=state["question"],
             assistant_output=final_text,

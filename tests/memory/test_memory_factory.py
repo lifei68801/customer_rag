@@ -17,8 +17,10 @@ async def test_build_memory_conn_from_settings_creates_usable_schema(tmp_path):
     )
 
     conn = await build_memory_conn_from_settings(settings)
-    await upsert_memory_item(conn, memory_id="m1", user_id="u1", text="测试记忆")
-    items = await list_active_memory_items(conn, user_id="u1")
+    await upsert_memory_item(
+        conn, memory_id="m1", tenant_id="t1", user_id="u1", text="测试记忆"
+    )
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
 
     assert [i["text"] for i in items] == ["测试记忆"]
     assert db_path.exists()

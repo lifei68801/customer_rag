@@ -5,6 +5,7 @@ import aiosqlite
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS conversation_turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     role TEXT NOT NULL,
@@ -12,10 +13,11 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_session
-    ON conversation_turns (session_id, id);
+    ON conversation_turns (tenant_id, session_id, id);
 
 CREATE TABLE IF NOT EXISTS memory_items (
     memory_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     text TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
@@ -24,11 +26,12 @@ CREATE TABLE IF NOT EXISTS memory_items (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_memory_items_user
-    ON memory_items (user_id, status);
+    ON memory_items (tenant_id, user_id, status);
 
 CREATE TABLE IF NOT EXISTS memory_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     memory_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     event TEXT NOT NULL,
     old_text TEXT,

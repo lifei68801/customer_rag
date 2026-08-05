@@ -10,6 +10,7 @@ from app.memory.memory_store import append_history, mark_deleted, upsert_memory_
 async def apply_memory_actions(
     conn: aiosqlite.Connection,
     *,
+    tenant_id: str,
     user_id: str,
     actions: list[dict[str, str]],
 ) -> list[dict[str, str]]:
@@ -26,11 +27,16 @@ async def apply_memory_actions(
                 continue
             resolved_id = memory_id or str(uuid.uuid4())
             await upsert_memory_item(
-                conn, memory_id=resolved_id, user_id=user_id, text=text
+                conn,
+                memory_id=resolved_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                text=text,
             )
             await append_history(
                 conn,
                 memory_id=resolved_id,
+                tenant_id=tenant_id,
                 user_id=user_id,
                 event="ADD",
                 old_text=None,
@@ -43,11 +49,16 @@ async def apply_memory_actions(
             if not text or not memory_id:
                 continue
             await upsert_memory_item(
-                conn, memory_id=memory_id, user_id=user_id, text=text
+                conn,
+                memory_id=memory_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                text=text,
             )
             await append_history(
                 conn,
                 memory_id=memory_id,
+                tenant_id=tenant_id,
                 user_id=user_id,
                 event="UPDATE",
                 old_text=None,
@@ -59,10 +70,13 @@ async def apply_memory_actions(
         elif event == "DELETE":
             if not memory_id:
                 continue
-            await mark_deleted(conn, memory_id=memory_id, user_id=user_id)
+            await mark_deleted(
+                conn, memory_id=memory_id, tenant_id=tenant_id, user_id=user_id
+            )
             await append_history(
                 conn,
                 memory_id=memory_id,
+                tenant_id=tenant_id,
                 user_id=user_id,
                 event="DELETE",
                 old_text=None,
