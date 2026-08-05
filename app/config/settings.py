@@ -22,3 +22,9 @@ class Settings(BaseSettings):
     rerank_base_url: str | None = None
     rerank_api_key: str | None = None
     rerank_model: str | None = None
+
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "changeme123"
+    # 默认指向占位示例数据，正式环境必须替换为真实术语表文件路径。
+    terminology_path: str = "app/graphrag/terminology_seed.yaml"
