@@ -110,6 +110,43 @@ async def test_no_records_triggers_fallback_and_creates_ticket():
     assert llm_provider.last_request is None
 
 
+async def test_ticket_conn_persists_ticket_for_later_stale_scan():
+    import aiosqlite
+
+    from app.agent.create_ticket_tool import list_stale_pending_tickets
+
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(with_records=False, llm_text="不应该被用到")
+    )
+    ticket_conn = await aiosqlite.connect(":memory:")
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        ticket_conn=ticket_conn,
+    )
+
+    result = await graph.ainvoke(
+        {"question": "完全无关的问题", "tenant_id": "t1", "user_id": "c1"}
+    )
+
+    from datetime import datetime, timedelta
+
+    stale = await list_stale_pending_tickets(
+        ticket_conn,
+        tenant_id="t1",
+        older_than_seconds=0,
+        now=datetime.now() + timedelta(seconds=1),
+    )
+    assert len(stale) == 1
+    assert stale[0]["ticket_id"] == result["ticket_id"]
+    assert stale[0]["customer_id"] == "c1"
+
+
 class ScriptedLLMProvider:
     def __init__(self, responses: list[str]) -> None:
         self._responses = list(responses)

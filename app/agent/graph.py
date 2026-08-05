@@ -52,6 +52,7 @@ def build_agent_graph(
     graph_client: Neo4jGraphClient | None = None,
     banned_terms: list[str] | None = None,
     memory_conn: aiosqlite.Connection | None = None,
+    ticket_conn: aiosqlite.Connection | None = None,
     top_k: int = 3,
     enable_autonomous_planning: bool = False,
     max_tool_call_rounds: int = 3,
@@ -79,6 +80,10 @@ def build_agent_graph(
     （app/memory/consolidation_queue.py），不阻塞本轮响应——真正的事实
     抽取+冲突决策+写入由独立的 app/memory/consolidation_worker.py
     处理，需要部署方单独调度（cron/systemd timer/常驻循环）。
+
+    ticket_conn 同样可选：不传则 create_ticket 保持纯 mock 行为，不落库；
+    传入则工单持久化，使 app/memory/proactive_scan.py 能扫描出"挂起过久"
+    的工单并触发主动跟进（见 app/memory/followup_engine.py）。
     """
 
     async def input_safety_node(state: AgentState) -> dict[str, Any]:
@@ -155,7 +160,11 @@ def build_agent_graph(
 
     async def create_ticket_node(state: AgentState) -> dict[str, Any]:
         result = await create_ticket(
-            question=state["question"], reason="检索结果不足，需人工介入"
+            tenant_id=state["tenant_id"],
+            customer_id=state.get("user_id", ""),
+            question=state["question"],
+            reason="检索结果不足，需人工介入",
+            conn=ticket_conn,
         )
         return {"ticket_id": result.ticket_id}
 
