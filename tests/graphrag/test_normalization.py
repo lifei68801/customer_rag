@@ -1,5 +1,8 @@
+import aiosqlite
+
 from app.graphrag.normalization import normalize_and_write_relations
 from app.graphrag.ontology import Term
+from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
 
 _TERMS = [
     Term(
@@ -85,3 +88,63 @@ async def test_drops_relation_with_invalid_relation_type_without_crashing_batch(
     )
 
     assert written == 1
+
+
+async def test_enqueues_unresolved_candidate_for_review_when_review_conn_provided():
+    graph_client = FakeGraphClient()
+    review_conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(review_conn)
+    relations = [
+        {
+            "subject": "网关超时",
+            "object": "不存在的实体",
+            "relation_type": "RELATED_TO",
+        }
+    ]
+
+    written = await normalize_and_write_relations(
+        relations, terms=_TERMS, graph_client=graph_client, review_conn=review_conn
+    )
+
+    assert written == 0
+    pending = await list_pending_reviews(review_conn)
+    assert len(pending) == 1
+    assert pending[0]["subject_candidate"] == "网关超时"
+    assert pending[0]["object_candidate"] == "不存在的实体"
+    assert pending[0]["reason"] == "object_unresolved"
+
+
+async def test_enqueues_invalid_relation_type_for_review_when_review_conn_provided():
+    graph_client = FakeGraphClient()
+    review_conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(review_conn)
+    relations = [
+        {"subject": "网关超时", "object": "认证模块", "relation_type": "非法类型"}
+    ]
+
+    written = await normalize_and_write_relations(
+        relations, terms=_TERMS, graph_client=graph_client, review_conn=review_conn
+    )
+
+    assert written == 0
+    pending = await list_pending_reviews(review_conn)
+    assert len(pending) == 1
+    assert pending[0]["reason"] == "invalid_relation_type"
+
+
+async def test_does_not_enqueue_when_review_conn_not_provided():
+    """默认行为保持不变：不传 review_conn 时仍然只是丢弃+记日志，不建表不写库。"""
+    graph_client = FakeGraphClient()
+    relations = [
+        {
+            "subject": "网关超时",
+            "object": "不存在的实体",
+            "relation_type": "RELATED_TO",
+        }
+    ]
+
+    written = await normalize_and_write_relations(
+        relations, terms=_TERMS, graph_client=graph_client
+    )
+
+    assert written == 0

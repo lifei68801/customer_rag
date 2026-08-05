@@ -3,7 +3,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
+import aiosqlite
+
 from app.graphrag.ontology import Term
+from app.graphrag.review_queue import enqueue_for_review
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +39,16 @@ async def normalize_and_write_relations(
     *,
     terms: list[Term],
     graph_client: GraphWriteClientProtocol,
+    review_conn: aiosqlite.Connection | None = None,
 ) -> int:
     """候选关系归一化对齐术语表后写入图谱，返回成功写入数。
 
-    任一侧未能对齐标准术语的候选直接丢弃，不自动入库——这是架构文档
-    "低置信度新实体进入人工待审核队列，而非直接自动入库"原则的最小
-    实现：本阶段暂不接入真正的人工审核队列，只做"丢弃"这一半，避免
-    引入尚无使用方的队列基础设施。
+    任一侧未能对齐标准术语、或关系类型不合法的候选不会自动入库。
+    review_conn 为可选项：
+    - 不传（默认）：候选只记日志后丢弃，保持阶段3落地时的行为不变；
+    - 传入：候选改为写入持久化的人工待审核队列（见 review_queue.py），
+      而不是随日志一起消失——对应架构文档"低置信度新实体进入人工待
+      审核队列，而非直接自动入库/直接丢弃"的完整实现。
     """
     written = 0
     for relation in relations:
@@ -54,6 +60,15 @@ async def normalize_and_write_relations(
                 relation["subject"],
                 relation["object"],
             )
+            if review_conn is not None:
+                reason = "subject_unresolved" if subject_std is None else "object_unresolved"
+                await enqueue_for_review(
+                    review_conn,
+                    subject_candidate=relation["subject"],
+                    object_candidate=relation["object"],
+                    relation_type=relation["relation_type"],
+                    reason=reason,
+                )
             continue
         try:
             await graph_client.merge_relation(
@@ -66,6 +81,14 @@ async def normalize_and_write_relations(
                 "关系类型不合法，丢弃该候选 relation_type=%s",
                 relation["relation_type"],
             )
+            if review_conn is not None:
+                await enqueue_for_review(
+                    review_conn,
+                    subject_candidate=relation["subject"],
+                    object_candidate=relation["object"],
+                    relation_type=relation["relation_type"],
+                    reason="invalid_relation_type",
+                )
             continue
         written += 1
     return written
