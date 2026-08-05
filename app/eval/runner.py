@@ -5,6 +5,8 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
+from langgraph.graph.state import CompiledStateGraph
+
 from app.config.settings import Settings
 from app.eval.dataset import EvalCase, load_eval_cases
 from app.eval.llm_judged_metrics import score_answer_relevancy, score_faithfulness
@@ -57,6 +59,63 @@ def _average(values: list[float | None]) -> float | None:
     return sum(present) / len(present)
 
 
+async def _score_case(
+    case: EvalCase,
+    *,
+    answer_text: str,
+    used_sources: list[str],
+    retrieved_context: str,
+    llm_registry: ProviderRegistry,
+    llm_provider_name: str,
+    terms: list[Term] | None,
+) -> EvalCaseResult:
+    """对已经产出答案的一个用例打分，供 run_eval_suite/run_eval_suite_via_agent_graph
+    共用——两者获取答案的方式不同（直连 answer_question vs 走完整 Agent graph），
+    但打分逻辑必须完全一致，否则两边的分数没有可比性。
+    """
+    context_recall = score_context_recall(case, used_sources)
+    faithfulness = await score_faithfulness(
+        answer=answer_text,
+        context=retrieved_context,
+        llm_registry=llm_registry,
+        llm_provider_name=llm_provider_name,
+    )
+    answer_relevancy = await score_answer_relevancy(
+        question=case.question,
+        answer=answer_text,
+        llm_registry=llm_registry,
+        llm_provider_name=llm_provider_name,
+    )
+    terminology_accuracy = (
+        score_terminology_accuracy(answer_text, terms) if terms else None
+    )
+    return EvalCaseResult(
+        question=case.question,
+        answer=answer_text,
+        context_recall=context_recall,
+        faithfulness=faithfulness,
+        answer_relevancy=answer_relevancy,
+        terminology_accuracy=terminology_accuracy,
+    )
+
+
+def _build_report(case_results: list[EvalCaseResult]) -> EvalReport:
+    return EvalReport(
+        case_results=case_results,
+        average_context_recall=_average(
+            [r.context_recall for r in case_results]
+        )
+        or 0.0,
+        average_faithfulness=_average([r.faithfulness for r in case_results]),
+        average_answer_relevancy=_average(
+            [r.answer_relevancy for r in case_results]
+        ),
+        average_terminology_accuracy=_average(
+            [r.terminology_accuracy for r in case_results]
+        ),
+    )
+
+
 async def run_eval_suite(
     cases: list[EvalCase],
     *,
@@ -74,6 +133,10 @@ async def run_eval_suite(
     top_k: int = 3,
 ) -> EvalReport:
     """对评测集里的每个用例真正跑一遍检索+生成，汇总 RAGAS 类指标。
+
+    直接调用 answer_question()——只跑"检索+生成"这一段，不经过 Agent graph
+    的 InputSafety/TermGuard/Memory/OutputSafety 等节点。想对比走完整 Agent
+    流程（含 Planner）的效果，用 run_eval_suite_via_agent_graph()。
 
     整个评测集只针对一个 tenant_id 跑——评测的是"这个租户的知识库
     回答得好不好"，不存在跨租户混跑的场景。
@@ -99,49 +162,72 @@ async def run_eval_suite(
             graph_client=graph_client,
             top_k=top_k,
         )
-
-        context_recall = score_context_recall(case, result.used_sources)
-        faithfulness = await score_faithfulness(
-            answer=result.text,
-            context=result.retrieved_context,
-            llm_registry=llm_registry,
-            llm_provider_name=llm_provider_name,
-        )
-        answer_relevancy = await score_answer_relevancy(
-            question=case.question,
-            answer=result.text,
-            llm_registry=llm_registry,
-            llm_provider_name=llm_provider_name,
-        )
-        terminology_accuracy = (
-            score_terminology_accuracy(result.text, terms) if terms else None
-        )
-
         case_results.append(
-            EvalCaseResult(
-                question=case.question,
-                answer=result.text,
-                context_recall=context_recall,
-                faithfulness=faithfulness,
-                answer_relevancy=answer_relevancy,
-                terminology_accuracy=terminology_accuracy,
+            await _score_case(
+                case,
+                answer_text=result.text,
+                used_sources=result.used_sources,
+                retrieved_context=result.retrieved_context,
+                llm_registry=llm_registry,
+                llm_provider_name=llm_provider_name,
+                terms=terms,
             )
         )
 
-    return EvalReport(
-        case_results=case_results,
-        average_context_recall=_average(
-            [r.context_recall for r in case_results]
+    return _build_report(case_results)
+
+
+async def run_eval_suite_via_agent_graph(
+    cases: list[EvalCase],
+    *,
+    graph: CompiledStateGraph,
+    tenant_id: str,
+    llm_registry: ProviderRegistry,
+    llm_provider_name: str,
+    terms: list[Term] | None = None,
+) -> EvalReport:
+    """跟 run_eval_suite 完全一样的打分口径，但答案来自完整 Agent graph
+    （InputSafety/TermGuard/MemoryRecall/确定性检索或 Planner/OutputSafety
+    全走一遍），不是直接调 answer_question()。
+
+    graph 由调用方预先通过 build_agent_graph() 构建好再传入——是否开启
+    Planner（enable_autonomous_planning）、要不要接记忆等由 graph 自身的
+    构建参数决定；这个函数只管"喂问题进去、把结果接进同一套打分流水线"。
+    这正是用来对比 Planner 开/关两种模式效果的入口：分别用
+    enable_autonomous_planning=False/True 构建两个 graph，各跑一次这个
+    函数，比较 average_* 指标。
+
+    每个用例用独立的 session_id（"eval-{index}"），避免评测跑多条用例时
+    互相污染同一个会话的记忆滑窗。
+    """
+    case_results: list[EvalCaseResult] = []
+    for index, case in enumerate(cases):
+        result = await graph.ainvoke(
+            {
+                "question": case.question,
+                "tenant_id": tenant_id,
+                "session_id": f"eval-{index}",
+                "user_id": "eval",
+            }
         )
-        or 0.0,
-        average_faithfulness=_average([r.faithfulness for r in case_results]),
-        average_answer_relevancy=_average(
-            [r.answer_relevancy for r in case_results]
-        ),
-        average_terminology_accuracy=_average(
-            [r.terminology_accuracy for r in case_results]
-        ),
-    )
+        answer_text = result.get("final_text", "")
+        used_sources = result.get("used_sources", [])
+        retrieved_context = "\n\n".join(
+            record.text for record in result.get("retrieved_records", [])
+        )
+        case_results.append(
+            await _score_case(
+                case,
+                answer_text=answer_text,
+                used_sources=used_sources,
+                retrieved_context=retrieved_context,
+                llm_registry=llm_registry,
+                llm_provider_name=llm_provider_name,
+                terms=terms,
+            )
+        )
+
+    return _build_report(case_results)
 
 
 def _fmt(value: float | None) -> str:
