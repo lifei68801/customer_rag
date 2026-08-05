@@ -174,9 +174,14 @@ async def ingest_pdf_file(
     graph_terms: list[Term] | None = None,
     graph_client: GraphWriteClientProtocol | None = None,
     graph_review_conn: aiosqlite.Connection | None = None,
+    ocr: OcrFunction | None = None,
 ) -> int:
-    """读取单个 PDF 文件（逐页分块），向量化并写入向量库，返回写入的 chunk 数。"""
-    chunks = parse_pdf(path)
+    """读取单个 PDF 文件（逐页分块），向量化并写入向量库，返回写入的 chunk 数。
+
+    ocr 可选：提供时，提取不到文字层的扫描件页面会渲染成图片走 OCR
+    （见 pdf_parser.py），不提供则保持"跳过无文字层页面"的原有行为。
+    """
+    chunks = parse_pdf(path, ocr=ocr)
     return await _ingest_chunks(
         chunks,
         path,
@@ -273,9 +278,11 @@ async def ingest_directory(
 ) -> int:
     """遍历目录下所有 .md/.pdf/.docx/图片文件并逐个摄取，返回写入的 chunk 总数。
 
-    图片格式覆盖 .png/.jpg/.jpeg，OCR 走 ocr_parser.py（需要本机装好
-    Tesseract，或通过 ocr 参数注入替代实现）；"扫描件 PDF"（PDF 页面
-    本身是图片、没有文字层）不在覆盖范围内，见 ocr_parser.py 的说明。
+    图片格式覆盖 .png/.jpg/.jpeg；PDF 里提取不到文字层的扫描件页面同样
+    走 ocr 参数指定的 OCR（默认走 ocr_parser.py 的 pytesseract 实现，
+    需要本机装好 Tesseract；页面渲染用 PyMuPDF，不需要额外的 poppler
+    系统依赖，见 pdf_parser.py）。不提供 ocr 时两者都保持"跳过没有文字
+    的页面/图片"的原有行为。
 
     一次调用只摄取给一个租户；不同租户的文档要分开跑摄取脚本。
     """
@@ -305,6 +312,7 @@ async def ingest_directory(
             graph_terms=graph_terms,
             graph_client=graph_client,
             graph_review_conn=graph_review_conn,
+            ocr=ocr,
         )
     for docx_file in sorted(directory.glob("*.docx")):
         total += await ingest_docx_file(

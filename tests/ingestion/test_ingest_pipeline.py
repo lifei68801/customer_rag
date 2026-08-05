@@ -7,6 +7,7 @@ from app.ingestion.pipeline import (
     ingest_docx_file,
     ingest_image_file,
     ingest_markdown_file,
+    ingest_pdf_file,
 )
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
@@ -285,6 +286,38 @@ async def test_ingest_image_file_uses_injected_ocr_function(tmp_path):
         query_vector=[0.1, 0.2], top_k=1, tenant_id="t1"
     )
     assert "错误码E502表示网关超时" in results[0].text
+
+
+async def test_ingest_pdf_file_uses_injected_ocr_for_scanned_pages(tmp_path):
+    from PIL import Image
+    from reportlab.pdfgen import canvas
+
+    scan_image_path = tmp_path / "scan.png"
+    Image.new("RGB", (100, 100), color="white").save(scan_image_path)
+    pdf_path = tmp_path / "scanned.pdf"
+    c = canvas.Canvas(str(pdf_path))
+    c.drawImage(str(scan_image_path), 100, 700, width=100, height=100)
+    c.showPage()
+    c.save()
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    count = await ingest_pdf_file(
+        pdf_path,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        tenant_id="t1",
+        ocr=lambda path: "扫描件识别出的文字",
+    )
+
+    assert count == 1
+    results = await vector_store.search(
+        query_vector=[0.1, 0.2], top_k=1, tenant_id="t1"
+    )
+    assert "扫描件识别出的文字" in results[0].text
 
 
 async def test_ingest_directory_processes_markdown_and_pdf_but_skips_other_extensions(

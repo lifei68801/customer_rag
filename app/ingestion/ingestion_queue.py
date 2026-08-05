@@ -38,7 +38,6 @@ CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status ON ingestion_jobs (status);
 
 _PARSERS = {
     ".md": lambda path: chunk_markdown(path.read_text(encoding="utf-8"), source=str(path)),
-    ".pdf": parse_pdf,
     ".docx": parse_docx,
 }
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
@@ -128,6 +127,8 @@ def _parse_file(path: Path, *, ocr: OcrFunction | None):
     suffix = path.suffix.lower()
     if suffix in _IMAGE_SUFFIXES:
         return parse_image(path, ocr=ocr)
+    if suffix == ".pdf":
+        return parse_pdf(path, ocr=ocr)
     parser = _PARSERS.get(suffix)
     if parser is None:
         raise ValueError(f"不支持的文件类型: {suffix}")

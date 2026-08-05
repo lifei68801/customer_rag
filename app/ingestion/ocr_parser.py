@@ -34,10 +34,10 @@ def parse_image(path: Path, *, ocr: OcrFunction | None = None) -> list[Chunk]:
 
     ocr 参数可注入替换默认实现，测试时不需要本机真的装好 Tesseract。
 
-    范围说明：只覆盖独立图片文件；"扫描件 PDF"（PDF 页面本身是图片、
-    没有文字层）需要先把 PDF 页面渲染成图片（pdf2image + poppler 系统
-    依赖）再走这里的 OCR，这条链路本次没有实现——不在已装的 Tesseract
-    依赖之外再引入 poppler，作为明确的范围缩减记录。
+    只覆盖独立图片文件；"扫描件 PDF"（PDF 页面本身是图片、没有文字层）
+    走 pdf_parser.py 里独立的渲染+OCR 逻辑（用 PyMuPDF 渲染页面，不需要
+    poppler），parse_pdf() 接受同样的 OcrFunction，默认就是这里的
+    _default_ocr。
     """
     ocr_fn = ocr or _default_ocr
     text = ocr_fn(path).strip()
