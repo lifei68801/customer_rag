@@ -22,6 +22,7 @@ from app.providers.rerank import RerankProvider
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.hybrid_search import hybrid_search
 from app.retrieval.vector_store import VectorStore
+from app.safety.prompt_injection import detect_prompt_injection, wrap_system_prompt
 from app.safety.rules import check_text
 from app.safety.semantic_review import semantic_safety_review
 
@@ -82,9 +83,11 @@ def build_agent_graph(
 
     async def input_safety_node(state: AgentState) -> dict[str, Any]:
         result = check_text(state["question"], banned_terms=banned_terms)
+        injection_result = detect_prompt_injection(state["question"])
         return {
-            "is_input_safe": result.is_safe,
-            "input_unsafe_terms": result.matched_terms,
+            "is_input_safe": result.is_safe and not injection_result.is_suspicious,
+            "input_unsafe_terms": result.matched_terms
+            + injection_result.matched_categories,
         }
 
     async def term_guard_node(state: AgentState) -> dict[str, Any]:
@@ -224,7 +227,9 @@ def build_agent_graph(
     async def planner_node(state: AgentState) -> dict[str, Any]:
         messages = state.get("planner_messages")
         if not messages:
-            messages = [{"role": "system", "content": _PLANNER_SYSTEM_PROMPT}]
+            messages = [
+                {"role": "system", "content": wrap_system_prompt(_PLANNER_SYSTEM_PROMPT)}
+            ]
             term_guard_context = state.get("term_guard_context")
             if term_guard_context:
                 messages.append({"role": "system", "content": term_guard_context})
