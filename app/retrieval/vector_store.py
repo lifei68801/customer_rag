@@ -20,6 +20,8 @@ class VectorStore(Protocol):
         self, query_vector: list[float], *, top_k: int
     ) -> list[VectorRecord]: ...
 
+    async def list_all(self) -> list[VectorRecord]: ...
+
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
@@ -52,3 +54,6 @@ class InMemoryVectorStore:
         ]
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [record for _, record in scored[:top_k]]
+
+    async def list_all(self) -> list[VectorRecord]:
+        return list(self._records)

@@ -18,6 +18,14 @@ class MilvusClientProtocol(Protocol):
         output_fields: list[str],
     ) -> Any: ...
 
+    def query(
+        self,
+        *,
+        collection_name: str,
+        filter: str,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]: ...
+
 
 class MilvusVectorStore:
     """真实 Milvus 后端的 VectorStore 实现。
@@ -70,4 +78,28 @@ class MilvusVectorStore:
                 metadata={},
             )
             for hit in hits
+        ]
+
+    async def list_all(self, *, limit: int = 10000) -> list[VectorRecord]:
+        """取出 collection 内全部记录，供 BM25 等需要全量语料的模块重建索引使用。
+
+        主键是 VARCHAR（见 collection_init.py），用 `id != ""` 作为
+        "匹配全部"过滤条件——所有写入的 id 均非空，等价于无条件查询。
+        """
+        rows = await asyncio.to_thread(
+            self._client.query,
+            collection_name=self._collection_name,
+            filter='id != ""',
+            limit=limit,
+        )
+        return [
+            VectorRecord(
+                id=str(row["id"]),
+                vector=[],
+                text=str(row.get("text", "")),
+                metadata={
+                    k: v for k, v in row.items() if k not in {"id", "text"}
+                },
+            )
+            for row in rows
         ]
