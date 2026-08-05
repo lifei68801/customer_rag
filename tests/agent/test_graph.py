@@ -147,6 +147,121 @@ async def test_ticket_conn_persists_ticket_for_later_stale_scan():
     assert stale[0]["customer_id"] == "c1"
 
 
+async def test_fallback_asks_for_clarification_for_future_time_instead_of_ticket():
+    import aiosqlite
+
+    from app.memory.clarification import ensure_clarification_schema, get_pending_clarification
+    from app.memory.schema import ensure_schema
+
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(with_records=False, llm_text="不是合法JSON，触发规则引擎兜底")
+    )
+    memory_conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(memory_conn)
+    await ensure_clarification_schema(memory_conn)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=memory_conn,
+    )
+
+    result = await graph.ainvoke(
+        {
+            "question": "明天的工单进度怎么样",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "c1",
+        }
+    )
+
+    # 未来时间的问题走澄清追问，不直接转人工工单
+    assert result.get("ticket_id") is None
+    assert result["fallback_triggered"] is True
+
+    from datetime import datetime
+
+    pending = await get_pending_clarification(
+        memory_conn, tenant_id="t1", session_id="s1", now=datetime.now()
+    )
+    assert pending is not None
+    assert pending["original_question"] == "明天的工单进度怎么样"
+
+
+async def test_time_reply_merges_with_pending_clarification_before_retrieval():
+    import aiosqlite
+    from datetime import datetime
+
+    from app.memory.clarification import (
+        ensure_clarification_schema,
+        get_pending_clarification,
+        set_pending_clarification,
+    )
+    from app.memory.schema import ensure_schema
+
+    class RecordingLLMProvider:
+        def __init__(self, responses: list[str]) -> None:
+            self._responses = list(responses)
+            self.requests: list[ProviderRequest] = []
+
+        async def complete(self, request: ProviderRequest) -> ProviderResult:
+            self.requests.append(request)
+            return ProviderResult(text=self._responses.pop(0))
+
+    embedding_registry, vector_store, bm25_index, _unused_llm_registry, _unused_llm_provider = (
+        await _build_dependencies(with_records=True, llm_text="不应该被用到")
+    )
+    llm_provider = RecordingLLMProvider(
+        ["重启路由器即可解决。", '{"is_safe": true}']
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+    memory_conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(memory_conn)
+    await ensure_clarification_schema(memory_conn)
+    await set_pending_clarification(
+        memory_conn,
+        tenant_id="t1",
+        session_id="s1",
+        original_question="工单进度怎么样",
+        clarification_prompt="请问您想查询哪个具体日期？",
+        now=datetime.now(),
+    )
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=memory_conn,
+    )
+
+    await graph.ainvoke(
+        {"question": "上周三", "tenant_id": "t1", "session_id": "s1", "user_id": "c1"}
+    )
+
+    # 短时间回复应该和原问题拼接后再走检索，responder（第一次 LLM 调用）
+    # 拿到的是合并后的问题
+    assert len(llm_provider.requests) >= 1
+    prompt_text = llm_provider.requests[0].messages[-1]["content"]
+    assert "工单进度怎么样" in prompt_text
+    assert "上周三" in prompt_text
+
+    # 待澄清状态应该被清除，不会一直挂着
+    pending = await get_pending_clarification(
+        memory_conn, tenant_id="t1", session_id="s1", now=datetime.now()
+    )
+    assert pending is None
+
+
 class ScriptedLLMProvider:
     def __init__(self, responses: list[str]) -> None:
         self._responses = list(responses)

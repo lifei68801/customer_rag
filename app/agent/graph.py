@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import aiosqlite
@@ -12,9 +13,18 @@ from app.agent.state import AgentState
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.term_guard import build_term_guard_context
+from app.memory.clarification import (
+    clear_pending_clarification,
+    ensure_clarification_schema,
+    get_pending_clarification,
+    looks_like_a_time_reply,
+    merge_clarification_reply,
+    set_pending_clarification,
+)
 from app.memory.consolidation_queue import enqueue_consolidation_job
 from app.memory.context_injection import inject_memory_context
 from app.memory.session_window import append_turn
+from app.memory.temporal_resolver import resolve_time_window
 from app.providers.base import ProviderCapability, ProviderRequest
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
@@ -30,6 +40,10 @@ _PROMPT_TEMPLATE = "根据以下资料回答问题。\n资料：\n{context}\n\n�
 _UNSAFE_INPUT_MESSAGE = "您的问题包含无法处理的敏感内容，请修改后重新提问。"
 _UNSAFE_OUTPUT_MESSAGE = "抱歉，生成的回答未通过安全审查，已为您转接人工客服。"
 _FALLBACK_MESSAGE = "抱歉，暂时没有找到确切答案，已为您转接人工客服处理。"
+_FUTURE_TIME_CLARIFICATION_PROMPT = (
+    "您提到的时间似乎是将来的日期，我们暂时没有对应的记录。"
+    "请问您想查询的是哪一个具体的历史日期呢？"
+)
 _PLANNER_SYSTEM_PROMPT = (
     "你是客服问答助手。可以调用 vector_search_tool 检索知识库、"
     "graph_query_tool 查询专有名词的标准名称及关联关系。"
@@ -84,6 +98,15 @@ def build_agent_graph(
     ticket_conn 同样可选：不传则 create_ticket 保持纯 mock 行为，不落库；
     传入则工单持久化，使 app/memory/proactive_scan.py 能扫描出"挂起过久"
     的工单并触发主动跟进（见 app/memory/followup_engine.py）。
+
+    时间/澄清状态机同样依赖 memory_conn（未提供则完全跳过，行为不变）：
+    检索兜底（fallback）时如果问题里提到未来时间，不直接转人工工单，而是
+    先记录待澄清状态并追问具体日期；下一轮如果用户只回复了一个时间，
+    会自动和原问题拼接后重新走完整流程。刻意只在"检索本来就要失败"这
+    条路径上做判断，而不是在每个问题进入检索前都做时间解析——大量带
+    "明天/下周"的问题其实是在问政策性内容（"明天能退货吗"），不是在查
+    历史数据，全局拦截会误伤这类正常提问；只在兜底路径上介入，风险
+    仅限于"反正要失败"的场景。
     """
 
     async def input_safety_node(state: AgentState) -> dict[str, Any]:
@@ -94,6 +117,28 @@ def build_agent_graph(
             "input_unsafe_terms": result.matched_terms
             + injection_result.matched_categories,
         }
+
+    async def clarification_check_node(state: AgentState) -> dict[str, Any]:
+        if memory_conn is None:
+            return {}
+        await ensure_clarification_schema(memory_conn)
+        session_id = state.get("session_id", "")
+        pending = await get_pending_clarification(
+            memory_conn,
+            tenant_id=state["tenant_id"],
+            session_id=session_id,
+            now=datetime.now(),
+        )
+        if pending and looks_like_a_time_reply(state["question"]):
+            merged = merge_clarification_reply(
+                original_question=pending["original_question"],
+                reply_text=state["question"],
+            )
+            await clear_pending_clarification(
+                memory_conn, tenant_id=state["tenant_id"], session_id=session_id
+            )
+            return {"question": merged}
+        return {}
 
     async def term_guard_node(state: AgentState) -> dict[str, Any]:
         if not (terms and graph_client is not None):
@@ -156,7 +201,33 @@ def build_agent_graph(
         return {"answer_text": result.text, "fallback_triggered": False}
 
     async def fallback_node(state: AgentState) -> dict[str, Any]:
-        return {"answer_text": _FALLBACK_MESSAGE, "fallback_triggered": True}
+        if memory_conn is not None:
+            time_result = await resolve_time_window(
+                state["question"],
+                llm_registry=llm_registry,
+                llm_provider_name=llm_provider_name,
+                reference_time=datetime.now(),
+            )
+            if time_result.resolved and time_result.is_future:
+                await ensure_clarification_schema(memory_conn)
+                await set_pending_clarification(
+                    memory_conn,
+                    tenant_id=state["tenant_id"],
+                    session_id=state.get("session_id", ""),
+                    original_question=state["question"],
+                    clarification_prompt=_FUTURE_TIME_CLARIFICATION_PROMPT,
+                    now=datetime.now(),
+                )
+                return {
+                    "answer_text": _FUTURE_TIME_CLARIFICATION_PROMPT,
+                    "fallback_triggered": True,
+                    "needs_clarification": True,
+                }
+        return {
+            "answer_text": _FALLBACK_MESSAGE,
+            "fallback_triggered": True,
+            "needs_clarification": False,
+        }
 
     async def create_ticket_node(state: AgentState) -> dict[str, Any]:
         result = await create_ticket(
@@ -276,13 +347,19 @@ def build_agent_graph(
         }
 
     def route_after_input_safety(state: AgentState) -> str:
-        return "term_guard" if state.get("is_input_safe", True) else "output_safety"
+        return (
+            "clarification_check" if state.get("is_input_safe", True) else "output_safety"
+        )
 
     def route_after_retrieval(state: AgentState) -> str:
         return "responder" if state.get("retrieved_records") else "fallback"
 
+    def route_after_fallback(state: AgentState) -> str:
+        return "output_safety" if state.get("needs_clarification") else "create_ticket"
+
     graph: StateGraph[AgentState] = StateGraph(AgentState)
     graph.add_node("input_safety", input_safety_node)
+    graph.add_node("clarification_check", clarification_check_node)
     graph.add_node("term_guard", term_guard_node)
     graph.add_node("memory_recall", memory_recall_node)
     graph.add_node("fallback", fallback_node)
@@ -294,10 +371,15 @@ def build_agent_graph(
     graph.add_conditional_edges(
         "input_safety",
         route_after_input_safety,
-        {"term_guard": "term_guard", "output_safety": "output_safety"},
+        {"clarification_check": "clarification_check", "output_safety": "output_safety"},
     )
+    graph.add_edge("clarification_check", "term_guard")
     graph.add_edge("term_guard", "memory_recall")
-    graph.add_edge("fallback", "create_ticket")
+    graph.add_conditional_edges(
+        "fallback",
+        route_after_fallback,
+        {"create_ticket": "create_ticket", "output_safety": "output_safety"},
+    )
     graph.add_edge("create_ticket", "output_safety")
     graph.add_edge("output_safety", "memory_save")
     graph.add_edge("memory_save", END)
