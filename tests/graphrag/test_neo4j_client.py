@@ -1,4 +1,5 @@
 from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.ontology import Term
 
 
 class FakeResult:
@@ -14,10 +15,12 @@ class FakeSession:
         self._rows = rows
         self.last_query: str | None = None
         self.last_parameters: dict | None = None
+        self.calls: list[tuple[str, dict]] = []
 
     async def run(self, query: str, parameters: dict | None = None) -> FakeResult:
         self.last_query = query
         self.last_parameters = parameters
+        self.calls.append((query, parameters))
         return FakeResult(self._rows)
 
     async def __aenter__(self) -> "FakeSession":
@@ -80,3 +83,55 @@ async def test_merge_relation_rejects_unrecognized_relation_type():
         assert False, "应拒绝非法关系类型"
     except ValueError:
         pass
+
+
+async def test_sync_term_writes_standard_node_properties_and_alias_edges():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    term = Term(
+        standard_name="错误码E502",
+        aliases=["网关超时", "E502超时"],
+        term_type="error_code",
+        product_line="核心平台",
+    )
+
+    await client.sync_term(term)
+
+    assert session.last_parameters == {
+        "standard_name": "错误码E502",
+        "type": "error_code",
+        "product_line": "核心平台",
+        "aliases": ["网关超时", "E502超时"],
+    }
+    assert "ALIAS_OF" in session.last_query
+    assert "alias_name" in session.last_query
+
+
+async def test_sync_term_with_no_aliases_sends_empty_alias_list():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    term = Term(
+        standard_name="登录模块",
+        aliases=[],
+        term_type="module",
+        product_line="核心平台",
+    )
+
+    await client.sync_term(term)
+
+    assert session.last_parameters["aliases"] == []
+
+
+async def test_sync_terms_syncs_every_term_in_the_list():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    terms = [
+        Term(standard_name="错误码E502", aliases=["网关超时"], term_type="error_code", product_line="核心平台"),
+        Term(standard_name="登录模块", aliases=["认证模块"], term_type="module", product_line="核心平台"),
+    ]
+
+    await client.sync_terms(terms)
+
+    assert len(session.calls) == 2
+    synced_names = {call[1]["standard_name"] for call in session.calls}
+    assert synced_names == {"错误码E502", "登录模块"}

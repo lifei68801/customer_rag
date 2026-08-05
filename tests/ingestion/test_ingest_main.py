@@ -60,6 +60,7 @@ class FixedLLMProvider:
 class FakeGraphClient:
     def __init__(self) -> None:
         self.written: list[dict] = []
+        self.synced_terms: list[Term] = []
 
     async def merge_relation(
         self, *, subject_standard_name, object_standard_name, relation_type
@@ -71,6 +72,9 @@ class FakeGraphClient:
                 "relation_type": relation_type,
             }
         )
+
+    async def sync_terms(self, terms: list[Term]) -> None:
+        self.synced_terms.extend(terms)
 
 
 async def test_main_sends_unresolved_graph_candidates_to_injected_review_conn(
@@ -122,3 +126,45 @@ async def test_main_sends_unresolved_graph_candidates_to_injected_review_conn(
     pending = await list_pending_reviews(review_conn)
     assert len(pending) == 1
     assert pending[0]["object_candidate"] == "不存在的实体"
+
+
+async def test_main_syncs_ontology_terms_into_graph_when_build_graph(tmp_path):
+    """--build-graph 时应该先把术语表（标准节点+别名）同步进图谱，而不是
+    只写 LLM 抽取出的关系——否则图谱里除了关系边，标准节点/别名信息全靠
+    YAML 文件，Neo4j 里查不到。"""
+    (tmp_path / "doc.md").write_text("## 主题\n无关内容。\n", encoding="utf-8")
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("qwen-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    graph_llm_registry = ProviderRegistry()
+    graph_llm_registry.register(
+        ProviderCapability.LLM, "qwen", FixedLLMProvider('{"relations": []}')
+    )
+    graph_terms = [
+        Term(
+            standard_name="示例错误码E502",
+            aliases=["网关超时示例"],
+            term_type="error_code",
+            product_line="示例产品线",
+        )
+    ]
+    graph_client = FakeGraphClient()
+    review_conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(review_conn)
+
+    await main(
+        directory=tmp_path,
+        tenant_id="t1",
+        build_graph=True,
+        settings=_settings(),
+        embedding_registry=embedding_registry,
+        vector_store=vector_store,
+        graph_llm_registry=graph_llm_registry,
+        graph_terms=graph_terms,
+        graph_client=graph_client,
+        graph_review_conn=review_conn,
+    )
+
+    assert graph_client.synced_terms == graph_terms
