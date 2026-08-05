@@ -61,6 +61,8 @@ def test_qa_endpoint_returns_answer_and_used_sources():
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
     app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
     try:
         client = TestClient(app)
         response = client.post("/qa", json={"question": "网络连不上怎么办？"})

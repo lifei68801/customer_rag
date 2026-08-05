@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.graphrag.ontology import Term
+from app.graphrag.term_guard import GraphClientProtocol, build_term_guard_context
 from app.providers.base import ProviderCapability, ProviderRequest
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
@@ -30,8 +32,16 @@ async def answer_question(
     llm_provider_name: str,
     rerank_provider: RerankProvider | None = None,
     query_rewrite_enabled: bool = True,
+    terms: list[Term] | None = None,
+    graph_client: GraphClientProtocol | None = None,
     top_k: int = 3,
 ) -> AnswerResult:
+    term_guard_context: str | None = None
+    if terms and graph_client is not None:
+        term_guard_context = await build_term_guard_context(
+            question, terms=terms, graph_client=graph_client
+        )
+
     records = await hybrid_search(
         question,
         embedding_registry=embedding_registry,
@@ -45,6 +55,8 @@ async def answer_question(
         final_top_k=top_k,
     )
     context = "\n\n".join(record.text for record in records)
+    if term_guard_context:
+        context = f"{term_guard_context}\n\n{context}"
 
     prompt = _PROMPT_TEMPLATE.format(context=context, question=question)
     llm_result = await llm_registry.run(

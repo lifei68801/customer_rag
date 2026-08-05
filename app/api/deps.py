@@ -19,20 +19,28 @@ from app.providers.rerank_factory import build_rerank_provider_from_settings
 from app.retrieval.bm25 import BM25Index, build_bm25_index_from_store
 from app.retrieval.factory import build_vector_store_from_settings
 from app.retrieval.vector_store import VectorStore
+from app.graphrag.factory import build_graph_client_from_settings, load_terms_from_settings
+from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.ontology import Term
 
 __all__ = [
     "DEFAULT_EMBEDDING_PROVIDER_NAME",
     "DEFAULT_LLM_PROVIDER_NAME",
     "get_bm25_index",
     "get_embedding_registry",
+    "get_graph_client",
     "get_llm_registry",
     "get_rerank_provider",
     "get_settings",
+    "get_terms",
     "get_vector_store",
 ]
 
 _bm25_index_cache: BM25Index | None = None
 _bm25_index_lock = asyncio.Lock()
+_graph_client_cache: Neo4jGraphClient | None = None
+_graph_client_lock = asyncio.Lock()
+_terms_cache: list[Term] | None = None
 
 
 @lru_cache
@@ -80,3 +88,23 @@ def get_rerank_provider(
     settings: Settings = Depends(get_settings),
 ) -> RerankProvider | None:
     return build_rerank_provider_from_settings(settings)
+
+
+async def get_graph_client(
+    settings: Settings = Depends(get_settings),
+) -> Neo4jGraphClient:
+    """进程内单例，避免每次请求都新建一个 Neo4j 驱动连接池。"""
+    global _graph_client_cache
+    if _graph_client_cache is None:
+        async with _graph_client_lock:
+            if _graph_client_cache is None:
+                _graph_client_cache = build_graph_client_from_settings(settings)
+    return _graph_client_cache
+
+
+def get_terms(settings: Settings = Depends(get_settings)) -> list[Term]:
+    """进程内单例：术语表文件在服务启动期间视为不变，避免逐请求重新解析。"""
+    global _terms_cache
+    if _terms_cache is None:
+        _terms_cache = load_terms_from_settings(settings)
+    return _terms_cache
