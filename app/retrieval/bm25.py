@@ -33,16 +33,22 @@ class BM25Index:
         self._records.extend(records)
         self._tokenized_docs.extend(_tokenize(r.text) for r in records)
 
-    def search(self, query: str, *, top_k: int) -> list[BM25Hit]:
+    def search(self, query: str, *, top_k: int, tenant_id: str) -> list[BM25Hit]:
         query_tokens = _tokenize(query)
-        if not query_tokens or not self._tokenized_docs:
+        scoped = [
+            (record, tokens)
+            for record, tokens in zip(self._records, self._tokenized_docs)
+            if record.tenant_id == tenant_id
+        ]
+        if not query_tokens or not scoped:
             return []
 
-        doc_count = len(self._tokenized_docs)
-        avgdl = sum(len(d) for d in self._tokenized_docs) / doc_count
+        scoped_docs = [tokens for _, tokens in scoped]
+        doc_count = len(scoped_docs)
+        avgdl = sum(len(d) for d in scoped_docs) / doc_count
 
         doc_freq: dict[str, int] = {}
-        for tokens in self._tokenized_docs:
+        for tokens in scoped_docs:
             for token in set(tokens):
                 doc_freq[token] = doc_freq.get(token, 0) + 1
 
@@ -52,7 +58,7 @@ class BM25Index:
             idf[token] = math.log(1.0 + (doc_count - freq + 0.5) / (freq + 0.5))
 
         scored: list[tuple[float, VectorRecord]] = []
-        for record, tokens in zip(self._records, self._tokenized_docs):
+        for record, tokens in scoped:
             if not tokens:
                 continue
             term_freq: dict[str, int] = {}
