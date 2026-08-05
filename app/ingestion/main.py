@@ -4,10 +4,13 @@ import argparse
 import asyncio
 from pathlib import Path
 
+import aiosqlite
+
 from app.config.settings import Settings
 from app.graphrag.factory import build_graph_client_from_settings, load_terms_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
+from app.graphrag.review_factory import build_review_conn_from_settings
 from app.ingestion.pipeline import ingest_directory
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
@@ -32,10 +35,15 @@ async def main(
     graph_llm_registry: ProviderRegistry | None = None,
     graph_terms: list[Term] | None = None,
     graph_client: Neo4jGraphClient | None = None,
+    graph_review_conn: aiosqlite.Connection | None = None,
 ) -> int:
     """批量摄取脚本入口：分块→向量化→写入向量库，可选同步构建知识图谱。
 
     一次调用只摄取给一个租户（--tenant-id），不同租户的文档要分开跑。
+
+    --build-graph 时会自动启用人工待审核队列（graph_review_conn），
+    未能对齐术语表的候选关系进队列而非直接丢弃；可通过
+    `python -m app.graphrag.review_cli` 查看/批准/驳回。
 
     用法：
       python -m app.ingestion.main --dir path/to/docs --tenant-id t1
@@ -50,6 +58,7 @@ async def main(
     resolved_graph_llm_registry = None
     resolved_graph_terms = None
     resolved_graph_client = None
+    resolved_graph_review_conn = None
     if build_graph:
         resolved_graph_llm_registry = (
             graph_llm_registry
@@ -60,6 +69,10 @@ async def main(
         )
         resolved_graph_client = graph_client or build_graph_client_from_settings(
             resolved_settings
+        )
+        resolved_graph_review_conn = (
+            graph_review_conn
+            or await build_review_conn_from_settings(resolved_settings)
         )
 
     total = await ingest_directory(
@@ -72,6 +85,7 @@ async def main(
         graph_llm_provider_name=DEFAULT_LLM_PROVIDER_NAME if build_graph else None,
         graph_terms=resolved_graph_terms,
         graph_client=resolved_graph_client,
+        graph_review_conn=resolved_graph_review_conn,
     )
     print(f"已摄取 {total} 个 chunk，来自目录: {directory}（租户: {tenant_id}）")
     return total

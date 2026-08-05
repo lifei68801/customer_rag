@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # 默认指向占位示例数据，正式环境必须替换为真实术语表文件路径。
     terminology_path: str = "app/graphrag/terminology_seed.yaml"
 
+    # GraphRAG 人工待审核队列存储，SQLite 文件路径。
+    graph_review_db_path: str = "data/graph_review_queue.sqlite3"
+
     # 对话记忆存储（会话滑窗+长期记忆条目），SQLite 文件路径。
     memory_db_path: str = "data/memory.sqlite3"
 
