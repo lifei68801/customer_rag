@@ -10,6 +10,7 @@ class VectorRecord:
     id: str
     vector: list[float]
     text: str
+    tenant_id: str
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -17,7 +18,7 @@ class VectorStore(Protocol):
     async def upsert(self, records: list[VectorRecord]) -> None: ...
 
     async def search(
-        self, query_vector: list[float], *, top_k: int
+        self, query_vector: list[float], *, top_k: int, tenant_id: str
     ) -> list[VectorRecord]: ...
 
     async def list_all(self) -> list[VectorRecord]: ...
@@ -46,11 +47,12 @@ class InMemoryVectorStore:
         self._records.extend(records)
 
     async def search(
-        self, query_vector: list[float], *, top_k: int
+        self, query_vector: list[float], *, top_k: int, tenant_id: str
     ) -> list[VectorRecord]:
         scored = [
             (_cosine_similarity(query_vector, record.vector), record)
             for record in self._records
+            if record.tenant_id == tenant_id
         ]
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [record for _, record in scored[:top_k]]

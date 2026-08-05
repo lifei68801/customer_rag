@@ -38,7 +38,7 @@ async def test_build_vector_store_from_settings_uses_configured_uri_and_collecti
         settings, client_factory=fake_client_factory
     )
     await store.upsert(
-        [VectorRecord(id="a", vector=[0.1], text="text", metadata={})]
+        [VectorRecord(id="a", vector=[0.1], text="text", tenant_id="t1", metadata={})]
     )
 
     assert captured["uri"] == "http://localhost:19530"

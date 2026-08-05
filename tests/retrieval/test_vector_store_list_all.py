@@ -5,8 +5,8 @@ async def test_list_all_returns_every_upserted_record():
     store = InMemoryVectorStore()
     await store.upsert(
         [
-            VectorRecord(id="a", vector=[1.0], text="内容A", metadata={}),
-            VectorRecord(id="b", vector=[0.0], text="内容B", metadata={}),
+            VectorRecord(id="a", vector=[1.0], text="内容A", tenant_id="t1", metadata={}),
+            VectorRecord(id="b", vector=[0.0], text="内容B", tenant_id="t1", metadata={}),
         ]
     )
 

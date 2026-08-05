@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, Protocol
 
 from app.retrieval.vector_store import VectorRecord
+
+_SAFE_TENANT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_tenant_id(tenant_id: str) -> None:
+    """tenant_id 会被拼进 Milvus 过滤表达式字符串，不能参数化传递；
+    白名单校验字符集，防止过滤表达式注入（与 Neo4j 关系类型白名单同思路）。
+    """
+    if not _SAFE_TENANT_ID_PATTERN.match(tenant_id):
+        raise ValueError(f"非法 tenant_id: {tenant_id!r}")
 
 
 class MilvusClientProtocol(Protocol):
@@ -49,6 +60,7 @@ class MilvusVectorStore:
                 "id": record.id,
                 "vector": record.vector,
                 "text": record.text,
+                "tenant_id": record.tenant_id,
                 **record.metadata,
             }
             for record in records
@@ -60,13 +72,15 @@ class MilvusVectorStore:
         )
 
     async def search(
-        self, query_vector: list[float], *, top_k: int
+        self, query_vector: list[float], *, top_k: int, tenant_id: str
     ) -> list[VectorRecord]:
+        _validate_tenant_id(tenant_id)
         results = await asyncio.to_thread(
             self._client.search,
             collection_name=self._collection_name,
             data=[query_vector],
             limit=top_k,
+            filter=f'tenant_id == "{tenant_id}"',
             output_fields=["text"],
         )
         hits = results[0] if results else []
@@ -75,13 +89,15 @@ class MilvusVectorStore:
                 id=str(hit["id"]),
                 vector=[],
                 text=hit["entity"]["text"],
+                tenant_id=tenant_id,
                 metadata={},
             )
             for hit in hits
         ]
 
     async def list_all(self, *, limit: int = 10000) -> list[VectorRecord]:
-        """取出 collection 内全部记录，供 BM25 等需要全量语料的模块重建索引使用。
+        """取出 collection 内全部记录（不区分租户），供 BM25 等需要全量语料的
+        模块重建索引使用；租户隔离在 BM25Index.search() 查询时按 tenant_id 过滤。
 
         主键是 VARCHAR（见 collection_init.py），用 `id != ""` 作为
         "匹配全部"过滤条件——所有写入的 id 均非空，等价于无条件查询。
@@ -97,8 +113,11 @@ class MilvusVectorStore:
                 id=str(row["id"]),
                 vector=[],
                 text=str(row.get("text", "")),
+                tenant_id=str(row.get("tenant_id", "")),
                 metadata={
-                    k: v for k, v in row.items() if k not in {"id", "text"}
+                    k: v
+                    for k, v in row.items()
+                    if k not in {"id", "text", "tenant_id"}
                 },
             )
             for row in rows
