@@ -40,6 +40,23 @@ CREATE TABLE IF NOT EXISTS memory_history (
     reason TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS consolidation_jobs (
+    job_id TEXT PRIMARY KEY,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    user_input TEXT NOT NULL,
+    assistant_output TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_consolidation_jobs_status
+    ON consolidation_jobs (status);
 """
 
 

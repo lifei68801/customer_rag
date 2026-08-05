@@ -12,7 +12,7 @@ from app.agent.state import AgentState
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.term_guard import build_term_guard_context
-from app.memory.consolidation import run_memory_consolidation
+from app.memory.consolidation_queue import enqueue_consolidation_job
 from app.memory.context_injection import inject_memory_context
 from app.memory.session_window import append_turn
 from app.providers.base import ProviderCapability, ProviderRequest
@@ -74,10 +74,10 @@ def build_agent_graph(
 
     memory_conn 为可选项：不传则完全跳过记忆召回/写入，图的行为与
     阶段4完全一致；传入则在 Responder 前注入长期记忆+近期会话上下文，
-    并在 OutputSafety 后同步保存本轮对话+做一次记忆 consolidation。
-    这里的"同步"是简化——架构文档设计的异步 consolidation 队列（不
-    阻塞主响应）未实现，当前会让 consolidation 的 LLM 调用延迟计入
-    本轮响应总耗时。
+    并在 OutputSafety 后保存本轮对话+把 consolidation 任务异步入队
+    （app/memory/consolidation_queue.py），不阻塞本轮响应——真正的事实
+    抽取+冲突决策+写入由独立的 app/memory/consolidation_worker.py
+    处理，需要部署方单独调度（cron/systemd timer/常驻循环）。
     """
 
     async def input_safety_node(state: AgentState) -> dict[str, Any]:
@@ -208,16 +208,16 @@ def build_agent_graph(
             role="assistant",
             content=final_text,
         )
-        await run_memory_consolidation(
+        # 只做一次快速 INSERT 入队，真正耗时的事实抽取+冲突决策+写入交给
+        # app/memory/consolidation_worker.py 异步处理，不阻塞本轮响应
+        # （见 docs/ARCHITECTURE.md §6.2"异步 consolidation 队列"）。
+        await enqueue_consolidation_job(
             memory_conn,
             tenant_id=state["tenant_id"],
             user_id=user_id,
+            session_id=session_id,
             user_input=state["question"],
             assistant_output=final_text,
-            llm_registry=llm_registry,
-            llm_provider_name=llm_provider_name,
-            embedding_registry=embedding_registry,
-            embedding_provider_name=embedding_provider_name,
         )
         return {}
 

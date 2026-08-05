@@ -1,6 +1,7 @@
 import aiosqlite
 
 from app.agent.graph import build_agent_graph
+from app.memory.consolidation_queue import list_pending_jobs, process_pending_jobs
 from app.memory.memory_store import list_active_memory_items, upsert_memory_item
 from app.memory.schema import ensure_schema
 from app.memory.session_window import get_recent_turns
@@ -125,7 +126,10 @@ async def test_memory_enabled_saves_turn_and_injects_context():
     assert turns[1]["content"] == "重启路由器即可解决。"
 
 
-async def test_memory_enabled_stores_embedding_for_newly_added_facts():
+async def test_memory_enabled_enqueues_consolidation_job_without_blocking_response():
+    """graph.ainvoke() 返回后 consolidation 应该只是入队（pending），还没有
+    真正执行事实抽取/冲突决策——那部分由独立的 worker 异步处理，不阻塞
+    本轮响应（见 docs/ARCHITECTURE.md §6.2）。"""
     conn = await aiosqlite.connect(":memory:")
     await ensure_schema(conn)
 
@@ -134,7 +138,51 @@ async def test_memory_enabled_stores_embedding_for_newly_added_facts():
             [
                 "重启路由器即可解决。",  # responder 的回答
                 '{"is_safe": true}',  # OutputSafety 语义审查
-                '{"facts": ["客户使用企业版套餐"]}',  # 事实抽取
+            ]
+        )
+    )
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+    )
+
+    await graph.ainvoke(
+        {
+            "question": "网络连不上怎么办？",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    # 只入队，不应该触发事实抽取——上面只准备了 responder+语义审查两个
+    # 脚本响应，如果 consolidation 同步跑了，第三次 LLM 调用会因为脚本
+    # 响应耗尽而报错，测试本身就会失败。
+    pending = await list_pending_jobs(conn)
+    assert len(pending) == 1
+    assert pending[0]["user_input"] == "网络连不上怎么办？"
+    assert pending[0]["assistant_output"] == "重启路由器即可解决。"
+
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
+    assert items == []
+
+
+async def test_memory_enabled_stores_embedding_for_newly_added_facts_after_worker_drains_queue():
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(
+            [
+                "重启路由器即可解决。",  # responder 的回答
+                '{"is_safe": true}',  # OutputSafety 语义审查
+                '{"facts": ["客户使用企业版套餐"]}',  # 事实抽取（worker 处理阶段）
                 '{"actions": [{"event": "ADD", "target_memory_id": "", '
                 '"text": "客户使用企业版套餐", "reason": "首次提及"}]}',  # 冲突决策
             ]
@@ -160,6 +208,16 @@ async def test_memory_enabled_stores_embedding_for_newly_added_facts():
         }
     )
 
+    processed = await process_pending_jobs(
+        conn,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+    )
+    assert processed == 1
+
     items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
     assert len(items) == 1
+    assert items[0]["embedding"] == [1.0, 0.0]
     assert items[0]["embedding"] == [1.0, 0.0]
