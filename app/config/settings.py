@@ -28,3 +28,6 @@ class Settings(BaseSettings):
     neo4j_password: str = "changeme123"
     # 默认指向占位示例数据，正式环境必须替换为真实术语表文件路径。
     terminology_path: str = "app/graphrag/terminology_seed.yaml"
+
+    # 对话记忆存储（会话滑窗+长期记忆条目），SQLite 文件路径。
+    memory_db_path: str = "data/memory.sqlite3"
