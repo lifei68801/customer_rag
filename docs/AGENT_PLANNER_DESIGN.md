@@ -224,19 +224,27 @@ stateDiagram-v2
 
 ## 9. 实施步骤拆分（供后续 TDD 逐条实现，建议按此顺序）
 
-1. `ProviderRequest`/`ProviderResult`/`ToolCall` 新增字段（纯数据结构，无行为）。
-2. `OpenAICompatibleChatProvider.complete()` 支持 `tools`/`tool_choice` 请求 + 解析
+1. ✅ `ProviderRequest`/`ProviderResult`/`ToolCall` 新增字段（纯数据结构，无行为）。
+2. ✅ `OpenAICompatibleChatProvider.complete()` 支持 `tools`/`tool_choice` 请求 + 解析
    `tool_calls` 响应（含修掉 `content` 可能为 `None` 的隐藏 bug）。
-3. `vector_search_tool`/`graph_query_tool` 独立函数 + 各自的工具 JSON Schema 常量。
-4. `AgentState` 新增字段。
-5. `planner_node`/`tool_call_node`/`route_after_planner` 三个新节点/路由函数，先在
+3. ✅ `vector_search_tool`/`graph_query_tool` 独立函数 + 各自的工具 JSON Schema 常量。
+4. ✅ `AgentState` 新增字段。
+5. ✅ `planner_node`/`tool_call_node`/`route_after_planner` 三个新节点/路由函数，先在
    独立测试里验证（不接入 `build_agent_graph`）。
-6. `build_agent_graph()` 加 `enable_autonomous_planning`/`max_tool_call_rounds` 参数，
+6. ✅ `build_agent_graph()` 加 `enable_autonomous_planning`/`max_tool_call_rounds` 参数，
    接入新拓扑，`False` 时保证现有全部测试原样通过。
-7. `agent_routes.py` 接入 `recursion_limit` 外层护栏 + 语音请求的降级策略（§8）。
-8. （可选，视优先级）打通评测框架对 Agent graph 的执行路径，用真实评测数据决定是否
-   把默认值翻转为 `True`。
+7. ✅ `agent_routes.py` 接入 `recursion_limit` 外层护栏 + 语音请求的降级策略（§8）。
+8. ⬜（可选，视优先级，尚未开始）打通评测框架对 Agent graph 的执行路径，用真实评测
+   数据决定是否把 `Settings.agent_enable_autonomous_planning` 默认值翻转为 `True`。
+
+**尚未做、需要在真正打开开关前完成的事**（不要误认为已经生产就绪）：
+- 没有对任何真实厂商 API（Qwen/DeepSeek/GLM/Kimi）做过 `tools`/`tool_calls` 的真实
+  冒烟测试——§3.3 提到的"文档宣称支持≠实际稳定"这条验证完全没做，全部测试都是
+  fake/scripted provider。
+- `Settings.agent_enable_autonomous_planning` 默认仍是 `False`，第8步没做意味着没有
+  真实数据支撑"该不该打开"这个决定。
+- Prompt injection（§4.3）只是指出了风险，没有专门的检测/防护机制。
 
 ---
 
-*本文档只是设计，尚未开始实施。*
+*第1-7步已实施完成（2026-08-05）；第8步（评测框架接入）待办。*
