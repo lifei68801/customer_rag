@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from typing import AsyncIterator
 
@@ -15,8 +16,10 @@ from app.graphrag.ontology import Term
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
+from app.providers.tts import TTSProvider
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import VectorStore
+from app.voice.voice_output import synthesize_voice_response
 
 router = APIRouter()
 
@@ -27,6 +30,9 @@ class AgentChatRequest(BaseModel):
     # 认证层注入 tenant_id/user_id 的接入点（见执行计划里程碑X）。
     session_id: str = "default"
     user_id: str = "anonymous"
+    # 按需触发：仅当本轮以语音提问时才为 true，文字提问始终为 false，
+    # 避免不必要的 TTS 成本和延迟。
+    voice_response: bool = False
 
 
 @router.post("/agent/chat")
@@ -40,6 +46,7 @@ async def agent_chat_endpoint(
     graph_client: Neo4jGraphClient | None = Depends(deps.get_graph_client),
     terms: list[Term] = Depends(deps.get_terms),
     memory_conn: aiosqlite.Connection = Depends(deps.get_memory_conn),
+    tts_provider: TTSProvider | None = Depends(deps.get_tts_provider),
 ) -> StreamingResponse:
     """Agent 推理入口，SSE 传输。
 
@@ -48,6 +55,11 @@ async def agent_chat_endpoint(
     （解析 SSE 分片），目前 OpenAICompatibleChatProvider 只有一次性
     complete()，这部分尚未实现。此处先把 SSE 传输协议本身接通，
     后续给 provider 层加流式支持后可以平滑升级为逐 token 推送。
+
+    语音输出同理是简化版：句子级合成本身有做（voice_output.py），但
+    没有和 Responder 的 token 流式生成过程流水线化（因为上面那条也没
+    做），所以"首包延迟"目前等于"完整回答生成完+全部句子合成完"，
+    不是架构文档 7.3 节设想的"边生成边合成"。
     """
     graph = build_agent_graph(
         embedding_registry=embedding_registry,
@@ -70,10 +82,22 @@ async def agent_chat_endpoint(
                 "user_id": payload.user_id,
             }
         )
+        final_text = result.get("final_text", "")
+
+        audio_segments_base64: list[str] | None = None
+        if payload.voice_response and tts_provider is not None:
+            segments = await synthesize_voice_response(
+                final_text, tts_provider=tts_provider
+            )
+            audio_segments_base64 = [
+                base64.b64encode(segment).decode("ascii") for segment in segments
+            ]
+
         body = json.dumps(
             {
-                "text": result.get("final_text", ""),
+                "text": final_text,
                 "used_sources": result.get("used_sources", []),
+                "audio_segments_base64": audio_segments_base64,
             },
             ensure_ascii=False,
         )

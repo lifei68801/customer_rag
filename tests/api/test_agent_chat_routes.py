@@ -77,6 +77,7 @@ def test_agent_chat_streams_final_answer_as_sse():
     app.dependency_overrides[deps.get_terms] = lambda: []
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
+    app.dependency_overrides[deps.get_tts_provider] = lambda: None
     try:
         client = TestClient(app)
         with client.stream(
@@ -92,3 +93,54 @@ def test_agent_chat_streams_final_answer_as_sse():
     payload = json.loads(body[len("data: ") :].strip())
     assert payload["text"] == "按资料所述，重启路由器即可解决。"
     assert payload["used_sources"] == ["faq/network.md"]
+    assert payload.get("audio_segments_base64") is None
+
+
+class FakeTTSProvider:
+    async def synthesize(self, request):
+        from app.providers.tts import TTSResult
+
+        return TTSResult(audio_bytes=f"audio:{request.text}".encode())
+
+
+def test_agent_chat_synthesizes_voice_when_requested():
+    import asyncio
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, FakeLLMProvider()
+    )
+    vector_store = asyncio.run(_fake_vector_store())
+
+    async def _override_get_memory_conn() -> aiosqlite.Connection:
+        conn = await aiosqlite.connect(":memory:")
+        await ensure_schema(conn)
+        return conn
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
+    app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
+    app.dependency_overrides[deps.get_tts_provider] = lambda: FakeTTSProvider()
+    try:
+        client = TestClient(app)
+        with client.stream(
+            "POST",
+            "/agent/chat",
+            json={"question": "网络连不上怎么办？", "voice_response": True},
+        ) as response:
+            body = "".join(response.iter_text())
+    finally:
+        app.dependency_overrides.clear()
+
+    payload = json.loads(body[len("data: ") :].strip())
+    assert payload["audio_segments_base64"]
+    assert len(payload["audio_segments_base64"]) >= 1
