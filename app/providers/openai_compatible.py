@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from typing import AsyncIterator
+
 import httpx
 
 from app.providers.base import ProviderRequest, ProviderResult, ToolCall
@@ -66,6 +69,40 @@ class OpenAICompatibleChatProvider(_OpenAICompatibleClient):
             ]
 
         return ProviderResult(text=text, raw=body, tool_calls=tool_calls)
+
+    async def stream_complete(self, request: ProviderRequest) -> AsyncIterator[str]:
+        """流式生成：逐个 yield 增量文本片段（SSE `delta.content`），不等
+        完整回复生成完才返回——这是让语音输出首包延迟名副其实的前提
+        （见 docs/ARCHITECTURE.md §7.3），也是 `complete()` 做不到的。
+
+        不处理流式场景下的 tool_calls 增量拼接（工具调用的 delta 是跨多个
+        chunk 拼接的片段，比纯文本流复杂得多）——流式生成目前只服务于
+        语音输出这个场景，用的是静态 Responder 路径，不涉及 Planner
+        工具调用；需要"流式+工具调用"两者都要的场景出现时再扩展。
+        """
+        payload: dict = {
+            "model": self._model,
+            "messages": request.messages,
+            "stream": True,
+            **request.options,
+        }
+        async with self._client.stream(
+            "POST",
+            f"{self._base_url}/chat/completions",
+            headers=self._headers(),
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[len("data: ") :]
+                if data.strip() == "[DONE]":
+                    break
+                chunk = json.loads(data)
+                delta = chunk["choices"][0]["delta"].get("content")
+                if delta:
+                    yield delta
 
 
 class OpenAICompatibleEmbeddingProvider(_OpenAICompatibleClient):
