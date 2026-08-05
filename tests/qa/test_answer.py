@@ -62,6 +62,7 @@ async def test_answer_question_uses_retrieved_context_in_the_prompt():
 
     assert result.text == "按资料所述，重启路由器即可解决。"
     assert result.used_sources == ["faq/network.md"]
+    assert result.retrieved_context == "网络断开时，请先重启路由器。"
     assert llm_provider.last_request is not None
     assert "重启路由器" in llm_provider.last_request.messages[0]["content"]
 

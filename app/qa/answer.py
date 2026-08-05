@@ -19,6 +19,7 @@ _PROMPT_TEMPLATE = "根据以下资料回答问题。\n资料：\n{context}\n\n�
 class AnswerResult:
     text: str
     used_sources: list[str]
+    retrieved_context: str
 
 
 async def answer_question(
@@ -54,11 +55,12 @@ async def answer_question(
         query_rewrite_enabled=query_rewrite_enabled,
         final_top_k=top_k,
     )
-    context = "\n\n".join(record.text for record in records)
+    retrieved_context = "\n\n".join(record.text for record in records)
+    prompt_context = retrieved_context
     if term_guard_context:
-        context = f"{term_guard_context}\n\n{context}"
+        prompt_context = f"{term_guard_context}\n\n{retrieved_context}"
 
-    prompt = _PROMPT_TEMPLATE.format(context=context, question=question)
+    prompt = _PROMPT_TEMPLATE.format(context=prompt_context, question=question)
     llm_result = await llm_registry.run(
         ProviderCapability.LLM,
         ProviderRequest(messages=[{"role": "user", "content": prompt}]),
@@ -68,4 +70,5 @@ async def answer_question(
     return AnswerResult(
         text=llm_result.text,
         used_sources=[record.id for record in records],
+        retrieved_context=retrieved_context,
     )
