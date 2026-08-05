@@ -89,6 +89,40 @@ async def test_no_records_triggers_fallback_and_creates_ticket():
     assert llm_provider.last_request is None
 
 
+class ScriptedLLMProvider:
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = list(responses)
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        return ProviderResult(text=self._responses.pop(0))
+
+
+async def test_semantic_review_flags_output_as_unsafe():
+    embedding_registry, vector_store, bm25_index, llm_registry, _ = (
+        await _build_dependencies(with_records=True, llm_text="占位")
+    )
+    scripted = ScriptedLLMProvider(
+        ["这是回答内容。", '{"is_safe": false, "reason": "测试触发"}']
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", scripted)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+    )
+
+    result = await graph.ainvoke({"question": "网络连不上怎么办？"})
+
+    assert result["final_text"] == "抱歉，生成的回答未通过安全审查，已为您转接人工客服。"
+    assert result["semantic_review_reviewed"] is True
+
+
 async def test_unsafe_input_short_circuits_without_calling_llm():
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(with_records=True, llm_text="不应该被用到")

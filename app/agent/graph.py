@@ -22,6 +22,7 @@ from app.retrieval.bm25 import BM25Index
 from app.retrieval.hybrid_search import hybrid_search
 from app.retrieval.vector_store import VectorStore
 from app.safety.rules import check_text
+from app.safety.semantic_review import semantic_safety_review
 
 _PROMPT_TEMPLATE = "根据以下资料回答问题。\n资料：\n{context}\n\n问题：{question}"
 _UNSAFE_INPUT_MESSAGE = "您的问题包含无法处理的敏感内容，请修改后重新提问。"
@@ -142,7 +143,28 @@ def build_agent_graph(
         result = check_text(answer, banned_terms=banned_terms)
         if not result.is_safe:
             return {"is_output_safe": False, "final_text": _UNSAFE_OUTPUT_MESSAGE}
-        return {"is_output_safe": True, "final_text": answer}
+
+        if state.get("fallback_triggered"):
+            # 兜底话术是固定文案，不含 LLM 生成内容，跳过语义审查节省一次
+            # 无意义的 LLM 调用。
+            return {"is_output_safe": True, "final_text": answer}
+
+        semantic_result = await semantic_safety_review(
+            answer,
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
+        )
+        if semantic_result.reviewed and not semantic_result.is_safe:
+            return {
+                "is_output_safe": False,
+                "final_text": _UNSAFE_OUTPUT_MESSAGE,
+                "semantic_review_reviewed": True,
+            }
+        return {
+            "is_output_safe": True,
+            "final_text": answer,
+            "semantic_review_reviewed": semantic_result.reviewed,
+        }
 
     async def memory_save_node(state: AgentState) -> dict[str, Any]:
         if memory_conn is None:

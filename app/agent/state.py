@@ -19,4 +19,5 @@ class AgentState(TypedDict, total=False):
     fallback_triggered: bool
     ticket_id: str | None
     is_output_safe: bool
+    semantic_review_reviewed: bool
     final_text: str
