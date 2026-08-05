@@ -26,8 +26,9 @@ router = APIRouter()
 
 class AgentChatRequest(BaseModel):
     question: str
-    # 单租户 MVP 阶段先用简单默认值；多租户里程碑触发时，这里是
-    # 认证层注入 tenant_id/user_id 的接入点（见执行计划里程碑X）。
+    # 里程碑X：多租户隔离已接入。tenant_id 目前直接来自请求体，
+    # 真正上生产前需要换成从认证层（网关/JWT）注入，而不是信任客户端自报。
+    tenant_id: str
     session_id: str = "default"
     user_id: str = "anonymous"
     # 按需触发：仅当本轮以语音提问时才为 true，文字提问始终为 false，
@@ -78,6 +79,7 @@ async def agent_chat_endpoint(
         result = await graph.ainvoke(
             {
                 "question": payload.question,
+                "tenant_id": payload.tenant_id,
                 "session_id": payload.session_id,
                 "user_id": payload.user_id,
             }

@@ -7,6 +7,7 @@ from app.retrieval.vector_store import VectorRecord
 
 class AgentState(TypedDict, total=False):
     question: str
+    tenant_id: str
     session_id: str
     user_id: str
     is_input_safe: bool

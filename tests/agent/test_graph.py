@@ -33,6 +33,7 @@ async def _build_dependencies(*, with_records: bool, llm_text: str):
                 id="faq/network.md",
                 vector=[1.0, 0.0],
                 text="网络断开时，请先重启路由器。",
+                tenant_id="t1",
                 metadata={},
             )
         ]
@@ -60,11 +61,31 @@ async def test_happy_path_returns_llm_answer_with_used_sources():
         query_rewrite_enabled=False,
     )
 
-    result = await graph.ainvoke({"question": "网络连不上怎么办？"})
+    result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
 
     assert result["final_text"] == "重启路由器即可解决。"
     assert result["used_sources"] == ["faq/network.md"]
     assert result.get("ticket_id") is None
+
+
+async def test_does_not_surface_another_tenants_records():
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(with_records=True, llm_text="不应该被用到")
+    )
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+    )
+
+    result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t2"})
+
+    assert result["fallback_triggered"] is True
+    assert llm_provider.last_request is None
 
 
 async def test_no_records_triggers_fallback_and_creates_ticket():
@@ -81,7 +102,7 @@ async def test_no_records_triggers_fallback_and_creates_ticket():
         query_rewrite_enabled=False,
     )
 
-    result = await graph.ainvoke({"question": "完全无关的问题"})
+    result = await graph.ainvoke({"question": "完全无关的问题", "tenant_id": "t1"})
 
     assert result["fallback_triggered"] is True
     assert result["ticket_id"]
@@ -117,7 +138,7 @@ async def test_semantic_review_flags_output_as_unsafe():
         query_rewrite_enabled=False,
     )
 
-    result = await graph.ainvoke({"question": "网络连不上怎么办？"})
+    result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
 
     assert result["final_text"] == "抱歉，生成的回答未通过安全审查，已为您转接人工客服。"
     assert result["semantic_review_reviewed"] is True
@@ -138,7 +159,7 @@ async def test_unsafe_input_short_circuits_without_calling_llm():
         banned_terms=["敏感词"],
     )
 
-    result = await graph.ainvoke({"question": "这里面有敏感词"})
+    result = await graph.ainvoke({"question": "这里面有敏感词", "tenant_id": "t1"})
 
     assert result["is_input_safe"] is False
     assert llm_provider.last_request is None

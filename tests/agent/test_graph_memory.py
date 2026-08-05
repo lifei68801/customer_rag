@@ -37,6 +37,7 @@ async def _build_dependencies(llm_responses: list[str]):
             id="faq/network.md",
             vector=[1.0, 0.0],
             text="网络断开时，请先重启路由器。",
+            tenant_id="t1",
             metadata={},
         )
     ]
@@ -65,7 +66,7 @@ async def test_memory_disabled_by_default_matches_stage4_behavior():
         query_rewrite_enabled=False,
     )
 
-    result = await graph.ainvoke({"question": "网络连不上怎么办？"})
+    result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
 
     assert result["final_text"] == "重启路由器即可解决。"
 
@@ -97,7 +98,12 @@ async def test_memory_enabled_saves_turn_and_injects_context():
     )
 
     result = await graph.ainvoke(
-        {"question": "网络连不上怎么办？", "session_id": "s1", "user_id": "u1"}
+        {
+            "question": "网络连不上怎么办？",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
     )
 
     assert result["final_text"] == "重启路由器即可解决。"

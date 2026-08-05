@@ -28,6 +28,7 @@ _FAKE_RECORDS = [
         id="faq/network.md",
         vector=[1.0, 0.0],
         text="网络断开时，请先重启路由器。",
+        tenant_id="t1",
         metadata={},
     )
 ]
@@ -81,7 +82,9 @@ def test_agent_chat_streams_final_answer_as_sse():
     try:
         client = TestClient(app)
         with client.stream(
-            "POST", "/agent/chat", json={"question": "网络连不上怎么办？"}
+            "POST",
+            "/agent/chat",
+            json={"question": "网络连不上怎么办？", "tenant_id": "t1"},
         ) as response:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("text/event-stream")
@@ -135,7 +138,11 @@ def test_agent_chat_synthesizes_voice_when_requested():
         with client.stream(
             "POST",
             "/agent/chat",
-            json={"question": "网络连不上怎么办？", "voice_response": True},
+            json={
+                "question": "网络连不上怎么办？",
+                "tenant_id": "t1",
+                "voice_response": True,
+            },
         ) as response:
             body = "".join(response.iter_text())
     finally:

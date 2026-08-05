@@ -24,6 +24,7 @@ _FAKE_RECORDS = [
         id="faq/network.md",
         vector=[1.0, 0.0],
         text="网络断开时，请先重启路由器。",
+        tenant_id="t1",
         metadata={},
     )
 ]
@@ -65,7 +66,9 @@ def test_qa_endpoint_returns_answer_and_used_sources():
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     try:
         client = TestClient(app)
-        response = client.post("/qa", json={"question": "网络连不上怎么办？"})
+        response = client.post(
+            "/qa", json={"question": "网络连不上怎么办？", "tenant_id": "t1"}
+        )
     finally:
         app.dependency_overrides.clear()
 
@@ -73,3 +76,38 @@ def test_qa_endpoint_returns_answer_and_used_sources():
     body = response.json()
     assert body["text"] == "按资料所述，重启路由器即可解决。"
     assert body["used_sources"] == ["faq/network.md"]
+
+
+def test_qa_endpoint_does_not_leak_another_tenants_sources():
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
+    )
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, FakeLLMProvider()
+    )
+
+    import asyncio
+
+    vector_store = asyncio.run(_fake_vector_store())
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/qa", json={"question": "网络连不上怎么办？", "tenant_id": "t2"}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["used_sources"] == []

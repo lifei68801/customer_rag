@@ -102,6 +102,7 @@ def build_agent_graph(
             rerank_provider=rerank_provider,
             query_rewrite_enabled=query_rewrite_enabled,
             final_top_k=top_k,
+            tenant_id=state["tenant_id"],
         )
         return {
             "retrieved_records": records,

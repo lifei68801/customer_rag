@@ -18,6 +18,7 @@ router = APIRouter()
 
 class QARequest(BaseModel):
     question: str
+    tenant_id: str
 
 
 class QAResponse(BaseModel):
@@ -47,5 +48,6 @@ async def qa_endpoint(
         rerank_provider=rerank_provider,
         terms=terms,
         graph_client=graph_client,
+        tenant_id=payload.tenant_id,
     )
     return QAResponse(text=result.text, used_sources=result.used_sources)
