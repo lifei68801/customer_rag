@@ -237,14 +237,38 @@ stateDiagram-v2
 8. ⬜（可选，视优先级，尚未开始）打通评测框架对 Agent graph 的执行路径，用真实评测
    数据决定是否把 `Settings.agent_enable_autonomous_planning` 默认值翻转为 `True`。
 
+### 真实厂商 API 冒烟测试结果（DeepSeek，2026-08-05）
+
+用 `deepseek-chat` 跑了三个场景（脚本未入库，属一次性验证）：
+1. 明确需要检索的问题——模型正确选择调用工具，**且一次性并行请求了两个工具**
+   （`vector_search_tool` + `graph_query_tool`），证明 DeepSeek 支持 parallel
+   function calling。本实现已经能正确处理（`run_planner_turn` 本就是把
+   `result.tool_calls` 整个列表存进 `pending_tool_calls`，`run_tool_calls`
+   逐个执行），不用额外改动，但有个参数含义要注意：`max_tool_call_rounds`
+   数的是"LLM 轮次"不是"工具调用次数"——如果模型习惯一轮请求多个工具，
+   实际执行的工具调用总数可能远大于轮次上限本身，调 `max_tool_call_rounds`
+   时要按这个口径估算。
+2. 不需要检索的闲聊——模型不调用任何工具，直接回答，`tool_calls` 为 `None`。
+3. 把场景1的工具结果按 OpenAI 协议格式（`assistant.tool_calls` + `role=tool`
+   带 `tool_call_id`）回填后发起第二轮——模型正确读取了工具结果并基于其中
+   内容给出最终答案，证明多轮消息历史格式是被 DeepSeek 正确接受的。
+
+一个和文档描述略有出入、但不影响正确性的观察：调用工具时 `message.content`
+**不一定是 `None`**——DeepSeek 在场景1里 `content` 和 `tool_calls` 同时非空
+（先写了一段"我来帮你检索"之类的话，再附带工具调用）。§3.2 的
+`text = message.get("content") or ""` 已经能正确处理这种情况（不会因为
+`content` 有值就误判为"这是最终答案"——`route_after_planner` 的判断依据
+始终是 `tool_calls` 是否存在，不是 `content` 是否为空），无需改动。
+
 **尚未做、需要在真正打开开关前完成的事**（不要误认为已经生产就绪）：
-- 没有对任何真实厂商 API（Qwen/DeepSeek/GLM/Kimi）做过 `tools`/`tool_calls` 的真实
-  冒烟测试——§3.3 提到的"文档宣称支持≠实际稳定"这条验证完全没做，全部测试都是
-  fake/scripted provider。
+- 只验证了 DeepSeek 一家；Qwen/智谱 GLM/Kimi 仍未做过真实冒烟测试，不能假设
+  它们的 tool-calling 行为（尤其是 parallel function calling 支持与否）和
+  DeepSeek 一致。
 - `Settings.agent_enable_autonomous_planning` 默认仍是 `False`，第8步没做意味着没有
   真实数据支撑"该不该打开"这个决定。
 - Prompt injection（§4.3）只是指出了风险，没有专门的检测/防护机制。
 
 ---
 
-*第1-7步已实施完成（2026-08-05）；第8步（评测框架接入）待办。*
+*第1-7步已实施完成（2026-08-05）；DeepSeek 真实 API 冒烟测试已通过（2026-08-05）；
+第8步（评测框架接入）、其余三家厂商的冒烟测试待办。*
