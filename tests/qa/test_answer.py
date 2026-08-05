@@ -2,6 +2,7 @@ from app.providers.base import ProviderCapability, ProviderRequest, ProviderResu
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
 from app.qa.answer import answer_question
+from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
 
 
@@ -23,23 +24,24 @@ async def test_answer_question_uses_retrieved_context_in_the_prompt():
     embedding_registry = EmbeddingRegistry()
     embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
 
+    records = [
+        VectorRecord(
+            id="faq/network.md",
+            vector=[1.0, 0.0],
+            text="网络断开时，请先重启路由器。",
+            metadata={},
+        ),
+        VectorRecord(
+            id="faq/login.md",
+            vector=[0.0, 1.0],
+            text="登录失败请检查账号密码。",
+            metadata={},
+        ),
+    ]
     vector_store = InMemoryVectorStore()
-    await vector_store.upsert(
-        [
-            VectorRecord(
-                id="faq/network.md",
-                vector=[1.0, 0.0],
-                text="网络断开时，请先重启路由器。",
-                metadata={},
-            ),
-            VectorRecord(
-                id="faq/login.md",
-                vector=[0.0, 1.0],
-                text="登录失败请检查账号密码。",
-                metadata={},
-            ),
-        ]
-    )
+    await vector_store.upsert(records)
+    bm25_index = BM25Index()
+    bm25_index.index(records)
 
     llm_provider = FakeLLMProvider()
     llm_registry = ProviderRegistry()
@@ -50,8 +52,10 @@ async def test_answer_question_uses_retrieved_context_in_the_prompt():
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
+        bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
         top_k=1,
     )
 

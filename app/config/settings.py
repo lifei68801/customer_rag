@@ -17,3 +17,8 @@ class Settings(BaseSettings):
 
     milvus_uri: str = "http://localhost:19530"
     milvus_collection: str = "faq_chunks"
+
+    # Rerank 为可选项：不配置时 /qa 直接跳过精排，仅走 RRF 融合排序。
+    rerank_base_url: str | None = None
+    rerank_api_key: str | None = None
+    rerank_model: str | None = None
