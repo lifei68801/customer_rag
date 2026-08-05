@@ -106,17 +106,48 @@ class OpenAICompatibleChatProvider(_OpenAICompatibleClient):
 
 
 class OpenAICompatibleEmbeddingProvider(_OpenAICompatibleClient):
+    """batch_size 为可选项：不少供应商（如阿里百炼）对单次 embeddings 请求
+    能接受的文本条数有硬限制（实测 DashScope 的 text-embedding 系列限
+    20 条/请求，超过直接 400），不能假设调用方一次传多少条文本就能一次
+    性发出去。不设置则保持原有行为——一次性发全部文本，兼容没有这类
+    限制的供应商。
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        client: httpx.AsyncClient | None = None,
+        batch_size: int | None = None,
+    ) -> None:
+        super().__init__(base_url=base_url, api_key=api_key, model=model, client=client)
+        self._batch_size = batch_size
+
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
-        response = await self._client.post(
-            f"{self._base_url}/embeddings",
-            headers=self._headers(),
-            json={
-                "model": self._model,
-                "input": request.texts,
-                **request.options,
-            },
-        )
-        response.raise_for_status()
-        body = response.json()
-        vectors = [item["embedding"] for item in body["data"]]
-        return EmbeddingResult(vectors=vectors, raw=body)
+        size = self._batch_size or len(request.texts) or 1
+        vectors: list[list[float]] = []
+        raw_batches: list[dict] = []
+        for start in range(0, len(request.texts), size):
+            batch = request.texts[start : start + size]
+            response = await self._client.post(
+                f"{self._base_url}/embeddings",
+                headers=self._headers(),
+                json={
+                    "model": self._model,
+                    "input": batch,
+                    **request.options,
+                },
+            )
+            response.raise_for_status()
+            body = response.json()
+            vectors.extend(item["embedding"] for item in body["data"])
+            raw_batches.append(body)
+
+        raw: dict = {}
+        if len(raw_batches) == 1:
+            raw = raw_batches[0]
+        elif raw_batches:
+            raw = {"batches": raw_batches}
+        return EmbeddingResult(vectors=vectors, raw=raw)

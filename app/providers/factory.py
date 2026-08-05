@@ -44,6 +44,7 @@ def build_embedding_registry_from_settings(
             api_key=settings.embedding_api_key,
             model=settings.embedding_model,
             client=client,
+            batch_size=settings.embedding_batch_size,
         ),
     )
     return registry

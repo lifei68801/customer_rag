@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     embedding_api_key: str
     embedding_model: str
     embedding_dimension: int
+    # 部分供应商（如阿里百炼）单次 embeddings 请求最多接受的文本条数有硬
+    # 限制，超过直接 400；不设置则一次性发全部文本（兼容没有这类限制的
+    # 供应商）。
+    embedding_batch_size: int | None = None
 
     milvus_uri: str = "http://localhost:19530"
     milvus_collection: str = "faq_chunks"
