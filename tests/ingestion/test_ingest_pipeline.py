@@ -2,7 +2,12 @@ import aiosqlite
 
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
-from app.ingestion.pipeline import ingest_directory, ingest_markdown_file
+from app.ingestion.pipeline import (
+    ingest_directory,
+    ingest_docx_file,
+    ingest_image_file,
+    ingest_markdown_file,
+)
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
@@ -222,6 +227,58 @@ async def test_ingest_markdown_file_sends_unresolved_candidates_to_review_queue(
     pending = await list_pending_reviews(review_conn)
     assert len(pending) == 1
     assert pending[0]["object_candidate"] == "不存在的实体"
+
+
+async def test_ingest_docx_file_chunks_embeds_and_upserts(tmp_path):
+    from docx import Document
+
+    docx_path = tmp_path / "manual.docx"
+    doc = Document()
+    doc.add_heading("安装步骤", level=1)
+    doc.add_paragraph("先下载安装包。")
+    doc.save(str(docx_path))
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    count = await ingest_docx_file(
+        docx_path,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        tenant_id="t1",
+    )
+
+    assert count == 1
+    results = await vector_store.search(
+        query_vector=[0.1, 0.2], top_k=1, tenant_id="t1"
+    )
+    assert "先下载安装包" in results[0].text
+
+
+async def test_ingest_image_file_uses_injected_ocr_function(tmp_path):
+    image_path = tmp_path / "scan.png"
+    image_path.write_bytes(b"fake image bytes")
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    count = await ingest_image_file(
+        image_path,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        tenant_id="t1",
+        ocr=lambda path: "错误码E502表示网关超时",
+    )
+
+    assert count == 1
+    results = await vector_store.search(
+        query_vector=[0.1, 0.2], top_k=1, tenant_id="t1"
+    )
+    assert "错误码E502表示网关超时" in results[0].text
 
 
 async def test_ingest_directory_processes_markdown_and_pdf_but_skips_other_extensions(

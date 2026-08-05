@@ -7,7 +7,9 @@ import aiosqlite
 from app.graphrag.normalization import GraphWriteClientProtocol
 from app.graphrag.ontology import Term
 from app.ingestion.chunking import Chunk, chunk_markdown
+from app.ingestion.docx_parser import parse_docx
 from app.ingestion.graph_extraction import extract_and_write_graph_relations
+from app.ingestion.ocr_parser import OcrFunction, parse_image
 from app.ingestion.pdf_parser import parse_pdf
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
 from app.providers.registry import ProviderRegistry
@@ -79,6 +81,45 @@ async def _maybe_extract_graph_relations(
     )
 
 
+async def _ingest_chunks(
+    chunks: list[Chunk],
+    path: Path,
+    *,
+    embedding_registry: EmbeddingRegistry,
+    embedding_provider_name: str,
+    vector_store: VectorStore,
+    tenant_id: str,
+    graph_llm_registry: ProviderRegistry | None,
+    graph_llm_provider_name: str | None,
+    graph_terms: list[Term] | None,
+    graph_client: GraphWriteClientProtocol | None,
+    graph_review_conn: aiosqlite.Connection | None,
+) -> int:
+    """已解析出 chunk 之后共用的写入逻辑：向量化+入库，可选做图谱抽取。
+
+    各文件格式的 ingest_*_file 只负责"怎么把文件解析成 chunk 列表"这一步
+    不同，解析完之后的处理管线完全一致，抽出来避免四份文件格式各写一遍
+    近乎相同的代码。
+    """
+    count = await _embed_and_upsert(
+        chunks,
+        path,
+        embedding_registry=embedding_registry,
+        embedding_provider_name=embedding_provider_name,
+        vector_store=vector_store,
+        tenant_id=tenant_id,
+    )
+    await _maybe_extract_graph_relations(
+        chunks,
+        graph_llm_registry=graph_llm_registry,
+        graph_llm_provider_name=graph_llm_provider_name,
+        graph_terms=graph_terms,
+        graph_client=graph_client,
+        graph_review_conn=graph_review_conn,
+    )
+    return count
+
+
 async def ingest_markdown_file(
     path: Path,
     *,
@@ -103,23 +144,19 @@ async def ingest_markdown_file(
     """
     text = path.read_text(encoding="utf-8")
     chunks = chunk_markdown(text, source=str(path))
-    count = await _embed_and_upsert(
+    return await _ingest_chunks(
         chunks,
         path,
         embedding_registry=embedding_registry,
         embedding_provider_name=embedding_provider_name,
         vector_store=vector_store,
         tenant_id=tenant_id,
-    )
-    await _maybe_extract_graph_relations(
-        chunks,
         graph_llm_registry=graph_llm_registry,
         graph_llm_provider_name=graph_llm_provider_name,
         graph_terms=graph_terms,
         graph_client=graph_client,
         graph_review_conn=graph_review_conn,
     )
-    return count
 
 
 async def ingest_pdf_file(
@@ -137,23 +174,84 @@ async def ingest_pdf_file(
 ) -> int:
     """读取单个 PDF 文件（逐页分块），向量化并写入向量库，返回写入的 chunk 数。"""
     chunks = parse_pdf(path)
-    count = await _embed_and_upsert(
+    return await _ingest_chunks(
         chunks,
         path,
         embedding_registry=embedding_registry,
         embedding_provider_name=embedding_provider_name,
         vector_store=vector_store,
         tenant_id=tenant_id,
-    )
-    await _maybe_extract_graph_relations(
-        chunks,
         graph_llm_registry=graph_llm_registry,
         graph_llm_provider_name=graph_llm_provider_name,
         graph_terms=graph_terms,
         graph_client=graph_client,
         graph_review_conn=graph_review_conn,
     )
-    return count
+
+
+async def ingest_docx_file(
+    path: Path,
+    *,
+    embedding_registry: EmbeddingRegistry,
+    embedding_provider_name: str,
+    vector_store: VectorStore,
+    tenant_id: str,
+    graph_llm_registry: ProviderRegistry | None = None,
+    graph_llm_provider_name: str | None = None,
+    graph_terms: list[Term] | None = None,
+    graph_client: GraphWriteClientProtocol | None = None,
+    graph_review_conn: aiosqlite.Connection | None = None,
+) -> int:
+    """读取单个 Word 文件（按一级标题分块），向量化并写入向量库，返回写入的 chunk 数。"""
+    chunks = parse_docx(path)
+    return await _ingest_chunks(
+        chunks,
+        path,
+        embedding_registry=embedding_registry,
+        embedding_provider_name=embedding_provider_name,
+        vector_store=vector_store,
+        tenant_id=tenant_id,
+        graph_llm_registry=graph_llm_registry,
+        graph_llm_provider_name=graph_llm_provider_name,
+        graph_terms=graph_terms,
+        graph_client=graph_client,
+        graph_review_conn=graph_review_conn,
+    )
+
+
+async def ingest_image_file(
+    path: Path,
+    *,
+    embedding_registry: EmbeddingRegistry,
+    embedding_provider_name: str,
+    vector_store: VectorStore,
+    tenant_id: str,
+    graph_llm_registry: ProviderRegistry | None = None,
+    graph_llm_provider_name: str | None = None,
+    graph_terms: list[Term] | None = None,
+    graph_client: GraphWriteClientProtocol | None = None,
+    graph_review_conn: aiosqlite.Connection | None = None,
+    ocr: OcrFunction | None = None,
+) -> int:
+    """OCR 提取单张图片（扫描件/照片）里的文字，向量化并写入向量库。
+
+    ocr 可注入替换默认的 pytesseract 实现，测试/自定义 OCR 引擎时用；
+    默认实现需要本机安装 Tesseract 二进制（见 ocr_parser.py 的说明）。
+    """
+    chunks = parse_image(path, ocr=ocr)
+    return await _ingest_chunks(
+        chunks,
+        path,
+        embedding_registry=embedding_registry,
+        embedding_provider_name=embedding_provider_name,
+        vector_store=vector_store,
+        tenant_id=tenant_id,
+        graph_llm_registry=graph_llm_registry,
+        graph_llm_provider_name=graph_llm_provider_name,
+        graph_terms=graph_terms,
+        graph_client=graph_client,
+        graph_review_conn=graph_review_conn,
+    )
 
 
 async def ingest_directory(
@@ -168,8 +266,13 @@ async def ingest_directory(
     graph_terms: list[Term] | None = None,
     graph_client: GraphWriteClientProtocol | None = None,
     graph_review_conn: aiosqlite.Connection | None = None,
+    ocr: OcrFunction | None = None,
 ) -> int:
-    """遍历目录下所有 .md/.pdf 文件并逐个摄取，返回写入的 chunk 总数。
+    """遍历目录下所有 .md/.pdf/.docx/图片文件并逐个摄取，返回写入的 chunk 总数。
+
+    图片格式覆盖 .png/.jpg/.jpeg，OCR 走 ocr_parser.py（需要本机装好
+    Tesseract，或通过 ocr 参数注入替代实现）；"扫描件 PDF"（PDF 页面
+    本身是图片、没有文字层）不在覆盖范围内，见 ocr_parser.py 的说明。
 
     一次调用只摄取给一个租户；不同租户的文档要分开跑摄取脚本。
     """
@@ -199,5 +302,37 @@ async def ingest_directory(
             graph_terms=graph_terms,
             graph_client=graph_client,
             graph_review_conn=graph_review_conn,
+        )
+    for docx_file in sorted(directory.glob("*.docx")):
+        total += await ingest_docx_file(
+            docx_file,
+            embedding_registry=embedding_registry,
+            embedding_provider_name=embedding_provider_name,
+            vector_store=vector_store,
+            tenant_id=tenant_id,
+            graph_llm_registry=graph_llm_registry,
+            graph_llm_provider_name=graph_llm_provider_name,
+            graph_terms=graph_terms,
+            graph_client=graph_client,
+            graph_review_conn=graph_review_conn,
+        )
+    image_files = [
+        f
+        for pattern in ("*.png", "*.jpg", "*.jpeg")
+        for f in directory.glob(pattern)
+    ]
+    for image_file in sorted(image_files):
+        total += await ingest_image_file(
+            image_file,
+            embedding_registry=embedding_registry,
+            embedding_provider_name=embedding_provider_name,
+            vector_store=vector_store,
+            tenant_id=tenant_id,
+            graph_llm_registry=graph_llm_registry,
+            graph_llm_provider_name=graph_llm_provider_name,
+            graph_terms=graph_terms,
+            graph_client=graph_client,
+            graph_review_conn=graph_review_conn,
+            ocr=ocr,
         )
     return total
