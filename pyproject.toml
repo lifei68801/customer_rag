@@ -8,12 +8,14 @@ dependencies = [
     "uvicorn>=0.30",
     "pydantic-settings>=2.14",
     "pymilvus>=3.0",
+    "pypdf>=6.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=9.1",
     "pytest-asyncio>=1.4",
+    "reportlab>=5.0",
 ]
 
 [tool.pytest.ini_options]
