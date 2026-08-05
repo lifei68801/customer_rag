@@ -18,7 +18,9 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ProviderRequest:
-    messages: list[dict[str, str]]
+    # 值类型是 Any 而不是 str——assistant 消息里的 tool_calls、tool 消息里的
+    # tool_call_id 都是非字符串结构，只有 user/system 消息通常是纯字符串。
+    messages: list[dict[str, Any]]
     options: dict[str, Any] = field(default_factory=dict)
     tools: list[dict[str, Any]] | None = None
     tool_choice: str | dict[str, Any] | None = None
