@@ -36,3 +36,49 @@ async def test_search_does_not_return_records_from_a_different_tenant():
     results = await store.search(query_vector=[1.0, 0.0], top_k=5, tenant_id="t1")
 
     assert [r.id for r in results] == ["a"]
+
+
+async def test_delete_by_source_removes_only_matching_records():
+    store = InMemoryVectorStore()
+    await store.upsert(
+        [
+            VectorRecord(
+                id="a#0", vector=[1.0, 0.0], text="旧版本第一段",
+                tenant_id="t1", metadata={"source": "doc.md"},
+            ),
+            VectorRecord(
+                id="a#1", vector=[1.0, 0.0], text="旧版本第二段",
+                tenant_id="t1", metadata={"source": "doc.md"},
+            ),
+            VectorRecord(
+                id="b#0", vector=[1.0, 0.0], text="另一份文档",
+                tenant_id="t1", metadata={"source": "other.md"},
+            ),
+        ]
+    )
+
+    await store.delete_by_source(source="doc.md", tenant_id="t1")
+
+    remaining = await store.list_all()
+    assert [r.id for r in remaining] == ["b#0"]
+
+
+async def test_delete_by_source_only_affects_the_matching_tenant():
+    store = InMemoryVectorStore()
+    await store.upsert(
+        [
+            VectorRecord(
+                id="a#0", vector=[1.0, 0.0], text="租户1的文档",
+                tenant_id="t1", metadata={"source": "doc.md"},
+            ),
+            VectorRecord(
+                id="a#0", vector=[1.0, 0.0], text="租户2同名文档",
+                tenant_id="t2", metadata={"source": "doc.md"},
+            ),
+        ]
+    )
+
+    await store.delete_by_source(source="doc.md", tenant_id="t1")
+
+    remaining = await store.list_all()
+    assert [r.tenant_id for r in remaining] == ["t2"]

@@ -37,6 +37,14 @@ class MilvusClientProtocol(Protocol):
         **kwargs: Any,
     ) -> list[dict[str, Any]]: ...
 
+    def delete(
+        self,
+        *,
+        collection_name: str,
+        filter: str,
+        **kwargs: Any,
+    ) -> Any: ...
+
 
 class MilvusVectorStore:
     """真实 Milvus 后端的 VectorStore 实现。
@@ -94,6 +102,25 @@ class MilvusVectorStore:
             )
             for hit in hits
         ]
+
+    async def delete_by_source(self, *, source: str, tenant_id: str) -> None:
+        """删除某个来源文件（同一 tenant_id 下）写入过的全部记录——增量摄取
+        重新处理一个已变更文件前，先清掉它旧版本产出的所有 chunk，避免
+        新版本 chunk 数变少时残留旧 chunk（陈旧、且可能已经不准确的内容）
+        永远留在向量库里污染检索结果。
+
+        source 是我们自己摄取时写入的文件路径字符串，不是外部不可信输入，
+        但仍然转义双引号防止意外break出过滤表达式的字符串字面量——不用
+        tenant_id 那种白名单校验，因为任意合法文件路径本身就可能包含
+        白名单之外的字符（空格、中文等）。
+        """
+        _validate_tenant_id(tenant_id)
+        escaped_source = source.replace('"', '\\"')
+        await asyncio.to_thread(
+            self._client.delete,
+            collection_name=self._collection_name,
+            filter=f'tenant_id == "{tenant_id}" && source == "{escaped_source}"',
+        )
 
     async def list_all(self, *, limit: int = 10000) -> list[VectorRecord]:
         """取出 collection 内全部记录（不区分租户），供 BM25 等需要全量语料的

@@ -23,6 +23,8 @@ class VectorStore(Protocol):
 
     async def list_all(self) -> list[VectorRecord]: ...
 
+    async def delete_by_source(self, *, source: str, tenant_id: str) -> None: ...
+
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
@@ -59,3 +61,10 @@ class InMemoryVectorStore:
 
     async def list_all(self) -> list[VectorRecord]:
         return list(self._records)
+
+    async def delete_by_source(self, *, source: str, tenant_id: str) -> None:
+        self._records = [
+            r
+            for r in self._records
+            if not (r.tenant_id == tenant_id and r.metadata.get("source") == source)
+        ]
