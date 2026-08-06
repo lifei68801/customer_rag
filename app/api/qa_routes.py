@@ -18,7 +18,11 @@ router = APIRouter()
 
 class QARequest(BaseModel):
     question: str
-    tenant_id: str
+    # tenant_id 优先从网关注入的 X-Tenant-Id 头读取（见
+    # deps.get_gateway_tenant_id），这里保留为可选字段仅作为网关未配置
+    # 时的本地开发兜底，见
+    # docs/superpowers/specs/2026-08-06-gateway-tenant-auth-design.md。
+    tenant_id: str | None = None
 
 
 class QAResponse(BaseModel):
@@ -29,6 +33,7 @@ class QAResponse(BaseModel):
 @router.post("/qa", response_model=QAResponse)
 async def qa_endpoint(
     payload: QARequest,
+    gateway_tenant_id: str | None = Depends(deps.get_gateway_tenant_id),
     embedding_registry: EmbeddingRegistry = Depends(deps.get_embedding_registry),
     vector_store: VectorStore = Depends(deps.get_vector_store),
     bm25_index: BM25Index = Depends(deps.get_bm25_index),
@@ -37,6 +42,9 @@ async def qa_endpoint(
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
     terms: list[Term] = Depends(deps.get_terms),
 ) -> QAResponse:
+    tenant_id = deps.resolve_tenant_id(
+        gateway_tenant_id, payload.tenant_id, source="qa"
+    )
     result = await answer_question(
         payload.question,
         embedding_registry=embedding_registry,
@@ -48,6 +56,6 @@ async def qa_endpoint(
         rerank_provider=rerank_provider,
         terms=terms,
         graph_client=graph_client,
-        tenant_id=payload.tenant_id,
+        tenant_id=tenant_id,
     )
     return QAResponse(text=result.text, used_sources=result.used_sources)

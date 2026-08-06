@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.api import deps
+from app.config.settings import Settings
 from app.main import app
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
@@ -40,6 +41,20 @@ def _fake_bm25_index() -> BM25Index:
     index = BM25Index()
     index.index(_FAKE_RECORDS)
     return index
+
+
+def _settings(**overrides) -> Settings:
+    defaults = dict(
+        llm_base_url="https://api.deepseek.com/v1",
+        llm_api_key="k",
+        llm_model="deepseek-chat",
+        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        embedding_api_key="k",
+        embedding_model="text-embedding-v3",
+        embedding_dimension=2,
+    )
+    defaults.update(overrides)
+    return Settings(**defaults)
 
 
 def test_qa_endpoint_returns_answer_and_used_sources():
@@ -111,3 +126,74 @@ def test_qa_endpoint_does_not_leak_another_tenants_sources():
     assert response.status_code == 200
     body = response.json()
     assert body["used_sources"] == []
+
+
+def test_qa_endpoint_uses_gateway_tenant_id_over_request_body():
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, FakeLLMProvider()
+    )
+
+    import asyncio
+
+    vector_store = asyncio.run(_fake_vector_store())
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
+    app.dependency_overrides[deps.get_settings] = lambda: _settings(
+        gateway_shared_secret="sekret"
+    )
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/qa",
+            json={"question": "网络连不上怎么办？", "tenant_id": "wrong-tenant"},
+            headers={"X-Tenant-Id": "t1", "X-Gateway-Secret": "sekret"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["used_sources"] == ["faq/network.md"]
+
+
+def test_qa_endpoint_rejects_wrong_gateway_secret_when_configured():
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, FakeLLMProvider()
+    )
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_bm25_index] = lambda: BM25Index()
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
+    app.dependency_overrides[deps.get_settings] = lambda: _settings(
+        gateway_shared_secret="sekret"
+    )
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/qa",
+            json={"question": "网络连不上怎么办？", "tenant_id": "t1"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
