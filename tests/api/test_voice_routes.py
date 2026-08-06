@@ -16,6 +16,7 @@ def _settings(**overrides) -> Settings:
         embedding_api_key="k",
         embedding_model="text-embedding-v3",
         embedding_dimension=2,
+        gateway_shared_secret=None,
     )
     defaults.update(overrides)
     return Settings(**defaults)

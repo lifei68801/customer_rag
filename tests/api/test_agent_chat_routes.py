@@ -43,6 +43,7 @@ def _settings(**overrides) -> Settings:
         embedding_dimension=2,
         milvus_uri="http://localhost:19530",
         milvus_collection="faq_chunks",
+        gateway_shared_secret=None,
     )
     defaults.update(overrides)
     return Settings(**defaults)

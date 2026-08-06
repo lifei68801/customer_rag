@@ -52,6 +52,7 @@ def _settings(**overrides) -> Settings:
         embedding_api_key="k",
         embedding_model="text-embedding-v3",
         embedding_dimension=2,
+        gateway_shared_secret=None,
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -79,6 +80,11 @@ def test_qa_endpoint_returns_answer_and_used_sources():
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
     app.dependency_overrides[deps.get_terms] = lambda: []
     app.dependency_overrides[deps.get_graph_client] = lambda: None
+    # gateway_shared_secret 显式钉死为 None：不 override 的话 get_settings
+    # 会读真实环境变量/.env，一旦开发者本机或 .env 配置了
+    # CUSTOMER_RAG_GATEWAY_SHARED_SECRET（正是这个安全修复要促使运营者去做
+    # 的事），这条与网关鉴权无关的测试会意外因缺少网关凭证被 401 拒绝。
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
     try:
         client = TestClient(app)
         response = client.post(
@@ -115,6 +121,8 @@ def test_qa_endpoint_does_not_leak_another_tenants_sources():
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
     app.dependency_overrides[deps.get_terms] = lambda: []
     app.dependency_overrides[deps.get_graph_client] = lambda: None
+    # gateway_shared_secret 显式钉死为 None，理由同上一条测试。
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
     try:
         client = TestClient(app)
         response = client.post(
