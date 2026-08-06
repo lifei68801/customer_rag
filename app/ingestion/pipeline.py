@@ -11,6 +11,7 @@ from app.ingestion.docx_parser import parse_docx
 from app.ingestion.graph_extraction import extract_and_write_graph_relations
 from app.ingestion.ocr_parser import OcrFunction, parse_image
 from app.ingestion.pdf_parser import parse_pdf
+from app.ingestion.ticket_parser import TicketColumnMapping, parse_ticket_csv
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
 from app.providers.registry import ProviderRegistry
 from app.retrieval.vector_store import VectorRecord, VectorStore
@@ -266,6 +267,43 @@ async def ingest_image_file(
     )
 
 
+async def ingest_ticket_csv_file(
+    path: Path,
+    *,
+    embedding_registry: EmbeddingRegistry,
+    embedding_provider_name: str,
+    vector_store: VectorStore,
+    tenant_id: str,
+    graph_llm_registry: ProviderRegistry | None = None,
+    graph_llm_provider_name: str | None = None,
+    graph_terms: list[Term] | None = None,
+    graph_client: GraphWriteClientProtocol | None = None,
+    graph_review_conn: aiosqlite.Connection | None = None,
+    column_mapping: TicketColumnMapping | None = None,
+    resolved_only: bool = True,
+) -> int:
+    """读取历史工单 CSV 导出文件，每条已解决工单作为一个 chunk，向量化并
+    写入向量库。column_mapping/resolved_only 透传给 parse_ticket_csv()
+    （见 ticket_parser.py），未解决的工单默认不摄取——不构成可复用的知识。
+    """
+    chunks = parse_ticket_csv(
+        path, column_mapping=column_mapping, resolved_only=resolved_only
+    )
+    return await _ingest_chunks(
+        chunks,
+        path,
+        embedding_registry=embedding_registry,
+        embedding_provider_name=embedding_provider_name,
+        vector_store=vector_store,
+        tenant_id=tenant_id,
+        graph_llm_registry=graph_llm_registry,
+        graph_llm_provider_name=graph_llm_provider_name,
+        graph_terms=graph_terms,
+        graph_client=graph_client,
+        graph_review_conn=graph_review_conn,
+    )
+
+
 async def ingest_directory(
     directory: Path,
     *,
@@ -280,13 +318,19 @@ async def ingest_directory(
     graph_review_conn: aiosqlite.Connection | None = None,
     ocr: OcrFunction | None = None,
 ) -> int:
-    """遍历目录下所有 .md/.pdf/.docx/图片文件并逐个摄取，返回写入的 chunk 总数。
+    """遍历目录下所有 .md/.pdf/.docx/图片/工单CSV文件并逐个摄取，返回写入
+    的 chunk 总数。
 
     图片格式覆盖 .png/.jpg/.jpeg；PDF 里提取不到文字层的扫描件页面同样
     走 ocr 参数指定的 OCR（默认走 ocr_parser.py 的 pytesseract 实现，
     需要本机装好 Tesseract；页面渲染用 PyMuPDF，不需要额外的 poppler
     系统依赖，见 pdf_parser.py）。不提供 ocr 时两者都保持"跳过没有文字
     的页面/图片"的原有行为。
+
+    .csv 文件按历史工单导出格式解析（见 ticket_parser.py），用默认列名
+    映射（ticket_id/subject/description/resolution）；不同工单系统的
+    列名不一样，需要自定义映射时请直接调用 ingest_ticket_csv_file()，
+    这里的批量目录扫描只覆盖默认列名这一种情况。
 
     一次调用只摄取给一个租户；不同租户的文档要分开跑摄取脚本。
     """
@@ -349,5 +393,18 @@ async def ingest_directory(
             graph_client=graph_client,
             graph_review_conn=graph_review_conn,
             ocr=ocr,
+        )
+    for csv_file in sorted(directory.glob("*.csv")):
+        total += await ingest_ticket_csv_file(
+            csv_file,
+            embedding_registry=embedding_registry,
+            embedding_provider_name=embedding_provider_name,
+            vector_store=vector_store,
+            tenant_id=tenant_id,
+            graph_llm_registry=graph_llm_registry,
+            graph_llm_provider_name=graph_llm_provider_name,
+            graph_terms=graph_terms,
+            graph_client=graph_client,
+            graph_review_conn=graph_review_conn,
         )
     return total

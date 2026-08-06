@@ -8,6 +8,7 @@ from app.ingestion.pipeline import (
     ingest_image_file,
     ingest_markdown_file,
     ingest_pdf_file,
+    ingest_ticket_csv_file,
 )
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
@@ -371,6 +372,37 @@ async def test_ingest_pdf_file_stores_full_table_text_for_table_row_chunks(tmp_p
     assert all(
         "武汉金融控股" in r.text and "东亚银行" in r.text for r in table_records
     )
+
+
+async def test_ingest_ticket_csv_file_chunks_embeds_and_upserts(tmp_path):
+    import csv
+
+    csv_path = tmp_path / "tickets.csv"
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["ticket_id", "subject", "resolution"])
+        writer.writeheader()
+        writer.writerow(
+            {"ticket_id": "T1", "subject": "登录失败", "resolution": "清除缓存后重新登录。"}
+        )
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    count = await ingest_ticket_csv_file(
+        csv_path,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        tenant_id="t1",
+    )
+
+    assert count == 1
+    results = await vector_store.search(
+        query_vector=[0.1, 0.2], top_k=1, tenant_id="t1"
+    )
+    assert "登录失败" in results[0].text
+    assert "清除缓存后重新登录。" in results[0].text
 
 
 async def test_ingest_directory_processes_markdown_and_pdf_but_skips_other_extensions(

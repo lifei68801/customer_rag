@@ -7,7 +7,7 @@ import aiosqlite
 
 from app.ingestion.tracking import compute_file_hash, list_tracked_files
 
-_SUPPORTED_PATTERNS = ("*.md", "*.pdf", "*.docx", "*.png", "*.jpg", "*.jpeg")
+_SUPPORTED_PATTERNS = ("*.md", "*.pdf", "*.docx", "*.png", "*.jpg", "*.jpeg", "*.csv")
 
 
 @dataclass(frozen=True)

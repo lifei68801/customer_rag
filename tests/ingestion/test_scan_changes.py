@@ -76,9 +76,10 @@ async def test_scan_reports_deleted_file_no_longer_present(tmp_path):
 
 async def test_scan_only_considers_supported_extensions(tmp_path):
     (tmp_path / "a.md").write_text("内容", encoding="utf-8")
+    (tmp_path / "tickets.csv").write_text("ticket_id,subject\n", encoding="utf-8")
     (tmp_path / "notes.txt").write_text("不该被扫描", encoding="utf-8")
     conn = await _connect()
 
     result = await scan_for_changes(tmp_path, tenant_id="t1", tracking_conn=conn)
 
-    assert {p.name for p in result.new_files} == {"a.md"}
+    assert {p.name for p in result.new_files} == {"a.md", "tickets.csv"}

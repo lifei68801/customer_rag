@@ -14,6 +14,7 @@ from app.ingestion.ocr_parser import OcrFunction, parse_image
 from app.ingestion.pdf_parser import parse_pdf
 from app.ingestion.pipeline import _ingest_chunks
 from app.ingestion.chunking import chunk_markdown
+from app.ingestion.ticket_parser import parse_ticket_csv
 from app.ingestion.tracking import record_ingested, remove_tracked_file
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
@@ -39,6 +40,7 @@ CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status ON ingestion_jobs (status);
 _PARSERS = {
     ".md": lambda path: chunk_markdown(path.read_text(encoding="utf-8"), source=str(path)),
     ".docx": parse_docx,
+    ".csv": parse_ticket_csv,
 }
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 
