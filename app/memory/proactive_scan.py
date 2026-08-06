@@ -12,6 +12,11 @@ from app.agent.create_ticket_tool import (
     mark_ticket_notified,
 )
 from app.memory.customer_profile import ensure_customer_profile_schema, get_customer_profile
+from app.memory.delayed_confirmation import (
+    ensure_delayed_confirmation_schema,
+    list_due_confirmations,
+    mark_confirmed,
+)
 from app.memory.delivery_policy import compute_delivery_policy
 from app.memory.followup_engine import FollowupTrigger, send_followup_if_allowed
 from app.memory.followup_log import ensure_followup_log_schema, get_send_history, record_followup_sent
@@ -169,4 +174,50 @@ async def scan_and_send_known_fix_followups(
                 await record_followup_sent(conn, tenant_id=tenant_id, customer_id=customer_id, sent_at=now)
                 await mark_notified(conn, ticket_id=ticket["ticket_id"], fix_id=fix["fix_id"], now=now)
                 sent_count += 1
+    return sent_count
+
+
+async def scan_and_send_delayed_confirmation_followups(
+    conn: aiosqlite.Connection,
+    *,
+    tenant_id: str,
+    channel: ProactiveDeliveryChannel,
+    llm_registry: ProviderRegistry,
+    llm_provider_name: str,
+    now: datetime,
+) -> int:
+    """客户表达过"稍后再试"之类的延迟意图后，到期主动确认结果。
+
+    到期项来自 Task 10 的 delayed_confirmations 表（list_due_confirmations
+    只返回 confirm_after<=now 且还未确认的记录，天然按租户过滤），发送成功
+    才调用 mark_confirmed 标记，被频率限流跳过的项保留待下次扫描重新评估
+    ——和 scan_and_send_known_fix_followups/scan_and_send_ticket_followups
+    是同一个"扫描+画像/频率治理+发送+记录"模式。
+    """
+    await ensure_delayed_confirmation_schema(conn)
+    await ensure_customer_profile_schema(conn)
+    await ensure_followup_log_schema(conn)
+
+    sent_count = 0
+    for item in await list_due_confirmations(conn, tenant_id=tenant_id, now=now):
+        customer_id = item["user_id"]
+        profile = await get_customer_profile(conn, tenant_id=tenant_id, customer_id=customer_id)
+        policy = compute_delivery_policy(profile)
+        send_history = await get_send_history(
+            conn, tenant_id=tenant_id, customer_id=customer_id,
+            since=now - timedelta(seconds=policy.window_seconds),
+        )
+        trigger = FollowupTrigger(
+            reason="delayed_confirmation",
+            context=f"之前您提到{item['context']}，想确认一下现在情况如何？",
+        )
+        result = await send_followup_if_allowed(
+            trigger, tenant_id=tenant_id, customer_id=customer_id, profile=profile,
+            send_history=send_history, now=now, channel=channel,
+            llm_registry=llm_registry, llm_provider_name=llm_provider_name,
+        )
+        if result.sent:
+            await record_followup_sent(conn, tenant_id=tenant_id, customer_id=customer_id, sent_at=now)
+            await mark_confirmed(conn, confirmation_id=item["id"], now=now)
+            sent_count += 1
     return sent_count

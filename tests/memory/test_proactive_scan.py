@@ -8,10 +8,19 @@ from app.agent.create_ticket_tool import (
     list_stale_pending_tickets,
 )
 from app.memory.customer_profile import ensure_customer_profile_schema, upsert_customer_profile
+from app.memory.delayed_confirmation import (
+    ensure_delayed_confirmation_schema,
+    list_due_confirmations,
+    schedule_delayed_confirmation,
+)
 from app.memory.followup_log import ensure_followup_log_schema, get_send_history
 from app.memory.known_fixes import ensure_known_fixes_schema, register_known_fix
 from app.memory.proactive_channel import MockProactiveChannel
-from app.memory.proactive_scan import scan_and_send_known_fix_followups, scan_and_send_ticket_followups
+from app.memory.proactive_scan import (
+    scan_and_send_delayed_confirmation_followups,
+    scan_and_send_known_fix_followups,
+    scan_and_send_ticket_followups,
+)
 from app.memory.ticket_fix_notifications import ensure_ticket_fix_notifications_schema, is_already_notified
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
@@ -312,3 +321,70 @@ async def test_scan_and_send_known_fix_followups_excludes_tickets_created_after_
     )
 
     assert sent == 0
+
+
+async def test_scan_and_send_delayed_confirmation_followups_sends_when_due():
+    conn = await aiosqlite.connect(":memory:")
+    now = datetime(2026, 8, 6, 10, 0, 0)
+    await ensure_delayed_confirmation_schema(conn)
+    await schedule_delayed_confirmation(
+        conn, tenant_id="t1", user_id="c1", context="重启路由器试试",
+        confirm_after=now - timedelta(hours=1),
+    )
+
+    channel = MockProactiveChannel()
+    llm_registry = _llm_registry(["您好，想确认一下之前的问题现在解决了吗？"])
+
+    sent = await scan_and_send_delayed_confirmation_followups(
+        conn, tenant_id="t1", channel=channel,
+        llm_registry=llm_registry, llm_provider_name="llm", now=now,
+    )
+
+    assert sent == 1
+    assert len(channel.sent) == 1
+
+    # 已确认的到期项不应该在下次扫描里重复出现
+    remaining = await list_due_confirmations(conn, tenant_id="t1", now=now)
+    assert remaining == []
+
+
+async def test_scan_and_send_delayed_confirmation_followups_skips_not_due_yet():
+    conn = await aiosqlite.connect(":memory:")
+    now = datetime(2026, 8, 6, 10, 0, 0)
+    await ensure_delayed_confirmation_schema(conn)
+    await schedule_delayed_confirmation(
+        conn, tenant_id="t1", user_id="c1", context="还没到期",
+        confirm_after=now + timedelta(hours=1),
+    )
+
+    channel = MockProactiveChannel()
+    llm_registry = _llm_registry(["不应该被用到"])
+
+    sent = await scan_and_send_delayed_confirmation_followups(
+        conn, tenant_id="t1", channel=channel,
+        llm_registry=llm_registry, llm_provider_name="llm", now=now,
+    )
+
+    assert sent == 0
+    assert channel.sent == []
+
+
+async def test_scan_and_send_delayed_confirmation_followups_ignores_other_tenants():
+    conn = await aiosqlite.connect(":memory:")
+    now = datetime(2026, 8, 6, 10, 0, 0)
+    await ensure_delayed_confirmation_schema(conn)
+    await schedule_delayed_confirmation(
+        conn, tenant_id="t2", user_id="c1", context="另一个租户的到期确认",
+        confirm_after=now - timedelta(hours=1),
+    )
+
+    channel = MockProactiveChannel()
+    llm_registry = _llm_registry([])
+
+    sent = await scan_and_send_delayed_confirmation_followups(
+        conn, tenant_id="t1", channel=channel,
+        llm_registry=llm_registry, llm_provider_name="llm", now=now,
+    )
+
+    assert sent == 0
+    assert channel.sent == []
