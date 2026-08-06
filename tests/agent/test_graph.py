@@ -307,7 +307,11 @@ async def test_time_reply_merges_with_pending_clarification_before_retrieval():
         await _build_dependencies(with_records=True, llm_text="不应该被用到")
     )
     llm_provider = RecordingLLMProvider(
-        ["重启路由器即可解决。", '{"is_safe": true}']
+        [
+            '{"is_correction": false}',  # correction_check_node 对原始问题"上周三"的意图检测
+            "重启路由器即可解决。",
+            '{"is_safe": true}',
+        ]
     )
     llm_registry = ProviderRegistry()
     llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
@@ -338,10 +342,11 @@ async def test_time_reply_merges_with_pending_clarification_before_retrieval():
         {"question": "上周三", "tenant_id": "t1", "session_id": "s1", "user_id": "c1"}
     )
 
-    # 短时间回复应该和原问题拼接后再走检索，responder（第一次 LLM 调用）
-    # 拿到的是合并后的问题
-    assert len(llm_provider.requests) >= 1
-    prompt_text = llm_provider.requests[0].messages[-1]["content"]
+    # 短时间回复应该和原问题拼接后再走检索，responder（第二次 LLM 调用，
+    # 第一次是 correction_check_node 对原始问题的纠错意图检测）拿到的是
+    # 合并后的问题
+    assert len(llm_provider.requests) >= 2
+    prompt_text = llm_provider.requests[1].messages[-1]["content"]
     assert "工单进度怎么样" in prompt_text
     assert "上周三" in prompt_text
 
@@ -533,4 +538,112 @@ async def test_on_answer_chunk_not_called_when_provider_lacks_streaming_support(
     result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
 
     assert received_chunks == []
+    assert result["final_text"] == "重启路由器即可解决。"
+
+
+async def test_correction_check_short_circuits_and_updates_memory():
+    import aiosqlite
+
+    from app.memory.memory_store import list_active_memory_items, upsert_memory_item
+    from app.memory.schema import ensure_schema
+
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+    await upsert_memory_item(
+        conn,
+        memory_id="m1",
+        tenant_id="t1",
+        user_id="u1",
+        text="客户使用Windows系统",
+        embedding=[1.0, 0.0],
+    )
+
+    embedding_registry, vector_store, bm25_index, _unused_registry, _unused_provider = (
+        await _build_dependencies(with_records=True, llm_text="不应该被用到")
+    )
+
+    class ScriptedLLMProvider:
+        def __init__(self, responses: list[str]) -> None:
+            self._responses = list(responses)
+            self.requests: list[ProviderRequest] = []
+
+        async def complete(self, request: ProviderRequest) -> ProviderResult:
+            self.requests.append(request)
+            return ProviderResult(text=self._responses.pop(0))
+
+    llm_provider = ScriptedLLMProvider(
+        [
+            '{"is_correction": true}',  # correction_check_node 的意图检测
+            '{"facts": ["客户使用macOS系统"]}',  # fact_extractor
+            '{"actions": [{"event": "UPDATE", "target_memory_id": "m1", '
+            '"text": "客户使用macOS系统", "reason": "客户更正"}]}',  # conflict_resolver
+            '{"is_safe": true}',  # output_safety 对确认文案做语义安全审查
+        ]
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+    )
+
+    result = await graph.ainvoke(
+        {
+            "question": "你记错了，其实我用的是macOS系统",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    assert result["is_correction_handled"] is True
+    assert "macOS系统" in result["final_text"]
+    # 意图检测+事实抽取+冲突决策+output_safety的语义安全审查，没有额外的
+    # 检索/responder调用（确认文案拼了用户原始输入，仍要走完整语义审查）
+    assert len(llm_provider.requests) == 4
+
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
+    updated = next(item for item in items if item["memory_id"] == "m1")
+    assert updated["text"] == "客户使用macOS系统"
+
+
+async def test_correction_check_does_not_trigger_for_normal_question():
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(with_records=True, llm_text="重启路由器即可解决。")
+    )
+    import aiosqlite
+
+    from app.memory.schema import ensure_schema
+
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+    )
+
+    result = await graph.ainvoke(
+        {
+            "question": "网络连不上怎么办？",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    assert result.get("is_correction_handled") is not True
     assert result["final_text"] == "重启路由器即可解决。"

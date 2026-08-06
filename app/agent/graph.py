@@ -21,12 +21,17 @@ from app.memory.clarification import (
     merge_clarification_reply,
     set_pending_clarification,
 )
+from app.memory.action_executor import apply_memory_actions
+from app.memory.conflict_resolver import resolve_memory_actions
 from app.memory.consolidation_queue import enqueue_consolidation_job
 from app.memory.context_injection import inject_memory_context
+from app.memory.correction_intent import detect_correction_intent
+from app.memory.fact_extractor import extract_facts
 from app.memory.session_window import append_turn
+from app.memory.similarity import find_similar_memory_items
 from app.memory.temporal_resolver import resolve_time_window
 from app.providers.base import ProviderCapability, ProviderRequest
-from app.providers.embedding import EmbeddingRegistry
+from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
 from app.retrieval.bm25 import BM25Index
@@ -145,6 +150,77 @@ def build_agent_graph(
             "is_input_safe": result.is_safe and not injection_result.is_suspicious,
             "input_unsafe_terms": result.matched_terms
             + injection_result.matched_categories,
+        }
+
+    async def correction_check_node(state: AgentState) -> dict[str, Any]:
+        if memory_conn is None:
+            return {}
+        question = state["question"]
+        is_correction = await detect_correction_intent(
+            question, llm_registry=llm_registry, llm_provider_name=llm_provider_name
+        )
+        if not is_correction:
+            return {}
+
+        tenant_id = state["tenant_id"]
+        user_id = state.get("user_id", "")
+        facts = await extract_facts(
+            user_input=question,
+            assistant_output="",
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
+        )
+        if not facts:
+            return {}
+
+        embed_result = await embedding_registry.run(
+            EmbeddingRequest(texts=facts), provider_name=embedding_provider_name
+        )
+        candidates: dict[str, dict[str, Any]] = {}
+        for vector in embed_result.vectors:
+            similar = await find_similar_memory_items(
+                memory_conn,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                query_vector=vector,
+                top_k=20,
+            )
+            for item in similar:
+                candidates[item["memory_id"]] = item
+
+        actions = await resolve_memory_actions(
+            new_facts=facts,
+            existing_memories=list(candidates.values()),
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
+        )
+        applied = await apply_memory_actions(
+            memory_conn,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            actions=actions,
+            embedding_registry=embedding_registry,
+            embedding_provider_name=embedding_provider_name,
+        )
+        if not applied:
+            return {}
+
+        primary = applied[0]
+        if primary["event"] in ("UPDATE", "DELETE"):
+            confirmation = f"好的，已经帮您更正为：{primary['text']}" if primary["text"] else "好的，已经帮您更正了。"
+        else:
+            confirmation = f"好的，已经记下：{primary['text']}"
+        # 返回 answer_text（而非直接写 final_text）：走和 responder_node 相同的
+        # 契约，让 output_safety_node 按正常流程对确认文案做规则+语义双重
+        # 安全审查后再产出 final_text——确认文案里拼接了用户刚提供的原始
+        # 文本（primary["text"]来自事实抽取，未经审查），不能因为这是"确认
+        # 消息"就绕开审查。fallback_triggered=False 是这个决定的关键开关：
+        # output_safety_node 只在 fallback_triggered 为真时才跳过语义审查
+        # （因为兜底文案是固定文案，不含生成内容），确认文案不满足这个前提。
+        return {
+            "is_correction_handled": True,
+            "fallback_triggered": False,
+            "answer_text": confirmation,
         }
 
     async def clarification_check_node(state: AgentState) -> dict[str, Any]:
@@ -397,8 +473,11 @@ def build_agent_graph(
 
     def route_after_input_safety(state: AgentState) -> str:
         return (
-            "clarification_check" if state.get("is_input_safe", True) else "output_safety"
+            "correction_check" if state.get("is_input_safe", True) else "output_safety"
         )
+
+    def route_after_correction_check(state: AgentState) -> str:
+        return "output_safety" if state.get("is_correction_handled") else "clarification_check"
 
     def route_after_retrieval(state: AgentState) -> str:
         records = state.get("retrieved_records")
@@ -415,6 +494,7 @@ def build_agent_graph(
 
     graph: StateGraph[AgentState] = StateGraph(AgentState)
     graph.add_node("input_safety", input_safety_node)
+    graph.add_node("correction_check", correction_check_node)
     graph.add_node("clarification_check", clarification_check_node)
     graph.add_node("term_guard", term_guard_node)
     graph.add_node("memory_recall", memory_recall_node)
@@ -427,7 +507,12 @@ def build_agent_graph(
     graph.add_conditional_edges(
         "input_safety",
         route_after_input_safety,
-        {"clarification_check": "clarification_check", "output_safety": "output_safety"},
+        {"correction_check": "correction_check", "output_safety": "output_safety"},
+    )
+    graph.add_conditional_edges(
+        "correction_check",
+        route_after_correction_check,
+        {"output_safety": "output_safety", "clarification_check": "clarification_check"},
     )
     graph.add_edge("clarification_check", "term_guard")
     graph.add_edge("term_guard", "memory_recall")

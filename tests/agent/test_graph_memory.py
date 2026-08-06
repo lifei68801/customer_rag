@@ -97,6 +97,7 @@ async def test_query_rewrite_receives_recent_conversation_turns_as_context():
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(
             [
+                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
                 "错误码E502 网关超时",  # query 改写结果
                 "重启路由器即可解决。",  # responder 的回答
                 '{"is_safe": true}',  # OutputSafety 语义审查
@@ -123,8 +124,8 @@ async def test_query_rewrite_receives_recent_conversation_turns_as_context():
         }
     )
 
-    assert len(llm_provider.requests) >= 1
-    rewrite_request = llm_provider.requests[0]
+    assert len(llm_provider.requests) >= 2
+    rewrite_request = llm_provider.requests[1]
     contents = [message.get("content") for message in rewrite_request.messages]
     assert "我遇到了E502错误" in contents
 
@@ -144,6 +145,7 @@ async def test_memory_enabled_saves_turn_and_injects_context():
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(
             [
+                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
                 "重启路由器即可解决。",  # responder 的回答
                 '{"facts":[]}',  # 事实抽取（对话后置处理）
             ]
@@ -171,7 +173,7 @@ async def test_memory_enabled_saves_turn_and_injects_context():
 
     assert result["final_text"] == "重启路由器即可解决。"
 
-    responder_request = llm_provider.requests[0]
+    responder_request = llm_provider.requests[1]
     assert any(
         "客户使用企业版套餐" in m["content"]
         for m in responder_request.messages
@@ -193,6 +195,7 @@ async def test_memory_enabled_enqueues_consolidation_job_without_blocking_respon
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(
             [
+                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
                 "重启路由器即可解决。",  # responder 的回答
                 '{"is_safe": true}',  # OutputSafety 语义审查
             ]
@@ -218,9 +221,9 @@ async def test_memory_enabled_enqueues_consolidation_job_without_blocking_respon
         }
     )
 
-    # 只入队，不应该触发事实抽取——上面只准备了 responder+语义审查两个
-    # 脚本响应，如果 consolidation 同步跑了，第三次 LLM 调用会因为脚本
-    # 响应耗尽而报错，测试本身就会失败。
+    # 只入队，不应该触发事实抽取——上面只准备了纠错意图检测+responder+
+    # 语义审查三个脚本响应，如果 consolidation 同步跑了，第四次 LLM 调用
+    # 会因为脚本响应耗尽而报错，测试本身就会失败。
     pending = await list_pending_jobs(conn)
     assert len(pending) == 1
     assert pending[0]["user_input"] == "网络连不上怎么办？"
@@ -237,6 +240,7 @@ async def test_memory_enabled_stores_embedding_for_newly_added_facts_after_worke
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(
             [
+                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
                 "重启路由器即可解决。",  # responder 的回答
                 '{"is_safe": true}',  # OutputSafety 语义审查
                 '{"facts": ["客户使用企业版套餐"]}',  # 事实抽取（worker 处理阶段）
