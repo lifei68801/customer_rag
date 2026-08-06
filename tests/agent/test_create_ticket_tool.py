@@ -5,6 +5,7 @@ import aiosqlite
 from app.agent.create_ticket_tool import (
     create_ticket,
     ensure_ticket_schema,
+    list_pending_tickets_created_before,
     list_stale_pending_tickets,
     mark_ticket_notified,
 )
@@ -113,3 +114,22 @@ async def test_list_stale_pending_tickets_scoped_to_tenant():
     )
 
     assert stale == []
+
+
+async def test_list_pending_tickets_created_before_a_timestamp():
+    conn = await aiosqlite.connect(":memory:")
+    fixed_at = datetime(2026, 8, 5, 0, 0, 0)
+
+    old_ticket = await create_ticket(
+        tenant_id="t1", customer_id="c1", question="旧问题",
+        reason="原因", conn=conn, now=datetime(2026, 8, 1, 0, 0, 0),
+    )
+    await create_ticket(
+        tenant_id="t1", customer_id="c2", question="新问题（修复之后才提的）",
+        reason="原因", conn=conn, now=datetime(2026, 8, 6, 0, 0, 0),
+    )
+
+    results = await list_pending_tickets_created_before(conn, tenant_id="t1", before=fixed_at)
+
+    assert len(results) == 1
+    assert results[0]["ticket_id"] == old_ticket.ticket_id

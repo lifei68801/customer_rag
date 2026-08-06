@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import aiosqlite
 
 from app.agent.graph import build_agent_graph
@@ -97,6 +99,8 @@ async def test_query_rewrite_receives_recent_conversation_turns_as_context():
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(
             [
+                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
+                '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，问题里没有时间表达式
                 "错误码E502 网关超时",  # query 改写结果
                 "重启路由器即可解决。",  # responder 的回答
                 '{"is_safe": true}',  # OutputSafety 语义审查
@@ -123,8 +127,8 @@ async def test_query_rewrite_receives_recent_conversation_turns_as_context():
         }
     )
 
-    assert len(llm_provider.requests) >= 1
-    rewrite_request = llm_provider.requests[0]
+    assert len(llm_provider.requests) >= 2
+    rewrite_request = llm_provider.requests[2]
     contents = [message.get("content") for message in rewrite_request.messages]
     assert "我遇到了E502错误" in contents
 
@@ -144,8 +148,10 @@ async def test_memory_enabled_saves_turn_and_injects_context():
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(
             [
+                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
+                '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，问题里没有时间表达式
                 "重启路由器即可解决。",  # responder 的回答
-                '{"facts":[]}',  # 事实抽取（对话后置处理）
+                '{"facts":[]}',  # OutputSafety 语义审查（无 is_safe 字段时默认放行未审查）
             ]
         )
     )
@@ -171,7 +177,7 @@ async def test_memory_enabled_saves_turn_and_injects_context():
 
     assert result["final_text"] == "重启路由器即可解决。"
 
-    responder_request = llm_provider.requests[0]
+    responder_request = llm_provider.requests[2]
     assert any(
         "客户使用企业版套餐" in m["content"]
         for m in responder_request.messages
@@ -193,6 +199,8 @@ async def test_memory_enabled_enqueues_consolidation_job_without_blocking_respon
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(
             [
+                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
+                '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，问题里没有时间表达式
                 "重启路由器即可解决。",  # responder 的回答
                 '{"is_safe": true}',  # OutputSafety 语义审查
             ]
@@ -218,9 +226,9 @@ async def test_memory_enabled_enqueues_consolidation_job_without_blocking_respon
         }
     )
 
-    # 只入队，不应该触发事实抽取——上面只准备了 responder+语义审查两个
-    # 脚本响应，如果 consolidation 同步跑了，第三次 LLM 调用会因为脚本
-    # 响应耗尽而报错，测试本身就会失败。
+    # 只入队，不应该触发事实抽取——上面只准备了纠错意图检测+resolve_time_window+
+    # responder+语义审查四个脚本响应，如果 consolidation 同步跑了，第五次
+    # LLM 调用会因为脚本响应耗尽而报错，测试本身就会失败。
     pending = await list_pending_jobs(conn)
     assert len(pending) == 1
     assert pending[0]["user_input"] == "网络连不上怎么办？"
@@ -237,8 +245,11 @@ async def test_memory_enabled_stores_embedding_for_newly_added_facts_after_worke
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(
             [
+                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
+                '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，问题里没有时间表达式
                 "重启路由器即可解决。",  # responder 的回答
                 '{"is_safe": true}',  # OutputSafety 语义审查
+                '{"is_delay": false}',  # consolidation worker 里的 detect_delay_intent
                 '{"facts": ["客户使用企业版套餐"]}',  # 事实抽取（worker 处理阶段）
                 '{"actions": [{"event": "ADD", "target_memory_id": "", '
                 '"text": "客户使用企业版套餐", "reason": "首次提及"}]}',  # 冲突决策
@@ -278,3 +289,172 @@ async def test_memory_enabled_stores_embedding_for_newly_added_facts_after_worke
     assert len(items) == 1
     assert items[0]["embedding"] == [1.0, 0.0]
     assert items[0]["embedding"] == [1.0, 0.0]
+
+
+async def test_memory_recall_injects_structured_history_for_time_bearing_question():
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+    await append_turn(
+        conn, tenant_id="t1", session_id="s0", user_id="u1",
+        role="user", content="错误码E502网关超时怎么解决",
+    )
+    # 手动把 created_at 改到"昨天中午"，确保能被 resolve_time_window 解析出
+    # 的"昨天"窗口命中。resolve_time_window 产出的窗口边界是 naive 本地
+    # 时间（见 app/agent/graph.py 的 reference_time=datetime.now()），而
+    # conversation_turns.created_at 存的是 UTC（query_turns_in_window 会把
+    # 窗口边界 astimezone 成 UTC 再比较，Finding 1 的修复）。这里不能直接用
+    # SQLite `datetime('now', '-1 day')`（那是 UTC 的"昨天"，不是本地的
+    # "昨天"）——在 UTC+8 这类时区上，本地凌晨 0-8 点运行测试时，UTC 的
+    # "昨天"和本地的"昨天"窗口对不上，会导致测试间歇性失败。改成显式用本地
+    # 昨天中午（任何墙钟时刻减一天再钉在正午，都稳稳落在本地"昨天"这一天
+    # 的窗口正中间，不会因为窗口边界的时区换算而跑到相邻的一天），再显式
+    # 换算成 UTC 字符串写入，测试结果就不再依赖运行测试时的具体墙钟时间。
+    local_yesterday_noon = (datetime.now() - timedelta(days=1)).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    )
+    utc_created_at = local_yesterday_noon.astimezone(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    await conn.execute(
+        "UPDATE conversation_turns SET created_at = ? WHERE session_id = 's0'",
+        (utc_created_at,),
+    )
+    await conn.commit()
+
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(
+            [
+                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
+                '{"start": null, "end": null, "confidence": 0}',  # resolve_time_window 的LLM调用故意给低置信度，回退规则引擎判"昨天"
+                "重启路由器即可解决。",  # responder
+                '{"is_safe": true}',  # OutputSafety 语义审查
+            ]
+        )
+    )
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+    )
+
+    await graph.ainvoke(
+        {
+            "question": "昨天那个E502网关超时问题解决了吗",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    # 请求顺序：correction_check(0) -> memory_recall 的 resolve_time_window(1)
+    # -> responder(2) -> output_safety 的语义审查(3)
+    assert len(llm_provider.requests) >= 3
+    responder_request = llm_provider.requests[2]
+    all_content = " ".join(
+        m.get("content", "") for m in responder_request.messages
+    )
+    assert "E502网关超时怎么解决" in all_content
+
+
+async def test_memory_recall_stays_noop_when_question_has_no_time_expression():
+    # 问题里没有可解析的时间表达式时，structured recall 必须完全是 no-op：
+    # 不额外拼接系统消息，行为和接入前一致。
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+    await append_turn(
+        conn, tenant_id="t1", session_id="s0", user_id="u1",
+        role="user", content="错误码E502网关超时怎么解决",
+    )
+
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(
+            [
+                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
+                '{"start": null, "end": null, "confidence": 0}',  # resolve_time_window 的LLM调用，问题里没有时间表达式，规则引擎也不命中
+                "重启路由器即可解决。",  # responder
+                '{"is_safe": true}',  # OutputSafety 语义审查
+            ]
+        )
+    )
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+    )
+
+    await graph.ainvoke(
+        {
+            "question": "网络连不上怎么办？",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    responder_request = llm_provider.requests[2]
+    all_content = " ".join(
+        m.get("content", "") for m in responder_request.messages
+    )
+    assert "E502网关超时怎么解决" not in all_content
+
+
+async def test_uses_injected_session_window_store_instead_of_direct_sql():
+    from app.memory.session_window_store import SessionWindowStore
+
+    class RecordingSessionWindowStore:
+        def __init__(self) -> None:
+            self.appended: list[dict] = []
+
+        async def append_turn(self, *, tenant_id, session_id, user_id, role, content):
+            self.appended.append(
+                {"tenant_id": tenant_id, "session_id": session_id, "role": role, "content": content}
+            )
+
+        async def get_recent_turns(self, *, tenant_id, session_id, limit):
+            return [
+                {"role": item["role"], "content": item["content"]}
+                for item in self.appended
+                if item["tenant_id"] == tenant_id and item["session_id"] == session_id
+            ][-limit:]
+
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+    session_window_store = RecordingSessionWindowStore()
+
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(["重启路由器即可解决。", '{"facts":[]}'])
+    )
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+        session_window_store=session_window_store,
+    )
+
+    await graph.ainvoke(
+        {
+            "question": "网络连不上怎么办？",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    assert len(session_window_store.appended) == 2
+    assert session_window_store.appended[0]["role"] == "user"
+    assert session_window_store.appended[1]["role"] == "assistant"

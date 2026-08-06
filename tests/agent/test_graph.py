@@ -307,7 +307,12 @@ async def test_time_reply_merges_with_pending_clarification_before_retrieval():
         await _build_dependencies(with_records=True, llm_text="不应该被用到")
     )
     llm_provider = RecordingLLMProvider(
-        ["重启路由器即可解决。", '{"is_safe": true}']
+        [
+            '{"is_correction": false}',  # correction_check_node 对原始问题"上周三"的意图检测
+            '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，低置信度回退规则引擎（"上周三"规则引擎也不覆盖，最终 unresolved）
+            "重启路由器即可解决。",  # responder（第三次 LLM 调用）
+            '{"is_safe": true}',  # output_safety 的语义审查
+        ]
     )
     llm_registry = ProviderRegistry()
     llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
@@ -338,10 +343,11 @@ async def test_time_reply_merges_with_pending_clarification_before_retrieval():
         {"question": "上周三", "tenant_id": "t1", "session_id": "s1", "user_id": "c1"}
     )
 
-    # 短时间回复应该和原问题拼接后再走检索，responder（第一次 LLM 调用）
-    # 拿到的是合并后的问题
-    assert len(llm_provider.requests) >= 1
-    prompt_text = llm_provider.requests[0].messages[-1]["content"]
+    # 短时间回复应该和原问题拼接后再走检索，responder（第三次 LLM 调用：
+    # correction_check=0，memory_recall_node 的 resolve_time_window=1，
+    # responder=2）拿到的是合并后的问题
+    assert len(llm_provider.requests) >= 3
+    prompt_text = llm_provider.requests[2].messages[-1]["content"]
     assert "工单进度怎么样" in prompt_text
     assert "上周三" in prompt_text
 
@@ -534,3 +540,134 @@ async def test_on_answer_chunk_not_called_when_provider_lacks_streaming_support(
 
     assert received_chunks == []
     assert result["final_text"] == "重启路由器即可解决。"
+
+
+async def test_correction_check_short_circuits_and_updates_memory():
+    import aiosqlite
+
+    from app.memory.memory_store import list_active_memory_items, upsert_memory_item
+    from app.memory.schema import ensure_schema
+
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+    await upsert_memory_item(
+        conn,
+        memory_id="m1",
+        tenant_id="t1",
+        user_id="u1",
+        text="客户使用Windows系统",
+        embedding=[1.0, 0.0],
+    )
+
+    embedding_registry, vector_store, bm25_index, _unused_registry, _unused_provider = (
+        await _build_dependencies(with_records=True, llm_text="不应该被用到")
+    )
+
+    class ScriptedLLMProvider:
+        def __init__(self, responses: list[str]) -> None:
+            self._responses = list(responses)
+            self.requests: list[ProviderRequest] = []
+
+        async def complete(self, request: ProviderRequest) -> ProviderResult:
+            self.requests.append(request)
+            return ProviderResult(text=self._responses.pop(0))
+
+    llm_provider = ScriptedLLMProvider(
+        [
+            '{"is_correction": true}',  # correction_check_node 的意图检测
+            '{"facts": ["客户使用macOS系统"]}',  # fact_extractor
+            '{"actions": [{"event": "UPDATE", "target_memory_id": "m1", '
+            '"text": "客户使用macOS系统", "reason": "客户更正"}]}',  # conflict_resolver
+            '{"is_safe": true}',  # output_safety 对确认文案做语义安全审查
+        ]
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+    )
+
+    result = await graph.ainvoke(
+        {
+            "question": "你记错了，其实我用的是macOS系统",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    assert result["is_correction_handled"] is True
+    assert "macOS系统" in result["final_text"]
+    # 意图检测+事实抽取+冲突决策+output_safety的语义安全审查，没有额外的
+    # 检索/responder调用（确认文案拼了用户原始输入，仍要走完整语义审查）
+    assert len(llm_provider.requests) == 4
+
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
+    updated = next(item for item in items if item["memory_id"] == "m1")
+    assert updated["text"] == "客户使用macOS系统"
+
+    # memory_save_node 不应该为已经同步处理过的更正轮次再入队一次
+    # consolidation 任务——同步路径（correction_check_node）已经做完了
+    # 事实抽取+冲突决策+写入，重复入队只会让 worker 用独立的一次 LLM
+    # 重新抽取/决策同一对 (question, confirmation)，最好是空转，最坏是
+    # 和刚才的同步结果打架。但会话历史（append_turn）仍要正常记录这轮。
+    from app.memory.consolidation_queue import list_pending_jobs
+    from app.memory.session_window import get_recent_turns
+
+    pending_jobs = await list_pending_jobs(conn)
+    assert pending_jobs == []
+
+    recent_turns = await get_recent_turns(conn, tenant_id="t1", session_id="s1", limit=10)
+    assert [turn["role"] for turn in recent_turns] == ["user", "assistant"]
+    assert recent_turns[0]["content"] == "你记错了，其实我用的是macOS系统"
+    assert "macOS系统" in recent_turns[1]["content"]
+
+
+async def test_correction_check_does_not_trigger_for_normal_question():
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(with_records=True, llm_text="重启路由器即可解决。")
+    )
+    import aiosqlite
+
+    from app.memory.schema import ensure_schema
+
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+    )
+
+    result = await graph.ainvoke(
+        {
+            "question": "网络连不上怎么办？",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    assert result.get("is_correction_handled") is not True
+    assert result["final_text"] == "重启路由器即可解决。"
+
+    # 非更正轮次的行为不变：consolidation 任务照常入队。
+    from app.memory.consolidation_queue import list_pending_jobs
+
+    pending_jobs = await list_pending_jobs(conn)
+    assert len(pending_jobs) == 1
+    assert pending_jobs[0]["user_input"] == "网络连不上怎么办？"

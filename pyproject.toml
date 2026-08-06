@@ -27,6 +27,15 @@ dev = [
     "pytest-asyncio>=1.4",
     "reportlab>=5.0",
 ]
+# 只有启用 session_window_backend="redis" 时才需要——
+# app/memory/session_window_factory.py 里对应分支是运行时 lazy import
+# （if backend == "redis": import redis.asyncio as redis），特意不在
+# 模块顶层引入，就是为了不强制所有部署都装这个包；这里的 optional
+# extra 声明要和那处 lazy import 的意图保持一致，不能反过来把它列进
+# 主 dependencies 强制安装。
+redis = [
+    "redis>=5.0",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

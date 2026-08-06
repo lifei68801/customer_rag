@@ -23,6 +23,7 @@ class AgentState(TypedDict, total=False):
     semantic_review_reviewed: bool
     final_text: str
     needs_clarification: bool
+    is_correction_handled: bool
 
     # Planner/ToolCall 循环专用字段（见 docs/AGENT_PLANNER_DESIGN.md §5）。
     # 只在 enable_autonomous_planning=True 时被 planner_node/tool_call_node 使用；
