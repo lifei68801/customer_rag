@@ -309,8 +309,9 @@ async def test_time_reply_merges_with_pending_clarification_before_retrieval():
     llm_provider = RecordingLLMProvider(
         [
             '{"is_correction": false}',  # correction_check_node 对原始问题"上周三"的意图检测
-            "重启路由器即可解决。",
-            '{"is_safe": true}',
+            '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，低置信度回退规则引擎（"上周三"规则引擎也不覆盖，最终 unresolved）
+            "重启路由器即可解决。",  # responder（第三次 LLM 调用）
+            '{"is_safe": true}',  # output_safety 的语义审查
         ]
     )
     llm_registry = ProviderRegistry()
@@ -342,11 +343,11 @@ async def test_time_reply_merges_with_pending_clarification_before_retrieval():
         {"question": "上周三", "tenant_id": "t1", "session_id": "s1", "user_id": "c1"}
     )
 
-    # 短时间回复应该和原问题拼接后再走检索，responder（第二次 LLM 调用，
-    # 第一次是 correction_check_node 对原始问题的纠错意图检测）拿到的是
-    # 合并后的问题
-    assert len(llm_provider.requests) >= 2
-    prompt_text = llm_provider.requests[1].messages[-1]["content"]
+    # 短时间回复应该和原问题拼接后再走检索，responder（第三次 LLM 调用：
+    # correction_check=0，memory_recall_node 的 resolve_time_window=1，
+    # responder=2）拿到的是合并后的问题
+    assert len(llm_provider.requests) >= 3
+    prompt_text = llm_provider.requests[2].messages[-1]["content"]
     assert "工单进度怎么样" in prompt_text
     assert "上周三" in prompt_text
 
