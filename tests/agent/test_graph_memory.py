@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import aiosqlite
 
 from app.agent.graph import build_agent_graph
@@ -296,12 +298,26 @@ async def test_memory_recall_injects_structured_history_for_time_bearing_questio
         conn, tenant_id="t1", session_id="s0", user_id="u1",
         role="user", content="错误码E502网关超时怎么解决",
     )
-    # 手动把 created_at 改到"昨天"，确保能被 resolve_time_window 解析出的
-    # "昨天"窗口命中（append_turn 本身用 datetime('now') 默认值，测试运行
-    # 时刻就是"今天"，这里直接改成昨天，不依赖具体的墙钟时间）。
+    # 手动把 created_at 改到"昨天中午"，确保能被 resolve_time_window 解析出
+    # 的"昨天"窗口命中。resolve_time_window 产出的窗口边界是 naive 本地
+    # 时间（见 app/agent/graph.py 的 reference_time=datetime.now()），而
+    # conversation_turns.created_at 存的是 UTC（query_turns_in_window 会把
+    # 窗口边界 astimezone 成 UTC 再比较，Finding 1 的修复）。这里不能直接用
+    # SQLite `datetime('now', '-1 day')`（那是 UTC 的"昨天"，不是本地的
+    # "昨天"）——在 UTC+8 这类时区上，本地凌晨 0-8 点运行测试时，UTC 的
+    # "昨天"和本地的"昨天"窗口对不上，会导致测试间歇性失败。改成显式用本地
+    # 昨天中午（任何墙钟时刻减一天再钉在正午，都稳稳落在本地"昨天"这一天
+    # 的窗口正中间，不会因为窗口边界的时区换算而跑到相邻的一天），再显式
+    # 换算成 UTC 字符串写入，测试结果就不再依赖运行测试时的具体墙钟时间。
+    local_yesterday_noon = (datetime.now() - timedelta(days=1)).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    )
+    utc_created_at = local_yesterday_noon.astimezone(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
     await conn.execute(
-        "UPDATE conversation_turns SET created_at = datetime('now', '-1 day') "
-        "WHERE session_id = 's0'"
+        "UPDATE conversation_turns SET created_at = ? WHERE session_id = 's0'",
+        (utc_created_at,),
     )
     await conn.commit()
 
