@@ -70,3 +70,8 @@ class Settings(BaseSettings):
     # 是把不相关资料硬塞给 LLM。默认不设置（None），行为与之前完全一致——
     # 具体阈值需要结合实际 embedding 模型/语料标定，不能瞎猜一个通用值。
     agent_min_relevance_score: float | None = None
+
+    # 会话滑窗存储后端："sqlite"（默认，复用 memory_conn）或 "redis"
+    # （并发扩展性考虑，见 app/memory/session_window_store.py）。
+    session_window_backend: str = "sqlite"
+    redis_url: str | None = None
