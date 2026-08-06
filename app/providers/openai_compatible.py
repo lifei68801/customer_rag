@@ -9,11 +9,19 @@ from app.providers.base import ProviderRequest, ProviderResult, ToolCall
 from app.providers.embedding import EmbeddingRequest, EmbeddingResult
 
 
+_DEFAULT_TIMEOUT_SECONDS = 60.0
+
+
 class _OpenAICompatibleClient:
     """所有 OpenAI 兼容 provider 共用的构造与鉴权逻辑。
 
     GLM/DeepSeek/Kimi/Qwen(DashScope) 等均提供 OpenAI 兼容模式，
     区别只在 base_url/api_key/model，无需为每家单独写 adapter。
+
+    默认给 httpx.AsyncClient 设置 60 秒超时——httpx 自己的默认值是 5 秒，
+    真实 LLM 补全（尤其带 RAG 检索上下文、或推理模型的 reasoning_content）
+    经常超过这个时间，真实调用曾经因此被 ReadTimeout 打断，不是罕见的
+    极端情况。
     """
 
     def __init__(
@@ -23,11 +31,12 @@ class _OpenAICompatibleClient:
         api_key: str,
         model: str,
         client: httpx.AsyncClient | None = None,
+        timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
-        self._client = client or httpx.AsyncClient()
+        self._client = client or httpx.AsyncClient(timeout=timeout)
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}

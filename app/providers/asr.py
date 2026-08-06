@@ -32,11 +32,14 @@ class GenericASRProvider:
         api_key: str,
         model: str,
         client: httpx.AsyncClient | None = None,
+        timeout: float = 60.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
-        self._client = client or httpx.AsyncClient()
+        # httpx 默认5秒超时对真实语音转写请求太紧，见 openai_compatible.py
+        # 里 _OpenAICompatibleClient 同样的修复。
+        self._client = client or httpx.AsyncClient(timeout=timeout)
 
     async def transcribe(self, request: ASRRequest) -> ASRResult:
         response = await self._client.post(

@@ -33,11 +33,14 @@ class GenericTTSProvider:
         api_key: str,
         model: str,
         client: httpx.AsyncClient | None = None,
+        timeout: float = 60.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
-        self._client = client or httpx.AsyncClient()
+        # httpx 默认5秒超时对真实语音合成请求太紧，见 openai_compatible.py
+        # 里 _OpenAICompatibleClient 同样的修复。
+        self._client = client or httpx.AsyncClient(timeout=timeout)
 
     async def synthesize(self, request: TTSRequest) -> TTSResult:
         response = await self._client.post(
