@@ -19,7 +19,11 @@ def test_asr_stream_returns_partial_then_final_text():
     )
     try:
         client = TestClient(app)
-        with client.websocket_connect("/voice/asr/stream") as ws:
+        # gateway_shared_secret 未配置（本文件未 override deps.get_settings），
+        # resolve_tenant_id() 走 fallback 降级路径，这里显式带上 tenant_id
+        # query 参数，避免因缺少任何租户身份而被关闭连接——这些测试关注的是
+        # 流式转写/去重合并/语气词过滤逻辑，与租户鉴权无关。
+        with client.websocket_connect("/voice/asr/stream?tenant_id=t1") as ws:
             ws.send_bytes(b"chunk-1")
             first = ws.receive_json()
             ws.send_bytes(b"chunk-2")
@@ -41,7 +45,11 @@ def test_asr_stream_merges_overlapping_chunk_boundary():
     )
     try:
         client = TestClient(app)
-        with client.websocket_connect("/voice/asr/stream") as ws:
+        # gateway_shared_secret 未配置（本文件未 override deps.get_settings），
+        # resolve_tenant_id() 走 fallback 降级路径，这里显式带上 tenant_id
+        # query 参数，避免因缺少任何租户身份而被关闭连接——这些测试关注的是
+        # 流式转写/去重合并/语气词过滤逻辑，与租户鉴权无关。
+        with client.websocket_connect("/voice/asr/stream?tenant_id=t1") as ws:
             ws.send_bytes(b"chunk-1")
             ws.receive_json()
             ws.send_bytes(b"chunk-2")
@@ -61,7 +69,11 @@ def test_asr_stream_filters_filler_words_in_final_text():
     )
     try:
         client = TestClient(app)
-        with client.websocket_connect("/voice/asr/stream") as ws:
+        # gateway_shared_secret 未配置（本文件未 override deps.get_settings），
+        # resolve_tenant_id() 走 fallback 降级路径，这里显式带上 tenant_id
+        # query 参数，避免因缺少任何租户身份而被关闭连接——这些测试关注的是
+        # 流式转写/去重合并/语气词过滤逻辑，与租户鉴权无关。
+        with client.websocket_connect("/voice/asr/stream?tenant_id=t1") as ws:
             ws.send_bytes(b"chunk-1")
             ws.receive_json()
             ws.send_text("stop")

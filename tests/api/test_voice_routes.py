@@ -1,0 +1,103 @@
+from fastapi.testclient import TestClient
+
+from app.api import deps
+from app.config.settings import Settings
+from app.main import app
+from app.providers.asr import ASRRequest, ASRResult
+from app.providers.registry import ProviderRegistry
+
+
+def _settings(**overrides) -> Settings:
+    defaults = dict(
+        llm_base_url="https://api.deepseek.com/v1",
+        llm_api_key="k",
+        llm_model="deepseek-chat",
+        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        embedding_api_key="k",
+        embedding_model="text-embedding-v3",
+        embedding_dimension=2,
+    )
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
+class FakeASRProvider:
+    async def transcribe(self, request: ASRRequest) -> ASRResult:
+        return ASRResult(text="重启路由器")
+
+
+def test_asr_finalize_rejects_wrong_gateway_secret_when_configured():
+    app.dependency_overrides[deps.get_asr_provider] = lambda: FakeASRProvider()
+    app.dependency_overrides[deps.get_llm_registry] = lambda: ProviderRegistry()
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_settings] = lambda: _settings(
+        gateway_shared_secret="sekret"
+    )
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/voice/asr/finalize",
+            files={"audio": ("test.wav", b"fake-audio-bytes", "audio/wav")},
+            headers={"X-Tenant-Id": "t1", "X-Gateway-Secret": "wrong"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+
+
+def test_asr_finalize_accepts_correct_gateway_secret():
+    app.dependency_overrides[deps.get_asr_provider] = lambda: FakeASRProvider()
+    app.dependency_overrides[deps.get_llm_registry] = lambda: ProviderRegistry()
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_settings] = lambda: _settings(
+        gateway_shared_secret="sekret"
+    )
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/voice/asr/finalize",
+            files={"audio": ("test.wav", b"fake-audio-bytes", "audio/wav")},
+            headers={"X-Tenant-Id": "t1", "X-Gateway-Secret": "sekret"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+
+
+def test_asr_stream_closes_with_error_on_wrong_gateway_secret():
+    app.dependency_overrides[deps.get_asr_provider] = lambda: FakeASRProvider()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings(
+        gateway_shared_secret="sekret"
+    )
+    try:
+        client = TestClient(app)
+        with client.websocket_connect(
+            "/voice/asr/stream",
+            headers={"X-Tenant-Id": "t1", "X-Gateway-Secret": "wrong"},
+        ) as websocket:
+            message = websocket.receive_json()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert message["type"] == "error"
+
+
+def test_asr_stream_accepts_correct_gateway_secret():
+    app.dependency_overrides[deps.get_asr_provider] = lambda: FakeASRProvider()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings(
+        gateway_shared_secret="sekret"
+    )
+    try:
+        client = TestClient(app)
+        with client.websocket_connect(
+            "/voice/asr/stream",
+            headers={"X-Tenant-Id": "t1", "X-Gateway-Secret": "sekret"},
+        ) as websocket:
+            websocket.send_bytes(b"fake-audio-chunk")
+            message = websocket.receive_json()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert message["type"] == "partial"

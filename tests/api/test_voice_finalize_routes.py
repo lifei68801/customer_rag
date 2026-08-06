@@ -43,7 +43,13 @@ def test_asr_finalize_transcribes_and_corrects_terms():
     try:
         client = TestClient(app)
         response = client.post(
-            "/voice/asr/finalize", files={"audio": ("clip.wav", b"fake-audio", "audio/wav")}
+            "/voice/asr/finalize",
+            files={"audio": ("clip.wav", b"fake-audio", "audio/wav")},
+            # gateway_shared_secret 未配置（沿用本文件既有的默认 Settings，未 override
+            # deps.get_settings），resolve_tenant_id() 会走 fallback 降级路径，因此这里
+            # 显式带上 tenant_id query 参数，避免因缺少任何租户身份而被 422 拒绝——
+            # 这条测试本身关注的是转写+专有名词校正逻辑，与租户鉴权无关。
+            params={"tenant_id": "t1"},
         )
     finally:
         app.dependency_overrides.clear()
