@@ -73,5 +73,16 @@ class Settings(BaseSettings):
 
     # 会话滑窗存储后端："sqlite"（默认，复用 memory_conn）或 "redis"
     # （并发扩展性考虑，见 app/memory/session_window_store.py）。
+    #
+    # !!! 生产环境慎用 "redis" !!! 目前只有写入路径（memory_save_node，
+    # 见 app/agent/graph.py）迁移到了这个可插拔的 store 抽象；读取路径——
+    # app/memory/context_injection.py 的 get_recent_turns（近期会话轮次
+    # 注入）和 app/memory/structured_recall.py 的 query_turns_in_window
+    # （P1 结构化历史检索）——仍然直接读 SQLite 的 conversation_turns 表，
+    # 没有经过这层 store 抽象。这是刻意的分阶段迁移（读路径迁移见后续
+    # 任务），但意味着：如果现在就把这个值配成 "redis"，写入会去
+    # Redis，而两个读取路径还在查一张永远不会再被写入的 SQLite 表——
+    # 近期对话上下文和结构化历史检索会静默返回空结果，没有任何报错
+    # 提示。读路径完成迁移之前，生产环境请保持默认的 "sqlite"。
     session_window_backend: str = "sqlite"
     redis_url: str | None = None
