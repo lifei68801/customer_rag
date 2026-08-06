@@ -20,7 +20,15 @@ class SessionWindowStore(Protocol):
     async def get_recent_turns(
         self, *, tenant_id: str, session_id: str, limit: int
     ) -> list[dict[str, Any]]:
-        """获取最近的 limit 条对话轮次，按时间正序排列。"""
+        """获取最近的 limit 条对话轮次，按时间正序排列。
+
+        返回的每条轮次 dict 唯一保证的字段是 `{role, content}`——这是
+        协议约定的最小公约数。不同实现返回的 dict 可能带额外字段（比如
+        SQLiteSessionWindowStore 底层 session_window.py 会带上
+        created_at；两个实现都不带 user_id），那些都是实现细节，不是协议
+        的一部分。调用方（目前只有 context_injection.py）不能依赖除
+        role/content 之外的任何字段一定存在。
+        """
         ...
 
 
