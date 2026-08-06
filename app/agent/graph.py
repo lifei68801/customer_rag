@@ -27,7 +27,7 @@ from app.memory.consolidation_queue import enqueue_consolidation_job
 from app.memory.context_injection import inject_memory_context
 from app.memory.correction_intent import detect_correction_intent
 from app.memory.fact_extractor import extract_facts
-from app.memory.session_window import append_turn
+from app.memory.session_window_store import SessionWindowStore, SQLiteSessionWindowStore
 from app.memory.similarity import find_similar_memory_items
 from app.memory.structured_recall import search_turns_by_keyword_and_window
 from app.memory.temporal_resolver import resolve_time_window
@@ -80,6 +80,7 @@ def build_agent_graph(
     enable_autonomous_planning: bool = False,
     max_tool_call_rounds: int = 3,
     on_answer_chunk: Callable[[str], Awaitable[None]] | None = None,
+    session_window_store: SessionWindowStore | None = None,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     """构建 Agent 推理状态图。
 
@@ -142,7 +143,22 @@ def build_agent_graph(
     防御纵深，不是用轻量检查取代它。这一权衡（先播出部分内容、完整审查
     在后）已与产品方确认，如果 provider 不支持流式，自动退化为一次性
     生成+审查，不会强行流式。
+
+    session_window_store 为可选项：不传（默认）则等价于用
+    SQLiteSessionWindowStore 包装同一个 memory_conn，行为和接入前完全
+    一致；传入（例如 Redis 实现）则 memory_save_node 写会话轮次时改用
+    注入的 store，替代直接调用 app/memory/session_window.py 的自由函数
+    append_turn。仅切换写入路径——memory_recall_node 读取近期会话轮次
+    仍然走 context_injection.py 里的 get_recent_turns(memory_conn, ...)，
+    读取路径的切换留给后续任务（先验证写入路径稳定，避免一次改两个
+    方向增加排查复杂度）。
     """
+
+    resolved_session_window_store: SessionWindowStore | None = None
+    if memory_conn is not None:
+        resolved_session_window_store = session_window_store or SQLiteSessionWindowStore(
+            memory_conn
+        )
 
     async def input_safety_node(state: AgentState) -> dict[str, Any]:
         result = check_text(state["question"], banned_terms=banned_terms)
@@ -433,16 +449,15 @@ def build_agent_graph(
         session_id = state.get("session_id", "")
         user_id = state.get("user_id", "")
         final_text = state.get("final_text", "")
-        await append_turn(
-            memory_conn,
+        assert resolved_session_window_store is not None
+        await resolved_session_window_store.append_turn(
             tenant_id=state["tenant_id"],
             session_id=session_id,
             user_id=user_id,
             role="user",
             content=state["question"],
         )
-        await append_turn(
-            memory_conn,
+        await resolved_session_window_store.append_turn(
             tenant_id=state["tenant_id"],
             session_id=session_id,
             user_id=user_id,

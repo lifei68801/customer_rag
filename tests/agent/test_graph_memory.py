@@ -390,3 +390,55 @@ async def test_memory_recall_stays_noop_when_question_has_no_time_expression():
         m.get("content", "") for m in responder_request.messages
     )
     assert "E502网关超时怎么解决" not in all_content
+
+
+async def test_uses_injected_session_window_store_instead_of_direct_sql():
+    from app.memory.session_window_store import SessionWindowStore
+
+    class RecordingSessionWindowStore:
+        def __init__(self) -> None:
+            self.appended: list[dict] = []
+
+        async def append_turn(self, *, tenant_id, session_id, user_id, role, content):
+            self.appended.append(
+                {"tenant_id": tenant_id, "session_id": session_id, "role": role, "content": content}
+            )
+
+        async def get_recent_turns(self, *, tenant_id, session_id, limit):
+            return [
+                {"role": item["role"], "content": item["content"]}
+                for item in self.appended
+                if item["tenant_id"] == tenant_id and item["session_id"] == session_id
+            ][-limit:]
+
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+    session_window_store = RecordingSessionWindowStore()
+
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(["重启路由器即可解决。", '{"facts":[]}'])
+    )
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+        session_window_store=session_window_store,
+    )
+
+    await graph.ainvoke(
+        {
+            "question": "网络连不上怎么办？",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    assert len(session_window_store.appended) == 2
+    assert session_window_store.appended[0]["role"] == "user"
+    assert session_window_store.appended[1]["role"] == "assistant"
