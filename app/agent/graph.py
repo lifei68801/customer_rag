@@ -29,6 +29,7 @@ from app.memory.correction_intent import detect_correction_intent
 from app.memory.fact_extractor import extract_facts
 from app.memory.session_window import append_turn
 from app.memory.similarity import find_similar_memory_items
+from app.memory.structured_recall import search_turns_by_keyword_and_window
 from app.memory.temporal_resolver import resolve_time_window
 from app.providers.base import ProviderCapability, ProviderRequest
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
@@ -265,6 +266,38 @@ def build_agent_graph(
             embedding_registry=embedding_registry,
             embedding_provider_name=embedding_provider_name,
         )
+        # P1 结构化历史检索（架构文档 §6.3）：问题里带可解析的时间表达式
+        # 时（"昨天""上周三"），额外按 tenant+user+时间窗口做一次跨 session
+        # 的关键词过滤检索，把命中的历史轮次原文拼成独立的一条 system
+        # message——不去改写/合并已有的 inject_memory_context 结果（近期
+        # 会话轮次+长期记忆条目），两路结果职责不同、互不覆盖。没有可解析
+        # 时间表达式，或窗口内没有关键词命中时完全是 no-op，不额外拼接
+        # 任何内容，不影响接入前的既有行为。
+        time_result = await resolve_time_window(
+            state["question"],
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
+            reference_time=datetime.now(),
+        )
+        if time_result.resolved and time_result.start and time_result.end:
+            structured_turns = await search_turns_by_keyword_and_window(
+                memory_conn,
+                tenant_id=state["tenant_id"],
+                user_id=state.get("user_id", ""),
+                start=time_result.start,
+                end=time_result.end,
+                question=state["question"],
+            )
+            if structured_turns:
+                lines = "\n".join(
+                    f"- {turn['role']}: {turn['content']}" for turn in structured_turns
+                )
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": f"以下是您在相关时间段提到的历史对话：\n{lines}",
+                    }
+                )
         return {"memory_context_messages": messages}
 
     async def retrieval_node(state: AgentState) -> dict[str, Any]:
