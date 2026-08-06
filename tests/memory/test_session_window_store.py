@@ -93,6 +93,20 @@ async def test_redis_store_trims_to_max_turns():
     assert [t["content"] for t in turns] == ["消息3", "消息4"]
 
 
+async def test_redis_store_limit_zero_returns_empty_list():
+    """回归测试 Finding 6：limit=0 时 -limit 也是 0（不是负数），如果直接
+    传给 lrange(key, 0, -1) 会返回整个存储窗口，而不是零条——和
+    SQLiteSessionWindowStore 底层 `LIMIT 0` 正确返回零行的语义不一致。"""
+    client = FakeRedisClient()
+    store = RedisSessionWindowStore(client, max_turns=50, ttl_seconds=86400)
+
+    await store.append_turn(tenant_id="t1", session_id="s1", user_id="u1", role="user", content="消息")
+
+    turns = await store.get_recent_turns(tenant_id="t1", session_id="s1", limit=0)
+
+    assert turns == []
+
+
 async def test_redis_store_respects_get_recent_turns_limit():
     client = FakeRedisClient()
     store = RedisSessionWindowStore(client, max_turns=50, ttl_seconds=86400)

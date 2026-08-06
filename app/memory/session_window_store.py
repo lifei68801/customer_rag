@@ -87,6 +87,12 @@ class RedisSessionWindowStore:
     async def get_recent_turns(
         self, *, tenant_id: str, session_id: str, limit: int
     ) -> list[dict[str, Any]]:
+        # limit=0 时 -limit 也是 0（不是负数），直接传给 lrange(key, 0, -1)
+        # 会返回整个存储窗口，而不是零条——和 SQLiteSessionWindowStore 底层
+        # `LIMIT 0` 的语义（正确返回零行）不一致。这里显式短路，保证两个
+        # 实现在 limit<=0 时行为一致。
+        if limit <= 0:
+            return []
         key = self._key(tenant_id=tenant_id, session_id=session_id)
         raw_values = await self._client.lrange(key, -limit, -1)
         return [json.loads(value) for value in raw_values]
