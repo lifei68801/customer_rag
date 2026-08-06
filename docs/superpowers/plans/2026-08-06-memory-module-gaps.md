@@ -1512,11 +1512,78 @@ git commit -m "feat: scan and notify customers when a known fix matches their ti
 
 **Files:**
 - Create: `app/memory/known_fix_cli.py`
+- Test: `tests/memory/test_known_fix_cli.py`
 
 **Interfaces:**
-- Consumes: `register_known_fix`/`list_known_fixes`（Task 6）、`build_memory_conn_from_settings`（已有，`app/memory/factory.py`）、`build_embedding_registry_from_settings`/`DEFAULT_EMBEDDING_PROVIDER_NAME`（已有，`app/providers/factory.py`）
+- Consumes: `register_known_fix`/`list_known_fixes`/`ensure_known_fixes_schema`（Task 6）、`build_memory_conn_from_settings`（已有，`app/memory/factory.py`）、`build_embedding_registry_from_settings`/`DEFAULT_EMBEDDING_PROVIDER_NAME`（已有，`app/providers/factory.py`）
+- Produces: `async def cmd_register(*, tenant_id: str, description: str, fixed_at: datetime, conn: aiosqlite.Connection, embedding_registry: EmbeddingRegistry, embedding_provider_name: str) -> str`（返回 `fix_id`）；`async def cmd_list(*, tenant_id: str, conn: aiosqlite.Connection) -> list[dict[str, Any]]`
 
-- [ ] **Step 1: 写实现**（纯 CLI 包装，参照 `app/graphrag/review_cli.py` 的结构，不需要单独单元测试——底层 `register_known_fix`/`list_known_fixes` 已在 Task 6 测试过；此任务只是接线，跑一次真实调用验证即可，不是 TDD 循环）
+参照 `app/graphrag/review_cli.py`/`tests/graphrag/test_review_cli.py` 的既定模式：`cmd_*` 函数接收显式注入的 `conn`/`embedding_registry` 参数（可测试，不在函数内部构造真实依赖），只有 `_main()` 才用 `Settings()` 构造真实依赖并调用 `cmd_*`；打印输出放在 `_main()` 里，`cmd_*` 只返回数据，不做 I/O。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `tests/memory/test_known_fix_cli.py`：
+
+```python
+from datetime import datetime
+
+import aiosqlite
+
+from app.memory.known_fix_cli import cmd_list, cmd_register
+from app.memory.known_fixes import ensure_known_fixes_schema
+from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
+
+
+class FakeEmbeddingProvider:
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+        return EmbeddingResult(vectors=[[1.0, 0.0] for _ in request.texts])
+
+
+def _registry() -> EmbeddingRegistry:
+    registry = EmbeddingRegistry()
+    registry.register("fake-embedding", FakeEmbeddingProvider())
+    return registry
+
+
+async def _connect() -> aiosqlite.Connection:
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_known_fixes_schema(conn)
+    return conn
+
+
+async def test_cmd_register_persists_and_returns_fix_id():
+    conn = await _connect()
+
+    fix_id = await cmd_register(
+        tenant_id="t1",
+        description="网关超时问题已修复",
+        fixed_at=datetime(2026, 8, 5, 0, 0, 0),
+        conn=conn,
+        embedding_registry=_registry(),
+        embedding_provider_name="fake-embedding",
+    )
+
+    assert fix_id
+
+    fixes = await cmd_list(tenant_id="t1", conn=conn)
+    assert len(fixes) == 1
+    assert fixes[0]["fix_id"] == fix_id
+
+
+async def test_cmd_list_returns_empty_when_no_fixes_registered():
+    conn = await _connect()
+
+    fixes = await cmd_list(tenant_id="t1", conn=conn)
+
+    assert fixes == []
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `.venv/Scripts/python.exe -m pytest tests/memory/test_known_fix_cli.py -v`
+Expected: `ModuleNotFoundError: No module named 'app.memory.known_fix_cli'`
+
+- [ ] **Step 3: 写最小实现**
 
 创建 `app/memory/known_fix_cli.py`：
 
@@ -1526,39 +1593,38 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import datetime
+from typing import Any
+
+import aiosqlite
 
 from app.config.settings import Settings
 from app.memory.factory import build_memory_conn_from_settings
 from app.memory.known_fixes import ensure_known_fixes_schema, list_known_fixes, register_known_fix
+from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import DEFAULT_EMBEDDING_PROVIDER_NAME, build_embedding_registry_from_settings
 
 
-async def cmd_register(*, tenant_id: str, description: str, fixed_at: datetime) -> None:
-    settings = Settings()
-    conn = await build_memory_conn_from_settings(settings)
-    await ensure_known_fixes_schema(conn)
-    embedding_registry = build_embedding_registry_from_settings(settings)
-    fix_id = await register_known_fix(
+async def cmd_register(
+    *,
+    tenant_id: str,
+    description: str,
+    fixed_at: datetime,
+    conn: aiosqlite.Connection,
+    embedding_registry: EmbeddingRegistry,
+    embedding_provider_name: str,
+) -> str:
+    return await register_known_fix(
         conn,
         tenant_id=tenant_id,
         description=description,
         fixed_at=fixed_at,
         embedding_registry=embedding_registry,
-        embedding_provider_name=DEFAULT_EMBEDDING_PROVIDER_NAME,
+        embedding_provider_name=embedding_provider_name,
     )
-    print(f"已登记修复记录 fix_id={fix_id}")
 
 
-async def cmd_list(*, tenant_id: str) -> None:
-    settings = Settings()
-    conn = await build_memory_conn_from_settings(settings)
-    await ensure_known_fixes_schema(conn)
-    fixes = await list_known_fixes(conn, tenant_id=tenant_id)
-    if not fixes:
-        print("没有已登记的修复记录。")
-    for fix in fixes:
-        fixed_at = datetime.fromtimestamp(fix["fixed_at"])
-        print(f"[{fix['fix_id']}] {fix['description']} (修复时间: {fixed_at.isoformat()})")
+async def cmd_list(*, tenant_id: str, conn: aiosqlite.Connection) -> list[dict[str, Any]]:
+    return await list_known_fixes(conn, tenant_id=tenant_id)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -1586,34 +1652,48 @@ async def _main() -> None:
       python -m app.memory.known_fix_cli list --tenant-id t1
     """
     args = _parse_args()
+    settings = Settings()
+    conn = await build_memory_conn_from_settings(settings)
+    await ensure_known_fixes_schema(conn)
+
     if args.command == "register":
-        await cmd_register(
+        embedding_registry = build_embedding_registry_from_settings(settings)
+        fix_id = await cmd_register(
             tenant_id=args.tenant_id,
             description=args.description,
             fixed_at=datetime.fromisoformat(args.fixed_at),
+            conn=conn,
+            embedding_registry=embedding_registry,
+            embedding_provider_name=DEFAULT_EMBEDDING_PROVIDER_NAME,
         )
+        print(f"已登记修复记录 fix_id={fix_id}")
     elif args.command == "list":
-        await cmd_list(tenant_id=args.tenant_id)
+        fixes = await cmd_list(tenant_id=args.tenant_id, conn=conn)
+        if not fixes:
+            print("没有已登记的修复记录。")
+        for fix in fixes:
+            fixed_at = datetime.fromtimestamp(fix["fixed_at"])
+            print(f"[{fix['fix_id']}] {fix['description']} (修复时间: {fixed_at.isoformat()})")
 
 
 if __name__ == "__main__":
     asyncio.run(_main())
 ```
 
-- [ ] **Step 2: 跑一次语法检查（不是完整TDD，只是确认可以正常 import）**
+- [ ] **Step 4: 跑测试确认通过**
 
-Run: `.venv/Scripts/python.exe -c "import app.memory.known_fix_cli"`
-Expected: 无报错
+Run: `.venv/Scripts/python.exe -m pytest tests/memory/test_known_fix_cli.py -v`
+Expected: 2 passed
 
-- [ ] **Step 3: 跑全量测试确认没有破坏其它模块**
+- [ ] **Step 5: 跑全量测试**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/ -q`
 Expected: 全部通过
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
-git add app/memory/known_fix_cli.py
+git add app/memory/known_fix_cli.py tests/memory/test_known_fix_cli.py
 git commit -m "feat: add CLI for registering known fixes"
 ```
 
@@ -2733,12 +2813,13 @@ git commit -m "feat: add pluggable session-window backend selection via settings
 
 **Files:**
 - Modify: `app/agent/graph.py`
-- Modify: `app/api/agent_routes.py`
 - Test: `tests/agent/test_graph_memory.py`
 
 **Interfaces:**
 - Consumes: `SessionWindowStore`（Task 14/15）、`build_session_window_store_from_settings`（Task 16）
 - Produces: `build_agent_graph()` 新增可选参数 `session_window_store: SessionWindowStore | None = None`
+
+不修改 `app/api/agent_routes.py`——默认不传 `session_window_store` 等价于现状（`SQLiteSessionWindowStore` 包装同一个 `memory_conn`），是否在路由层接入 Redis 留给实际部署方按需决定，见本任务末尾说明。
 
 - [ ] **Step 1: 写失败测试**
 
