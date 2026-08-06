@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from functools import lru_cache
 
-from fastapi import Depends
+from fastapi import Depends, Header, HTTPException
 
 from app.config.settings import Settings
 from app.providers.embedding import EmbeddingRegistry
@@ -38,6 +39,7 @@ __all__ = [
     "get_asr_provider",
     "get_bm25_index",
     "get_embedding_registry",
+    "get_gateway_tenant_id",
     "get_graph_client",
     "get_llm_registry",
     "get_memory_conn",
@@ -46,6 +48,7 @@ __all__ = [
     "get_terms",
     "get_tts_provider",
     "get_vector_store",
+    "resolve_tenant_id",
 ]
 
 _bm25_index_cache: BM25Index | None = None
@@ -56,10 +59,60 @@ _terms_cache: list[Term] | None = None
 _memory_conn_cache: aiosqlite.Connection | None = None
 _memory_conn_lock = asyncio.Lock()
 
+logger = logging.getLogger(__name__)
+
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+async def get_gateway_tenant_id(
+    x_tenant_id: str | None = Header(default=None),
+    x_gateway_secret: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
+) -> str | None:
+    """校验请求是否真的经过了网关，而不是被绕过网关直接访问。
+
+    settings.gateway_shared_secret 未配置时（本地开发默认）直接放行返回
+    None，交给调用方走 resolve_tenant_id() 的请求体/query 兜底路径；一旦
+    配置了密钥，缺失或错误的 X-Gateway-Secret 直接 401 拒绝，绝不允许
+    静默降级到不受保护的旧路径——否则攻击者只要不带这个头就能绕过校验，
+    密钥形同虚设。
+    """
+    if not settings.gateway_shared_secret:
+        return None
+    if x_gateway_secret != settings.gateway_shared_secret:
+        raise HTTPException(status_code=401, detail="缺少有效的网关凭证")
+    if not x_tenant_id:
+        raise HTTPException(status_code=401, detail="网关未声明租户身份")
+    return x_tenant_id
+
+
+def resolve_tenant_id(
+    gateway_tenant_id: str | None,
+    fallback_tenant_id: str | None,
+    *,
+    source: str,
+) -> str:
+    """合并网关声明的租户身份与请求体/query 里的兜底值。
+
+    网关值优先且视为可信；网关未启用鉴权（get_gateway_tenant_id 返回
+    None）时才会用到 fallback_tenant_id，此时打印警告日志，提醒这是本地
+    开发的降级路径，生产环境不应该出现。两者都缺失时视为客户端请求缺少
+    必要参数，返回 422。
+    """
+    if gateway_tenant_id is not None:
+        return gateway_tenant_id
+    if fallback_tenant_id:
+        logger.warning(
+            "%s: 网关鉴权未启用（gateway_shared_secret 未配置），降级信任"
+            "客户端自报的 tenant_id=%s，生产环境不应出现此日志",
+            source,
+            fallback_tenant_id,
+        )
+        return fallback_tenant_id
+    raise HTTPException(status_code=422, detail="缺少 tenant_id")
 
 
 def get_embedding_registry(

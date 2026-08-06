@@ -91,3 +91,10 @@ class Settings(BaseSettings):
     # 提示。读路径完成迁移之前，生产环境请保持默认的 "sqlite"。
     session_window_backend: Literal["sqlite", "redis"] = "sqlite"
     redis_url: str | None = None
+
+    # 网关注入 tenant_id 时的共享密钥校验（见
+    # docs/superpowers/specs/2026-08-06-gateway-tenant-auth-design.md）。
+    # 未配置时（本地开发默认）自动降级信任客户端自报的 tenant_id，仅打印
+    # 警告日志；生产环境必须配置，否则 tenant_id 可被任意伪造，Milvus/
+    # Neo4j 层面即使做了按 tenant_id 过滤的隔离也形同虚设。
+    gateway_shared_secret: str | None = None
