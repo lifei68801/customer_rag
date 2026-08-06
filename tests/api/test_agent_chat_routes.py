@@ -404,6 +404,91 @@ def test_agent_chat_forces_static_path_for_voice_even_when_planner_enabled():
     assert "人工" in payload["text"] or "转" in payload["text"]
 
 
+def test_agent_chat_uses_gateway_tenant_id_over_request_body():
+    import asyncio
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, FakeLLMProvider()
+    )
+    vector_store = asyncio.run(_fake_vector_store())
+
+    async def _override_get_memory_conn() -> aiosqlite.Connection:
+        conn = await aiosqlite.connect(":memory:")
+        await ensure_schema(conn)
+        return conn
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
+    app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
+    app.dependency_overrides[deps.get_tts_provider] = lambda: None
+    app.dependency_overrides[deps.get_settings] = lambda: _settings(
+        gateway_shared_secret="sekret"
+    )
+    try:
+        client = TestClient(app)
+        # 请求体里的 tenant_id 是错的（"wrong-tenant"），_FAKE_RECORDS 只挂在
+        # tenant_id="t1" 下——如果最终真正用于检索的 tenant_id 是网关 Header
+        # 里的 "t1" 而不是请求体的 "wrong-tenant"，应该能检索到 faq/network.md。
+        with client.stream(
+            "POST",
+            "/agent/chat",
+            json={"question": "网络连不上怎么办？", "tenant_id": "wrong-tenant"},
+            headers={"X-Tenant-Id": "t1", "X-Gateway-Secret": "sekret"},
+        ) as response:
+            assert response.status_code == 200
+            body = "".join(response.iter_text())
+    finally:
+        app.dependency_overrides.clear()
+
+    payload = _final_event(body)
+    assert payload["used_sources"] == ["faq/network.md"]
+
+
+def test_agent_chat_rejects_wrong_gateway_secret_when_configured():
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, FakeLLMProvider()
+    )
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_bm25_index] = lambda: BM25Index()
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
+    app.dependency_overrides[deps.get_memory_conn] = lambda: None
+    app.dependency_overrides[deps.get_tts_provider] = lambda: None
+    app.dependency_overrides[deps.get_settings] = lambda: _settings(
+        gateway_shared_secret="sekret"
+    )
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/agent/chat",
+            json={"question": "网络连不上怎么办？", "tenant_id": "t1"},
+            headers={"X-Tenant-Id": "t1", "X-Gateway-Secret": "wrong"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+
+
 def test_agent_chat_uses_static_path_when_planner_disabled_by_default():
     llm_provider = ScriptedLLMProvider(
         [ProviderResult(text="不应该被用到，静态路径检索为空时不会调用LLM。")]

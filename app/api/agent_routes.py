@@ -28,9 +28,11 @@ router = APIRouter()
 
 class AgentChatRequest(BaseModel):
     question: str
-    # 里程碑X：多租户隔离已接入。tenant_id 目前直接来自请求体，
-    # 真正上生产前需要换成从认证层（网关/JWT）注入，而不是信任客户端自报。
-    tenant_id: str
+    # tenant_id 优先从网关注入的 X-Tenant-Id 头读取（见
+    # deps.get_gateway_tenant_id），这里保留为可选字段仅作为网关未配置
+    # 时的本地开发兜底，见
+    # docs/superpowers/specs/2026-08-06-gateway-tenant-auth-design.md。
+    tenant_id: str | None = None
     session_id: str = "default"
     user_id: str = "anonymous"
     # 按需触发：仅当本轮以语音提问时才为 true，文字提问始终为 false，
@@ -41,6 +43,7 @@ class AgentChatRequest(BaseModel):
 @router.post("/agent/chat")
 async def agent_chat_endpoint(
     payload: AgentChatRequest,
+    gateway_tenant_id: str | None = Depends(deps.get_gateway_tenant_id),
     embedding_registry: EmbeddingRegistry = Depends(deps.get_embedding_registry),
     vector_store: VectorStore = Depends(deps.get_vector_store),
     bm25_index: BM25Index = Depends(deps.get_bm25_index),
@@ -83,6 +86,9 @@ async def agent_chat_endpoint(
     流式推送/合成（只有静态 Responder 路径会调用 on_answer_chunk），
     和文字流式生成同一个既定范围。
     """
+    tenant_id = deps.resolve_tenant_id(
+        gateway_tenant_id, payload.tenant_id, source="agent_chat"
+    )
     enable_autonomous_planning = (
         settings.agent_enable_autonomous_planning and not payload.voice_response
     )
@@ -135,7 +141,7 @@ async def agent_chat_endpoint(
                 return await graph.ainvoke(
                     {
                         "question": payload.question,
-                        "tenant_id": payload.tenant_id,
+                        "tenant_id": tenant_id,
                         "session_id": payload.session_id,
                         "user_id": payload.user_id,
                     },
