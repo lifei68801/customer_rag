@@ -18,7 +18,7 @@ from app.graphrag.ontology import Term
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
-from app.providers.tts import TTSProvider
+from app.providers.tts import TTSProvider, TTSRequest
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import VectorStore
 from app.voice.voice_output import synthesize_voice_response
@@ -57,25 +57,31 @@ async def agent_chat_endpoint(
     文字提问（voice_response=False）且 LLM provider 支持 stream_complete()
     时，Responder 按句子边界逐句推送 `{"type": "delta", "text": ...}` 事件
     （复用 app/voice/streaming_responder.py 的切句逻辑，每句先过一次轻量
-    规则安全检查——见 build_agent_graph 的 on_answer_chunk 参数说明）；
-    图执行完毕后总是发送一个 `{"type": "final", ...}` 事件，字段和之前
-    完全一致，是权威的最终结果（如果完整语义安全审查事后判定不安全，
-    final 事件里的 text 会是兜底话术，可能与之前推送的 delta 不一致——
-    已推送的部分收不回来，这是流式输出的已知代价，已与产品方确认）。
-    provider 不支持流式时自动退化为只发一次 final 事件，不强行流式。
+    规则安全检查——见 build_agent_graph 的 on_answer_chunk 参数说明）。
 
-    语音请求（voice_response=True）不走文字流式：TTS 合成仍是图执行完毕
-    后对完整 final_text 做句子级合成（voice_output.py），没有和 Responder
-    的流式生成过程流水线化，"首包延迟"目前等于"完整回答生成完+全部句子
-    合成完"，不是架构文档 7.3 节设想的"边生成边合成"。
+    语音请求（voice_response=True）且配置了 tts_provider 时，同样的流式
+    生成驱动逐句合成：每句一从 Responder 产出（已经过轻量安全检查）就立刻
+    调用 tts_provider 合成，推送 `{"type": "audio", "audio_base64": ...}`
+    事件——这是 docs/ARCHITECTURE.md §7.3"首包延迟=等第一句生成完+该句
+    合成耗时"而不是"等完整回复生成完"的落地，不再是"图跑完再对完整文本
+    批量合成"。provider 不支持流式（没有 stream_complete）时自动退化为
+    图跑完后对 final_text 做一次批量句子级合成（voice_output.py 原有
+    行为），不强行流式。
+
+    两种场景图执行完毕后都总是发送一个 `{"type": "final", ...}` 事件，
+    字段和之前完全一致，是权威的最终结果——流式阶段累积的音频/文本片段
+    也会汇总进这个事件里，方便只关心最终结果、不处理增量事件的简单
+    客户端。如果完整语义安全审查事后判定不安全，final 事件里的 text/
+    audio 会是兜底话术/兜底音频，可能与之前推送的增量内容不一致——已经
+    推送的部分收不回来，这是流式输出的已知代价，已与产品方确认。
 
     Agent 自主规划（见 docs/AGENT_PLANNER_DESIGN.md）由
     settings.agent_enable_autonomous_planning 总控，但语音请求
     （voice_response=True）无论这个开关怎么配置都强制走确定性路径——
     Planner 多轮 LLM 往返和语音首包延迟的硬性要求直接冲突，不能让
     Planner 自己判断该不该省时间。Planner 路径的最终答案本身也不逐句
-    流式推送（只有静态 Responder 路径会调用 on_answer_chunk），和语音
-    流式生成同一个既定范围。
+    流式推送/合成（只有静态 Responder 路径会调用 on_answer_chunk），
+    和文字流式生成同一个既定范围。
     """
     enable_autonomous_planning = (
         settings.agent_enable_autonomous_planning and not payload.voice_response
@@ -83,9 +89,28 @@ async def agent_chat_endpoint(
 
     async def event_stream() -> AsyncIterator[str]:
         queue: asyncio.Queue[str | None] = asyncio.Queue()
+        accumulated_audio_base64: list[str] = []
 
-        async def on_answer_chunk(sentence: str) -> None:
-            await queue.put(sentence)
+        async def on_text_chunk(sentence: str) -> None:
+            body = json.dumps({"type": "delta", "text": sentence}, ensure_ascii=False)
+            await queue.put(body)
+
+        async def on_audio_chunk(sentence: str) -> None:
+            # sentence 已经在 graph.py 的 responder_node 里过了一次分句轻量
+            # 安全检查（命中风险词会被替换成安全兜底话术），这里直接合成，
+            # 不重复检查。
+            result = await tts_provider.synthesize(TTSRequest(text=sentence))
+            encoded = base64.b64encode(result.audio_bytes).decode("ascii")
+            accumulated_audio_base64.append(encoded)
+            body = json.dumps(
+                {"type": "audio", "audio_base64": encoded}, ensure_ascii=False
+            )
+            await queue.put(body)
+
+        if payload.voice_response:
+            on_answer_chunk = on_audio_chunk if tts_provider is not None else None
+        else:
+            on_answer_chunk = on_text_chunk
 
         graph = build_agent_graph(
             embedding_registry=embedding_registry,
@@ -102,7 +127,7 @@ async def agent_chat_endpoint(
             min_relevance_score=settings.agent_min_relevance_score,
             enable_autonomous_planning=enable_autonomous_planning,
             max_tool_call_rounds=settings.agent_max_tool_call_rounds,
-            on_answer_chunk=None if payload.voice_response else on_answer_chunk,
+            on_answer_chunk=on_answer_chunk,
         )
 
         async def run_graph() -> dict[str, Any]:
@@ -130,22 +155,24 @@ async def agent_chat_endpoint(
             item = await queue.get()
             if item is None:
                 break
-            delta_body = json.dumps(
-                {"type": "delta", "text": item}, ensure_ascii=False
-            )
-            yield f"data: {delta_body}\n\n"
+            yield f"data: {item}\n\n"
 
         result = await graph_task
         final_text = result.get("final_text", "")
 
         audio_segments_base64: list[str] | None = None
         if payload.voice_response and tts_provider is not None:
-            segments = await synthesize_voice_response(
-                final_text, tts_provider=tts_provider
-            )
-            audio_segments_base64 = [
-                base64.b64encode(segment).decode("ascii") for segment in segments
-            ]
+            if accumulated_audio_base64:
+                # 流式阶段已经边生成边合成过，不重复合成，直接汇总
+                audio_segments_base64 = accumulated_audio_base64
+            else:
+                # provider 不支持 stream_complete()，走原有批量合成兜底
+                segments = await synthesize_voice_response(
+                    final_text, tts_provider=tts_provider
+                )
+                audio_segments_base64 = [
+                    base64.b64encode(segment).decode("ascii") for segment in segments
+                ]
 
         body = json.dumps(
             {

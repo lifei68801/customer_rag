@@ -201,7 +201,7 @@ def test_agent_chat_streams_delta_events_before_the_final_event():
     assert events.index(delta_events[0]) < events.index(final_events[0])
 
 
-def test_agent_chat_does_not_stream_deltas_for_voice_requests():
+def test_agent_chat_streams_audio_events_for_voice_requests_when_provider_streams():
     import asyncio
 
     embedding_registry = EmbeddingRegistry()
@@ -247,7 +247,25 @@ def test_agent_chat_does_not_stream_deltas_for_voice_requests():
         app.dependency_overrides.clear()
 
     events = _parse_sse_events(body)
-    assert all(e["type"] == "final" for e in events)
+    # 语音请求走音频流式合成，不应该出现文字 delta 事件
+    assert all(e["type"] != "delta" for e in events)
+
+    audio_events = [e for e in events if e["type"] == "audio"]
+    final_events = [e for e in events if e["type"] == "final"]
+    assert len(audio_events) == 1
+    assert len(final_events) == 1
+    # audio 必须先于 final 到达（客户端要能边收边播放）
+    assert events.index(audio_events[0]) < events.index(final_events[0])
+
+    import base64
+
+    expected_audio_base64 = base64.b64encode(
+        "audio:重启路由器即可解决。".encode("utf-8")
+    ).decode("ascii")
+    assert audio_events[0]["audio_base64"] == expected_audio_base64
+    # final 事件里的 audio_segments_base64 应该汇总了流式阶段已经合成过的
+    # 音频，而不是重新合成一遍
+    assert final_events[0]["audio_segments_base64"] == [expected_audio_base64]
 
 
 class FakeTTSProvider:
