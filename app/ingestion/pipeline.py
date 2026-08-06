@@ -28,6 +28,10 @@ async def _embed_and_upsert(
     if not chunks:
         return 0
 
+    # embedding 永远用 chunk.text（细粒度的 child 文本，比如表格的一行）
+    # 保证检索精度；写进向量库、命中后返回给 LLM 的是 parent_text（没有
+    # 设置则退回 chunk.text 本身）——parent-child 分块的核心就是这两者
+    # 可以不同，见 app/ingestion/chunking.py 的 Chunk.parent_text 说明。
     embed_result = await embedding_registry.run(
         EmbeddingRequest(texts=[chunk.text for chunk in chunks]),
         provider_name=embedding_provider_name,
@@ -37,7 +41,7 @@ async def _embed_and_upsert(
         VectorRecord(
             id=f"{path}#{i}",
             vector=vector,
-            text=chunk.text,
+            text=chunk.parent_text if chunk.parent_text is not None else chunk.text,
             tenant_id=tenant_id,
             metadata={
                 "source": chunk.source,

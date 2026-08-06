@@ -77,3 +77,52 @@ def test_parse_pdf_uses_ocr_fallback_for_pages_with_no_text_layer(tmp_path):
     assert len(chunks) == 1
     assert chunks[0].text == "扫描件识别出的文字"
     assert chunks[0].source == str(pdf_path)
+
+
+def _write_pdf_with_table(pdf_path, rows: list[list[str]]) -> None:
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+
+    doc = SimpleDocTemplate(str(pdf_path))
+    table = Table(rows)
+    table.setStyle(
+        TableStyle(
+            [
+                ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+            ]
+        )
+    )
+    doc.build([table])
+
+
+def test_parse_pdf_creates_parent_child_chunks_for_table_rows(tmp_path):
+    pdf_path = tmp_path / "table.pdf"
+    _write_pdf_with_table(
+        pdf_path,
+        [
+            ["股东名称", "持股比例"],
+            ["武汉金融控股", "75.00%"],
+            ["东亚银行", "15.38%"],
+        ],
+    )
+
+    chunks = parse_pdf(pdf_path)
+
+    table_chunks = [c for c in chunks if c.parent_text is not None]
+    assert len(table_chunks) == 2
+    assert "股东名称：武汉金融控股" in table_chunks[0].text
+    assert "持股比例：75.00%" in table_chunks[0].text
+    assert "东亚银行" in table_chunks[0].parent_text
+    assert "武汉金融控股" in table_chunks[0].parent_text
+    assert table_chunks[0].parent_text == table_chunks[1].parent_text
+    assert table_chunks[0].source == str(pdf_path)
+
+
+def test_parse_pdf_skips_header_only_tables(tmp_path):
+    pdf_path = tmp_path / "table.pdf"
+    _write_pdf_with_table(pdf_path, [["股东名称", "持股比例"]])
+
+    chunks = parse_pdf(pdf_path)
+
+    assert all(c.parent_text is None for c in chunks)

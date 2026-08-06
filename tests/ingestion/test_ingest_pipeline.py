@@ -320,6 +320,59 @@ async def test_ingest_pdf_file_uses_injected_ocr_for_scanned_pages(tmp_path):
     assert "扫描件识别出的文字" in results[0].text
 
 
+async def test_ingest_pdf_file_stores_full_table_text_for_table_row_chunks(tmp_path):
+    # embedding 用的是每一行的细粒度文本（parent-child 的 child），但真正
+    # 写进向量库、将来命中后返回给 LLM 的应该是整张表（parent），不能只有
+    # 命中的那一行、丢了表格其余部分的上下文。
+    from reportlab.lib import colors
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+
+    if "STSong-Light" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+
+    pdf_path = tmp_path / "table.pdf"
+    doc = SimpleDocTemplate(str(pdf_path))
+    table = Table(
+        [
+            ["股东名称", "持股比例"],
+            ["武汉金融控股", "75.00%"],
+            ["东亚银行", "15.38%"],
+        ]
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+            ]
+        )
+    )
+    doc.build([table])
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    await ingest_pdf_file(
+        pdf_path,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        tenant_id="t1",
+    )
+
+    all_records = await vector_store.list_all()
+    table_records = [
+        r for r in all_records if r.metadata.get("heading_path") == "第1页/表格"
+    ]
+    assert len(table_records) == 2
+    assert all(
+        "武汉金融控股" in r.text and "东亚银行" in r.text for r in table_records
+    )
+
+
 async def test_ingest_directory_processes_markdown_and_pdf_but_skips_other_extensions(
     tmp_path,
 ):
