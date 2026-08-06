@@ -54,6 +54,7 @@ async def test_main_processes_pending_jobs_using_injected_dependencies():
         "qwen",
         ScriptedLLMProvider(
             [
+                '{"is_delay": false}',  # detect_delay_intent
                 '{"facts": ["客户使用企业版套餐"]}',
                 '{"actions": [{"event": "ADD", "target_memory_id": "", '
                 '"text": "客户使用企业版套餐", "reason": "首次提及"}]}',

@@ -1,8 +1,10 @@
 import json
+from datetime import datetime, timedelta
 
 import aiosqlite
 
 from app.memory.consolidation import run_memory_consolidation
+from app.memory.delayed_confirmation import ensure_delayed_confirmation_schema, list_due_confirmations
 from app.memory.memory_store import list_active_memory_items, upsert_memory_item
 from app.memory.schema import ensure_schema
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
@@ -34,6 +36,7 @@ async def test_run_memory_consolidation_adds_new_fact_end_to_end():
         "llm",
         ScriptedLLMProvider(
             [
+                '{"is_delay": false}',  # detect_delay_intent
                 '{"facts": ["客户使用企业版套餐"]}',
                 '{"actions": [{"event": "ADD", "target_memory_id": "", '
                 '"text": "客户使用企业版套餐", "reason": "首次提及"}]}',
@@ -66,7 +69,9 @@ async def test_run_memory_consolidation_no_facts_extracted_writes_nothing():
     conn = await _connect()
     llm_registry = ProviderRegistry()
     llm_registry.register(
-        ProviderCapability.LLM, "llm", ScriptedLLMProvider(['{"facts": []}'])
+        ProviderCapability.LLM,
+        "llm",
+        ScriptedLLMProvider(['{"is_delay": false}', '{"facts": []}']),
     )
 
     applied = await run_memory_consolidation(
@@ -115,6 +120,7 @@ async def test_run_memory_consolidation_narrows_candidates_by_similarity_when_em
     llm_registry = ProviderRegistry()
     llm_provider = RecordingLLMProvider(
         [
+            '{"is_delay": false}',  # detect_delay_intent
             '{"facts": ["客户使用企业版套餐"]}',
             '{"actions": []}',
         ]
@@ -137,7 +143,116 @@ async def test_run_memory_consolidation_narrows_candidates_by_similarity_when_em
         similarity_top_k=1,
     )
 
-    conflict_resolve_request = llm_provider.requests[1]
+    conflict_resolve_request = llm_provider.requests[2]
     prompt_payload = json.loads(conflict_resolve_request.messages[1]["content"])
     existing_texts = {item["text"] for item in prompt_payload["existing_memories"]}
     assert existing_texts == {"很像的历史记忆"}
+
+
+async def test_run_memory_consolidation_schedules_delayed_confirmation_on_delay_intent():
+    conn = await _connect()
+    await ensure_delayed_confirmation_schema(conn)
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        ScriptedLLMProvider(
+            [
+                '{"is_delay": true}',  # detect_delay_intent
+                '{"start": null, "end": null, "confidence": 0}',  # resolve_time_window
+                # 低置信度，规则引擎也无法解析"先试试"这种非时间表达，回退默认2小时
+                '{"facts": []}',  # fact_extractor（这句话本身没有值得记忆的事实）
+            ]
+        ),
+    )
+    now = datetime(2026, 8, 6, 10, 0, 0)
+
+    applied = await run_memory_consolidation(
+        conn,
+        tenant_id="t1",
+        user_id="u1",
+        user_input="我先按您说的重启路由器试试，不行再联系",
+        assistant_output="好的，麻烦您先试试，有问题随时联系我们。",
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        now=now,
+    )
+
+    assert applied == []  # 延迟确认调度不影响 consolidation 的返回值
+    due = await list_due_confirmations(conn, tenant_id="t1", now=now + timedelta(hours=3))
+    assert len(due) == 1
+    assert due[0]["user_id"] == "u1"
+    assert "重启路由器试试" in due[0]["context"]
+
+
+async def test_run_memory_consolidation_does_not_schedule_for_normal_turn():
+    conn = await _connect()
+    await ensure_delayed_confirmation_schema(conn)
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        ScriptedLLMProvider(
+            [
+                '{"is_delay": false}',  # detect_delay_intent
+                '{"facts": []}',  # fact_extractor
+            ]
+        ),
+    )
+    now = datetime(2026, 8, 6, 10, 0, 0)
+
+    await run_memory_consolidation(
+        conn,
+        tenant_id="t1",
+        user_id="u1",
+        user_input="网络连不上怎么办",
+        assistant_output="请先重启路由器。",
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        now=now,
+    )
+
+    due = await list_due_confirmations(conn, tenant_id="t1", now=now + timedelta(hours=3))
+    assert due == []
+
+
+async def test_run_memory_consolidation_delay_intent_uses_future_time_window_when_resolved():
+    """延迟意图 + 能解析出具体未来时间点时，用解析出的时间而不是默认 +2h。"""
+    conn = await _connect()
+    await ensure_delayed_confirmation_schema(conn)
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        ScriptedLLMProvider(
+            [
+                '{"is_delay": true}',  # detect_delay_intent
+                '{"start": "2026-08-07T09:00:00", "end": "2026-08-07T10:00:00", "confidence": 0.9}',
+                '{"facts": []}',  # fact_extractor
+            ]
+        ),
+    )
+    now = datetime(2026, 8, 6, 10, 0, 0)
+
+    await run_memory_consolidation(
+        conn,
+        tenant_id="t1",
+        user_id="u1",
+        user_input="明天上午再联系我确认一下",
+        assistant_output="好的，明天上午我们再跟进。",
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        now=now,
+    )
+
+    # 尚未到 confirm_after（2026-08-07T09:00），此时查询不应该命中
+    not_yet_due = await list_due_confirmations(conn, tenant_id="t1", now=now + timedelta(hours=3))
+    assert not_yet_due == []
+
+    due = await list_due_confirmations(
+        conn, tenant_id="t1", now=datetime(2026, 8, 7, 9, 0, 1)
+    )
+    assert len(due) == 1

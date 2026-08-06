@@ -247,6 +247,7 @@ async def test_memory_enabled_stores_embedding_for_newly_added_facts_after_worke
                 '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，问题里没有时间表达式
                 "重启路由器即可解决。",  # responder 的回答
                 '{"is_safe": true}',  # OutputSafety 语义审查
+                '{"is_delay": false}',  # consolidation worker 里的 detect_delay_intent
                 '{"facts": ["客户使用企业版套餐"]}',  # 事实抽取（worker 处理阶段）
                 '{"actions": [{"event": "ADD", "target_memory_id": "", '
                 '"text": "客户使用企业版套餐", "reason": "首次提及"}]}',  # 冲突决策

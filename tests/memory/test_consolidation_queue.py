@@ -107,6 +107,7 @@ async def test_process_pending_jobs_runs_consolidation_and_marks_completed():
         "llm",
         ScriptedLLMProvider(
             [
+                '{"is_delay": false}',  # detect_delay_intent
                 '{"facts": ["客户使用企业版套餐"]}',
                 '{"actions": [{"event": "ADD", "target_memory_id": "", '
                 '"text": "客户使用企业版套餐", "reason": "首次提及"}]}',
@@ -146,7 +147,9 @@ async def test_process_pending_jobs_marks_failed_job_for_retry_without_crashing_
         "llm",
         ScriptedLLMProvider(
             [
+                '{"is_delay": false}',  # job1 的 detect_delay_intent
                 '{"facts": ["事实1"]}',
+                '{"is_delay": false}',  # job2 的 detect_delay_intent
                 '{"facts": ["事实2"]}',
             ]
         ),
