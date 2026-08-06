@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Protocol
 
 import aiosqlite
@@ -49,3 +50,43 @@ class SQLiteSessionWindowStore:
         return await get_recent_turns(
             self._conn, tenant_id=tenant_id, session_id=session_id, limit=limit
         )
+
+
+class RedisClientProtocol(Protocol):
+    async def rpush(self, key: str, value: str) -> None: ...
+    async def ltrim(self, key: str, start: int, end: int) -> None: ...
+    async def lrange(self, key: str, start: int, end: int) -> list[str]: ...
+    async def expire(self, key: str, ttl_seconds: int) -> None: ...
+
+
+class RedisSessionWindowStore:
+    """会话滑窗 Redis 实现：key = f"session_turns:{tenant_id}:{session_id}"，
+    每条轮次序列化为 JSON 存进一个 Redis List，RPUSH 追加 + LTRIM 只保留
+    最近 max_turns 条 + EXPIRE 每次写入都刷新滑动过期时间。
+    """
+
+    def __init__(
+        self, redis_client: RedisClientProtocol, *, max_turns: int = 50, ttl_seconds: int = 86400
+    ) -> None:
+        self._client = redis_client
+        self._max_turns = max_turns
+        self._ttl_seconds = ttl_seconds
+
+    def _key(self, *, tenant_id: str, session_id: str) -> str:
+        return f"session_turns:{tenant_id}:{session_id}"
+
+    async def append_turn(
+        self, *, tenant_id: str, session_id: str, user_id: str, role: str, content: str
+    ) -> None:
+        key = self._key(tenant_id=tenant_id, session_id=session_id)
+        payload = json.dumps({"role": role, "content": content})
+        await self._client.rpush(key, payload)
+        await self._client.ltrim(key, -self._max_turns, -1)
+        await self._client.expire(key, self._ttl_seconds)
+
+    async def get_recent_turns(
+        self, *, tenant_id: str, session_id: str, limit: int
+    ) -> list[dict[str, Any]]:
+        key = self._key(tenant_id=tenant_id, session_id=session_id)
+        raw_values = await self._client.lrange(key, -limit, -1)
+        return [json.loads(value) for value in raw_values]
