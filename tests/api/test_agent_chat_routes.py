@@ -14,6 +14,24 @@ from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
 
 
+def _parse_sse_events(body: str) -> list[dict]:
+    events = []
+    for block in body.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        assert block.startswith("data: ")
+        events.append(json.loads(block[len("data: ") :]))
+    return events
+
+
+def _final_event(body: str) -> dict:
+    events = _parse_sse_events(body)
+    final_events = [e for e in events if e.get("type") == "final"]
+    assert len(final_events) == 1
+    return final_events[0]
+
+
 def _settings(**overrides) -> Settings:
     defaults = dict(
         llm_base_url="https://api.deepseek.com/v1",
@@ -111,10 +129,125 @@ def test_agent_chat_streams_final_answer_as_sse():
         app.dependency_overrides.clear()
 
     assert body.startswith("data: ")
-    payload = json.loads(body[len("data: ") :].strip())
+    payload = _final_event(body)
     assert payload["text"] == "按资料所述，重启路由器即可解决。"
     assert payload["used_sources"] == ["faq/network.md"]
     assert payload.get("audio_segments_base64") is None
+
+
+class StreamingFakeLLMProvider:
+    def __init__(self, chunks: list[str], *, second_response: str = '{"is_safe": true}') -> None:
+        self._chunks = chunks
+        self._second_response = second_response
+
+    async def stream_complete(self, request: ProviderRequest):
+        for chunk in self._chunks:
+            yield chunk
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        # OutputSafety 的 semantic_safety_review 仍然会调一次非流式 complete()
+        return ProviderResult(text=self._second_response)
+
+
+def test_agent_chat_streams_delta_events_before_the_final_event():
+    import asyncio
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        deps.DEFAULT_LLM_PROVIDER_NAME,
+        StreamingFakeLLMProvider(["重启路由器", "即可解决。"]),
+    )
+    vector_store = asyncio.run(_fake_vector_store())
+
+    async def _override_get_memory_conn() -> aiosqlite.Connection:
+        conn = await aiosqlite.connect(":memory:")
+        await ensure_schema(conn)
+        return conn
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
+    app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
+    app.dependency_overrides[deps.get_tts_provider] = lambda: None
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    try:
+        client = TestClient(app)
+        with client.stream(
+            "POST",
+            "/agent/chat",
+            json={"question": "网络连不上怎么办？", "tenant_id": "t1"},
+        ) as response:
+            body = "".join(response.iter_text())
+    finally:
+        app.dependency_overrides.clear()
+
+    events = _parse_sse_events(body)
+    delta_events = [e for e in events if e["type"] == "delta"]
+    final_events = [e for e in events if e["type"] == "final"]
+
+    assert delta_events == [{"type": "delta", "text": "重启路由器即可解决。"}]
+    assert len(final_events) == 1
+    assert final_events[0]["text"] == "重启路由器即可解决。"
+    # delta 必须先于 final 到达（客户端要能边收边展示）
+    assert events.index(delta_events[0]) < events.index(final_events[0])
+
+
+def test_agent_chat_does_not_stream_deltas_for_voice_requests():
+    import asyncio
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        deps.DEFAULT_LLM_PROVIDER_NAME,
+        StreamingFakeLLMProvider(["重启路由器即可解决。"]),
+    )
+    vector_store = asyncio.run(_fake_vector_store())
+
+    async def _override_get_memory_conn() -> aiosqlite.Connection:
+        conn = await aiosqlite.connect(":memory:")
+        await ensure_schema(conn)
+        return conn
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
+    app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
+    app.dependency_overrides[deps.get_tts_provider] = lambda: FakeTTSProvider()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    try:
+        client = TestClient(app)
+        with client.stream(
+            "POST",
+            "/agent/chat",
+            json={
+                "question": "网络连不上怎么办？",
+                "tenant_id": "t1",
+                "voice_response": True,
+            },
+        ) as response:
+            body = "".join(response.iter_text())
+    finally:
+        app.dependency_overrides.clear()
+
+    events = _parse_sse_events(body)
+    assert all(e["type"] == "final" for e in events)
 
 
 class FakeTTSProvider:
@@ -167,7 +300,7 @@ def test_agent_chat_synthesizes_voice_when_requested():
     finally:
         app.dependency_overrides.clear()
 
-    payload = json.loads(body[len("data: ") :].strip())
+    payload = _final_event(body)
     assert payload["audio_segments_base64"]
     assert len(payload["audio_segments_base64"]) >= 1
 
@@ -226,7 +359,7 @@ def test_agent_chat_uses_planner_path_when_enabled_and_not_voice():
     finally:
         app.dependency_overrides.clear()
 
-    payload = json.loads(body[len("data: ") :].strip())
+    payload = _final_event(body)
     assert payload["text"] == "这是通用问题，无需检索资料。"
 
 
@@ -249,7 +382,7 @@ def test_agent_chat_forces_static_path_for_voice_even_when_planner_enabled():
     finally:
         app.dependency_overrides.clear()
 
-    payload = json.loads(body[len("data: ") :].strip())
+    payload = _final_event(body)
     assert "人工" in payload["text"] or "转" in payload["text"]
 
 
@@ -267,5 +400,5 @@ def test_agent_chat_uses_static_path_when_planner_disabled_by_default():
     finally:
         app.dependency_overrides.clear()
 
-    payload = json.loads(body[len("data: ") :].strip())
+    payload = _final_event(body)
     assert "人工" in payload["text"] or "转" in payload["text"]

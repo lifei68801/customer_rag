@@ -36,3 +36,48 @@ async def test_run_raises_for_unregistered_provider_name():
             ProviderRequest(messages=[{"role": "user", "content": "hi"}]),
             provider_name="glm",
         )
+
+
+class StreamingFakeProvider:
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        return ProviderResult(text="不应该被用到")
+
+    async def stream_complete(self, request: ProviderRequest):
+        for chunk in ["你好", "，世界"]:
+            yield chunk
+
+
+def test_supports_streaming_true_for_provider_with_stream_complete():
+    registry = ProviderRegistry()
+    registry.register(ProviderCapability.LLM, "streaming", StreamingFakeProvider())
+
+    assert registry.supports_streaming(ProviderCapability.LLM, "streaming") is True
+
+
+def test_supports_streaming_false_for_provider_without_stream_complete():
+    registry = ProviderRegistry()
+    registry.register(ProviderCapability.LLM, "qwen", FakeProvider("qwen"))
+
+    assert registry.supports_streaming(ProviderCapability.LLM, "qwen") is False
+
+
+def test_supports_streaming_false_for_unregistered_provider_name():
+    registry = ProviderRegistry()
+
+    assert registry.supports_streaming(ProviderCapability.LLM, "missing") is False
+
+
+async def test_stream_yields_chunks_from_the_named_provider():
+    registry = ProviderRegistry()
+    registry.register(ProviderCapability.LLM, "streaming", StreamingFakeProvider())
+
+    chunks = [
+        chunk
+        async for chunk in registry.stream(
+            ProviderCapability.LLM,
+            ProviderRequest(messages=[{"role": "user", "content": "hi"}]),
+            provider_name="streaming",
+        )
+    ]
+
+    assert chunks == ["你好", "，世界"]

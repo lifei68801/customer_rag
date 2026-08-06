@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import aiosqlite
 from langgraph.graph import END, START, StateGraph
@@ -35,6 +35,7 @@ from app.retrieval.vector_store import VectorStore
 from app.safety.prompt_injection import detect_prompt_injection, wrap_system_prompt
 from app.safety.rules import check_text
 from app.safety.semantic_review import semantic_safety_review
+from app.voice.streaming_responder import stream_sentences
 
 _PROMPT_TEMPLATE = "根据以下资料回答问题。\n资料：\n{context}\n\n问题：{question}"
 _UNSAFE_INPUT_MESSAGE = "您的问题包含无法处理的敏感内容，请修改后重新提问。"
@@ -44,6 +45,7 @@ _FUTURE_TIME_CLARIFICATION_PROMPT = (
     "您提到的时间似乎是将来的日期，我们暂时没有对应的记录。"
     "请问您想查询的是哪一个具体的历史日期呢？"
 )
+_LITE_SAFETY_FALLBACK_SENTENCE = "（该部分内容因安全检查被过滤。）"
 _PLANNER_SYSTEM_PROMPT = (
     "你是客服问答助手。可以调用 vector_search_tool 检索知识库、"
     "graph_query_tool 查询专有名词的标准名称及关联关系。"
@@ -71,6 +73,7 @@ def build_agent_graph(
     min_relevance_score: float | None = None,
     enable_autonomous_planning: bool = False,
     max_tool_call_rounds: int = 3,
+    on_answer_chunk: Callable[[str], Awaitable[None]] | None = None,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     """构建 Agent 推理状态图。
 
@@ -117,6 +120,18 @@ def build_agent_graph(
     "明天/下周"的问题其实是在问政策性内容（"明天能退货吗"），不是在查
     历史数据，全局拦截会误伤这类正常提问；只在兜底路径上介入，风险
     仅限于"反正要失败"的场景。
+
+    on_answer_chunk 为可选项：不提供则 Responder 仍是一次性 complete()
+    调用（行为不变）；提供且当前 llm_provider_name 对应的 provider 支持
+    stream_complete() 时，Responder 改为流式生成，按句子边界（复用
+    app/voice/streaming_responder.py 的 stream_sentences，和语音输出
+    同一套切句逻辑）逐句调用 on_answer_chunk。每句先过一次轻量规则检查
+    （check_text，毫秒级，不调 LLM），命中风险词的句子替换成安全兜底话术
+    再推送，而不是原样播报——完整语义级安全审查（OutputSafety 里的
+    semantic_safety_review）仍然在整段回复生成完毕后照常运行一次，这是
+    防御纵深，不是用轻量检查取代它。这一权衡（先播出部分内容、完整审查
+    在后）已与产品方确认，如果 provider 不支持流式，自动退化为一次性
+    生成+审查，不会强行流式。
     """
 
     async def input_safety_node(state: AgentState) -> dict[str, Any]:
@@ -203,6 +218,25 @@ def build_agent_graph(
             *state.get("memory_context_messages", []),
             {"role": "user", "content": prompt},
         ]
+
+        if on_answer_chunk is not None and llm_registry.supports_streaming(
+            ProviderCapability.LLM, llm_provider_name
+        ):
+            text_stream = llm_registry.stream(
+                ProviderCapability.LLM,
+                ProviderRequest(messages=messages),
+                provider_name=llm_provider_name,
+            )
+            sent_sentences: list[str] = []
+            async for sentence in stream_sentences(text_stream):
+                safety_result = check_text(sentence, banned_terms=banned_terms)
+                safe_sentence = (
+                    sentence if safety_result.is_safe else _LITE_SAFETY_FALLBACK_SENTENCE
+                )
+                await on_answer_chunk(safe_sentence)
+                sent_sentences.append(safe_sentence)
+            return {"answer_text": "".join(sent_sentences), "fallback_triggered": False}
+
         result = await llm_registry.run(
             ProviderCapability.LLM,
             ProviderRequest(messages=messages),

@@ -429,3 +429,108 @@ async def test_prompt_injection_attempt_short_circuits_without_calling_llm():
     assert result["is_input_safe"] is False
     assert llm_provider.last_request is None
     assert "override_instructions" in result["input_unsafe_terms"]
+
+
+class StreamingLLMProvider:
+    def __init__(self, chunks: list[str], *, second_response: str = '{"is_safe": true}') -> None:
+        self._chunks = chunks
+        self._second_response = second_response
+        self._complete_call_count = 0
+
+    async def stream_complete(self, request: ProviderRequest):
+        for chunk in self._chunks:
+            yield chunk
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        # OutputSafety 的 semantic_safety_review 仍然会调一次非流式 complete()
+        self._complete_call_count += 1
+        return ProviderResult(text=self._second_response)
+
+
+async def test_on_answer_chunk_streams_sentences_when_provider_supports_it():
+    embedding_registry, vector_store, bm25_index, _unused_registry, _unused_provider = (
+        await _build_dependencies(with_records=True, llm_text="不应该被用到")
+    )
+    llm_provider = StreamingLLMProvider(["重启路由器", "即可解决。"])
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+
+    received_chunks: list[str] = []
+
+    async def on_answer_chunk(sentence: str) -> None:
+        received_chunks.append(sentence)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        on_answer_chunk=on_answer_chunk,
+    )
+
+    result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
+
+    assert received_chunks == ["重启路由器即可解决。"]
+    assert result["final_text"] == "重启路由器即可解决。"
+
+
+async def test_on_answer_chunk_replaces_unsafe_sentence_with_fallback_text():
+    embedding_registry, vector_store, bm25_index, _unused_registry, _unused_provider = (
+        await _build_dependencies(with_records=True, llm_text="不应该被用到")
+    )
+    # 流式吐出的句子里含有被禁用词，轻量检查应该拦下这句、替换成安全兜底话术
+    llm_provider = StreamingLLMProvider(["这句话包含敏感词。"])
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+
+    received_chunks: list[str] = []
+
+    async def on_answer_chunk(sentence: str) -> None:
+        received_chunks.append(sentence)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        banned_terms=["敏感词"],
+        on_answer_chunk=on_answer_chunk,
+    )
+
+    result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
+
+    assert len(received_chunks) == 1
+    assert "敏感词" not in received_chunks[0]
+    assert "敏感词" not in result["final_text"]
+
+
+async def test_on_answer_chunk_not_called_when_provider_lacks_streaming_support():
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(with_records=True, llm_text="重启路由器即可解决。")
+    )
+    received_chunks: list[str] = []
+
+    async def on_answer_chunk(sentence: str) -> None:
+        received_chunks.append(sentence)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        on_answer_chunk=on_answer_chunk,
+    )
+
+    result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
+
+    assert received_chunks == []
+    assert result["final_text"] == "重启路由器即可解决。"
