@@ -22,6 +22,7 @@ async def hybrid_search(
     rerank_provider: RerankProvider | None = None,
     query_rewrite_enabled: bool = True,
     query_rewrite_timeout_sec: float = 1.0,
+    conversation_context: list[dict[str, str]] | None = None,
     vector_top_k: int = 10,
     bm25_top_k: int = 10,
     fusion_top_k: int = 10,
@@ -31,6 +32,10 @@ async def hybrid_search(
 
     RRF 只依据各路排名位置融合，不比较向量相似度和 BM25 分数这两种不同量纲；
     Rerank 仅用于对融合后的候选池精排，不改变候选池本身。
+
+    conversation_context 为可选项：传入近期对话轮次时，query 改写这一步
+    能看到"用户之前说了什么"来补全模糊指代（"这个报错"），见
+    app/qa/query_rewrite.py；不传则只看孤立的当前问题，行为不变。
     """
     candidates: dict[str, VectorRecord] = {}
     ranked_id_lists: list[list[str]] = []
@@ -42,6 +47,7 @@ async def hybrid_search(
             llm_registry=llm_registry,
             llm_provider_name=llm_provider_name,
             timeout_sec=query_rewrite_timeout_sec,
+            conversation_context=conversation_context,
         )
         if rewritten != question:
             query_texts.append(rewritten)

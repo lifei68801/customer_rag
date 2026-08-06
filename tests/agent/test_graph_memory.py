@@ -4,7 +4,7 @@ from app.agent.graph import build_agent_graph
 from app.memory.consolidation_queue import list_pending_jobs, process_pending_jobs
 from app.memory.memory_store import list_active_memory_items, upsert_memory_item
 from app.memory.schema import ensure_schema
-from app.memory.session_window import get_recent_turns
+from app.memory.session_window import append_turn, get_recent_turns
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
@@ -70,6 +70,63 @@ async def test_memory_disabled_by_default_matches_stage4_behavior():
     result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
 
     assert result["final_text"] == "重启路由器即可解决。"
+
+
+async def test_query_rewrite_receives_recent_conversation_turns_as_context():
+    # 客服口语化提问常有指代（"这个报错"），改写需要看到近期对话轮次
+    # 才能补全指代，不能只看孤立的一句话。
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+    await append_turn(
+        conn,
+        tenant_id="t1",
+        session_id="s1",
+        user_id="u1",
+        role="user",
+        content="我遇到了E502错误",
+    )
+    await append_turn(
+        conn,
+        tenant_id="t1",
+        session_id="s1",
+        user_id="u1",
+        role="assistant",
+        content="E502是网关超时错误。",
+    )
+
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(
+            [
+                "错误码E502 网关超时",  # query 改写结果
+                "重启路由器即可解决。",  # responder 的回答
+                '{"is_safe": true}',  # OutputSafety 语义审查
+            ]
+        )
+    )
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=True,
+        memory_conn=conn,
+    )
+
+    await graph.ainvoke(
+        {
+            "question": "这个报错怎么解决",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    assert len(llm_provider.requests) >= 1
+    rewrite_request = llm_provider.requests[0]
+    contents = [message.get("content") for message in rewrite_request.messages]
+    assert "我遇到了E502错误" in contents
 
 
 async def test_memory_enabled_saves_turn_and_injects_context():

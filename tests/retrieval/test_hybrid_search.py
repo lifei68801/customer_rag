@@ -98,6 +98,47 @@ async def test_hybrid_search_does_not_leak_another_tenants_records():
     assert results == []
 
 
+async def test_hybrid_search_passes_conversation_context_to_query_rewrite():
+    store, bm25 = await _build_store_and_index()
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        "fake-embedding",
+        FixedEmbeddingProvider({"E502 错误码是什么意思": [1.0, 0.0]}),
+    )
+
+    class RecordingLLMProvider:
+        def __init__(self) -> None:
+            self.last_request: ProviderRequest | None = None
+
+        async def complete(self, request: ProviderRequest) -> ProviderResult:
+            self.last_request = request
+            return ProviderResult(text="E502 错误码是什么意思")
+
+    llm_provider = RecordingLLMProvider()
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "llm", llm_provider)
+
+    conversation_context = [{"role": "user", "content": "我遇到了E502"}]
+
+    await hybrid_search(
+        "这个报错是什么意思",
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=store,
+        bm25_index=bm25,
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        query_rewrite_enabled=True,
+        final_top_k=2,
+        tenant_id="t1",
+        conversation_context=conversation_context,
+    )
+
+    assert llm_provider.last_request is not None
+    assert conversation_context[0] in llm_provider.last_request.messages
+
+
 async def test_hybrid_search_uses_rerank_order_when_provided():
     store, bm25 = await _build_store_and_index()
 

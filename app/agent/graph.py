@@ -99,6 +99,10 @@ def build_agent_graph(
     抽取+冲突决策+写入由独立的 app/memory/consolidation_worker.py
     处理，需要部署方单独调度（cron/systemd timer/常驻循环）。
 
+    memory_conn 提供时，检索前的 query 改写（app/qa/query_rewrite.py）也
+    会看到 memory_context_messages（近期会话轮次），用于补全"这个报错"
+    这类模糊指代——之前改写只看孤立的当前问题，看不到对话历史。
+
     ticket_conn 同样可选：不传则 create_ticket 保持纯 mock 行为，不落库；
     传入则工单持久化，使 app/memory/proactive_scan.py 能扫描出"挂起过久"
     的工单并触发主动跟进（见 app/memory/followup_engine.py）。
@@ -198,6 +202,7 @@ def build_agent_graph(
             llm_provider_name=llm_provider_name,
             rerank_provider=rerank_provider,
             query_rewrite_enabled=query_rewrite_enabled,
+            conversation_context=state.get("memory_context_messages", []),
             final_top_k=top_k,
             tenant_id=state["tenant_id"],
         )
