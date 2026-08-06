@@ -99,6 +99,27 @@ async def list_stale_pending_tickets(
     return [dict(row) for row in rows]
 
 
+async def list_pending_tickets_created_before(
+    conn: aiosqlite.Connection, *, tenant_id: str, before: datetime
+) -> list[dict[str, Any]]:
+    """找出还是 pending 状态、创建时间早于给定时间点的工单——"已知故障
+    修复后主动告知"的候选池：只有在修复上线之前提的工单才可能是同一个
+    问题，修复之后才提的大概率是别的问题，不参与匹配。
+
+    不排除 notified_at（"挂起过久"触发专用的标记），因为已知修复是完全
+    不同的触发原因，去重靠调用方结合 ticket_fix_notifications 表按
+    (ticket_id, fix_id) 维度判断，不能复用这个字段。
+    """
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute(
+        "SELECT * FROM tickets WHERE tenant_id = ? AND status = 'pending' "
+        "AND created_at < ? ORDER BY created_at",
+        (tenant_id, before.timestamp()),
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
 async def mark_ticket_notified(
     conn: aiosqlite.Connection, ticket_id: str, *, now: datetime
 ) -> None:

@@ -2,12 +2,19 @@ from datetime import datetime, timedelta
 
 import aiosqlite
 
-from app.agent.create_ticket_tool import create_ticket, list_stale_pending_tickets
+from app.agent.create_ticket_tool import (
+    create_ticket,
+    list_pending_tickets_created_before,
+    list_stale_pending_tickets,
+)
 from app.memory.customer_profile import ensure_customer_profile_schema, upsert_customer_profile
 from app.memory.followup_log import ensure_followup_log_schema, get_send_history
+from app.memory.known_fixes import ensure_known_fixes_schema, register_known_fix
 from app.memory.proactive_channel import MockProactiveChannel
-from app.memory.proactive_scan import scan_and_send_ticket_followups
+from app.memory.proactive_scan import scan_and_send_known_fix_followups, scan_and_send_ticket_followups
+from app.memory.ticket_fix_notifications import ensure_ticket_fix_notifications_schema, is_already_notified
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
+from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
 
 _STALE_AFTER_SECONDS = 72 * 3600
@@ -24,6 +31,20 @@ class ScriptedLLMProvider:
 def _llm_registry(responses: list[str]) -> ProviderRegistry:
     registry = ProviderRegistry()
     registry.register(ProviderCapability.LLM, "llm", ScriptedLLMProvider(responses))
+    return registry
+
+
+class FixedEmbeddingProvider:
+    def __init__(self, vector: list[float]) -> None:
+        self._vector = vector
+
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+        return EmbeddingResult(vectors=[self._vector for _ in request.texts])
+
+
+def _embedding_registry(vector: list[float]) -> EmbeddingRegistry:
+    registry = EmbeddingRegistry()
+    registry.register("fake-embedding", FixedEmbeddingProvider(vector))
     return registry
 
 
@@ -198,3 +219,96 @@ async def test_uses_customer_profile_communication_style_when_present():
 
     assert sent == 1
     assert channel.sent[0]["message"] == "亲切随和风格的跟进消息"
+
+
+async def test_scan_and_send_known_fix_followups_matches_similar_ticket():
+    conn = await aiosqlite.connect(":memory:")
+    now = datetime(2026, 8, 6, 10, 0, 0)
+    fixed_at = datetime(2026, 8, 5, 0, 0, 0)
+
+    await ensure_known_fixes_schema(conn)
+    await ensure_ticket_fix_notifications_schema(conn)
+    embedding_registry = _embedding_registry([1.0, 0.0])
+    fix_id = await register_known_fix(
+        conn, tenant_id="t1", description="网关超时问题已修复", fixed_at=fixed_at,
+        embedding_registry=embedding_registry, embedding_provider_name="fake-embedding",
+    )
+    await create_ticket(
+        tenant_id="t1", customer_id="c1", question="网关超时报错E502",
+        reason="原因", conn=conn, now=fixed_at - timedelta(days=1),
+    )
+
+    channel = MockProactiveChannel()
+    llm_registry = _llm_registry(["您反馈的网关超时问题已经修复，感谢您的耐心等待。"])
+
+    sent = await scan_and_send_known_fix_followups(
+        conn, tenant_id="t1", channel=channel,
+        embedding_registry=embedding_registry, embedding_provider_name="fake-embedding",
+        llm_registry=llm_registry, llm_provider_name="llm", now=now,
+    )
+
+    assert sent == 1
+    assert len(channel.sent) == 1
+    tickets = await list_pending_tickets_created_before(conn, tenant_id="t1", before=now)
+    assert await is_already_notified(conn, ticket_id=tickets[0]["ticket_id"], fix_id=fix_id) is True
+
+
+async def test_scan_and_send_known_fix_followups_skips_dissimilar_ticket():
+    conn = await aiosqlite.connect(":memory:")
+    now = datetime(2026, 8, 6, 10, 0, 0)
+    fixed_at = datetime(2026, 8, 5, 0, 0, 0)
+
+    await ensure_known_fixes_schema(conn)
+    await ensure_ticket_fix_notifications_schema(conn)
+    fix_embedding_registry = _embedding_registry([1.0, 0.0])
+    await register_known_fix(
+        conn, tenant_id="t1", description="网关超时问题已修复", fixed_at=fixed_at,
+        embedding_registry=fix_embedding_registry, embedding_provider_name="fake-embedding",
+    )
+    await create_ticket(
+        tenant_id="t1", customer_id="c1", question="完全不相关的问题",
+        reason="原因", conn=conn, now=fixed_at - timedelta(days=1),
+    )
+
+    channel = MockProactiveChannel()
+    # 扫描时给一个和 fix embedding 正交的向量，模拟"语义不相关"
+    scan_embedding_registry = _embedding_registry([0.0, 1.0])
+    llm_registry = _llm_registry(["不应该被用到"])
+
+    sent = await scan_and_send_known_fix_followups(
+        conn, tenant_id="t1", channel=channel,
+        embedding_registry=scan_embedding_registry, embedding_provider_name="fake-embedding",
+        llm_registry=llm_registry, llm_provider_name="llm", now=now,
+    )
+
+    assert sent == 0
+    assert channel.sent == []
+
+
+async def test_scan_and_send_known_fix_followups_excludes_tickets_created_after_fix():
+    conn = await aiosqlite.connect(":memory:")
+    now = datetime(2026, 8, 6, 10, 0, 0)
+    fixed_at = datetime(2026, 8, 5, 0, 0, 0)
+
+    await ensure_known_fixes_schema(conn)
+    await ensure_ticket_fix_notifications_schema(conn)
+    embedding_registry = _embedding_registry([1.0, 0.0])
+    await register_known_fix(
+        conn, tenant_id="t1", description="网关超时问题已修复", fixed_at=fixed_at,
+        embedding_registry=embedding_registry, embedding_provider_name="fake-embedding",
+    )
+    await create_ticket(
+        tenant_id="t1", customer_id="c1", question="网关超时报错E502（修复之后才提的）",
+        reason="原因", conn=conn, now=fixed_at + timedelta(days=1),
+    )
+
+    channel = MockProactiveChannel()
+    llm_registry = _llm_registry(["不应该被用到"])
+
+    sent = await scan_and_send_known_fix_followups(
+        conn, tenant_id="t1", channel=channel,
+        embedding_registry=embedding_registry, embedding_provider_name="fake-embedding",
+        llm_registry=llm_registry, llm_provider_name="llm", now=now,
+    )
+
+    assert sent == 0
