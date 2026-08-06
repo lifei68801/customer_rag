@@ -57,6 +57,20 @@ def _embedding_registry(vector: list[float]) -> EmbeddingRegistry:
     return registry
 
 
+class SelectivelyFailingEmbeddingProvider:
+    """对指定文本抛异常，模拟 embedding 服务对某一条工单的调用失败，其它
+    工单正常返回固定向量——用来验证单条工单 embedding 失败的隔离行为。"""
+
+    def __init__(self, vector: list[float], fail_for_texts: set[str]) -> None:
+        self._vector = vector
+        self._fail_for_texts = fail_for_texts
+
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+        if any(text in self._fail_for_texts for text in request.texts):
+            raise RuntimeError("embedding 服务暂时不可用")
+        return EmbeddingResult(vectors=[self._vector for _ in request.texts])
+
+
 async def test_scans_stale_ticket_and_sends_followup_then_marks_it_notified():
     conn = await aiosqlite.connect(":memory:")
     now = datetime(2026, 8, 5, 10, 0, 0)
@@ -321,6 +335,54 @@ async def test_scan_and_send_known_fix_followups_excludes_tickets_created_after_
     )
 
     assert sent == 0
+
+
+async def test_scan_and_send_known_fix_followups_isolates_per_ticket_embedding_failure(caplog):
+    """Finding 3 回归测试：单条工单 embedding 计算失败只应该跳过该条工单，
+    记日志，不影响同批次其它工单——不能因为一条工单 embedding 报错就让
+    整个租户这次扫描全部中断（设计文档 §3a 错误处理要求）。"""
+    conn = await aiosqlite.connect(":memory:")
+    now = datetime(2026, 8, 6, 10, 0, 0)
+    fixed_at = datetime(2026, 8, 5, 0, 0, 0)
+
+    await ensure_known_fixes_schema(conn)
+    await ensure_ticket_fix_notifications_schema(conn)
+    fix_embedding_registry = _embedding_registry([1.0, 0.0])
+    await register_known_fix(
+        conn, tenant_id="t1", description="网关超时问题已修复", fixed_at=fixed_at,
+        embedding_registry=fix_embedding_registry, embedding_provider_name="fake-embedding",
+    )
+    failing_question = "网关超时报错E502（这条工单 embedding 会失败）"
+    await create_ticket(
+        tenant_id="t1", customer_id="c1", question=failing_question,
+        reason="原因", conn=conn, now=fixed_at - timedelta(days=1),
+    )
+    await create_ticket(
+        tenant_id="t1", customer_id="c2", question="网关超时报错E502（这条正常）",
+        reason="原因", conn=conn, now=fixed_at - timedelta(days=1),
+    )
+
+    channel = MockProactiveChannel()
+    scan_embedding_registry = EmbeddingRegistry()
+    scan_embedding_registry.register(
+        "fake-embedding",
+        SelectivelyFailingEmbeddingProvider([1.0, 0.0], fail_for_texts={failing_question}),
+    )
+    llm_registry = _llm_registry(["您反馈的网关超时问题已经修复，感谢您的耐心等待。"])
+
+    with caplog.at_level("WARNING"):
+        sent = await scan_and_send_known_fix_followups(
+            conn, tenant_id="t1", channel=channel,
+            embedding_registry=scan_embedding_registry, embedding_provider_name="fake-embedding",
+            llm_registry=llm_registry, llm_provider_name="llm", now=now,
+        )
+
+    # 失败的那条被跳过，正常的那条（c2）照常发送
+    assert sent == 1
+    assert channel.sent == [
+        {"customer_id": "c2", "message": "您反馈的网关超时问题已经修复，感谢您的耐心等待。"}
+    ]
+    assert any("embedding" in record.message for record in caplog.records)
 
 
 async def test_scan_and_send_delayed_confirmation_followups_sends_when_due():

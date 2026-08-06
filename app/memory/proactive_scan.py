@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timedelta
 
@@ -29,6 +30,8 @@ from app.memory.ticket_fix_notifications import (
 )
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
 from app.providers.registry import ProviderRegistry
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_STALE_AFTER_SECONDS = 3 * 24 * 3600
 
@@ -130,11 +133,44 @@ async def scan_and_send_known_fix_followups(
     工单可能先被挂起过久通知过、之后又该被已修复通知，两者不能共用同一
     个布尔标记互相掩盖，去重靠独立的 ticket_fix_notifications 表按
     (ticket_id, fix_id) 维度判断。
+
+    错误处理（设计文档 §3a）：单条工单 embedding 失败只跳过该条工单+记
+    日志，不影响同批次其它工单——和 scan_and_send_ticket_followups 等
+    同批次扫描函数"一条失败不拖垮整批"的隔离原则一致，也和
+    consolidation_queue.py::process_pending_jobs 里"每个任务的失败都
+    单独捕获，不影响同批次其它任务"是同一种隔离模式。同一张工单可能被
+    多个 fix 拿来做相似度比较，embedding 只算一次、缓存在 ticket_id 维度
+    的字典里——既避免了 O(fixes × tickets) 的重复调用，也保证一条工单
+    embedding 失败只记一次日志、后续 fix 循环直接复用"失败"结果跳过，
+    不会对同一条工单反复重试同一次失败。
     """
     await ensure_known_fixes_schema(conn)
     await ensure_ticket_fix_notifications_schema(conn)
     await ensure_customer_profile_schema(conn)
     await ensure_followup_log_schema(conn)
+
+    ticket_embeddings: dict[str, list[float] | None] = {}
+
+    async def _embedding_for_ticket(ticket: dict) -> list[float] | None:
+        ticket_id = ticket["ticket_id"]
+        if ticket_id in ticket_embeddings:
+            return ticket_embeddings[ticket_id]
+        try:
+            embed_result = await embedding_registry.run(
+                EmbeddingRequest(texts=[ticket["question"]]),
+                provider_name=embedding_provider_name,
+            )
+            vector: list[float] | None = embed_result.vectors[0]
+        except Exception:
+            logger.warning(
+                "已知修复主动告知扫描：工单 %s 的 embedding 计算失败，跳过该条工单，"
+                "不影响同批次其它工单",
+                ticket_id,
+                exc_info=True,
+            )
+            vector = None
+        ticket_embeddings[ticket_id] = vector
+        return vector
 
     sent_count = 0
     for fix in await list_known_fixes(conn, tenant_id=tenant_id):
@@ -146,11 +182,10 @@ async def scan_and_send_known_fix_followups(
             if await is_already_notified(conn, ticket_id=ticket["ticket_id"], fix_id=fix["fix_id"]):
                 continue
 
-            embed_result = await embedding_registry.run(
-                EmbeddingRequest(texts=[ticket["question"]]),
-                provider_name=embedding_provider_name,
-            )
-            similarity = _cosine_similarity(embed_result.vectors[0], fix["embedding"])
+            vector = await _embedding_for_ticket(ticket)
+            if vector is None:
+                continue
+            similarity = _cosine_similarity(vector, fix["embedding"])
             if similarity < similarity_threshold:
                 continue
 
