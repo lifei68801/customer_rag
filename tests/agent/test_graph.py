@@ -110,6 +110,96 @@ async def test_no_records_triggers_fallback_and_creates_ticket():
     assert llm_provider.last_request is None
 
 
+async def test_min_relevance_score_triggers_fallback_when_all_matches_are_weak():
+    # 真实向量库几乎总能返回 Top-K 个最近邻，哪怕语义上完全不相关——
+    # 只看"检索结果是否为空"不够，需要相关性分数阈值兜底。
+    class OrthogonalEmbeddingProvider:
+        async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+            return EmbeddingResult(vectors=[[0.0, 1.0] for _ in request.texts])
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", OrthogonalEmbeddingProvider())
+
+    vector_store = InMemoryVectorStore()
+    bm25_index = BM25Index()
+    records = [
+        VectorRecord(
+            id="faq/unrelated.md",
+            vector=[1.0, 0.0],
+            text="完全不相关的资料",
+            tenant_id="t1",
+            metadata={},
+        )
+    ]
+    await vector_store.upsert(records)
+    bm25_index.index(records)
+
+    llm_provider = FakeLLMProvider("不应该被用到")
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        min_relevance_score=0.5,
+    )
+
+    result = await graph.ainvoke({"question": "任意问题", "tenant_id": "t1"})
+
+    assert result["fallback_triggered"] is True
+    assert result["ticket_id"]
+    assert llm_provider.last_request is None
+
+
+async def test_min_relevance_score_does_not_affect_default_behavior_when_unset():
+    # 不设置 min_relevance_score（默认 None）时行为完全不变——即使记录
+    # 分数很低，也照常走 responder，不引入新的默认行为变化。
+    class OrthogonalEmbeddingProvider:
+        async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+            return EmbeddingResult(vectors=[[0.0, 1.0] for _ in request.texts])
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", OrthogonalEmbeddingProvider())
+
+    vector_store = InMemoryVectorStore()
+    bm25_index = BM25Index()
+    records = [
+        VectorRecord(
+            id="faq/unrelated.md",
+            vector=[1.0, 0.0],
+            text="完全不相关的资料",
+            tenant_id="t1",
+            metadata={},
+        )
+    ]
+    await vector_store.upsert(records)
+    bm25_index.index(records)
+
+    llm_provider = FakeLLMProvider("照常回答")
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+    )
+
+    result = await graph.ainvoke({"question": "任意问题", "tenant_id": "t1"})
+
+    assert result["fallback_triggered"] is False
+    assert result["final_text"] == "照常回答"
+
+
 async def test_ticket_conn_persists_ticket_for_later_stale_scan():
     import aiosqlite
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -12,6 +13,11 @@ class VectorRecord:
     text: str
     tenant_id: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 只有 search() 返回的结果才会填充（余弦相似度/Milvus距离，越大越相关）；
+    # upsert 时新建的记录没有意义，保持 None。用于 Agent 兜底路径判断"检索
+    # 到的结果是不是真的相关"——真实向量库几乎总能返回 Top-K 个最近邻，
+    # 不能只靠"结果是否为空"判断需不需要转人工。
+    score: float | None = None
 
 
 class VectorStore(Protocol):
@@ -57,7 +63,9 @@ class InMemoryVectorStore:
             if record.tenant_id == tenant_id
         ]
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        return [record for _, record in scored[:top_k]]
+        return [
+            dataclasses.replace(record, score=score) for score, record in scored[:top_k]
+        ]
 
     async def list_all(self) -> list[VectorRecord]:
         return list(self._records)

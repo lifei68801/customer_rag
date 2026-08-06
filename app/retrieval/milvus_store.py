@@ -99,6 +99,7 @@ class MilvusVectorStore:
                 text=hit["entity"]["text"],
                 tenant_id=tenant_id,
                 metadata={},
+                score=hit["distance"],
             )
             for hit in hits
         ]

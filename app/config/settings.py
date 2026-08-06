@@ -57,3 +57,8 @@ class Settings(BaseSettings):
     # 确定性路径，避免多轮 LLM 往返和首包延迟的硬性要求冲突。
     agent_enable_autonomous_planning: bool = False
     agent_max_tool_call_rounds: int = 3
+    # 真实向量库几乎总能返回 Top-K 个最近邻，哪怕语义上完全不相关；设置后，
+    # 检索到的记录即使非空，最高相关性分数低于这个阈值也会转人工工单，而不
+    # 是把不相关资料硬塞给 LLM。默认不设置（None），行为与之前完全一致——
+    # 具体阈值需要结合实际 embedding 模型/语料标定，不能瞎猜一个通用值。
+    agent_min_relevance_score: float | None = None

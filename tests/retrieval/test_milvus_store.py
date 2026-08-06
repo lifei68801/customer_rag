@@ -87,7 +87,9 @@ async def test_search_maps_milvus_hits_to_vector_records():
     assert len(results) == 2
     assert results[0].id == "faq/network.md"
     assert results[0].text == "网络断开时请先重启路由器。"
+    assert results[0].score == 0.98
     assert results[1].id == "faq/login.md"
+    assert results[1].score == 0.42
 
 
 async def test_search_passes_tenant_id_as_a_scalar_filter_expression():

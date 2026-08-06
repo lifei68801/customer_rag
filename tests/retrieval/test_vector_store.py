@@ -20,6 +20,29 @@ async def test_search_returns_closest_record_first():
     assert results[0].id == "a"
 
 
+async def test_search_attaches_cosine_similarity_score_to_results():
+    # 相关性判断（Agent 兜底路径的相关性阈值）需要一个可比较的分数，不能只
+    # 依赖"检索结果是否为空"——真实向量库几乎总能返回 Top-K 个最近邻，
+    # 哪怕语义上完全不相关。
+    store = InMemoryVectorStore()
+    await store.upsert(
+        [
+            VectorRecord(
+                id="a", vector=[1.0, 0.0], text="关于安装", metadata={}, tenant_id="t1"
+            ),
+            VectorRecord(
+                id="b", vector=[0.0, 1.0], text="不相关内容", metadata={}, tenant_id="t1"
+            ),
+        ]
+    )
+
+    results = await store.search(query_vector=[1.0, 0.0], top_k=2, tenant_id="t1")
+
+    scores = {r.id: r.score for r in results}
+    assert scores["a"] == 1.0
+    assert scores["b"] == 0.0
+
+
 async def test_search_does_not_return_records_from_a_different_tenant():
     store = InMemoryVectorStore()
     await store.upsert(

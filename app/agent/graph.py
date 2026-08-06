@@ -68,6 +68,7 @@ def build_agent_graph(
     memory_conn: aiosqlite.Connection | None = None,
     ticket_conn: aiosqlite.Connection | None = None,
     top_k: int = 3,
+    min_relevance_score: float | None = None,
     enable_autonomous_planning: bool = False,
     max_tool_call_rounds: int = 3,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
@@ -98,6 +99,15 @@ def build_agent_graph(
     ticket_conn 同样可选：不传则 create_ticket 保持纯 mock 行为，不落库；
     传入则工单持久化，使 app/memory/proactive_scan.py 能扫描出"挂起过久"
     的工单并触发主动跟进（见 app/memory/followup_engine.py）。
+
+    min_relevance_score 为可选项：真实向量库（Milvus）几乎总能返回 Top-K
+    个最近邻，哪怕语义上完全不相关，光看"检索结果是否为空"判断该不该转
+    人工远远不够——真实数据测试就踩到过这个问题。设置后，检索到的记录
+    即使非空，只要最高分（VectorRecord.score，向量余弦相似度）低于这个
+    阈值也会走 fallback+create_ticket，而不是把不相关的资料硬塞给 LLM。
+    不设置（默认）则完全不影响原有行为，只看结果是否为空。分数只在向量
+    检索命中时才有（BM25-only 命中没有可比较的分数，不参与这个判断，
+    给它们"疑罪从无"）。
 
     时间/澄清状态机同样依赖 memory_conn（未提供则完全跳过，行为不变）：
     检索兜底（fallback）时如果问题里提到未来时间，不直接转人工工单，而是
@@ -352,7 +362,14 @@ def build_agent_graph(
         )
 
     def route_after_retrieval(state: AgentState) -> str:
-        return "responder" if state.get("retrieved_records") else "fallback"
+        records = state.get("retrieved_records")
+        if not records:
+            return "fallback"
+        if min_relevance_score is not None:
+            scores = [record.score for record in records if record.score is not None]
+            if scores and max(scores) < min_relevance_score:
+                return "fallback"
+        return "responder"
 
     def route_after_fallback(state: AgentState) -> str:
         return "output_safety" if state.get("needs_clarification") else "create_ticket"
