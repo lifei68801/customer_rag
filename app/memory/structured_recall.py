@@ -5,6 +5,9 @@ from typing import Any
 
 import aiosqlite
 
+from app.retrieval.bm25 import BM25Index
+from app.retrieval.vector_store import VectorRecord
+
 _SQLITE_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -34,3 +37,35 @@ async def query_turns_in_window(
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
+
+
+async def search_turns_by_keyword_and_window(
+    conn: aiosqlite.Connection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    start: datetime,
+    end: datetime,
+    question: str,
+    top_k: int = 5,
+) -> list[dict[str, Any]]:
+    """在时间窗口内的轮次基础上，再按当前问题做一次关键词过滤——窗口
+    可能跨多天多个会话，不加这层过滤会把大量不相关对话也拼进上下文。
+    """
+    turns = await query_turns_in_window(
+        conn, tenant_id=tenant_id, user_id=user_id, start=start, end=end
+    )
+    if not turns:
+        return []
+
+    records = [
+        VectorRecord(
+            id=str(index), vector=[], text=turn["content"], tenant_id=tenant_id, metadata={}
+        )
+        for index, turn in enumerate(turns)
+    ]
+    bm25_index = BM25Index()
+    bm25_index.index(records)
+    hits = bm25_index.search(question, top_k=top_k, tenant_id=tenant_id)
+    hit_indices = [int(hit.id) for hit in hits]
+    return [turns[index] for index in hit_indices]
