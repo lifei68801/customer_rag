@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     tts_base_url: str | None = None
     tts_api_key: str | None = None
     tts_model: str | None = None
+    # 阿里百炼 CosyVoice 系列 TTS 专用配置（走 dashscope SDK 的 WebSocket
+    # 协议，不是 OpenAI 兼容 REST 接口，见 dashscope_tts.py）。三项都设置
+    # 时优先于上面的 tts_base_url 通用 provider；voice 必须是提前用
+    # dashscope VoiceEnrollmentService 克隆好的 voice_id，标准音色名在
+    # 私有部署端点上不可用（实测报 InvalidParameter）。
+    tts_dashscope_websocket_url: str | None = None
+    tts_dashscope_http_url: str | None = None
+    tts_dashscope_voice: str | None = None
 
     # Agent 自主规划（Planner<->ToolCall 循环）总开关，默认关闭——关闭时用
     # 确定性检索路径，是 Planner 路径出问题时的回退（见
