@@ -416,6 +416,14 @@ def build_agent_graph(
             role="assistant",
             content=final_text,
         )
+        if state.get("is_correction_handled"):
+            # correction_check_node 已经在本轮同步完成了事实抽取+冲突决策+
+            # 写入（见该节点注释），这里再入队只会让 worker 用独立的一次
+            # LLM 重新抽取/决策同一对 (question, confirmation)——最好情况
+            # 是空转，最坏情况是 worker 的独立判断和刚才的同步结果打架，
+            # 写出重复或冲突的记忆条目。跳过入队，但上面的 append_turn 仍然
+            # 要跑，这轮对话要正常出现在会话历史里。
+            return {}
         # 只做一次快速 INSERT 入队，真正耗时的事实抽取+冲突决策+写入交给
         # app/memory/consolidation_worker.py 异步处理，不阻塞本轮响应
         # （见 docs/ARCHITECTURE.md §6.2"异步 consolidation 队列"）。

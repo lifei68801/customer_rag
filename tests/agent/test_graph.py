@@ -613,6 +613,22 @@ async def test_correction_check_short_circuits_and_updates_memory():
     updated = next(item for item in items if item["memory_id"] == "m1")
     assert updated["text"] == "客户使用macOS系统"
 
+    # memory_save_node 不应该为已经同步处理过的更正轮次再入队一次
+    # consolidation 任务——同步路径（correction_check_node）已经做完了
+    # 事实抽取+冲突决策+写入，重复入队只会让 worker 用独立的一次 LLM
+    # 重新抽取/决策同一对 (question, confirmation)，最好是空转，最坏是
+    # 和刚才的同步结果打架。但会话历史（append_turn）仍要正常记录这轮。
+    from app.memory.consolidation_queue import list_pending_jobs
+    from app.memory.session_window import get_recent_turns
+
+    pending_jobs = await list_pending_jobs(conn)
+    assert pending_jobs == []
+
+    recent_turns = await get_recent_turns(conn, tenant_id="t1", session_id="s1", limit=10)
+    assert [turn["role"] for turn in recent_turns] == ["user", "assistant"]
+    assert recent_turns[0]["content"] == "你记错了，其实我用的是macOS系统"
+    assert "macOS系统" in recent_turns[1]["content"]
+
 
 async def test_correction_check_does_not_trigger_for_normal_question():
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
@@ -647,3 +663,10 @@ async def test_correction_check_does_not_trigger_for_normal_question():
 
     assert result.get("is_correction_handled") is not True
     assert result["final_text"] == "重启路由器即可解决。"
+
+    # 非更正轮次的行为不变：consolidation 任务照常入队。
+    from app.memory.consolidation_queue import list_pending_jobs
+
+    pending_jobs = await list_pending_jobs(conn)
+    assert len(pending_jobs) == 1
+    assert pending_jobs[0]["user_input"] == "网络连不上怎么办？"
