@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -72,7 +74,10 @@ class Settings(BaseSettings):
     agent_min_relevance_score: float | None = None
 
     # 会话滑窗存储后端："sqlite"（默认，复用 memory_conn）或 "redis"
-    # （并发扩展性考虑，见 app/memory/session_window_store.py）。
+    # （并发扩展性考虑，见 app/memory/session_window_store.py）。类型限定
+    # 为 Literal，是为了让拼写错误（比如 "Redis"/"redsi"）在 Settings 构造
+    # 时就报错，而不是被 session_window_factory.py 里的字符串精确匹配
+    # 悄悄当成"非 redis"、静默退化成 sqlite 默认行为。
     #
     # !!! 生产环境慎用 "redis" !!! 目前只有写入路径（memory_save_node，
     # 见 app/agent/graph.py）迁移到了这个可插拔的 store 抽象；读取路径——
@@ -84,5 +89,5 @@ class Settings(BaseSettings):
     # Redis，而两个读取路径还在查一张永远不会再被写入的 SQLite 表——
     # 近期对话上下文和结构化历史检索会静默返回空结果，没有任何报错
     # 提示。读路径完成迁移之前，生产环境请保持默认的 "sqlite"。
-    session_window_backend: str = "sqlite"
+    session_window_backend: Literal["sqlite", "redis"] = "sqlite"
     redis_url: str | None = None
