@@ -34,10 +34,16 @@ class FixedLLMProvider:
 class FakeGraphClient:
     def __init__(self) -> None:
         self.written: list[dict] = []
-        self.deleted_sources: list[str] = []
+        self.deleted_sources: list[tuple[str, str]] = []
 
     async def merge_relation(
-        self, *, subject_standard_name, object_standard_name, relation_type, source
+        self,
+        *,
+        subject_standard_name,
+        object_standard_name,
+        relation_type,
+        source,
+        tenant_id,
     ) -> None:
         self.written.append(
             {
@@ -45,12 +51,17 @@ class FakeGraphClient:
                 "object": object_standard_name,
                 "relation_type": relation_type,
                 "source": source,
+                "tenant_id": tenant_id,
             }
         )
 
-    async def delete_relations_by_source(self, source: str) -> None:
-        self.deleted_sources.append(source)
-        self.written = [item for item in self.written if item["source"] != source]
+    async def delete_relations_by_source(self, source: str, *, tenant_id: str) -> None:
+        self.deleted_sources.append((source, tenant_id))
+        self.written = [
+            item
+            for item in self.written
+            if not (item["source"] == source and item["tenant_id"] == tenant_id)
+        ]
 
 
 async def test_extracts_normalizes_and_writes_relations_from_chunks():
@@ -73,6 +84,7 @@ async def test_extracts_normalizes_and_writes_relations_from_chunks():
         terms=_TERMS,
         graph_client=graph_client,
         source="a.md",
+        tenant_id="t1",
     )
 
     assert written == 1
@@ -82,9 +94,10 @@ async def test_extracts_normalizes_and_writes_relations_from_chunks():
             "object": "示例登录模块",
             "relation_type": "RELATED_TO",
             "source": "a.md",
+            "tenant_id": "t1",
         }
     ]
-    assert graph_client.deleted_sources == ["a.md"]
+    assert graph_client.deleted_sources == [("a.md", "t1")]
 
 
 async def test_unresolved_candidate_goes_to_review_queue_when_review_conn_provided():
@@ -109,6 +122,7 @@ async def test_unresolved_candidate_goes_to_review_queue_when_review_conn_provid
         terms=_TERMS,
         graph_client=graph_client,
         source="a.md",
+        tenant_id="t1",
         review_conn=review_conn,
     )
 
@@ -139,6 +153,7 @@ async def test_reingesting_same_source_clears_stale_relations_no_longer_present(
         terms=_TERMS,
         graph_client=graph_client,
         source="a.md",
+        tenant_id="t1",
     )
     assert len(graph_client.written) == 1
 
@@ -156,7 +171,60 @@ async def test_reingesting_same_source_clears_stale_relations_no_longer_present(
         terms=_TERMS,
         graph_client=graph_client,
         source="a.md",
+        tenant_id="t1",
     )
 
     assert graph_client.written == []
-    assert graph_client.deleted_sources == ["a.md", "a.md"]
+    assert graph_client.deleted_sources == [("a.md", "t1"), ("a.md", "t1")]
+
+
+async def test_reingesting_same_source_different_tenant_does_not_delete_other_tenants_edges():
+    """跨租户隔离的正面验证：两个租户各自摄取相同相对路径的文档，
+    租户 t2 重新摄取不应该删掉租户 t1 已经写入的边——这是本次改动
+    顺带修复的 bug（此前 delete_relations_by_source 完全不看租户）。
+    """
+    llm_registry_t1 = ProviderRegistry()
+    llm_registry_t1.register(
+        ProviderCapability.LLM,
+        "llm",
+        FixedLLMProvider(
+            '{"relations": [{"subject": "网关超时示例", '
+            '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+        ),
+    )
+    graph_client = FakeGraphClient()
+    chunks = [Chunk(text="网关超时示例通常与示例认证模块相关", heading_path=[], source="a.md")]
+    await extract_and_write_graph_relations(
+        chunks,
+        llm_registry=llm_registry_t1,
+        llm_provider_name="llm",
+        terms=_TERMS,
+        graph_client=graph_client,
+        source="a.md",
+        tenant_id="t1",
+    )
+    assert len(graph_client.written) == 1
+
+    llm_registry_t2 = ProviderRegistry()
+    llm_registry_t2.register(
+        ProviderCapability.LLM, "llm", FixedLLMProvider('{"relations": []}')
+    )
+    await extract_and_write_graph_relations(
+        chunks,
+        llm_registry=llm_registry_t2,
+        llm_provider_name="llm",
+        terms=_TERMS,
+        graph_client=graph_client,
+        source="a.md",
+        tenant_id="t2",
+    )
+
+    assert graph_client.written == [
+        {
+            "subject": "示例错误码E502",
+            "object": "示例登录模块",
+            "relation_type": "RELATED_TO",
+            "source": "a.md",
+            "tenant_id": "t1",
+        }
+    ]
