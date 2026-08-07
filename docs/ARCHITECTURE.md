@@ -182,7 +182,7 @@ flowchart LR
 ```
 
 - **术语表（基准真相）**：人工维护的 YAML/表格，包含标准名称、别名/同义词、类型（模块名/错误码/参数名等）、所属产品线。这是权威数据源，LLM 抽取结果必须向其对齐，而不是反过来。
-- **LLM 抽取归一化**：LLM 从文档中抽取实体/关系候选后，与术语表做实体链接（entity linking）——优先规则/词典精确匹配，其次向量相似度匹配辅助，模糊匹配结果需标记置信度，低置信度的新实体进入人工待审核队列，而非直接自动入库。
+- **LLM 抽取归一化**：LLM 从文档中抽取实体/关系候选后，与术语表做实体链接（entity linking）——优先规则/词典精确匹配，精确匹配失败时用 difflib 字符串相似度做模糊匹配兜底（阈值 0.75，取相似度最高的单一建议，见 `app/graphrag/normalization.py::find_fuzzy_candidate_standard_name`），模糊命中同样不自动入库，连同建议标准名一并进入人工待审核队列（`app/graphrag/review_queue.py`）。刻意不引入向量相似度、不持久化置信度分数——字符串相似度已能覆盖候选名的字面偏差场景，见 `docs/superpowers/specs/2026-08-07-graphrag-entity-linking-fuzzy-matching-design.md` §2.1 的取舍说明。
 - **图谱结构**：标准实体节点（`:Term {name, type, product_line}`）之间用 `ALIAS_OF`、`RELATED_TO`、`BELONGS_TO_MODULE` 等关系连接，别名作为独立节点通过 `ALIAS_OF` 指向标准节点，保证查询时无论用户说的是别名还是标准名都能定位到同一实体。
 
 ### 4.2 查询时保障

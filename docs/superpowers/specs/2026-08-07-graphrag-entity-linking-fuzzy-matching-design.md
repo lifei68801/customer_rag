@@ -5,7 +5,7 @@
 
 ## 1. 现状与复用点
 
-`resolve_to_standard_name` 只有一个调用方：`normalize_and_write_relations()`（同文件），在关系抽取归一化流程里对 LLM 抽取出的候选关系的 subject/object 两侧实体名分别做对齐，任一侧未命中就整条候选丢弃（`review_conn` 为 `None` 时只记日志）或写入 `app/graphrag/review_queue.py` 的人工待审核队列（`review_conn` 非空时）。
+`resolve_to_standard_name` 有两个调用方：`normalize_and_write_relations()`（同文件，写入侧）和 `app/agent/tools.py::graph_query_tool`（查询侧）。写入侧在关系抽取归一化流程里对 LLM 抽取出的候选关系的 subject/object 两侧实体名分别做对齐，任一侧未命中就整条候选丢弃（`review_conn` 为 `None` 时只记日志）或写入 `app/graphrag/review_queue.py` 的人工待审核队列（`review_conn` 非空时）；查询侧未命中时直接返回未解析结果，不涉及图谱写入。本次设计只覆盖写入侧的模糊匹配兜底——查询侧同样存在"轻微用词偏差导致精确匹配失败"的问题，但那是独立的评估事项，不在本次范围内（见第 4 节）。
 
 本次会话已有两个高度相关的先例，但都不能直接照搬：
 - `app/graphrag/term_matcher.py::match_terms()`（TermGuard，本次会话第 2 个子项目新增）：滑动窗口 + `difflib.SequenceMatcher`，阈值 0.75，模糊命中直接和精确命中一样触发强制注入，不过 LLM 二次确认。误命中代价很轻（多塞一段可能不相关的图谱上下文）。
@@ -104,4 +104,5 @@ async def enqueue_for_review(
 - 不引入向量相似度/embedding（见 2.1 理由）。
 - 不写 schema 迁移脚本（`ALTER TABLE`），因为当前无已部署的旧数据需要迁移。
 - 不改动 `approve_review()` 的既有已知问题——它调用 `graph_client.merge_relation()` 时缺少 `tenant_id`/`source` 两个必需参数（这是 Neo4j 租户隔离子项目的最终审查阶段发现并记录的独立遗留问题，需要新的接口设计才能修，不在本次范围）。
+- 不给查询侧的 `app/agent/tools.py::graph_query_tool` 加同样的模糊匹配兜底——它同样调用 `resolve_to_standard_name`，同样存在轻微用词偏差导致精确匹配失败的问题（这是本次最终审查阶段发现并记录的独立遗留问题，需要单独评估是否要做、命中后怎么处理，不在本次范围）。
 - 不做模糊匹配阈值的自动调优/AB测试，阈值 0.75 是参考起点，不是最终标定值。
