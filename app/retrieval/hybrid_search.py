@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider, RerankRequest
@@ -31,7 +33,11 @@ async def hybrid_search(
     """原始query向量检索 + 改写query向量检索 + BM25 三路 -> RRF融合 -> 可选Rerank。
 
     RRF 只依据各路排名位置融合，不比较向量相似度和 BM25 分数这两种不同量纲；
-    Rerank 仅用于对融合后的候选池精排，不改变候选池本身。
+    Rerank 仅用于对融合后的候选池精排，不改变候选池本身，但会把每条记录的
+    score 覆盖为 rerank 返回的 relevance_score——下游 Fallback 判断（见
+    app/agent/graph.py::route_after_retrieval）依据的置信度分数因此来自
+    精排结果而不是向量检索阶段的原始相似度。未配置 rerank_provider 时
+    score 保持融合前的原始值不变。
 
     conversation_context 为可选项：传入近期对话轮次时，query 改写这一步
     能看到"用户之前说了什么"来补全模糊指代（"这个报错"），见
@@ -88,4 +94,7 @@ async def hybrid_search(
             top_n=final_top_k,
         )
     )
-    return [fused_records[hit.index] for hit in rerank_result.hits[:final_top_k]]
+    return [
+        dataclasses.replace(fused_records[hit.index], score=hit.relevance_score)
+        for hit in rerank_result.hits[:final_top_k]
+    ]

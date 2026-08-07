@@ -179,3 +179,43 @@ async def test_hybrid_search_uses_rerank_order_when_provided():
     )
 
     assert results[-1].id == "bm25_hit"
+
+
+async def test_hybrid_search_rewrites_score_with_rerank_relevance():
+    store, bm25 = await _build_store_and_index()
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        "fake-embedding",
+        FixedEmbeddingProvider({"E502 错误码是什么意思": [1.0, 0.0]}),
+    )
+    llm_registry = ProviderRegistry()
+
+    class FakeRerankProvider:
+        async def rerank(self, request: RerankRequest) -> RerankResult:
+            # relevance_score 和融合排序位置无关，专门设成能一眼看出是不是被
+            # 正确回写的值（0.42/0.17），验证下游拿到的是这两个数而不是向量
+            # 检索阶段的原始相似度。
+            hits = [
+                RerankHit(index=i, relevance_score=0.42 if "网关超时" not in doc else 0.17)
+                for i, doc in enumerate(request.documents)
+            ]
+            return RerankResult(hits=hits)
+
+    results = await hybrid_search(
+        "E502 错误码是什么意思",
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=store,
+        bm25_index=bm25,
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        query_rewrite_enabled=False,
+        rerank_provider=FakeRerankProvider(),
+        final_top_k=2,
+        tenant_id="t1",
+    )
+
+    scores_by_id = {record.id: record.score for record in results}
+    assert scores_by_id["vector_hit"] == 0.42
+    assert scores_by_id["bm25_hit"] == 0.17

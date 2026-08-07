@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     # 检索到的记录即使非空，最高相关性分数低于这个阈值也会转人工工单，而不
     # 是把不相关资料硬塞给 LLM。默认不设置（None），行为与之前完全一致——
     # 具体阈值需要结合实际 embedding 模型/语料标定，不能瞎猜一个通用值。
+    # 注意：配置了 rerank_provider 时，这里比较的是 rerank 返回的
+    # relevance_score（不同供应商的分数范围/语义可能不同，比如有的是 0-1
+    # 概率值，有的是无界的原始 logit），不是向量检索阶段的余弦相似度
+    # （0-1 有界）——标定这个阈值必须参照实际接入的 rerank 模型的分数
+    # 分布，不能沿用向量相似度的经验值。未配置 rerank_provider 时才是
+    # 比较向量相似度。
     agent_min_relevance_score: float | None = None
 
     # 会话滑窗存储后端："sqlite"（默认，复用 memory_conn）或 "redis"
