@@ -38,6 +38,7 @@ from app.providers.rerank import RerankProvider
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.hybrid_search import hybrid_search
 from app.retrieval.vector_store import VectorStore
+from app.safety.leakage_detection import detect_internal_leakage
 from app.safety.prompt_injection import detect_prompt_injection, wrap_system_prompt
 from app.safety.rules import UNSAFE_INPUT_MESSAGE, UNSAFE_OUTPUT_MESSAGE, check_text
 from app.safety.semantic_review import semantic_safety_review
@@ -424,6 +425,9 @@ def build_agent_graph(
         answer = state.get("answer_text", "")
         result = check_text(answer, banned_terms=banned_terms)
         if not result.is_safe:
+            return {"is_output_safe": False, "final_text": UNSAFE_OUTPUT_MESSAGE}
+        leakage_result = detect_internal_leakage(answer)
+        if leakage_result.is_leaked:
             return {"is_output_safe": False, "final_text": UNSAFE_OUTPUT_MESSAGE}
 
         if state.get("fallback_triggered"):

@@ -58,3 +58,9 @@ async def test_llm_failure_falls_back_to_unreviewed_but_not_blocked():
 
     assert result.is_safe is True
     assert result.reviewed is False
+
+
+def test_system_prompt_mentions_internal_data_leakage():
+    from app.safety.semantic_review import _SYSTEM_PROMPT
+
+    assert "内部数据" in _SYSTEM_PROMPT or "内部信息" in _SYSTEM_PROMPT

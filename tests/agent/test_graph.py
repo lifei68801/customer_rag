@@ -711,3 +711,33 @@ async def test_term_guard_node_forwards_tenant_id_to_graph_client():
     await graph.ainvoke({"question": "错误码E502是什么意思？", "tenant_id": "t2"})
 
     assert graph_client.queried_tenant_ids == ["t2"]
+
+
+async def test_output_safety_flags_internal_leakage_without_calling_semantic_review():
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(
+            with_records=True,
+            llm_text='Traceback (most recent call last):\n  File "app/x.py", line 1',
+        )
+    )
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+    )
+
+    result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
+
+    assert result["is_output_safe"] is False
+    assert result["final_text"] == "抱歉，生成的回答未通过安全审查，已为您转接人工客服。"
+    # 规则层命中就短路拦截，不应该再跑一次 LLM 语义审查——FakeLLMProvider
+    # 只在 _build_dependencies 里注册了一次，Responder 已经用掉了这次
+    # complete() 调用；如果 output_safety_node 还调用了 semantic_safety_review，
+    # 它会尝试对同一个 llm_provider 再发一次请求，但这里断言的是结果
+    # 字典里不应该出现 semantic_review_reviewed 键（短路路径的 return 语句
+    # 里没有这个键，只有走到语义审查那一分支才会加上）。
+    assert "semantic_review_reviewed" not in result
