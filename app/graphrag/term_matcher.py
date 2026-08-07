@@ -38,6 +38,14 @@ def match_terms(
 
     fuzzy_threshold 默认 0.75（比 ASR 校正的 0.6 更保守，因为这里没有
     LLM 兜底误召回）——这是参考起点，需要结合真实数据调整，不是权威值。
+
+    已知代价：短码型候选（如错误码 "E502"，4 个字符）在 0.75 阈值下
+    分辨率很低——只差 1 位的同族码（如 "E503"）相似度恰好等于 0.75，
+    会被判定为模糊命中，注入的是形近但错误的错误码上下文。这是当前
+    阈值下被接受的已知行为（见
+    tests/graphrag/test_term_matcher.py::test_match_terms_known_false_positive_for_similar_short_error_codes），
+    调整阈值前需要先确认不会反过来漏掉真实的模糊变体场景（如"服务器
+    连接超时"打错1字后的相似度约 0.857）。
     """
     matched: list[Term] = []
     for term in terms:

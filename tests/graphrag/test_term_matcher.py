@@ -66,3 +66,52 @@ def test_match_terms_does_not_duplicate_exact_match_via_fuzzy_layer():
     matches = match_terms("服务器连接超时了，麻烦看一下", _FUZZY_TERMS)
 
     assert [m.standard_name for m in matches] == ["服务器连接超时"]
+
+
+_FUZZY_TERMS_WITH_ALIAS = [
+    Term(
+        standard_name="服务器连接超时",
+        aliases=["连接超时"],
+        term_type="error_code",
+        product_line="核心平台",
+    ),
+]
+
+
+def test_match_terms_known_false_positive_for_similar_short_error_codes():
+    # 已知代价（见 term_matcher.py::match_terms 的 docstring）：短码候选
+    # "E502" 和 "E503" 相似度恰好等于默认阈值 0.75，会被判定为模糊命中。
+    # 这条测试锁定该已知行为，不是期望修复的 bug——调整阈值前先看这里。
+    matches = match_terms("我遇到了E503错误", _TERMS)
+
+    assert [m.standard_name for m in matches] == ["错误码E502"]
+
+
+def test_match_terms_does_not_fuzzy_match_within_threshold_band():
+    # "网络"替换了"连接"，7个字里错2个字，相似度约0.714，低于默认阈值
+    # 0.75 但明显高于完全不相关文本的相似度——专门压中阈值边界区间，
+    # 证明阈值没设太松（不同于 test_match_terms_does_not_fuzzy_match_below_threshold
+    # 用的完全无关文本，那条测试证明不了这一点）。
+    matches = match_terms("最近老是提示服务器网络超时，是不是坏了", _FUZZY_TERMS)
+
+    assert matches == []
+
+
+def test_match_terms_finds_fuzzy_variant_via_alias():
+    # 模糊层同样要对别名生效，不能只对标准名生效。"链接超时"是别名
+    # "连接超时"打错1字的变体，相似度0.75，应该通过别名命中。
+    matches = match_terms("最近提示链接超时，你看一下", _FUZZY_TERMS_WITH_ALIAS)
+
+    assert [m.standard_name for m in matches] == ["服务器连接超时"]
+
+
+def test_match_terms_respects_custom_fuzzy_threshold():
+    # fuzzy_threshold 是可调的公开参数——用非默认值验证它真的生效。
+    # 同一段文本在默认阈值0.75下命中（见
+    # test_match_terms_finds_fuzzy_variant_within_threshold），但传入更
+    # 严格的 fuzzy_threshold=0.9 时相似度0.857不够，应该不命中。
+    matches = match_terms(
+        "最近老是提示服务器链接超时，是不是坏了", _FUZZY_TERMS, fuzzy_threshold=0.9
+    )
+
+    assert matches == []
