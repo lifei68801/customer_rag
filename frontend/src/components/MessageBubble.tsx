@@ -11,12 +11,12 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[75%] rounded-bubble px-4 py-3 ${
+        className={`max-w-[75%] border-2 px-4 py-3 shadow-brutal ${
           isUser
-            ? 'bg-accent text-white'
+            ? 'border-ink bg-accent-pink text-ink'
             : message.isError
-              ? 'border border-status-error/40 bg-surface-card text-status-error'
-              : 'border border-surface-border bg-surface-card text-content-primary'
+              ? 'border-status-error bg-card text-status-error'
+              : 'border-ink bg-card text-ink'
         }`}
       >
         {message.text ? (
@@ -35,9 +35,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 function ThinkingIndicator() {
   return (
     <div className="flex items-center gap-1 py-1">
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-content-secondary [animation-delay:-0.3s]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-content-secondary [animation-delay:-0.15s]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-content-secondary" />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft [animation-delay:-0.3s]" />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft [animation-delay:-0.15s]" />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft" />
     </div>
   )
 }
