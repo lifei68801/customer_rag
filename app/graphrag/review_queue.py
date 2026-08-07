@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS graph_review_queue (
     object_candidate TEXT NOT NULL,
     relation_type TEXT NOT NULL,
     reason TEXT NOT NULL,
+    suggested_subject_standard_name TEXT,
+    suggested_object_standard_name TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     resolved_at TEXT,
@@ -54,17 +56,33 @@ async def enqueue_for_review(
     object_candidate: str,
     relation_type: str,
     reason: str,
+    suggested_subject_standard_name: str | None = None,
+    suggested_object_standard_name: str | None = None,
 ) -> int:
     """把未能对齐术语表（或关系类型不合法）的候选关系存入待审核队列，返回 review_id。
 
     这里存的是 LLM 抽取出的原始候选名（subject_candidate/object_candidate），
     不是标准名——正是因为它们对不上术语表才会进队列，所以此时还没有标准名可存。
+
+    suggested_subject_standard_name/suggested_object_standard_name 是可选的
+    模糊匹配建议（见 normalization.py::find_fuzzy_candidate_standard_name），
+    只是给人工审核参考，不会被自动采纳——approve_review() 仍然要求人工
+    明确指定最终标准名。默认 None，对应完全没有模糊候选的场景（如
+    reason="subject_unresolved"/"object_unresolved"/"invalid_relation_type"）。
     """
     cursor = await conn.execute(
         "INSERT INTO graph_review_queue "
-        "(subject_candidate, object_candidate, relation_type, reason) "
-        "VALUES (?, ?, ?, ?)",
-        (subject_candidate, object_candidate, relation_type, reason),
+        "(subject_candidate, object_candidate, relation_type, reason, "
+        "suggested_subject_standard_name, suggested_object_standard_name) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            subject_candidate,
+            object_candidate,
+            relation_type,
+            reason,
+            suggested_subject_standard_name,
+            suggested_object_standard_name,
+        ),
     )
     await conn.commit()
     return cursor.lastrowid
@@ -74,7 +92,8 @@ async def list_pending_reviews(conn: aiosqlite.Connection) -> list[dict[str, Any
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT review_id, subject_candidate, object_candidate, relation_type, "
-        "reason, created_at FROM graph_review_queue "
+        "reason, suggested_subject_standard_name, suggested_object_standard_name, "
+        "created_at FROM graph_review_queue "
         "WHERE status = 'pending' ORDER BY review_id"
     )
     rows = await cursor.fetchall()

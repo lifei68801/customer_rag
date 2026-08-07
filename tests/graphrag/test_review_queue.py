@@ -132,3 +132,39 @@ async def test_approve_already_resolved_review_raises():
             object_standard_name="b",
             graph_client=graph_client,
         )
+
+
+async def test_enqueue_with_suggested_names_is_returned_by_list_pending():
+    conn = await _connect()
+
+    await enqueue_for_review(
+        conn,
+        subject_candidate="网关超时了",
+        object_candidate="认证模块",
+        relation_type="RELATED_TO",
+        reason="fuzzy_match_needs_confirmation",
+        suggested_subject_standard_name="错误码E502",
+        suggested_object_standard_name=None,
+    )
+
+    pending = await list_pending_reviews(conn)
+    assert len(pending) == 1
+    assert pending[0]["suggested_subject_standard_name"] == "错误码E502"
+    assert pending[0]["suggested_object_standard_name"] is None
+
+
+async def test_enqueue_without_suggested_names_defaults_to_null():
+    conn = await _connect()
+
+    await enqueue_for_review(
+        conn,
+        subject_candidate="不存在的东西",
+        object_candidate="认证模块",
+        relation_type="RELATED_TO",
+        reason="subject_unresolved",
+    )
+
+    pending = await list_pending_reviews(conn)
+    assert len(pending) == 1
+    assert pending[0]["suggested_subject_standard_name"] is None
+    assert pending[0]["suggested_object_standard_name"] is None
