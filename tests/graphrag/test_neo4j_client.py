@@ -104,6 +104,23 @@ async def test_merge_relation_rejects_unrecognized_relation_type():
         pass
 
 
+async def test_merge_relation_rejects_alias_of():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    try:
+        await client.merge_relation(
+            subject_standard_name="a",
+            object_standard_name="b",
+            relation_type="ALIAS_OF",
+            source="a.md",
+            tenant_id="t1",
+        )
+        assert False, "应拒绝 ALIAS_OF：该关系类型只能由 sync_term 写入，不设置 tenant_id"
+    except ValueError:
+        pass
+
+
 async def test_sync_term_writes_standard_node_properties_and_alias_edges():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))

@@ -12,7 +12,7 @@ RETURN related.standard_name AS related_name, type(r) AS relation_type
 
 # Cypher 关系类型不能参数化，必须是查询字符串里的字面量；
 # 用白名单杜绝把未经校验的 LLM 抽取结果拼进 Cypher 语句。
-_ALLOWED_RELATION_TYPES = frozenset({"RELATED_TO", "BELONGS_TO_MODULE", "ALIAS_OF"})
+_ALLOWED_RELATION_TYPES = frozenset({"RELATED_TO", "BELONGS_TO_MODULE"})
 
 # 关系边有向（MERGE (a)-[:TYPE]->(b)），按有向模式匹配删除保证每条边只
 # 命中一次；r.source 只有 merge_relation 写入的抽取关系才有，sync_term/
