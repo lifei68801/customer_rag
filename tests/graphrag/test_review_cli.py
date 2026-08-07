@@ -84,3 +84,38 @@ async def test_cmd_reject_removes_from_pending():
     await cmd_reject(review_conn=conn, review_id=review_id, note="确认是噪声")
 
     assert await list_pending_reviews(conn) == []
+
+
+async def test_cmd_list_prints_suggested_standard_names_when_present(capsys):
+    conn = await _connect()
+    await enqueue_for_review(
+        conn,
+        subject_candidate="网关超时了",
+        object_candidate="认证模块",
+        relation_type="RELATED_TO",
+        reason="fuzzy_match_needs_confirmation",
+        suggested_subject_standard_name="错误码E502",
+        suggested_object_standard_name=None,
+    )
+
+    await cmd_list(review_conn=conn)
+
+    captured = capsys.readouterr()
+    assert "建议" in captured.out
+    assert "subject→错误码E502" in captured.out
+
+
+async def test_cmd_list_does_not_print_suggestion_section_when_absent(capsys):
+    conn = await _connect()
+    await enqueue_for_review(
+        conn,
+        subject_candidate="a",
+        object_candidate="b",
+        relation_type="RELATED_TO",
+        reason="subject_unresolved",
+    )
+
+    await cmd_list(review_conn=conn)
+
+    captured = capsys.readouterr()
+    assert "建议" not in captured.out

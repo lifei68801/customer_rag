@@ -23,10 +23,18 @@ async def cmd_list(*, review_conn: aiosqlite.Connection) -> list[dict[str, Any]]
     if not pending:
         print("没有待审核的候选关系。")
     for row in pending:
+        suggestion_parts = []
+        if row.get("suggested_subject_standard_name"):
+            suggestion_parts.append(f"subject→{row['suggested_subject_standard_name']}")
+        if row.get("suggested_object_standard_name"):
+            suggestion_parts.append(f"object→{row['suggested_object_standard_name']}")
+        suggestion_text = (
+            f" (建议: {', '.join(suggestion_parts)})" if suggestion_parts else ""
+        )
         print(
             f"[{row['review_id']}] {row['subject_candidate']} "
             f"--{row['relation_type']}--> {row['object_candidate']} "
-            f"(原因: {row['reason']}, 时间: {row['created_at']})"
+            f"(原因: {row['reason']}, 时间: {row['created_at']}){suggestion_text}"
         )
     return pending
 

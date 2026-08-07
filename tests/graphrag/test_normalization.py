@@ -271,3 +271,28 @@ async def test_totally_unresolved_candidate_still_uses_unresolved_reason_not_fuz
     assert pending[0]["reason"] == "object_unresolved"
     assert pending[0]["suggested_subject_standard_name"] is None
     assert pending[0]["suggested_object_standard_name"] is None
+
+
+def test_find_fuzzy_candidate_standard_name_picks_highest_ratio_not_first_match():
+    # 两个术语的别名都超过默认阈值 0.75，但相似度不同（"网关超时中" 0.8，
+    # "网关超时" 0.8889）——刻意把相似度更低的那个放在遍历顺序的第一位，
+    # 验证函数返回的是相似度更高的那个，而不是"遍历到的第一个达标候选"
+    # （TermGuard 的 match_terms() 是后者语义，这里必须不一样）。
+    multi_candidate_terms = [
+        Term(
+            standard_name="错误码E503",
+            aliases=["网关超时中"],
+            term_type="error_code",
+            product_line="核心平台",
+        ),
+        Term(
+            standard_name="错误码E502",
+            aliases=["网关超时"],
+            term_type="error_code",
+            product_line="核心平台",
+        ),
+    ]
+
+    result = find_fuzzy_candidate_standard_name("网关超时了", multi_candidate_terms)
+
+    assert result == "错误码E502"
