@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
@@ -42,6 +43,11 @@ async def hybrid_search(
     conversation_context 为可选项：传入近期对话轮次时，query 改写这一步
     能看到"用户之前说了什么"来补全模糊指代（"这个报错"），见
     app/qa/query_rewrite.py；不传则只看孤立的当前问题，行为不变。
+
+    query_texts（原始问题 + 可能的改写问题）各自的向量检索用 asyncio.gather
+    并发执行，而不是顺序等待——两条链路各自都是一次 embedding API 调用加一次
+    Milvus 查询，顺序执行会让总延迟翻倍。BM25 检索是同步内存操作，没有 IO
+    等待，不需要纳入并发调度。
     """
     candidates: dict[str, VectorRecord] = {}
     ranked_id_lists: list[list[str]] = []
@@ -58,14 +64,19 @@ async def hybrid_search(
         if rewritten != question:
             query_texts.append(rewritten)
 
-    for text in query_texts:
+    async def _vector_search_for_text(text: str) -> list[VectorRecord]:
         embed_result = await embedding_registry.run(
             EmbeddingRequest(texts=[text]),
             provider_name=embedding_provider_name,
         )
-        vector_hits = await vector_store.search(
+        return await vector_store.search(
             embed_result.vectors[0], top_k=vector_top_k, tenant_id=tenant_id
         )
+
+    per_text_hits = await asyncio.gather(
+        *(_vector_search_for_text(text) for text in query_texts)
+    )
+    for vector_hits in per_text_hits:
         ranked_id_lists.append([record.id for record in vector_hits])
         for record in vector_hits:
             candidates[record.id] = record
