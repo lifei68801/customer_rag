@@ -365,7 +365,9 @@ def build_agent_graph(
             )
             sent_sentences: list[str] = []
             async for sentence in stream_sentences(text_stream):
-                safety_result = check_text(sentence, banned_terms=banned_terms)
+                safety_result = check_text(
+                    sentence, banned_terms=banned_terms, include_email=False
+                )
                 safe_sentence = (
                     sentence if safety_result.is_safe else _LITE_SAFETY_FALLBACK_SENTENCE
                 )
@@ -423,7 +425,7 @@ def build_agent_graph(
         if not state.get("is_input_safe", True):
             return {"is_output_safe": True, "final_text": UNSAFE_INPUT_MESSAGE}
         answer = state.get("answer_text", "")
-        result = check_text(answer, banned_terms=banned_terms)
+        result = check_text(answer, banned_terms=banned_terms, include_email=False)
         if not result.is_safe:
             return {"is_output_safe": False, "final_text": UNSAFE_OUTPUT_MESSAGE}
         leakage_result = detect_internal_leakage(answer)

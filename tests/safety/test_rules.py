@@ -48,3 +48,26 @@ def test_check_text_does_not_flag_unrelated_text_as_pii():
 
     assert result.is_safe is True
     assert result.matched_terms == []
+
+
+def test_check_text_does_not_flag_long_order_number_as_id_card():
+    result = check_text("我的订单号是20250807123456789012，帮我查一下")
+
+    assert result.is_safe is True
+    assert result.matched_terms == []
+
+
+def test_check_text_include_email_false_does_not_flag_email():
+    result = check_text(
+        "如需帮助请联系 support@example.com", include_email=False
+    )
+
+    assert result.is_safe is True
+    assert result.matched_terms == []
+
+
+def test_check_text_include_email_true_still_flags_email_by_default():
+    result = check_text("如需帮助请联系 support@example.com")
+
+    assert result.is_safe is False
+    assert "email" in result.matched_terms

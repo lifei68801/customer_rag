@@ -82,7 +82,7 @@ async def answer_question(
     )
     answer_text = llm_result.text
 
-    output_result = check_text(answer_text, banned_terms=banned_terms)
+    output_result = check_text(answer_text, banned_terms=banned_terms, include_email=False)
     leakage_result = detect_internal_leakage(answer_text)
     if not output_result.is_safe or leakage_result.is_leaked:
         return AnswerResult(

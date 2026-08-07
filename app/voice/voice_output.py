@@ -16,7 +16,7 @@ async def _synthesize_one_sentence(
     tts_provider: TTSProvider,
     banned_terms: list[str] | None,
 ) -> bytes:
-    safety = check_text(sentence, banned_terms=banned_terms)
+    safety = check_text(sentence, banned_terms=banned_terms, include_email=False)
     speak_text = sentence if safety.is_safe else _UNSAFE_SENTENCE_FALLBACK
     result = await tts_provider.synthesize(TTSRequest(text=speak_text))
     return result.audio_bytes

@@ -741,3 +741,26 @@ async def test_output_safety_flags_internal_leakage_without_calling_semantic_rev
     # 字典里不应该出现 semantic_review_reviewed 键（短路路径的 return 语句
     # 里没有这个键，只有走到语义审查那一分支才会加上）。
     assert "semantic_review_reviewed" not in result
+
+
+async def test_output_safety_does_not_flag_email_in_generated_answer():
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(
+            with_records=True,
+            llm_text="如需帮助请联系 support@example.com",
+        )
+    )
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+    )
+
+    result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
+
+    assert result["is_output_safe"] is True
+    assert result["final_text"] == "如需帮助请联系 support@example.com"

@@ -54,3 +54,17 @@ def test_does_not_flag_chinese_create_account_instruction():
 
     assert result.is_leaked is False
     assert result.matched_categories == []
+
+
+def test_does_not_flag_english_prose_with_create_or_select_lowercase():
+    result = detect_internal_leakage("Please create (a ticket) first")
+
+    assert result.is_leaked is False
+    assert result.matched_categories == []
+
+
+def test_does_not_flag_english_prose_with_select_from_lowercase():
+    result = detect_internal_leakage("select the item from the list")
+
+    assert result.is_leaked is False
+    assert result.matched_categories == []

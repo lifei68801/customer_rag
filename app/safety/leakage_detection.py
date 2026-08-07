@@ -23,7 +23,7 @@ _LEAKAGE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
     (
         "db_query_fragment",
-        re.compile(r"\bMATCH\s*\(|\bCREATE\s*\(|\bSELECT\s+.+?\s+FROM\b", re.IGNORECASE),
+        re.compile(r"\bMATCH\s*\(|\bCREATE\s*\(|\bSELECT\s+.+?\s+FROM\b"),
     ),
 ]
 

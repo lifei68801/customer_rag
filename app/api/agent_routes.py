@@ -175,7 +175,9 @@ async def agent_chat_endpoint(
             else:
                 # provider 不支持 stream_complete()，走原有批量合成兜底
                 segments = await synthesize_voice_response(
-                    final_text, tts_provider=tts_provider
+                    final_text,
+                    tts_provider=tts_provider,
+                    banned_terms=deps.parse_banned_terms(settings.banned_terms),
                 )
                 audio_segments_base64 = [
                     base64.b64encode(segment).decode("ascii") for segment in segments

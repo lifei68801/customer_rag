@@ -204,3 +204,47 @@ async def test_answer_question_short_circuits_on_unsafe_output():
     )
 
     assert result.text == "抱歉，生成的回答未通过安全审查，已为您转接人工客服。"
+
+
+class EmailAnsweringLLMProvider:
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        return ProviderResult(text="如需帮助请联系 support@example.com")
+
+
+async def test_answer_question_does_not_flag_email_in_generated_answer():
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+
+    records = [
+        VectorRecord(
+            id="faq/network.md",
+            vector=[1.0, 0.0],
+            text="网络断开时，请先重启路由器。",
+            tenant_id="t1",
+            metadata={},
+        ),
+    ]
+    vector_store = InMemoryVectorStore()
+    await vector_store.upsert(records)
+    bm25_index = BM25Index()
+    bm25_index.index(records)
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, "fake-llm", EmailAnsweringLLMProvider()
+    )
+
+    result = await answer_question(
+        "网络连不上怎么办？",
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        top_k=1,
+        tenant_id="t1",
+    )
+
+    assert result.text == "如需帮助请联系 support@example.com"
