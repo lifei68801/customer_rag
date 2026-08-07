@@ -48,6 +48,7 @@ __all__ = [
     "get_terms",
     "get_tts_provider",
     "get_vector_store",
+    "parse_banned_terms",
     "resolve_tenant_id",
 ]
 
@@ -113,6 +114,18 @@ def resolve_tenant_id(
         )
         return fallback_tenant_id
     raise HTTPException(status_code=422, detail="缺少 tenant_id")
+
+
+def parse_banned_terms(raw: str | None) -> list[str] | None:
+    """把 Settings.banned_terms 的逗号分隔字符串解析成列表。
+
+    留空返回 None（check_text() 的 banned_terms=None 等价于不启用自定义
+    敏感词检测，只有内置正则生效）；每个词两端的空白会被去掉，方便配置
+    时随意加空格。
+    """
+    if not raw:
+        return None
+    return [term.strip() for term in raw.split(",") if term.strip()]
 
 
 def get_embedding_registry(

@@ -134,6 +134,7 @@ async def agent_chat_endpoint(
             enable_autonomous_planning=enable_autonomous_planning,
             max_tool_call_rounds=settings.agent_max_tool_call_rounds,
             on_answer_chunk=on_answer_chunk,
+            banned_terms=deps.parse_banned_terms(settings.banned_terms),
         )
 
         async def run_graph() -> dict[str, Any]:

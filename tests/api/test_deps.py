@@ -71,3 +71,23 @@ def test_resolve_tenant_id_raises_when_both_missing():
     with pytest.raises(HTTPException) as exc_info:
         deps.resolve_tenant_id(None, None, source="test")
     assert exc_info.value.status_code == 422
+
+
+def test_parse_banned_terms_returns_none_when_unset():
+    assert deps.parse_banned_terms(None) is None
+
+
+def test_parse_banned_terms_returns_none_when_empty_string():
+    assert deps.parse_banned_terms("") is None
+
+
+def test_parse_banned_terms_splits_comma_separated_values():
+    assert deps.parse_banned_terms("敏感词1,敏感词2,敏感词3") == [
+        "敏感词1",
+        "敏感词2",
+        "敏感词3",
+    ]
+
+
+def test_parse_banned_terms_strips_whitespace_around_each_term():
+    assert deps.parse_banned_terms(" 敏感词1 , 敏感词2 ") == ["敏感词1", "敏感词2"]

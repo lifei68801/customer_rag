@@ -104,3 +104,8 @@ class Settings(BaseSettings):
     # 警告日志；生产环境必须配置，否则 tenant_id 可被任意伪造，Milvus/
     # Neo4j 层面即使做了按 tenant_id 过滤的隔离也形同虚设。
     gateway_shared_secret: str | None = None
+
+    # 逗号分隔的自定义敏感词列表，留空 = 不启用自定义敏感词检测（只有
+    # check_text() 内置的手机号/身份证号/邮箱正则生效）。解析逻辑见
+    # app/api/deps.py::parse_banned_terms。
+    banned_terms: str | None = None
