@@ -6,6 +6,7 @@ from app.graphrag.ontology import Term
 
 _SUBGRAPH_QUERY = """
 MATCH (t:Term {standard_name: $standard_name})-[r]-(related:Term)
+WHERE r.tenant_id = $tenant_id
 RETURN related.standard_name AS related_name, type(r) AS relation_type
 """
 
@@ -16,8 +17,11 @@ _ALLOWED_RELATION_TYPES = frozenset({"RELATED_TO", "BELONGS_TO_MODULE", "ALIAS_O
 # 关系边有向（MERGE (a)-[:TYPE]->(b)），按有向模式匹配删除保证每条边只
 # 命中一次；r.source 只有 merge_relation 写入的抽取关系才有，sync_term/
 # sync_terms 写入的 ALIAS_OF 边没有这个属性，天然不会被误删。
+# ALIAS_OF 边（sync_term 写入）从不设置 tenant_id，这条按 r.tenant_id 精确
+# 匹配的过滤天然把它们排除在外（Cypher 里 null = $tenant_id 恒为假）——
+# 不需要额外按关系类型区分"这条边要不要按租户过滤"。
 _DELETE_RELATIONS_BY_SOURCE_QUERY = """
-MATCH ()-[r]->() WHERE r.source = $source
+MATCH ()-[r]->() WHERE r.source = $source AND r.tenant_id = $tenant_id
 DELETE r
 """
 
@@ -59,10 +63,13 @@ class Neo4jGraphClient:
     def __init__(self, *, driver: Neo4jDriverProtocol) -> None:
         self._driver = driver
 
-    async def query_subgraph(self, standard_name: str) -> list[dict[str, Any]]:
+    async def query_subgraph(
+        self, standard_name: str, *, tenant_id: str
+    ) -> list[dict[str, Any]]:
         async with self._driver.session() as session:
             result = await session.run(
-                _SUBGRAPH_QUERY, {"standard_name": standard_name}
+                _SUBGRAPH_QUERY,
+                {"standard_name": standard_name, "tenant_id": tenant_id},
             )
             return await result.data()
 
@@ -73,13 +80,17 @@ class Neo4jGraphClient:
         object_standard_name: str,
         relation_type: str,
         source: str,
+        tenant_id: str,
     ) -> None:
         """幂等写入一条术语间关系（MERGE，不存在则创建，存在则不重复）。
 
         source 记录这条边是从哪个文档抽取出来的，写在边的属性上——
-        重新摄取同一文档前先按 source 删掉它写过的旧边（见
+        重新摄取同一文档前先按 source+tenant_id 删掉它写过的旧边（见
         delete_relations_by_source），避免文档内容变更后旧关系永久
         残留在图谱里，和 vector_store.delete_by_source() 是同一个思路。
+
+        tenant_id 同样写在边的属性上，query_subgraph 按它强制过滤，
+        防止不同租户的关系事实互相可见。
         """
         if relation_type not in _ALLOWED_RELATION_TYPES:
             raise ValueError(
@@ -90,7 +101,7 @@ class Neo4jGraphClient:
             "MERGE (a:Term {standard_name: $subject_name}) "
             "MERGE (b:Term {standard_name: $object_name}) "
             f"MERGE (a)-[r:{relation_type}]->(b) "
-            "SET r.source = $source"
+            "SET r.source = $source, r.tenant_id = $tenant_id"
         )
         async with self._driver.session() as session:
             await session.run(
@@ -99,13 +110,21 @@ class Neo4jGraphClient:
                     "subject_name": subject_standard_name,
                     "object_name": object_standard_name,
                     "source": source,
+                    "tenant_id": tenant_id,
                 },
             )
 
-    async def delete_relations_by_source(self, source: str) -> None:
-        """删除某个文档抽取出的全部关系边，重新摄取该文档前调用。"""
+    async def delete_relations_by_source(self, source: str, *, tenant_id: str) -> None:
+        """删除某个文档、某个租户抽取出的全部关系边，重新摄取该文档前调用。
+
+        tenant_id 是必填过滤条件——不同租户即使摄取了相同相对路径的文档
+        （source 字符串相同），也只会删自己那部分边，不会互相影响。
+        """
         async with self._driver.session() as session:
-            await session.run(_DELETE_RELATIONS_BY_SOURCE_QUERY, {"source": source})
+            await session.run(
+                _DELETE_RELATIONS_BY_SOURCE_QUERY,
+                {"source": source, "tenant_id": tenant_id},
+            )
 
     async def sync_term(self, term: Term) -> None:
         """把术语表里的一个标准术语同步进图谱：写入/更新标准节点的

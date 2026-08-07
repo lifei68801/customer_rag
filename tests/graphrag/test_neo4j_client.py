@@ -46,10 +46,11 @@ async def test_query_subgraph_returns_related_terms():
     )
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    results = await client.query_subgraph("错误码E502")
+    results = await client.query_subgraph("错误码E502", tenant_id="t1")
 
     assert results == [{"related_name": "登录模块", "relation_type": "RELATED_TO"}]
-    assert session.last_parameters == {"standard_name": "错误码E502"}
+    assert session.last_parameters == {"standard_name": "错误码E502", "tenant_id": "t1"}
+    assert "tenant_id" in session.last_query
 
 
 async def test_merge_relation_sends_expected_query_and_parameters():
@@ -61,25 +62,29 @@ async def test_merge_relation_sends_expected_query_and_parameters():
         object_standard_name="登录模块",
         relation_type="RELATED_TO",
         source="a.md",
+        tenant_id="t1",
     )
 
     assert session.last_parameters == {
         "subject_name": "错误码E502",
         "object_name": "登录模块",
         "source": "a.md",
+        "tenant_id": "t1",
     }
     assert "RELATED_TO" in session.last_query
     assert "MERGE" in session.last_query
+    assert "tenant_id" in session.last_query
 
 
 async def test_delete_relations_by_source_sends_expected_query_and_parameters():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    await client.delete_relations_by_source("a.md")
+    await client.delete_relations_by_source("a.md", tenant_id="t1")
 
-    assert session.last_parameters == {"source": "a.md"}
+    assert session.last_parameters == {"source": "a.md", "tenant_id": "t1"}
     assert "DELETE" in session.last_query
+    assert "tenant_id" in session.last_query
 
 
 async def test_merge_relation_rejects_unrecognized_relation_type():
@@ -92,6 +97,7 @@ async def test_merge_relation_rejects_unrecognized_relation_type():
             object_standard_name="b",
             relation_type="DROP TABLE",
             source="a.md",
+            tenant_id="t1",
         )
         assert False, "应拒绝非法关系类型"
     except ValueError:
