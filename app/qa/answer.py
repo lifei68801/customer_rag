@@ -11,6 +11,10 @@ from app.providers.rerank import RerankProvider
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.hybrid_search import hybrid_search
 from app.retrieval.vector_store import VectorStore
+from app.safety.leakage_detection import detect_internal_leakage
+from app.safety.prompt_injection import detect_prompt_injection
+from app.safety.rules import UNSAFE_INPUT_MESSAGE, UNSAFE_OUTPUT_MESSAGE, check_text
+from app.safety.semantic_review import semantic_safety_review
 
 _PROMPT_TEMPLATE = "根据以下资料回答问题。\n资料：\n{context}\n\n问题：{question}"
 
@@ -37,7 +41,15 @@ async def answer_question(
     terms: list[Term] | None = None,
     graph_client: GraphClientProtocol | None = None,
     top_k: int = 3,
+    banned_terms: list[str] | None = None,
 ) -> AnswerResult:
+    input_result = check_text(question, banned_terms=banned_terms)
+    injection_result = detect_prompt_injection(question)
+    if not input_result.is_safe or injection_result.is_suspicious:
+        return AnswerResult(
+            text=UNSAFE_INPUT_MESSAGE, used_sources=[], retrieved_context=""
+        )
+
     term_guard_context: str | None = None
     if terms and graph_client is not None:
         term_guard_context = await build_term_guard_context(
@@ -68,9 +80,29 @@ async def answer_question(
         ProviderRequest(messages=[{"role": "user", "content": prompt}]),
         provider_name=llm_provider_name,
     )
+    answer_text = llm_result.text
+
+    output_result = check_text(answer_text, banned_terms=banned_terms)
+    leakage_result = detect_internal_leakage(answer_text)
+    if not output_result.is_safe or leakage_result.is_leaked:
+        return AnswerResult(
+            text=UNSAFE_OUTPUT_MESSAGE,
+            used_sources=[record.id for record in records],
+            retrieved_context=retrieved_context,
+        )
+
+    semantic_result = await semantic_safety_review(
+        answer_text, llm_registry=llm_registry, llm_provider_name=llm_provider_name
+    )
+    if semantic_result.reviewed and not semantic_result.is_safe:
+        return AnswerResult(
+            text=UNSAFE_OUTPUT_MESSAGE,
+            used_sources=[record.id for record in records],
+            retrieved_context=retrieved_context,
+        )
 
     return AnswerResult(
-        text=llm_result.text,
+        text=answer_text,
         used_sources=[record.id for record in records],
         retrieved_context=retrieved_context,
     )

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.api import deps
+from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.providers.embedding import EmbeddingRegistry
@@ -41,6 +42,7 @@ async def qa_endpoint(
     rerank_provider: RerankProvider | None = Depends(deps.get_rerank_provider),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
     terms: list[Term] = Depends(deps.get_terms),
+    settings: Settings = Depends(deps.get_settings),
 ) -> QAResponse:
     tenant_id = deps.resolve_tenant_id(
         gateway_tenant_id, payload.tenant_id, source="qa"
@@ -57,5 +59,6 @@ async def qa_endpoint(
         terms=terms,
         graph_client=graph_client,
         tenant_id=tenant_id,
+        banned_terms=deps.parse_banned_terms(settings.banned_terms),
     )
     return QAResponse(text=result.text, used_sources=result.used_sources)
