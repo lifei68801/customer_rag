@@ -25,7 +25,13 @@ class FakeEmbeddingProvider:
 
 
 class ScriptedLLMProvider:
-    """每条用例依次消费：回答生成、faithfulness打分、answer_relevancy打分。"""
+    """每条用例依次消费：回答生成、语义安全审查、faithfulness打分、answer_relevancy打分。
+
+    answer_question() 内部会对生成的回答调用一次 semantic_safety_review()
+    （见 app/qa/answer.py），这也是走同一个 llm_registry 的一次 LLM 请求，
+    夹在"回答生成"和后续两次裁判打分请求之间，脚本响应列表必须按这个真实
+    顺序排列，否则会错位消费。
+    """
 
     def __init__(self, responses: list[str]) -> None:
         self._responses = list(responses)
@@ -65,7 +71,12 @@ async def test_eval_seed_dataset_runs_end_to_end_with_fake_providers():
     scripted_responses: list[str] = []
     for _ in cases:
         scripted_responses.extend(
-            ["按资料所述处理即可。", '{"score": 1.0}', '{"score": 1.0}']
+            [
+                "按资料所述处理即可。",
+                '{"is_safe": true}',
+                '{"score": 1.0}',
+                '{"score": 1.0}',
+            ]
         )
     llm_registry = ProviderRegistry()
     llm_registry.register(

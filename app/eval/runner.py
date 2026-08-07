@@ -150,7 +150,9 @@ async def run_eval_suite(
 
     Faithfulness/Answer Relevancy 是 LLM 裁判打分，会真实调用一次 LLM
     （非 answer_question 生成阶段那次），因此跑一个完整评测集的耗时和
-    成本是 O(2N) 次 LLM 调用（N=用例数），比只做确定性指标贵得多。
+    成本是 O(4N) 次 LLM 调用（N=用例数：生成 1 次 + answer_question 内部
+    output safety 的 semantic_safety_review 1 次 + 这里的两次裁判打分各
+    1 次），比只做确定性指标贵得多。
     """
     case_results: list[EvalCaseResult] = []
     for case in cases:

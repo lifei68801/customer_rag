@@ -13,7 +13,13 @@ class FakeEmbeddingProvider:
 
 
 class ScriptedLLMProvider:
-    """依次返回：回答生成、faithfulness打分、answer_relevancy打分。"""
+    """依次返回：回答生成、语义安全审查、faithfulness打分、answer_relevancy打分。
+
+    answer_question() 内部会对生成的回答调用一次 semantic_safety_review()
+    （见 app/qa/answer.py），这也是走同一个 llm_registry 的一次 LLM 请求，
+    夹在"回答生成"和 run_eval_suite() 自己发起的两次裁判打分请求之间，
+    脚本响应列表必须按这个真实顺序排列，否则会错位消费。
+    """
 
     def __init__(self, responses: list[str]) -> None:
         self._responses = list(responses)
@@ -47,6 +53,7 @@ async def test_run_eval_suite_aggregates_all_metrics_across_cases():
         ScriptedLLMProvider(
             [
                 "重启路由器即可解决。",  # 回答生成
+                '{"is_safe": true}',  # 语义安全审查（answer_question 内部触发）
                 '{"score": 0.9}',  # faithfulness
                 '{"score": 0.8}',  # answer_relevancy
             ]
@@ -103,7 +110,9 @@ async def test_run_eval_suite_scores_zero_recall_when_tenant_id_does_not_match()
     llm_registry.register(
         ProviderCapability.LLM,
         "fake-llm",
-        ScriptedLLMProvider(["不应该有资料可用。", '{"score": 0.5}', '{"score": 0.5}']),
+        ScriptedLLMProvider(
+            ["不应该有资料可用。", '{"is_safe": true}', '{"score": 0.5}', '{"score": 0.5}']
+        ),
     )
 
     cases = [
