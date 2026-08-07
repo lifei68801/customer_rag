@@ -107,7 +107,7 @@ Qwen（DashScope 兼容模式）、DeepSeek、智谱 GLM、Kimi 官方文档都�
 | 工具名 | LLM 可控参数 | 系统强制注入（LLM 不可控） | 实现 |
 |---|---|---|---|
 | `vector_search_tool` | `query: str`, `top_k: int`（可选，默认3） | `tenant_id` | 内部调用 `hybrid_search()` |
-| `graph_query_tool` | `entity_name: str` | `tenant_id`（未来 Neo4j 接入租户后）| 内部调用 `resolve_to_standard_name()` + `graph_client.query_subgraph()` |
+| `graph_query_tool` | `entity_name: str` | `tenant_id` | 内部调用 `resolve_to_standard_name()` + `graph_client.query_subgraph()` |
 
 `create_ticket_tool` **不**开放给 Planner 调用——继续保持架构图里 `Fallback --> CreateTicket`
 的确定性路径，工单转人工是安全兜底动作，不能让 LLM 自主决定"要不要转人工"。
