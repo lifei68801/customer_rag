@@ -39,13 +39,11 @@ from app.retrieval.bm25 import BM25Index
 from app.retrieval.hybrid_search import hybrid_search
 from app.retrieval.vector_store import VectorStore
 from app.safety.prompt_injection import detect_prompt_injection, wrap_system_prompt
-from app.safety.rules import check_text
+from app.safety.rules import UNSAFE_INPUT_MESSAGE, UNSAFE_OUTPUT_MESSAGE, check_text
 from app.safety.semantic_review import semantic_safety_review
 from app.voice.streaming_responder import stream_sentences
 
 _PROMPT_TEMPLATE = "根据以下资料回答问题。\n资料：\n{context}\n\n问题：{question}"
-_UNSAFE_INPUT_MESSAGE = "您的问题包含无法处理的敏感内容，请修改后重新提问。"
-_UNSAFE_OUTPUT_MESSAGE = "抱歉，生成的回答未通过安全审查，已为您转接人工客服。"
 _FALLBACK_MESSAGE = "抱歉，暂时没有找到确切答案，已为您转接人工客服处理。"
 _FUTURE_TIME_CLARIFICATION_PROMPT = (
     "您提到的时间似乎是将来的日期，我们暂时没有对应的记录。"
@@ -422,11 +420,11 @@ def build_agent_graph(
 
     async def output_safety_node(state: AgentState) -> dict[str, Any]:
         if not state.get("is_input_safe", True):
-            return {"is_output_safe": True, "final_text": _UNSAFE_INPUT_MESSAGE}
+            return {"is_output_safe": True, "final_text": UNSAFE_INPUT_MESSAGE}
         answer = state.get("answer_text", "")
         result = check_text(answer, banned_terms=banned_terms)
         if not result.is_safe:
-            return {"is_output_safe": False, "final_text": _UNSAFE_OUTPUT_MESSAGE}
+            return {"is_output_safe": False, "final_text": UNSAFE_OUTPUT_MESSAGE}
 
         if state.get("fallback_triggered"):
             # 兜底话术是固定文案，不含 LLM 生成内容，跳过语义审查节省一次
@@ -441,7 +439,7 @@ def build_agent_graph(
         if semantic_result.reviewed and not semantic_result.is_safe:
             return {
                 "is_output_safe": False,
-                "final_text": _UNSAFE_OUTPUT_MESSAGE,
+                "final_text": UNSAFE_OUTPUT_MESSAGE,
                 "semantic_review_reviewed": True,
             }
         return {
