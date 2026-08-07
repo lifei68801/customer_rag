@@ -14,7 +14,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         className={`max-w-[75%] rounded-bubble px-4 py-3 ${
           isUser
             ? 'bg-accent text-white'
-            : 'border border-surface-border bg-surface-card text-content-primary'
+            : message.isError
+              ? 'border border-status-error/40 bg-surface-card text-status-error'
+              : 'border border-surface-border bg-surface-card text-content-primary'
         }`}
       >
         {message.text ? (

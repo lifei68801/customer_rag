@@ -10,6 +10,7 @@ export interface ChatMessage {
   text: string
   usedSources: string[]
   isStreaming: boolean
+  isError?: boolean
 }
 
 interface AgentDeltaEvent {
@@ -106,8 +107,12 @@ export function useAgentChat() {
           message.id === assistantMessageId
             ? {
                 ...message,
-                text: `连接后端失败：${detail}，请确认服务已启动。`,
+                text:
+                  message.text +
+                  (message.text ? '\n\n' : '') +
+                  `连接后端失败：${detail}，请确认服务已启动。`,
                 isStreaming: false,
+                isError: true,
               }
             : message,
         ),
