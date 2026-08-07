@@ -5,31 +5,36 @@ export default {
   theme: {
     extend: {
       colors: {
-        surface: {
-          base: '#0A0A0F',
-          raised: '#15151F',
-          card: '#1B1B29',
-          border: '#33333F',
+        paper: '#FFFAEF',
+        ink: {
+          DEFAULT: '#141111',
+          soft: '#5C5750',
         },
+        card: '#FFFFFF',
         accent: {
-          DEFAULT: '#0EA5E9',
-          soft: '#06B6D4',
-        },
-        content: {
-          primary: '#F5F5F7',
-          secondary: '#9CA3AF',
+          pink: '#FE7DA8',
+          yellow: '#FFD440',
+          cyan: '#27CCF3',
+          green: '#A9D877',
+          orange: '#F8A16F',
         },
         status: {
-          success: '#10B981',
-          error: '#EF4444',
+          success: '#A9D877',
+          error: '#F97264',
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        sans: [
+          '"Space Grotesk"',
+          'system-ui',
+          '"PingFang SC"',
+          '"Microsoft YaHei"',
+          'sans-serif',
+        ],
       },
-      borderRadius: {
-        card: '12px',
-        bubble: '16px',
+      boxShadow: {
+        brutal: '2px 2px 0 0 #141111',
+        'brutal-sm': '1px 1px 0 0 #141111',
       },
     },
   },
