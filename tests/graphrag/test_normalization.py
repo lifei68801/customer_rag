@@ -208,3 +208,66 @@ def test_find_fuzzy_candidate_standard_name_respects_custom_threshold():
     )
 
     assert result is None
+
+
+async def test_fuzzy_candidate_goes_to_review_queue_instead_of_auto_writing():
+    graph_client = FakeGraphClient()
+    review_conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(review_conn)
+    relations = [
+        {
+            "subject": "网关超时了",  # 模糊匹配"错误码E502"（经由别名"网关超时"）
+            "object": "认证模块",  # 精确匹配"登录模块"
+            "relation_type": "RELATED_TO",
+        }
+    ]
+
+    written = await normalize_and_write_relations(
+        relations,
+        terms=_TERMS,
+        graph_client=graph_client,
+        source="a.md",
+        tenant_id="t1",
+        review_conn=review_conn,
+    )
+
+    assert written == 0
+    assert graph_client.written == []
+    pending = await list_pending_reviews(review_conn)
+    assert len(pending) == 1
+    assert pending[0]["reason"] == "fuzzy_match_needs_confirmation"
+    assert pending[0]["subject_candidate"] == "网关超时了"
+    assert pending[0]["object_candidate"] == "认证模块"
+    assert pending[0]["suggested_subject_standard_name"] == "错误码E502"
+    assert pending[0]["suggested_object_standard_name"] is None
+
+
+async def test_totally_unresolved_candidate_still_uses_unresolved_reason_not_fuzzy():
+    # "不存在的实体"和任何术语的相似度都是 0，没有模糊候选——必须继续走
+    # 原有的 reason="object_unresolved" 分支，不能被误判成模糊匹配。
+    graph_client = FakeGraphClient()
+    review_conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(review_conn)
+    relations = [
+        {
+            "subject": "网关超时",
+            "object": "不存在的实体",
+            "relation_type": "RELATED_TO",
+        }
+    ]
+
+    written = await normalize_and_write_relations(
+        relations,
+        terms=_TERMS,
+        graph_client=graph_client,
+        source="a.md",
+        tenant_id="t1",
+        review_conn=review_conn,
+    )
+
+    assert written == 0
+    pending = await list_pending_reviews(review_conn)
+    assert len(pending) == 1
+    assert pending[0]["reason"] == "object_unresolved"
+    assert pending[0]["suggested_subject_standard_name"] is None
+    assert pending[0]["suggested_object_standard_name"] is None

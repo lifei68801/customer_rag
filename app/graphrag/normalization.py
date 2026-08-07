@@ -91,6 +91,36 @@ async def normalize_and_write_relations(
         subject_std = resolve_to_standard_name(relation["subject"], terms)
         object_std = resolve_to_standard_name(relation["object"], terms)
         if subject_std is None or object_std is None:
+            suggested_subject = (
+                None
+                if subject_std is not None
+                else find_fuzzy_candidate_standard_name(relation["subject"], terms)
+            )
+            suggested_object = (
+                None
+                if object_std is not None
+                else find_fuzzy_candidate_standard_name(relation["object"], terms)
+            )
+            if suggested_subject is not None or suggested_object is not None:
+                logger.info(
+                    "关系候选模糊匹配到建议标准名，转人工审核 subject=%s "
+                    "(建议=%s) object=%s (建议=%s)",
+                    relation["subject"],
+                    suggested_subject,
+                    relation["object"],
+                    suggested_object,
+                )
+                if review_conn is not None:
+                    await enqueue_for_review(
+                        review_conn,
+                        subject_candidate=relation["subject"],
+                        object_candidate=relation["object"],
+                        relation_type=relation["relation_type"],
+                        reason="fuzzy_match_needs_confirmation",
+                        suggested_subject_standard_name=suggested_subject,
+                        suggested_object_standard_name=suggested_object,
+                    )
+                continue
             logger.info(
                 "关系候选未能对齐术语表，丢弃 subject=%s object=%s",
                 relation["subject"],
