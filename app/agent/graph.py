@@ -266,7 +266,10 @@ def build_agent_graph(
         if not (terms and graph_client is not None):
             return {"term_guard_context": None}
         context = await build_term_guard_context(
-            state["question"], terms=terms, graph_client=graph_client
+            state["question"],
+            terms=terms,
+            tenant_id=state["tenant_id"],
+            graph_client=graph_client,
         )
         return {"term_guard_context": context}
 

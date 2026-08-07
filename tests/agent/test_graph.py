@@ -1,4 +1,5 @@
 from app.agent.graph import build_agent_graph
+from app.graphrag.ontology import Term
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
@@ -671,3 +672,42 @@ async def test_correction_check_does_not_trigger_for_normal_question():
     pending_jobs = await list_pending_jobs(conn)
     assert len(pending_jobs) == 1
     assert pending_jobs[0]["user_input"] == "网络连不上怎么办？"
+
+
+class _FakeTermGuardGraphClient:
+    def __init__(self) -> None:
+        self.queried_tenant_ids: list[str] = []
+
+    async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
+        self.queried_tenant_ids.append(tenant_id)
+        return []
+
+
+async def test_term_guard_node_forwards_tenant_id_to_graph_client():
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(with_records=True, llm_text="重启路由器即可解决。")
+    )
+    terms = [
+        Term(
+            standard_name="错误码E502",
+            aliases=[],
+            term_type="error_code",
+            product_line="核心平台",
+        )
+    ]
+    graph_client = _FakeTermGuardGraphClient()
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        terms=terms,
+        graph_client=graph_client,
+    )
+
+    await graph.ainvoke({"question": "错误码E502是什么意思？", "tenant_id": "t2"})
+
+    assert graph_client.queried_tenant_ids == ["t2"]

@@ -41,7 +41,7 @@ async def answer_question(
     term_guard_context: str | None = None
     if terms and graph_client is not None:
         term_guard_context = await build_term_guard_context(
-            question, terms=terms, graph_client=graph_client
+            question, terms=terms, tenant_id=tenant_id, graph_client=graph_client
         )
 
     records = await hybrid_search(

@@ -71,7 +71,7 @@ async def test_answer_question_uses_retrieved_context_in_the_prompt():
 
 
 class FakeGraphClient:
-    async def query_subgraph(self, standard_name: str) -> list[dict]:
+    async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
         return [{"related_name": "示例登录模块", "relation_type": "RELATED_TO"}]
 
 
