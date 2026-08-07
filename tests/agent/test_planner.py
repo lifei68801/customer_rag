@@ -207,7 +207,11 @@ _TERMS = [
 
 
 class FakeGraphClient:
-    async def query_subgraph(self, standard_name: str) -> list[dict]:
+    def __init__(self) -> None:
+        self.queried_tenant_ids: list[str] = []
+
+    async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
+        self.queried_tenant_ids.append(tenant_id)
         return [{"related_name": "示例登录模块", "relation_type": "RELATED_TO"}]
 
 
@@ -229,6 +233,7 @@ async def test_run_tool_calls_executes_graph_query_tool():
         ],
     }
 
+    graph_client = FakeGraphClient()
     update = await run_tool_calls(
         state,
         embedding_registry=embedding_registry,
@@ -238,12 +243,13 @@ async def test_run_tool_calls_executes_graph_query_tool():
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
         terms=_TERMS,
-        graph_client=FakeGraphClient(),
+        graph_client=graph_client,
     )
 
     tool_message = update["planner_messages"][-1]
     assert "示例错误码E502" in tool_message["content"]
     assert "示例登录模块" in tool_message["content"]
+    assert graph_client.queried_tenant_ids == ["t1"]
 
 
 async def test_run_tool_calls_reports_error_for_malformed_arguments_without_crashing():

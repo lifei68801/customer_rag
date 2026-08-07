@@ -121,7 +121,9 @@ async def _dispatch_tool_call(
         if not (terms and graph_client is not None):
             return json.dumps({"error": "graph_query_tool 未配置"}, ensure_ascii=False), []
         entity_name = str(arguments.get("entity_name", ""))
-        result = await graph_query_tool(entity_name, terms=terms, graph_client=graph_client)
+        result = await graph_query_tool(
+            entity_name, terms=terms, tenant_id=tenant_id, graph_client=graph_client
+        )
         observation = {
             "resolved": result.resolved,
             "standard_name": result.standard_name,

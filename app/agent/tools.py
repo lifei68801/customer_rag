@@ -105,6 +105,7 @@ async def graph_query_tool(
     entity_name: str,
     *,
     terms: list[Term],
+    tenant_id: str,
     graph_client: GraphClientProtocol,
 ) -> GraphQueryToolResult:
     """graph_query_tool 的实际执行体：先对齐术语表，命中才查图谱。
@@ -112,12 +113,15 @@ async def graph_query_tool(
     未命中术语表时直接返回 resolved=False，不发起图查询——和
     normalize_and_write_relations 的"先归一化再写入"是同一个原则：
     没有标准名就没有查询的意义，也避免拿一个不存在的名字去查图谱浪费一次调用。
+
+    tenant_id 透传给 query_subgraph，防止返回给 LLM 的子图里混入其它
+    租户的关系事实。
     """
     standard_name = resolve_to_standard_name(entity_name, terms)
     if standard_name is None:
         return GraphQueryToolResult(resolved=False, standard_name=None, subgraph=[])
 
-    subgraph = await graph_client.query_subgraph(standard_name)
+    subgraph = await graph_client.query_subgraph(standard_name, tenant_id=tenant_id)
     return GraphQueryToolResult(
         resolved=True, standard_name=standard_name, subgraph=subgraph
     )

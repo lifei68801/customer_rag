@@ -75,13 +75,18 @@ _TERMS = [
 
 
 class FakeGraphClient:
-    async def query_subgraph(self, standard_name: str) -> list[dict]:
+    def __init__(self) -> None:
+        self.queried_tenant_ids: list[str] = []
+
+    async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
+        self.queried_tenant_ids.append(tenant_id)
         return [{"related_name": "示例登录模块", "relation_type": "RELATED_TO"}]
 
 
 async def test_graph_query_tool_resolves_alias_and_returns_subgraph():
+    graph_client = FakeGraphClient()
     result = await graph_query_tool(
-        "网关超时示例", terms=_TERMS, graph_client=FakeGraphClient()
+        "网关超时示例", terms=_TERMS, tenant_id="t1", graph_client=graph_client
     )
 
     assert result.resolved is True
@@ -89,15 +94,16 @@ async def test_graph_query_tool_resolves_alias_and_returns_subgraph():
     assert result.subgraph == [
         {"related_name": "示例登录模块", "relation_type": "RELATED_TO"}
     ]
+    assert graph_client.queried_tenant_ids == ["t1"]
 
 
 async def test_graph_query_tool_returns_unresolved_without_querying_graph():
     class ExplodingGraphClient:
-        async def query_subgraph(self, standard_name: str) -> list[dict]:
+        async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
             raise AssertionError("未命中术语表时不应该查图谱")
 
     result = await graph_query_tool(
-        "完全不认识的名字", terms=_TERMS, graph_client=ExplodingGraphClient()
+        "完全不认识的名字", terms=_TERMS, tenant_id="t1", graph_client=ExplodingGraphClient()
     )
 
     assert result.resolved is False

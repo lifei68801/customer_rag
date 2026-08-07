@@ -211,7 +211,7 @@ async def test_planner_graph_uses_graph_query_tool_with_term_guard_context():
     ]
 
     class FakeGraphClient:
-        async def query_subgraph(self, standard_name: str) -> list[dict]:
+        async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
             return [{"related_name": "示例登录模块", "relation_type": "RELATED_TO"}]
 
     graph = build_agent_graph(
