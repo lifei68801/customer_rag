@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import logging
 from typing import Any, Protocol
 
@@ -36,6 +37,35 @@ def resolve_to_standard_name(name: str, terms: list[Term]) -> str | None:
         if name == term.standard_name or name in term.aliases:
             return term.standard_name
     return None
+
+
+def find_fuzzy_candidate_standard_name(
+    name: str, terms: list[Term], *, threshold: float = 0.75
+) -> str | None:
+    """精确匹配失败后的模糊匹配兜底：找相似度最高的单一标准名建议。
+
+    和 term_matcher.py::match_terms()（TermGuard）"任意命中就收集一组
+    术语"不同——那边是往上下文里塞信息，多塞几个无妨；这里要给人工审核
+    一个具体的对齐建议，必须是单一最优解。因为 name 本身就是 LLM 抽取
+    出的完整候选实体名（不是需要在长文本里扫描的段落），直接整串比较，
+    不需要滑动窗口。
+
+    threshold 默认 0.75（沿用 TermGuard 的保守取值）——这是参考起点，
+    需要结合真实数据调整，不是权威值。返回值只是"建议"，调用方（见
+    normalize_and_write_relations）不会拿这个结果自动写入图谱，而是
+    连同建议一起进人工审核队列，由人工最终确认。
+    """
+    best_name: str | None = None
+    best_ratio = 0.0
+    for term in terms:
+        for candidate in [term.standard_name, *term.aliases]:
+            if not candidate:
+                continue
+            ratio = difflib.SequenceMatcher(None, name, candidate).ratio()
+            if ratio >= threshold and ratio > best_ratio:
+                best_ratio = ratio
+                best_name = term.standard_name
+    return best_name
 
 
 async def normalize_and_write_relations(

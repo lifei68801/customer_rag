@@ -1,6 +1,9 @@
 import aiosqlite
 
-from app.graphrag.normalization import normalize_and_write_relations
+from app.graphrag.normalization import (
+    find_fuzzy_candidate_standard_name,
+    normalize_and_write_relations,
+)
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
 
@@ -172,3 +175,36 @@ async def test_does_not_enqueue_when_review_conn_not_provided():
     )
 
     assert written == 0
+
+
+def test_find_fuzzy_candidate_standard_name_matches_via_alias_typo():
+    # "网关超时了" 比别名"网关超时"多了一个字，difflib 相似度约 0.8889，
+    # 高于默认阈值 0.75，应该建议对齐到"错误码E502"。
+    result = find_fuzzy_candidate_standard_name("网关超时了", _TERMS)
+
+    assert result == "错误码E502"
+
+
+def test_find_fuzzy_candidate_standard_name_matches_at_exact_threshold_boundary():
+    # "认正模块"是别名"认证模块"打错1字，difflib 相似度恰好等于默认阈值
+    # 0.75，应该命中（>= 判断，不是 >）。
+    result = find_fuzzy_candidate_standard_name("认正模块", _TERMS)
+
+    assert result == "登录模块"
+
+
+def test_find_fuzzy_candidate_standard_name_returns_none_when_below_threshold():
+    # 完全不相关的候选名，所有术语的相似度都是 0，远低于阈值。
+    result = find_fuzzy_candidate_standard_name("不存在的实体", _TERMS)
+
+    assert result is None
+
+
+def test_find_fuzzy_candidate_standard_name_respects_custom_threshold():
+    # "认正模块" vs 别名"认证模块"相似度 0.75；传入更严格的阈值 0.9 时
+    # 不应该命中——验证 threshold 参数真的生效，不是死参数。
+    result = find_fuzzy_candidate_standard_name(
+        "认正模块", _TERMS, threshold=0.9
+    )
+
+    assert result is None
