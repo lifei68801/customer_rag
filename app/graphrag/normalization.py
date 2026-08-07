@@ -19,9 +19,10 @@ class GraphWriteClientProtocol(Protocol):
         object_standard_name: str,
         relation_type: str,
         source: str,
+        tenant_id: str,
     ) -> None: ...
 
-    async def delete_relations_by_source(self, source: str) -> None: ...
+    async def delete_relations_by_source(self, source: str, *, tenant_id: str) -> None: ...
 
 
 def resolve_to_standard_name(name: str, terms: list[Term]) -> str | None:
@@ -43,6 +44,7 @@ async def normalize_and_write_relations(
     terms: list[Term],
     graph_client: GraphWriteClientProtocol,
     source: str,
+    tenant_id: str,
     review_conn: aiosqlite.Connection | None = None,
 ) -> int:
     """候选关系归一化对齐术语表后写入图谱，返回成功写入数。
@@ -80,6 +82,7 @@ async def normalize_and_write_relations(
                 object_standard_name=object_std,
                 relation_type=relation["relation_type"],
                 source=source,
+                tenant_id=tenant_id,
             )
         except ValueError:
             logger.warning(
