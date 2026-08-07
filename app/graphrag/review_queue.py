@@ -28,6 +28,8 @@ class ReviewGraphClientProtocol(Protocol):
         subject_standard_name: str,
         object_standard_name: str,
         relation_type: str,
+        source: str,
+        tenant_id: str,
     ) -> None: ...
 
 
