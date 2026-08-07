@@ -30,7 +30,7 @@
 - Create: `docs/demo-data/faq-network.md`
 
 **Interfaces:**
-- Consumes：现有 `app/ingestion/main.py` CLI（`python -m app.ingestion.main --dir <目录> --tenant-id <租户> --build-graph`），`app/ingestion/chunking.py::chunk_markdown` 按 `## ` 二级标题切分 chunk（一级 `#` 标题不参与切分，只是文档标题，会被归入第一个 `##` 之前的部分而不会单独成块——因此每个文件的第一行用 `# ` 一级标题起个文档名，紧接着的内容都要用 `## ` 起头）。
+- Consumes：现有 `app/ingestion/main.py` CLI（`python -m app.ingestion.main --dir <目录> --tenant-id <租户> --build-graph`），`app/ingestion/chunking.py::chunk_markdown` 按 `## ` 二级标题切分 chunk（一级 `#` 标题及第一个 `##` 之前的所有内容都不会进入任何 chunk，会被直接丢弃、不参与索引——因此每个文件的第一行用 `# ` 一级标题起个文档名只是给人看的，紧接着的内容都要用 `## ` 起头才能被检索到）。
 - Produces：无代码接口，产出是向量库/图谱里的可检索内容，供 Task 5 做端到端验证时提问。
 
 - [ ] **Step 1: 创建示例语料文件**
@@ -858,7 +858,7 @@ Expected: 输出若干行 `data: {...}` 格式的 SSE 事件，最后一条 `typ
 
 1. 打开 `http://localhost:5173`，Hero 区标题/副标题正常显示，深色背景+青蓝色调是否符合预期。
 2. 输入"网关超时示例是什么意思？"，观察回答是否有逐句流式出现的效果（不是一次性蹦出全部文字）。
-3. 回答下方是否出现"📄 faq-error-e502.md"这样的来源引用标签。
+3. 回答下方是否出现来源引用标签——实际格式是 `used_sources` 原样展示，形如"📄 docs\demo-data\faq-error-e502.md#0"（含目录前缀、Windows 路径分隔符、chunk 序号，不是精简过的纯文件名），这是符合预期的正常格式，不要误判为异常。
 4. 连续追问一个指代不明的问题（如先问"E502 怎么处理"，再问"那这个问题会不会丢数据"），观察多轮对话是否连贯（依赖后端记忆/指代消解能力）。
 5. 关掉后端进程后再发一条消息，确认界面显示"连接后端失败"的提示，而不是卡死无响应。
 6. 用浏览器开发者工具的移动端模拟视图，确认页面在窄屏下没有明显的布局错乱（本计划没有专门做响应式适配任务，这里只是留意有没有严重问题，不是要求完美适配）。
