@@ -13,7 +13,9 @@ class VectorRecord:
     text: str
     tenant_id: str
     metadata: dict[str, Any] = field(default_factory=dict)
-    # 只有 search() 返回的结果才会填充（余弦相似度/Milvus距离，越大越相关）；
+    # search() 返回的结果会填充（余弦相似度/Milvus距离，越大越相关）；
+    # hybrid_search() 配置了 rerank_provider 时还会在融合后被覆盖成 rerank
+    # 的 relevance_score（不同量纲，见 app/retrieval/hybrid_search.py）。
     # upsert 时新建的记录没有意义，保持 None。用于 Agent 兜底路径判断"检索
     # 到的结果是不是真的相关"——真实向量库几乎总能返回 Top-K 个最近邻，
     # 不能只靠"结果是否为空"判断需不需要转人工。

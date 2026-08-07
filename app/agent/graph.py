@@ -117,11 +117,15 @@ def build_agent_graph(
     min_relevance_score 为可选项：真实向量库（Milvus）几乎总能返回 Top-K
     个最近邻，哪怕语义上完全不相关，光看"检索结果是否为空"判断该不该转
     人工远远不够——真实数据测试就踩到过这个问题。设置后，检索到的记录
-    即使非空，只要最高分（VectorRecord.score，向量余弦相似度）低于这个
-    阈值也会走 fallback+create_ticket，而不是把不相关的资料硬塞给 LLM。
-    不设置（默认）则完全不影响原有行为，只看结果是否为空。分数只在向量
-    检索命中时才有（BM25-only 命中没有可比较的分数，不参与这个判断，
-    给它们"疑罪从无"）。
+    即使非空，只要最高分（VectorRecord.score）低于这个阈值也会走
+    fallback+create_ticket，而不是把不相关的资料硬塞给 LLM。不设置
+    （默认）则完全不影响原有行为，只看结果是否为空。
+
+    未配置 rerank_provider 时，score 是向量检索阶段的余弦相似度，此时
+    BM25-only 命中没有可比较的分数，不参与这个判断，给它们"疑罪从无"；
+    配置了 rerank_provider 时，score 会被 hybrid_search 覆盖成 rerank
+    返回的 relevance_score（见 app/retrieval/hybrid_search.py），此时
+    BM25-only 命中也会拿到真实分数、一并参与阈值判断，不再自动豁免。
 
     时间/澄清状态机同样依赖 memory_conn（未提供则完全跳过，行为不变）：
     检索兜底（fallback）时如果问题里提到未来时间，不直接转人工工单，而是
