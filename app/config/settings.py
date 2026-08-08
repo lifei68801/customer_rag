@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     # Neo4j 层面即使做了按 tenant_id 过滤的隔离也形同虚设。
     gateway_shared_secret: str | None = None
 
-    # 后台管理系统的管理员 token（登录凭证），未配置时 /admin/auth/login
+    # 后台管理系统的管理员 token（登录凭证），未配置时 /api/admin/auth/login
     # 直接拒绝所有登录请求（而不是静默放行）——这和 gateway_shared_secret
     # 的"未配置=本地兜底"降级路径不同，后台管理能直接写库（上传文档、
     # 批准/驳回知识图谱关系），没有"无鉴权也能跑"的必要性。
