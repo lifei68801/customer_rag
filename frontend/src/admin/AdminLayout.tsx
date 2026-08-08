@@ -1,4 +1,4 @@
-import { NavLink, Navigate, Outlet } from 'react-router-dom'
+import { Link, NavLink, Navigate, Outlet } from 'react-router-dom'
 import { useAdminAuth } from './useAdminAuth'
 import { TenantProvider } from './TenantContext'
 import { TenantSwitcher } from './TenantSwitcher'
@@ -31,12 +31,12 @@ export function AdminLayout() {
           </nav>
           <div className="flex flex-col gap-3">
             <TenantSwitcher />
-            <a
-              href="/"
+            <Link
+              to="/"
               className="min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-2 text-center text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none"
             >
               返回前台
-            </a>
+            </Link>
             <button
               type="button"
               onClick={logout}

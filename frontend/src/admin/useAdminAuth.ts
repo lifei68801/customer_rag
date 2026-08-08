@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react'
+import { logoutSession } from './adminApi'
 
 const SESSION_STORAGE_KEY = 'admin_session_token'
 
@@ -22,8 +23,13 @@ export function useAdminAuth() {
   }, [])
 
   const logout = useCallback(() => {
+    const token = sessionStorage.getItem(SESSION_STORAGE_KEY)
     sessionStorage.removeItem(SESSION_STORAGE_KEY)
     setSessionToken(null)
+    // 本地状态先清、立即生效；服务端撤销是尽力而为，不阻塞登出这个动作。
+    if (token) {
+      void logoutSession(token)
+    }
   }, [])
 
   return { sessionToken, login, logout }

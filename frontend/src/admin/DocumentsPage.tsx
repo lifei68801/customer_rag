@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { adminFetch } from './adminApi'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 
@@ -7,6 +7,13 @@ interface TrackedDocument {
   file_path: string
   content_hash: string
   chunk_count: number
+  last_ingested_at: string
+}
+
+/** file_path 是服务端落盘的完整路径（含 uuid 前缀），管理页面只需要给人看的文件名。 */
+function displayFileName(filePath: string): string {
+  const segments = filePath.split(/[\\/]/)
+  return segments[segments.length - 1] || filePath
 }
 
 interface PendingJob {
@@ -23,7 +30,10 @@ export function DocumentsPage() {
   const [pendingJobs, setPendingJobs] = useState<PendingJob[]>([])
   const [buildGraph, setBuildGraph] = useState(false)
   const [uploading, setUploading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  // 轮询期间才需要知道"上一次拿到的 pending_jobs 是不是空的"，不需要触发重渲染。
+  const hasPendingJobsRef = useRef(false)
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
@@ -37,17 +47,31 @@ export function DocumentsPage() {
     }
     setDocuments(data.documents)
     setPendingJobs(data.pending_jobs)
+    hasPendingJobsRef.current = data.pending_jobs.length > 0
   }, [sessionToken, tenantId])
 
   useEffect(() => {
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+
     const poll = () => {
-      refresh().catch((err) => {
-        console.error('文档列表刷新失败', err)
-      })
+      refresh()
+        .catch((err) => {
+          console.error('文档列表刷新失败', err)
+        })
+        .finally(() => {
+          if (cancelled) return
+          // 没有处理中任务时没必要每 3 秒打一次后端——退避到 15 秒，
+          // 一旦又有任务在处理（比如用户上传了新文件）会立刻恢复到 3 秒。
+          const interval = hasPendingJobsRef.current ? 3000 : 15000
+          timer = setTimeout(poll, interval)
+        })
     }
     poll()
-    const timer = setInterval(poll, 3000)
-    return () => clearInterval(timer)
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
   }, [refresh])
 
   const handleUpload = async (event: FormEvent<HTMLFormElement>) => {
@@ -59,7 +83,7 @@ export function DocumentsPage() {
     if (!file) return
 
     setUploading(true)
-    setError(null)
+    setUploadError(null)
     try {
       const formData = new FormData()
       formData.append('file', file)
@@ -70,13 +94,13 @@ export function DocumentsPage() {
         body: formData,
       })
       if (!response.ok) {
-        const body = (await response.json()) as { detail?: string }
-        throw new Error(body.detail ?? '上传失败')
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '上传失败'))
       }
       form.reset()
       await refresh()
     } catch (err) {
-      setError(err instanceof Error ? err.message : '上传失败')
+      setUploadError(err instanceof Error ? err.message : '上传失败')
     } finally {
       setUploading(false)
     }
@@ -84,7 +108,7 @@ export function DocumentsPage() {
 
   const handleDelete = async (filePath: string) => {
     if (!sessionToken) return
-    setError(null)
+    setDeleteError(null)
     try {
       const response = await adminFetch(
         `/api/admin/documents?tenant_id=${encodeURIComponent(tenantId)}&file_path=${encodeURIComponent(filePath)}`,
@@ -92,12 +116,12 @@ export function DocumentsPage() {
         { method: 'DELETE' },
       )
       if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { detail?: string }
-        throw new Error(body.detail ?? '删除失败')
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '删除失败'))
       }
       await refresh()
     } catch (err) {
-      setError(err instanceof Error ? err.message : '删除失败')
+      setDeleteError(err instanceof Error ? err.message : '删除失败')
     }
   }
 
@@ -118,7 +142,7 @@ export function DocumentsPage() {
           />
           同时构建知识图谱（LLM 关系抽取，耗时更久）
         </label>
-        {error && <p className="text-sm text-ink">{error}</p>}
+        {uploadError && <p className="text-sm text-ink">{uploadError}</p>}
         <button
           type="submit"
           disabled={uploading}
@@ -147,13 +171,19 @@ export function DocumentsPage() {
 
       <div className="flex flex-col gap-2">
         <h2 className="font-bold text-ink">已摄取文档</h2>
+        {deleteError && (
+          <p className="border-2 border-status-error bg-card px-3 py-2 text-sm text-ink shadow-brutal-sm">
+            {deleteError}
+          </p>
+        )}
         {documents.map((doc) => (
           <div
             key={doc.file_path}
             className="flex items-center justify-between border-2 border-ink bg-card px-4 py-3 shadow-brutal-sm"
           >
-            <span className="text-ink">
-              {doc.file_path}（{doc.chunk_count} chunks）
+            <span className="text-ink" title={doc.file_path}>
+              {displayFileName(doc.file_path)}（{doc.chunk_count} chunks，最近摄取：
+              {doc.last_ingested_at}）
             </span>
             <button
               type="button"

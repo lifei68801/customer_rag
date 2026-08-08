@@ -100,14 +100,14 @@ boxShadow: {
 
 以下模式已在 `frontend/src/` 落地，新增同类元素时直接复用对应 className 组合，不要另起风格。
 
-### 6.1 顶部公告条（`App.tsx`）
+### 6.1 顶部公告条（`ChatPage.tsx`）
 黑底 + 黄字 + 等宽字体，用于放置一句话状态说明：
 ```
 border-b-2 border-ink bg-ink px-4 py-2 text-center font-mono text-xs uppercase tracking-widest text-accent-yellow
 ```
 内容要求**真实、不夸大**——这是给内部演示环境用的状态条，不是营销 CTA，不写"重磅发布"之类的话术。
 
-### 6.2 导航栏（`App.tsx`）
+### 6.2 导航栏（`ChatPage.tsx`）
 黄色背景 + 黑色底边框，是首屏色彩识别的关键区块：
 ```
 flex items-center justify-between border-b-2 border-ink bg-accent-yellow px-6 py-4
@@ -129,7 +129,7 @@ min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-1.5 text-sm fon
 transition active:translate-x-px active:translate-y-px active:shadow-none
 disabled:cursor-not-allowed disabled:opacity-50
 ```
-参考实现：`App.tsx` 导航栏"重新开始对话"按钮。**判断主/次的原则**：一个界面区域如果同时
+参考实现：`ChatPage.tsx` 导航栏"重新开始对话"按钮。**判断主/次的原则**：一个界面区域如果同时
 出现两个可点击操作，优先级更高的用主按钮样式，优先级低的用次级样式，不要两个都用实心色块
 （会分不清主次）。`min-h-[44px]` 和 `cursor-pointer` 是所有按钮类元素的强制要求，见第 7 节。
 

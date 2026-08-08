@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { adminFetch } from './adminApi'
+import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 
@@ -24,14 +24,17 @@ interface ResolvedReview {
 }
 
 type Tab = 'pending' | 'history'
+type HistoryFilter = 'all' | 'approved' | 'rejected'
 
 export function GraphReviewsPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const [tab, setTab] = useState<Tab>('pending')
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [pending, setPending] = useState<PendingReview[]>([])
   const [history, setHistory] = useState<ResolvedReview[]>([])
   const [drafts, setDrafts] = useState<Record<number, { subject: string; object: string }>>({})
+  const [rejectNotes, setRejectNotes] = useState<Record<number, string>>({})
   const [error, setError] = useState<string | null>(null)
   const [processingId, setProcessingId] = useState<number | null>(null)
 
@@ -43,8 +46,8 @@ export function GraphReviewsPage() {
         sessionToken,
       )
       if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { detail?: string }
-        throw new Error(body.detail ?? '加载待审核列表失败')
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '加载待审核列表失败'))
       }
       const data = (await response.json()) as { reviews: PendingReview[] }
       setPending(data.reviews)
@@ -67,30 +70,20 @@ export function GraphReviewsPage() {
   const refreshHistory = useCallback(async () => {
     if (!sessionToken) return
     try {
-      const [approvedRes, rejectedRes] = await Promise.all([
-        adminFetch(
-          `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=approved`,
-          sessionToken,
-        ),
-        adminFetch(
-          `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=rejected`,
-          sessionToken,
-        ),
-      ])
-      if (!approvedRes.ok || !rejectedRes.ok) {
-        throw new Error('加载历史记录失败')
-      }
-      const approved = (await approvedRes.json()) as { reviews: ResolvedReview[] }
-      const rejected = (await rejectedRes.json()) as { reviews: ResolvedReview[] }
-      setHistory(
-        [...approved.reviews, ...rejected.reviews].sort((a, b) =>
-          b.resolved_at.localeCompare(a.resolved_at),
-        ),
+      const response = await adminFetch(
+        `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=${historyFilter}`,
+        sessionToken,
       )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '加载历史记录失败'))
+      }
+      const data = (await response.json()) as { reviews: ResolvedReview[] }
+      setHistory(data.reviews)
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载历史记录失败')
     }
-  }, [sessionToken, tenantId])
+  }, [sessionToken, tenantId, historyFilter])
 
   useEffect(() => {
     setError(null)
@@ -107,6 +100,9 @@ export function GraphReviewsPage() {
 
   const handleApprove = async (reviewId: number) => {
     if (!sessionToken) return
+    // UI 上按钮已经用 disabled 挡了，这里再查一次 processingId 是双保险：
+    // disabled 只挡鼠标/键盘触发，挡不住代码里其它路径直接调这个函数。
+    if (processingId !== null) return
     const draft = drafts[reviewId]
     if (!draft?.subject || !draft?.object) return
     setError(null)
@@ -122,8 +118,8 @@ export function GraphReviewsPage() {
         }),
       })
       if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { detail?: string }
-        throw new Error(body.detail ?? '批准失败')
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '批准失败'))
       }
       await refreshPending()
     } catch (err) {
@@ -135,18 +131,24 @@ export function GraphReviewsPage() {
 
   const handleReject = async (reviewId: number) => {
     if (!sessionToken) return
+    if (processingId !== null) return
     setError(null)
     setProcessingId(reviewId)
     try {
       const response = await adminFetch(`/api/admin/graph-reviews/${reviewId}/reject`, sessionToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenant_id: tenantId }),
+        body: JSON.stringify({ tenant_id: tenantId, note: rejectNotes[reviewId] || null }),
       })
       if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { detail?: string }
-        throw new Error(body.detail ?? '驳回失败')
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '驳回失败'))
       }
+      setRejectNotes((prev) => {
+        const next = { ...prev }
+        delete next[reviewId]
+        return next
+      })
       await refreshPending()
     } catch (err) {
       setError(err instanceof Error ? err.message : '驳回失败')
@@ -226,6 +228,15 @@ export function GraphReviewsPage() {
                 className="flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
               />
             </div>
+            <textarea
+              value={rejectNotes[review.review_id] ?? ''}
+              onChange={(event) =>
+                setRejectNotes((prev) => ({ ...prev, [review.review_id]: event.target.value }))
+              }
+              placeholder="驳回备注（可选，仅驳回时提交）"
+              rows={2}
+              className="border-2 border-ink bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
+            />
             <div className="flex gap-3">
               <button
                 type="button"
@@ -252,6 +263,25 @@ export function GraphReviewsPage() {
         ))}
       {tab === 'pending' && pending.length === 0 && (
         <p className="text-ink-soft">当前没有待审核的候选关系。</p>
+      )}
+
+      {tab === 'history' && (
+        <div className="flex gap-2">
+          {(['all', 'approved', 'rejected'] as const).map((filter) => (
+            <button
+              key={filter}
+              type="button"
+              onClick={() => setHistoryFilter(filter)}
+              className={`min-h-[44px] cursor-pointer border-2 border-ink px-3 py-1.5 text-sm font-bold transition ${
+                historyFilter === filter
+                  ? 'bg-accent-pink text-ink shadow-brutal-sm'
+                  : 'bg-paper text-ink'
+              }`}
+            >
+              {filter === 'all' ? '全部' : filter === 'approved' ? '已批准' : '已驳回'}
+            </button>
+          ))}
+        </div>
       )}
 
       {tab === 'history' &&
