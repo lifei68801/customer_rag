@@ -6,6 +6,7 @@ from functools import lru_cache
 
 from fastapi import Depends, Header, HTTPException
 
+from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
@@ -36,6 +37,7 @@ import aiosqlite
 __all__ = [
     "DEFAULT_EMBEDDING_PROVIDER_NAME",
     "DEFAULT_LLM_PROVIDER_NAME",
+    "get_admin_session_store",
     "get_asr_provider",
     "get_bm25_index",
     "get_embedding_registry",
@@ -49,6 +51,7 @@ __all__ = [
     "get_tts_provider",
     "get_vector_store",
     "parse_banned_terms",
+    "require_admin_session",
     "resolve_tenant_id",
 ]
 
@@ -212,3 +215,29 @@ def get_tts_provider(
     settings: Settings = Depends(get_settings),
 ) -> TTSProvider | None:
     return build_tts_provider_from_settings(settings)
+
+
+_admin_session_store_cache: AdminSessionStore | None = None
+
+
+def get_admin_session_store() -> AdminSessionStore:
+    """进程内单例：所有管理员 session 共用同一份内存存储。"""
+    global _admin_session_store_cache
+    if _admin_session_store_cache is None:
+        _admin_session_store_cache = AdminSessionStore()
+    return _admin_session_store_cache
+
+
+async def require_admin_session(
+    authorization: str | None = Header(default=None),
+    session_store: AdminSessionStore = Depends(get_admin_session_store),
+) -> None:
+    """校验 Authorization: Bearer <token> 是否是有效的管理员 session。
+
+    所有 /admin/* 路由（登录接口本身除外）都应该依赖这个函数。
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="缺少管理员登录凭证")
+    token = authorization.removeprefix("Bearer ")
+    if not session_store.verify_session(token):
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
