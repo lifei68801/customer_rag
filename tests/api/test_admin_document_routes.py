@@ -8,16 +8,80 @@ from fastapi.testclient import TestClient
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
+from app.graphrag.ontology import Term
+from app.graphrag.review_queue import ensure_review_schema
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
 from app.ingestion.tracking import ensure_tracking_schema, record_ingested
 from app.main import app
+from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
+from app.providers.registry import ProviderRegistry
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
 
 
 class FakeEmbeddingProvider:
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
         return EmbeddingResult(vectors=[[0.1, 0.2] for _ in request.texts])
+
+
+class FixedLLMProvider:
+    """图谱抽取用的假 LLM：不管输入是什么都返回同一段候选关系 JSON。"""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        return ProviderResult(text=self._text)
+
+
+class SpyGraphClient:
+    def __init__(self) -> None:
+        self.written: list[dict] = []
+        self.deleted_sources: list[tuple[str, str]] = []
+
+    async def merge_relation(
+        self, *, subject_standard_name, object_standard_name, relation_type, source, tenant_id
+    ) -> None:
+        self.written.append(
+            {
+                "subject": subject_standard_name,
+                "object": object_standard_name,
+                "relation_type": relation_type,
+                "tenant_id": tenant_id,
+            }
+        )
+
+    async def delete_relations_by_source(self, source: str, *, tenant_id: str) -> None:
+        self.deleted_sources.append((source, tenant_id))
+
+
+_TERMS = [
+    Term(
+        standard_name="示例错误码E502",
+        aliases=["网关超时示例"],
+        term_type="error_code",
+        product_line="示例产品线",
+    ),
+    Term(
+        standard_name="示例登录模块",
+        aliases=["示例认证模块"],
+        term_type="module",
+        product_line="示例产品线",
+    ),
+]
+
+_RESOLVABLE_RELATION_JSON = (
+    '{"relations": [{"subject": "网关超时示例", '
+    '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+)
+
+
+def _llm_registry_returning(text: str) -> ProviderRegistry:
+    registry = ProviderRegistry()
+    registry.register(
+        ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, FixedLLMProvider(text)
+    )
+    return registry
 
 
 def _settings(**overrides) -> Settings:
@@ -55,9 +119,60 @@ def ingestion_conn():
         asyncio.run(conn.close())
 
 
+async def _open_review_conn() -> aiosqlite.Connection:
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(conn)
+    return conn
+
+
+@pytest.fixture
+def review_conn():
+    """图谱人工审核队列连接。close 的理由同 ingestion_conn。"""
+    conn = asyncio.run(_open_review_conn())
+    try:
+        yield conn
+    finally:
+        asyncio.run(conn.close())
+
+
 def _authed_headers(session_store: AdminSessionStore) -> dict[str, str]:
     token = session_store.create_session()
     return {"Authorization": f"Bearer {token}"}
+
+
+def _upload_overrides(
+    session_store,
+    ingestion_conn,
+    upload_dir,
+    *,
+    vector_store=None,
+    llm_registry=None,
+    graph_client=None,
+    review_conn=None,
+    terms=None,
+) -> None:
+    """上传接口依赖的全部 provider 覆盖。
+
+    图谱那四项（llm_registry/terms/graph_client/review_conn）现在是上传
+    路由的无条件依赖（build_graph 是逐任务判断的，资源必须先备好），
+    不覆盖的话测试会去真建 Neo4j driver、真开仓库里的 SQLite 文件。
+    """
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider())
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store or InMemoryVectorStore()
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_llm_registry] = lambda: (
+        llm_registry or _llm_registry_returning('{"relations": []}')
+    )
+    app.dependency_overrides[deps.get_terms] = lambda: (_TERMS if terms is None else terms)
+    app.dependency_overrides[deps.get_graph_client] = lambda: (
+        graph_client if graph_client is not None else SpyGraphClient()
+    )
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
 
 
 def test_upload_without_session_returns_401():
@@ -77,11 +192,8 @@ def test_upload_without_session_returns_401():
 
 def test_upload_rejects_file_larger_than_100mb(tmp_path, ingestion_conn):
     session_store = AdminSessionStore()
-    app.dependency_overrides[deps.get_settings] = lambda: _settings()
-    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
-    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     upload_dir = tmp_path / "uploads"
-    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    _upload_overrides(session_store, ingestion_conn, upload_dir)
     try:
         client = TestClient(app)
         oversized = io.BytesIO(b"0" * (101 * 1024 * 1024))
@@ -99,15 +211,8 @@ def test_upload_rejects_file_larger_than_100mb(tmp_path, ingestion_conn):
 
 def test_upload_enqueues_job_and_returns_job_id(tmp_path, ingestion_conn):
     session_store = AdminSessionStore()
-    embedding_registry = EmbeddingRegistry()
-    embedding_registry.register(deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider())
-    app.dependency_overrides[deps.get_settings] = lambda: _settings()
-    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
-    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
-    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
-    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     upload_dir = tmp_path / "uploads"
-    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    _upload_overrides(session_store, ingestion_conn, upload_dir)
     try:
         client = TestClient(app)
         response = client.post(
@@ -124,17 +229,6 @@ def test_upload_enqueues_job_and_returns_job_id(tmp_path, ingestion_conn):
     # 落盘路径是 <upload_dir>/<tenant_id>/<uuid>_<原文件名>，所以要递归 glob。
     assert (upload_dir / "t1").is_dir()
     assert len(list(upload_dir.rglob("*a.md"))) == 1
-
-
-def _upload_overrides(session_store, ingestion_conn, upload_dir) -> None:
-    embedding_registry = EmbeddingRegistry()
-    embedding_registry.register(deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider())
-    app.dependency_overrides[deps.get_settings] = lambda: _settings()
-    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
-    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
-    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
-    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
-    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
 
 
 def test_upload_sanitizes_traversal_in_filename(tmp_path, ingestion_conn):
@@ -267,7 +361,7 @@ def test_list_documents_excludes_other_tenants_pending_jobs(ingestion_conn):
     assert [job["file_path"] for job in pending] == ["mine.md"]
 
 
-def test_delete_document_removes_tracking_and_vectors(ingestion_conn):
+def test_delete_document_removes_tracking_and_vectors(tmp_path, ingestion_conn):
     asyncio.run(
         record_ingested(
             ingestion_conn, tenant_id="t1", file_path="a.md", content_hash="h1", chunk_count=1
@@ -286,10 +380,13 @@ def test_delete_document_removes_tracking_and_vectors(ingestion_conn):
     )
 
     session_store = AdminSessionStore()
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
     try:
         client = TestClient(app)
         response = client.request(
@@ -307,6 +404,211 @@ def test_delete_document_removes_tracking_and_vectors(ingestion_conn):
     )
     assert remaining == []
     assert asyncio.run(_tracked_paths(ingestion_conn, "t1")) == []
+
+
+def test_delete_document_also_unlinks_uploaded_file(tmp_path, ingestion_conn):
+    """删除文档要把 data/uploads 下的原始文件也删掉，不能只清索引。"""
+    upload_dir = tmp_path / "uploads"
+    tenant_dir = upload_dir / "t1"
+    tenant_dir.mkdir(parents=True)
+    uploaded = tenant_dir / "abc_a.md"
+    uploaded.write_text("# t\n内容", encoding="utf-8")
+    asyncio.run(
+        record_ingested(
+            ingestion_conn, tenant_id="t1", file_path=str(uploaded),
+            content_hash="h1", chunk_count=1,
+        )
+    )
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    try:
+        client = TestClient(app)
+        response = client.request(
+            "DELETE",
+            "/api/admin/documents",
+            params={"tenant_id": "t1", "file_path": str(uploaded)},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert not uploaded.exists()
+
+
+def test_delete_document_keeps_files_outside_upload_dir(tmp_path, ingestion_conn):
+    """CLI 摄取的原始语料不在 upload_dir 里，后台删除只清索引，不能删用户的文件。"""
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    outside = tmp_path / "corpus" / "a.md"
+    outside.parent.mkdir()
+    outside.write_text("# t\n内容", encoding="utf-8")
+    asyncio.run(
+        record_ingested(
+            ingestion_conn, tenant_id="t1", file_path=str(outside),
+            content_hash="h1", chunk_count=1,
+        )
+    )
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    try:
+        client = TestClient(app)
+        response = client.request(
+            "DELETE",
+            "/api/admin/documents",
+            params={"tenant_id": "t1", "file_path": str(outside)},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert outside.exists()
+
+
+def test_upload_rejects_unsupported_file_type(tmp_path, ingestion_conn):
+    """摄取管线不支持的扩展名要同步 400，不落盘、不入队。"""
+    session_store = AdminSessionStore()
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    _upload_overrides(session_store, ingestion_conn, upload_dir)
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/documents",
+            files={"file": ("payload.exe", b"MZ\x00\x00", "application/octet-stream")},
+            data={"tenant_id": "t1", "build_graph": "false"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert list(upload_dir.iterdir()) == []
+    assert asyncio.run(_pending_job_paths(ingestion_conn)) == []
+
+
+def test_upload_rejects_tenant_id_outside_milvus_charset(tmp_path, ingestion_conn):
+    """能通过旧的 Unicode 宽松校验、但过不了 Milvus 严格白名单的 tenant_id
+    必须在入口就 400——否则请求拿到 200 + job_id、文件已落盘，然后在后台
+    任务/DELETE 里才炸。
+    """
+    session_store = AdminSessionStore()
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    _upload_overrides(session_store, ingestion_conn, upload_dir)
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/documents",
+            files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
+            data={"tenant_id": "租户.一", "build_graph": "false"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert list(upload_dir.iterdir()) == []
+    assert asyncio.run(_pending_job_paths(ingestion_conn)) == []
+
+
+def test_upload_with_build_graph_true_runs_graph_extraction(
+    tmp_path, ingestion_conn, review_conn
+):
+    """build_graph=true 的正面路径：上传接口必须把图谱资源一路传到
+    process_pending_jobs()，后台任务真的走到 LLM 抽取 + 写图谱那一步。
+    """
+    session_store = AdminSessionStore()
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    graph_client = SpyGraphClient()
+    _upload_overrides(
+        session_store,
+        ingestion_conn,
+        upload_dir,
+        llm_registry=_llm_registry_returning(_RESOLVABLE_RELATION_JSON),
+        graph_client=graph_client,
+        review_conn=review_conn,
+    )
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/documents",
+            files={
+                "file": (
+                    "a.md",
+                    "# 标题\n网关超时示例通常与示例认证模块相关".encode("utf-8"),
+                    "text/markdown",
+                )
+            },
+            data={"tenant_id": "t1", "build_graph": "true"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    # BackgroundTasks 在 TestClient 返回之前就跑完了，所以这里能直接断言结果。
+    assert graph_client.deleted_sources, "图谱抽取根本没被触发"
+    assert [
+        (item["subject"], item["object"], item["relation_type"], item["tenant_id"])
+        for item in graph_client.written
+    ] == [("示例错误码E502", "示例登录模块", "RELATED_TO", "t1")]
+
+
+def test_upload_with_build_graph_false_skips_graph_extraction(
+    tmp_path, ingestion_conn, review_conn
+):
+    """反面对照：图谱资源同样传了，但这条任务没勾建图，就不该碰图谱。"""
+    session_store = AdminSessionStore()
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    graph_client = SpyGraphClient()
+    _upload_overrides(
+        session_store,
+        ingestion_conn,
+        upload_dir,
+        llm_registry=_llm_registry_returning(_RESOLVABLE_RELATION_JSON),
+        graph_client=graph_client,
+        review_conn=review_conn,
+    )
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/documents",
+            files={
+                "file": (
+                    "a.md",
+                    "# 标题\n网关超时示例通常与示例认证模块相关".encode("utf-8"),
+                    "text/markdown",
+                )
+            },
+            data={"tenant_id": "t1", "build_graph": "false"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert graph_client.written == []
+    assert graph_client.deleted_sources == []
+
+
+async def _pending_job_paths(conn: aiosqlite.Connection) -> list[str]:
+    from app.ingestion.ingestion_queue import list_pending_jobs
+
+    return [job["file_path"] for job in await list_pending_jobs(conn, limit=50)]
 
 
 async def _tracked_paths(conn: aiosqlite.Connection, tenant_id: str) -> list[str]:

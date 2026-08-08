@@ -45,6 +45,11 @@ _PARSERS = {
 }
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 
+# _parse_file() 能处理的全部扩展名，作为唯一权威来源导出，供上传接口在
+# 落盘/入队之前做同步校验——否则不受支持的文件会先落盘、再在后台任务里
+# 重试三次后进死信队列，用户只能从"处理中任务"的报错里发现问题。
+SUPPORTED_SUFFIXES = frozenset(_PARSERS) | _IMAGE_SUFFIXES | {".pdf"}
+
 
 async def ensure_ingestion_queue_schema(conn: aiosqlite.Connection) -> None:
     await conn.executescript(_SCHEMA_SQL)

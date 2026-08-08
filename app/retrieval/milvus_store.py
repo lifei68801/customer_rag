@@ -1,20 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from typing import Any, Protocol
 
 from app.retrieval.vector_store import VectorRecord
+from app.tenancy import validate_tenant_id as _validate_tenant_id
 
-_SAFE_TENANT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-def _validate_tenant_id(tenant_id: str) -> None:
-    """tenant_id 会被拼进 Milvus 过滤表达式字符串，不能参数化传递；
-    白名单校验字符集，防止过滤表达式注入（与 Neo4j 关系类型白名单同思路）。
-    """
-    if not _SAFE_TENANT_ID_PATTERN.match(tenant_id):
-        raise ValueError(f"非法 tenant_id: {tenant_id!r}")
+# tenant_id 会被拼进 Milvus 过滤表达式字符串，不能参数化传递；白名单校验
+# 字符集，防止过滤表达式注入（与 Neo4j 关系类型白名单同思路）。规则本身
+# 放在 app/tenancy.py，供 HTTP 入口层复用同一份定义——见那里的说明。
 
 
 class MilvusClientProtocol(Protocol):
