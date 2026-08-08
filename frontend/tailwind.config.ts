@@ -31,6 +31,7 @@ export default {
           '"Microsoft YaHei"',
           'sans-serif',
         ],
+        mono: ['"Space Mono"', 'ui-monospace', '"SFMono-Regular"', 'monospace'],
       },
       boxShadow: {
         brutal: '2px 2px 0 0 #141111',
