@@ -240,7 +240,7 @@ async def test_ingest_markdown_file_sends_unresolved_candidates_to_review_queue(
     )
 
     assert graph_client.written == []
-    pending = await list_pending_reviews(review_conn)
+    pending = await list_pending_reviews(review_conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["object_candidate"] == "不存在的实体"
 

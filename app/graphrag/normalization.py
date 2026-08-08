@@ -117,6 +117,8 @@ async def normalize_and_write_relations(
                         object_candidate=relation["object"],
                         relation_type=relation["relation_type"],
                         reason="fuzzy_match_needs_confirmation",
+                        source=source,
+                        tenant_id=tenant_id,
                         suggested_subject_standard_name=suggested_subject,
                         suggested_object_standard_name=suggested_object,
                     )
@@ -134,6 +136,8 @@ async def normalize_and_write_relations(
                     object_candidate=relation["object"],
                     relation_type=relation["relation_type"],
                     reason=reason,
+                    source=source,
+                    tenant_id=tenant_id,
                 )
             continue
         try:
@@ -156,6 +160,8 @@ async def normalize_and_write_relations(
                     object_candidate=relation["object"],
                     relation_type=relation["relation_type"],
                     reason="invalid_relation_type",
+                    source=source,
+                    tenant_id=tenant_id,
                 )
             continue
         written += 1
