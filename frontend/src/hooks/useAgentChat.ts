@@ -36,6 +36,11 @@ export function useAgentChat() {
   const [isSending, setIsSending] = useState(false)
   const sessionIdRef = useRef<string>(createId())
 
+  const resetConversation = useCallback(() => {
+    setMessages([])
+    sessionIdRef.current = createId()
+  }, [])
+
   const sendQuestion = useCallback(async (question: string) => {
     const userMessage: ChatMessage = {
       id: createId(),
@@ -122,5 +127,5 @@ export function useAgentChat() {
     }
   }, [])
 
-  return { messages, isSending, sendQuestion }
+  return { messages, isSending, sendQuestion, resetConversation }
 }
