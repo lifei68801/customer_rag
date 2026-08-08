@@ -132,6 +132,20 @@ async def test_delete_by_source_escapes_double_quotes_in_source():
     )
 
 
+async def test_delete_by_source_escapes_backslashes_in_windows_style_paths():
+    client = FakeMilvusClient()
+    store = MilvusVectorStore(client=client, collection_name="faq_chunks")
+
+    await store.delete_by_source(
+        source=r"data\uploads\demo\9c022d73_faq-network.md", tenant_id="t1"
+    )
+
+    assert client.last_delete_kwargs["filter"] == (
+        'tenant_id == "t1" && source == '
+        '"data\\\\uploads\\\\demo\\\\9c022d73_faq-network.md"'
+    )
+
+
 async def test_delete_by_source_rejects_unsafe_tenant_id():
     client = FakeMilvusClient()
     store = MilvusVectorStore(client=client, collection_name="faq_chunks")

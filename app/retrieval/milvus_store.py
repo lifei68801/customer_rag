@@ -111,12 +111,16 @@ class MilvusVectorStore:
         永远留在向量库里污染检索结果。
 
         source 是我们自己摄取时写入的文件路径字符串，不是外部不可信输入，
-        但仍然转义双引号防止意外break出过滤表达式的字符串字面量——不用
-        tenant_id 那种白名单校验，因为任意合法文件路径本身就可能包含
-        白名单之外的字符（空格、中文等）。
+        但仍然转义反斜杠和双引号防止意外break出过滤表达式的字符串字面量
+        ——不用 tenant_id 那种白名单校验，因为任意合法文件路径本身就可能
+        包含白名单之外的字符（空格、中文等）。反斜杠必须先转义（Windows
+        路径分隔符本身就是反斜杠），否则一段形如 反斜杠+数字 的路径片段会被
+        Milvus 的过滤表达式解析器当成非法转义序列，直接报
+        "cannot parse expression" 而不是把它当纯文本——顺序不能反过来，
+        否则会把双引号转义产生的反斜杠又转义一遍。
         """
         _validate_tenant_id(tenant_id)
-        escaped_source = source.replace('"', '\\"')
+        escaped_source = source.replace("\\", "\\\\").replace('"', '\\"')
         await asyncio.to_thread(
             self._client.delete,
             collection_name=self._collection_name,
