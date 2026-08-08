@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 
@@ -21,6 +22,31 @@ from app.retrieval.vector_store import VectorStore
 router = APIRouter(prefix="/admin/documents", dependencies=[Depends(deps.require_admin_session)])
 
 _MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100MB
+
+# tenant_id 和 file.filename 都会被拼进落盘路径，两者都来自请求体（可被
+# 调用方控制），必须先消毒再拼路径，否则 "../../x" 这种值能让文件写到
+# upload_dir 之外。允许的字符集：Unicode 字母/数字/下划线 + 点 + 连字符，
+# 路径分隔符（/ \）和盘符冒号都不在其中。
+_UNSAFE_NAME_CHARS = re.compile(r"[^\w.\-]", re.UNICODE)
+
+
+def _sanitize_filename(filename: str | None) -> str:
+    """把上传文件名压成一个安全的单层文件名。
+
+    结果会再被加上 uuid 前缀，所以即使原名是 "." / ".." 这类纯点串，最终
+    文件名也只会是 "<uuid>_.." 这样的普通名字，不构成向上跳目录。
+    """
+    sanitized = _UNSAFE_NAME_CHARS.sub("_", filename or "")
+    return sanitized or "upload"
+
+
+def _validate_tenant_id(tenant_id: str) -> str:
+    """tenant_id 直接当目录名用，不消毒成别的值——那会让两个不同租户撞进
+    同一个目录。这里只做校验，不合法就 400 拒掉。
+    """
+    if not tenant_id or _UNSAFE_NAME_CHARS.search(tenant_id) or set(tenant_id) <= {"."}:
+        raise HTTPException(status_code=400, detail="tenant_id 含非法字符")
+    return tenant_id
 
 
 class DocumentsListResponse(BaseModel):
@@ -65,9 +91,9 @@ async def upload_document(
     if len(contents) > _MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="文件超过 100MB 上限")
 
-    tenant_dir = upload_dir / tenant_id
+    tenant_dir = upload_dir / _validate_tenant_id(tenant_id)
     tenant_dir.mkdir(parents=True, exist_ok=True)
-    dest_path = tenant_dir / f"{uuid.uuid4().hex}_{file.filename}"
+    dest_path = tenant_dir / f"{uuid.uuid4().hex}_{_sanitize_filename(file.filename)}"
     dest_path.write_bytes(contents)
 
     content_hash = compute_file_hash(dest_path)

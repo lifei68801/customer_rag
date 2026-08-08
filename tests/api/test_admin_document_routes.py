@@ -126,6 +126,88 @@ def test_upload_enqueues_job_and_returns_job_id(tmp_path, ingestion_conn):
     assert len(list(upload_dir.rglob("*a.md"))) == 1
 
 
+def _upload_overrides(session_store, ingestion_conn, upload_dir) -> None:
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider())
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+
+
+def test_upload_sanitizes_traversal_in_filename(tmp_path, ingestion_conn):
+    """文件名里的 ../ 不能让文件落到 upload_dir 之外。"""
+    session_store = AdminSessionStore()
+    root = tmp_path / "root"
+    upload_dir = root / "uploads"
+    upload_dir.mkdir(parents=True)
+    _upload_overrides(session_store, ingestion_conn, upload_dir)
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/admin/documents",
+            files={"file": ("../../pwned.md", b"## t\ncontent", "text/markdown")},
+            data={"tenant_id": "t1", "build_graph": "false"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    # 文件确实落在了消毒后的租户目录里，而不是"没报错"而已。
+    landed = list((upload_dir / "t1").iterdir())
+    assert len(landed) == 1
+    assert landed[0].name.endswith(".._.._pwned.md")
+    # upload_dir 之外（它的父目录）没有多出任何东西。
+    assert [p.name for p in root.iterdir()] == ["uploads"]
+
+
+def test_upload_rejects_tenant_id_with_path_separators(tmp_path, ingestion_conn):
+    """tenant_id 里的路径分隔符要被 400 拒掉，且不能创建任何目录。"""
+    session_store = AdminSessionStore()
+    root = tmp_path / "root"
+    upload_dir = root / "uploads"
+    upload_dir.mkdir(parents=True)
+    _upload_overrides(session_store, ingestion_conn, upload_dir)
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/admin/documents",
+            files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
+            data={"tenant_id": "../../pwned", "build_graph": "false"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert list(upload_dir.iterdir()) == []
+    assert [p.name for p in root.iterdir()] == ["uploads"]
+
+
+def test_upload_rejects_dot_only_tenant_id(tmp_path, ingestion_conn):
+    """纯点的 tenant_id（"." / ".."）也不合法——它会指向 upload_dir 自身或父目录。"""
+    session_store = AdminSessionStore()
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir(parents=True)
+    _upload_overrides(session_store, ingestion_conn, upload_dir)
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/admin/documents",
+            files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
+            data={"tenant_id": "..", "build_graph": "false"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert list(upload_dir.iterdir()) == []
+
+
 def test_list_documents_returns_tracked_files_for_tenant(ingestion_conn):
     asyncio.run(
         record_ingested(
