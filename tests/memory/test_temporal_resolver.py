@@ -103,6 +103,29 @@ async def test_resolve_time_window_returns_unresolved_when_no_rule_matches_and_l
     assert result.end is None
 
 
+async def test_resolve_time_window_handles_tz_aware_llm_response():
+    llm_registry = _llm_registry(
+        ScriptedLLMProvider(
+            [
+                '{"start": "2026-07-27T00:00:00Z", "end": "2026-07-28T00:00:00+00:00", "confidence": 0.9}'
+            ]
+        )
+    )
+    reference_time = datetime(2026, 8, 5, 10, 0, 0)
+
+    result = await resolve_time_window(
+        "上周五",
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        reference_time=reference_time,
+    )
+
+    assert result.resolved is True
+    assert result.start == datetime(2026, 7, 27, 0, 0, 0)
+    assert result.end == datetime(2026, 7, 28, 0, 0, 0)
+    assert result.is_future is False
+
+
 async def test_resolve_time_window_flags_future_time():
     llm_registry = _llm_registry(
         ScriptedLLMProvider(
