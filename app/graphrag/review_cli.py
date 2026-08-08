@@ -17,9 +17,9 @@ from app.graphrag.review_queue import (
 )
 
 
-async def cmd_list(*, review_conn: aiosqlite.Connection) -> list[dict[str, Any]]:
+async def cmd_list(*, review_conn: aiosqlite.Connection, tenant_id: str) -> list[dict[str, Any]]:
     """列出所有待审核的候选关系，打印到终端并返回，便于测试断言。"""
-    pending = await list_pending_reviews(review_conn)
+    pending = await list_pending_reviews(review_conn, tenant_id=tenant_id)
     if not pending:
         print("没有待审核的候选关系。")
     for row in pending:
@@ -45,6 +45,7 @@ async def cmd_approve(
     review_id: int,
     subject_standard_name: str,
     object_standard_name: str,
+    tenant_id: str,
     graph_client: ReviewGraphClientProtocol,
 ) -> None:
     await approve_review(
@@ -52,6 +53,7 @@ async def cmd_approve(
         review_id=review_id,
         subject_standard_name=subject_standard_name,
         object_standard_name=object_standard_name,
+        tenant_id=tenant_id,
         graph_client=graph_client,
     )
     print(
@@ -64,14 +66,16 @@ async def cmd_reject(
     *,
     review_conn: aiosqlite.Connection,
     review_id: int,
+    tenant_id: str,
     note: str | None = None,
 ) -> None:
-    await reject_review(review_conn, review_id=review_id, note=note)
+    await reject_review(review_conn, review_id=review_id, tenant_id=tenant_id, note=note)
     print(f"已驳回 review_id={review_id}")
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GraphRAG 人工待审核队列管理")
+    parser.add_argument("--tenant-id", required=True, help="要操作的租户 ID")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("list", help="列出所有待审核的候选关系")
@@ -95,17 +99,17 @@ def _parse_args() -> argparse.Namespace:
 async def _main() -> None:
     """CLI 入口。
 
-    用法：
-      python -m app.graphrag.review_cli list
-      python -m app.graphrag.review_cli approve 3 --subject 示例错误码E502 --object 示例登录模块
-      python -m app.graphrag.review_cli reject 3 --note 确认是噪声
+    用法（--tenant-id 是顶层参数，必须写在子命令前面）：
+      python -m app.graphrag.review_cli --tenant-id demo list
+      python -m app.graphrag.review_cli --tenant-id demo approve 3 --subject 示例错误码E502 --object 示例登录模块
+      python -m app.graphrag.review_cli --tenant-id demo reject 3 --note 确认是噪声
     """
     args = _parse_args()
     settings = Settings()
     review_conn = await build_review_conn_from_settings(settings)
 
     if args.command == "list":
-        await cmd_list(review_conn=review_conn)
+        await cmd_list(review_conn=review_conn, tenant_id=args.tenant_id)
     elif args.command == "approve":
         graph_client = build_graph_client_from_settings(settings)
         await cmd_approve(
@@ -113,10 +117,14 @@ async def _main() -> None:
             review_id=args.review_id,
             subject_standard_name=args.subject,
             object_standard_name=args.object,
+            tenant_id=args.tenant_id,
             graph_client=graph_client,
         )
     elif args.command == "reject":
-        await cmd_reject(review_conn=review_conn, review_id=args.review_id, note=args.note)
+        await cmd_reject(
+            review_conn=review_conn, review_id=args.review_id,
+            tenant_id=args.tenant_id, note=args.note,
+        )
 
 
 if __name__ == "__main__":
