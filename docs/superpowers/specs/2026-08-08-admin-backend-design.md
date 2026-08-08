@@ -12,8 +12,8 @@
 ## 1. 认证
 
 - 后端从环境变量 `CUSTOMER_RAG_ADMIN_TOKEN`（沿用 `app/config/settings.py` 现有的 `CUSTOMER_RAG_*` 前缀约定）读一个写死的管理员 token。
-- 登录：`POST /admin/auth/login` 请求体带这个 token，校验通过后签发一个短期有效（建议 8 小时）的 session token，写入内存/SQLite 的 session 表（记 token/签发时间/过期时间即可，不需要持久化到 Neo4j/Milvus）。
-- 所有 `/admin/*`（除登录接口本身）都要求请求头带这个 session token（比如 `Authorization: Bearer <session_token>`），校验失败返回 401。
+- 登录：`POST /api/admin/auth/login` 请求体带这个 token，校验通过后签发一个短期有效（建议 8 小时）的 session token，写入内存/SQLite 的 session 表（记 token/签发时间/过期时间即可，不需要持久化到 Neo4j/Milvus）。
+- 所有 `/api/admin/*`（除登录接口本身）都要求请求头带这个 session token（比如 `Authorization: Bearer <session_token>`），校验失败返回 401。
 - 前端把 session token 存 `sessionStorage`（关标签页即失效，不做"记住登录"），未登录访问 `/admin/*` 路由重定向到 `/admin/login`。
 - **全局管理员，不按租户区分账号**——登录后能看到/操作所有租户的数据，页面里用一个租户切换下拉框决定当前操作哪个租户，不是登录时选租户。
 
@@ -40,7 +40,7 @@
 
 上传接口不直接同步跑完摄取（PDF/OCR + LLM 图谱构建可能耗时几十秒到几分钟，容易撞 HTTP 超时），走队列：
 
-1. `POST /admin/documents` 上传文件 → 后端把文件内容写到磁盘（路径规划：`data/uploads/{tenant_id}/{uuid}_{原始文件名}`，避免同名文件冲突）→ 计算 content_hash → 调用 `enqueue_ingestion_job()` 入队，请求体/表单里带一个 `build_graph: bool` 勾选项 → 立即返回 `job_id`。
+1. `POST /api/admin/documents` 上传文件 → 后端把文件内容写到磁盘（路径规划：`data/uploads/{tenant_id}/{uuid}_{原始文件名}`，避免同名文件冲突）→ 计算 content_hash → 调用 `enqueue_ingestion_job()` 入队，请求体/表单里带一个 `build_graph: bool` 勾选项 → 立即返回 `job_id`。
 2. **`ingestion_jobs` 表需要加 `build_graph` 列**：
    ```sql
    ALTER TABLE ingestion_jobs ADD COLUMN build_graph INTEGER NOT NULL DEFAULT 0;
@@ -48,25 +48,25 @@
    `enqueue_ingestion_job()` 签名加 `build_graph: bool = False` 参数，一并写入。
 3. `process_pending_jobs()` 循环体内改成按**每条任务自己的 `build_graph` 值**决定要不要把 `graph_llm_registry`/`graph_llm_provider_name`/`graph_terms`/`graph_client`/`graph_review_conn` 传给这条任务的 `_ingest_chunks()` 调用（这些资源本来就是外层一次性构建好传入 `process_pending_jobs()` 的，只是"用不用在这一条任务上"从"整批统一"改成"逐条判断" `if job["build_graph"]: ... else: 传 None`）。
 4. 入队后，FastAPI 用后台任务（`BackgroundTasks` 或 `asyncio.create_task`）**立即**触发一次 `process_pending_jobs()`，不等外部 cron。现有的 `incremental_main.py` cron 任务继续保留、不冲突（`dedupe_key` 保证重复触发安全）。
-5. 前端轮询 `GET /admin/jobs/{job_id}` 或复用 `GET /admin/documents` 里"处理中任务"列表的返回，展示状态（`pending`/`completed`/`dead` 及 `last_error`）。
+5. 前端轮询 `GET /api/admin/jobs/{job_id}` 或复用 `GET /api/admin/documents` 里"处理中任务"列表的返回，展示状态（`pending`/`completed`/`dead` 及 `last_error`）。
 
 ## 4. 知识图谱审核
 
 ### 4.1 待审核列表
 
-- `GET /admin/graph-reviews?tenant_id=xxx&status=pending`，复用 `list_pending_reviews()`（需要加 `tenant_id` 过滤参数）。
+- `GET /api/admin/graph-reviews?tenant_id=xxx&status=pending`，复用 `list_pending_reviews()`（需要加 `tenant_id` 过滤参数）。
 - 每条记录展示：候选实体名（subject/object）、关系类型、驳回原因分类（`reason`）、建议的标准名（`suggested_*_standard_name`，可能为空）。
 
 ### 4.2 批准/驳回
 
 - **批准是一步到位的表单**，不是"先编辑再提交"两步：每条记录的 subject/object 标准名各是一个文本输入框，默认预填 `suggested_*_standard_name`（如果有），管理员可以直接确认或改成别的标准名再提交。如果 `suggested_*_standard_name` 为空（`reason` 是 `*_unresolved` 的情况），输入框留空，管理员必须手动填标准名才能提交（后端 `approve_review()` 本来就要求显式传入标准名，不支持留空）。
-- `POST /admin/graph-reviews/{review_id}/approve`，请求体带最终确认的 `subject_standard_name`/`object_standard_name`，内部调用 `approve_review()`。
-- `POST /admin/graph-reviews/{review_id}/reject`，请求体可选带 `resolved_note`，内部调用 `reject_review()`。
+- `POST /api/admin/graph-reviews/{review_id}/approve`，请求体带最终确认的 `subject_standard_name`/`object_standard_name`，内部调用 `approve_review()`。
+- `POST /api/admin/graph-reviews/{review_id}/reject`，请求体可选带 `resolved_note`，内部调用 `reject_review()`。
 
 ### 4.3 历史记录
 
 - 新增查询函数 `list_resolved_reviews(conn, *, tenant_id, status=None, limit=50, offset=0)`（`app/graphrag/review_queue.py` 里现在没有这个函数，需要新写，表结构的 `status`/`resolved_at`/`resolved_note` 字段已经够用）。
-- `GET /admin/graph-reviews?tenant_id=xxx&status=approved|rejected`，前端做成"待审核"/"历史记录"两个 tab（同一个页面内，不是单独的侧边栏项），历史记录 tab 内可再按 approved/rejected 筛选。
+- `GET /api/admin/graph-reviews?tenant_id=xxx&status=approved|rejected`，前端做成"待审核"/"历史记录"两个 tab（同一个页面内，不是单独的侧边栏项），历史记录 tab 内可再按 approved/rejected 筛选。
 
 ## 5. 前端
 
@@ -79,6 +79,13 @@
   - `/admin/documents`：文档管理
   - `/admin/graph-reviews`：知识图谱审核（含待审核/历史 tab）
 - 未登录访问 `/admin/*`（除 `/admin/login`）重定向到 `/admin/login`。
+
+> **关于两套 `/admin` 前缀不一致的说明（不是笔误）**：后端 HTTP 接口一律挂在
+> `/api/admin/*`，前端 React Router 的页面路由是 `/admin/*`。两者刻意错开——前后端
+> 同源部署（同一个反向代理/同一个域名）时，如果后端也占用 `/admin/*`，浏览器直接访问
+> `/admin/documents` 会命中后端的 JSON 接口而不是前端的单页应用，SPA 的 history
+> fallback 和 API 路由会互相抢同一批路径。`/api` 前缀让代理可以用一条规则
+> （`/api/* -> 后端`，其余 -> 前端静态资源）干净地分流。
 
 ### 5.2 前台入口
 
