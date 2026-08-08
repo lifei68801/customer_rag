@@ -3,10 +3,7 @@ import { ChatPage } from './pages/ChatPage'
 import { AdminLayout } from './admin/AdminLayout'
 import { LoginPage } from './admin/LoginPage'
 import { DocumentsPage } from './admin/DocumentsPage'
-
-function GraphReviewsPlaceholder() {
-  return <p className="text-ink">知识图谱审核页面开发中</p>
-}
+import { GraphReviewsPage } from './admin/GraphReviewsPage'
 
 function App() {
   return (
@@ -16,7 +13,7 @@ function App() {
       <Route path="/admin" element={<AdminLayout />}>
         <Route index element={<Navigate to="documents" replace />} />
         <Route path="documents" element={<DocumentsPage />} />
-        <Route path="graph-reviews" element={<GraphReviewsPlaceholder />} />
+        <Route path="graph-reviews" element={<GraphReviewsPage />} />
       </Route>
     </Routes>
   )
