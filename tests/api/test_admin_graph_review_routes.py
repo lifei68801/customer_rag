@@ -73,7 +73,7 @@ def test_list_pending_reviews_returns_tenant_scoped_rows(review_conn):
     try:
         client = TestClient(app)
         response = client.get(
-            "/admin/graph-reviews", params={"tenant_id": "t1"},
+            "/api/admin/graph-reviews", params={"tenant_id": "t1"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -99,7 +99,7 @@ def test_approve_review_calls_graph_client_and_moves_to_history(review_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            f"/admin/graph-reviews/{review_id}/approve",
+            f"/api/admin/graph-reviews/{review_id}/approve",
             json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
             headers=_authed_headers(session_store),
         )
@@ -120,7 +120,7 @@ def test_approve_review_calls_graph_client_and_moves_to_history(review_conn):
     try:
         history_response = TestClient(app)
         response = history_response.get(
-            "/admin/graph-reviews", params={"tenant_id": "t1", "status": "approved"},
+            "/api/admin/graph-reviews", params={"tenant_id": "t1", "status": "approved"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -142,7 +142,7 @@ def test_reject_review_marks_rejected(review_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            f"/admin/graph-reviews/{review_id}/reject",
+            f"/api/admin/graph-reviews/{review_id}/reject",
             json={"tenant_id": "t1", "note": "噪声"},
             headers=_authed_headers(session_store),
         )
@@ -161,7 +161,7 @@ def test_approve_nonexistent_review_returns_404(review_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/admin/graph-reviews/999/approve",
+            "/api/admin/graph-reviews/999/approve",
             json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
             headers=_authed_headers(session_store),
         )

@@ -8,7 +8,7 @@ export function useAdminAuth() {
   )
 
   const login = useCallback(async (adminToken: string) => {
-    const response = await fetch('/admin/auth/login', {
+    const response = await fetch('/api/admin/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ admin_token: adminToken }),

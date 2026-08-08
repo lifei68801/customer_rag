@@ -39,7 +39,7 @@ export function GraphReviewsPage() {
     if (!sessionToken) return
     try {
       const response = await adminFetch(
-        `/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=pending`,
+        `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=pending`,
         sessionToken,
       )
       if (!response.ok) {
@@ -69,11 +69,11 @@ export function GraphReviewsPage() {
     try {
       const [approvedRes, rejectedRes] = await Promise.all([
         adminFetch(
-          `/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=approved`,
+          `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=approved`,
           sessionToken,
         ),
         adminFetch(
-          `/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=rejected`,
+          `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=rejected`,
           sessionToken,
         ),
       ])
@@ -112,7 +112,7 @@ export function GraphReviewsPage() {
     setError(null)
     setProcessingId(reviewId)
     try {
-      const response = await adminFetch(`/admin/graph-reviews/${reviewId}/approve`, sessionToken, {
+      const response = await adminFetch(`/api/admin/graph-reviews/${reviewId}/approve`, sessionToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -138,7 +138,7 @@ export function GraphReviewsPage() {
     setError(null)
     setProcessingId(reviewId)
     try {
-      const response = await adminFetch(`/admin/graph-reviews/${reviewId}/reject`, sessionToken, {
+      const response = await adminFetch(`/api/admin/graph-reviews/${reviewId}/reject`, sessionToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tenant_id: tenantId }),

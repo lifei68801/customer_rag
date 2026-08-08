@@ -26,7 +26,7 @@ def test_login_with_correct_token_returns_session_token():
     app.dependency_overrides[deps.get_admin_session_store] = lambda: AdminSessionStore()
     try:
         client = TestClient(app)
-        response = client.post("/admin/auth/login", json={"admin_token": "correct-token"})
+        response = client.post("/api/admin/auth/login", json={"admin_token": "correct-token"})
     finally:
         app.dependency_overrides.clear()
 
@@ -39,7 +39,7 @@ def test_login_with_wrong_token_returns_401():
     app.dependency_overrides[deps.get_admin_session_store] = lambda: AdminSessionStore()
     try:
         client = TestClient(app)
-        response = client.post("/admin/auth/login", json={"admin_token": "wrong"})
+        response = client.post("/api/admin/auth/login", json={"admin_token": "wrong"})
     finally:
         app.dependency_overrides.clear()
 
@@ -51,7 +51,7 @@ def test_login_when_admin_token_not_configured_returns_401():
     app.dependency_overrides[deps.get_admin_session_store] = lambda: AdminSessionStore()
     try:
         client = TestClient(app)
-        response = client.post("/admin/auth/login", json={"admin_token": "anything"})
+        response = client.post("/api/admin/auth/login", json={"admin_token": "anything"})
     finally:
         app.dependency_overrides.clear()
 
@@ -63,7 +63,7 @@ def test_admin_protected_route_rejects_missing_token():
     app.dependency_overrides[deps.get_admin_session_store] = lambda: AdminSessionStore()
     try:
         client = TestClient(app)
-        response = client.get("/admin/auth/whoami")
+        response = client.get("/api/admin/auth/whoami")
     finally:
         app.dependency_overrides.clear()
 
@@ -78,7 +78,7 @@ def test_admin_protected_route_accepts_valid_session():
     try:
         client = TestClient(app)
         response = client.get(
-            "/admin/auth/whoami", headers={"Authorization": f"Bearer {token}"}
+            "/api/admin/auth/whoami", headers={"Authorization": f"Bearer {token}"}
         )
     finally:
         app.dependency_overrides.clear()

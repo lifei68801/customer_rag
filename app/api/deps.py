@@ -241,7 +241,7 @@ async def require_admin_session(
 ) -> None:
     """校验 Authorization: Bearer <token> 是否是有效的管理员 session。
 
-    所有 /admin/* 路由（登录接口本身除外）都应该依赖这个函数。
+    所有 /api/admin/* 路由（登录接口本身除外）都应该依赖这个函数。
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="缺少管理员登录凭证")

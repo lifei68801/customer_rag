@@ -17,7 +17,7 @@ from app.graphrag.review_queue import (
 )
 
 router = APIRouter(
-    prefix="/admin/graph-reviews", dependencies=[Depends(deps.require_admin_session)]
+    prefix="/api/admin/graph-reviews", dependencies=[Depends(deps.require_admin_session)]
 )
 
 

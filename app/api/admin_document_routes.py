@@ -19,7 +19,9 @@ from app.ingestion.tracking import compute_file_hash, list_tracked_files, remove
 from app.providers.embedding import EmbeddingRegistry
 from app.retrieval.vector_store import VectorStore
 
-router = APIRouter(prefix="/admin/documents", dependencies=[Depends(deps.require_admin_session)])
+router = APIRouter(
+    prefix="/api/admin/documents", dependencies=[Depends(deps.require_admin_session)]
+)
 
 _MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100MB
 

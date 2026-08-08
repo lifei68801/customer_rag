@@ -65,7 +65,7 @@ def test_upload_without_session_returns_401():
     try:
         client = TestClient(app)
         response = client.post(
-            "/admin/documents",
+            "/api/admin/documents",
             files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
             data={"tenant_id": "t1", "build_graph": "false"},
         )
@@ -86,7 +86,7 @@ def test_upload_rejects_file_larger_than_100mb(tmp_path, ingestion_conn):
         client = TestClient(app)
         oversized = io.BytesIO(b"0" * (101 * 1024 * 1024))
         response = client.post(
-            "/admin/documents",
+            "/api/admin/documents",
             files={"file": ("big.md", oversized, "text/markdown")},
             data={"tenant_id": "t1", "build_graph": "false"},
             headers=_authed_headers(session_store),
@@ -111,7 +111,7 @@ def test_upload_enqueues_job_and_returns_job_id(tmp_path, ingestion_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/admin/documents",
+            "/api/admin/documents",
             files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
             data={"tenant_id": "t1", "build_graph": "false"},
             headers=_authed_headers(session_store),
@@ -147,7 +147,7 @@ def test_upload_sanitizes_traversal_in_filename(tmp_path, ingestion_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/admin/documents",
+            "/api/admin/documents",
             files={"file": ("../../pwned.md", b"## t\ncontent", "text/markdown")},
             data={"tenant_id": "t1", "build_graph": "false"},
             headers=_authed_headers(session_store),
@@ -174,7 +174,7 @@ def test_upload_rejects_tenant_id_with_path_separators(tmp_path, ingestion_conn)
     try:
         client = TestClient(app)
         response = client.post(
-            "/admin/documents",
+            "/api/admin/documents",
             files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
             data={"tenant_id": "../../pwned", "build_graph": "false"},
             headers=_authed_headers(session_store),
@@ -196,7 +196,7 @@ def test_upload_rejects_dot_only_tenant_id(tmp_path, ingestion_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/admin/documents",
+            "/api/admin/documents",
             files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
             data={"tenant_id": "..", "build_graph": "false"},
             headers=_authed_headers(session_store),
@@ -221,7 +221,7 @@ def test_list_documents_returns_tracked_files_for_tenant(ingestion_conn):
     try:
         client = TestClient(app)
         response = client.get(
-            "/admin/documents",
+            "/api/admin/documents",
             params={"tenant_id": "t1"},
             headers=_authed_headers(session_store),
         )
@@ -255,7 +255,7 @@ def test_list_documents_excludes_other_tenants_pending_jobs(ingestion_conn):
     try:
         client = TestClient(app)
         response = client.get(
-            "/admin/documents",
+            "/api/admin/documents",
             params={"tenant_id": "t1"},
             headers=_authed_headers(session_store),
         )
@@ -294,7 +294,7 @@ def test_delete_document_removes_tracking_and_vectors(ingestion_conn):
         client = TestClient(app)
         response = client.request(
             "DELETE",
-            "/admin/documents",
+            "/api/admin/documents",
             params={"tenant_id": "t1", "file_path": "a.md"},
             headers=_authed_headers(session_store),
         )

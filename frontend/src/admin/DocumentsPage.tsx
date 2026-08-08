@@ -28,7 +28,7 @@ export function DocumentsPage() {
   const refresh = useCallback(async () => {
     if (!sessionToken) return
     const response = await adminFetch(
-      `/admin/documents?tenant_id=${encodeURIComponent(tenantId)}`,
+      `/api/admin/documents?tenant_id=${encodeURIComponent(tenantId)}`,
       sessionToken,
     )
     const data = (await response.json()) as {
@@ -65,7 +65,7 @@ export function DocumentsPage() {
       formData.append('file', file)
       formData.append('tenant_id', tenantId)
       formData.append('build_graph', String(buildGraph))
-      const response = await adminFetch('/admin/documents', sessionToken, {
+      const response = await adminFetch('/api/admin/documents', sessionToken, {
         method: 'POST',
         body: formData,
       })
@@ -87,7 +87,7 @@ export function DocumentsPage() {
     setError(null)
     try {
       const response = await adminFetch(
-        `/admin/documents?tenant_id=${encodeURIComponent(tenantId)}&file_path=${encodeURIComponent(filePath)}`,
+        `/api/admin/documents?tenant_id=${encodeURIComponent(tenantId)}&file_path=${encodeURIComponent(filePath)}`,
         sessionToken,
         { method: 'DELETE' },
       )

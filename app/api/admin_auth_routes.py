@@ -7,7 +7,7 @@ from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 
-router = APIRouter(prefix="/admin/auth")
+router = APIRouter(prefix="/api/admin/auth")
 
 
 class LoginRequest(BaseModel):
