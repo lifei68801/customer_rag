@@ -89,7 +89,9 @@ async def main(
             graph_review_conn or await build_review_conn_from_settings(resolved_settings)
         )
 
-    scan_summary = await scan_and_enqueue(directory, tenant_id=tenant_id, conn=conn)
+    scan_summary = await scan_and_enqueue(
+        directory, tenant_id=tenant_id, conn=conn, build_graph=build_graph
+    )
     processed = await process_pending_jobs(
         conn,
         embedding_registry=registry,

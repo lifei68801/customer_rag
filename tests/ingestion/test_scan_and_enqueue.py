@@ -58,3 +58,32 @@ async def test_does_not_enqueue_anything_for_unchanged_files(tmp_path):
 
     assert summary == {"new": 0, "changed": 0, "deleted": 0, "unchanged": 1}
     assert await list_pending_jobs(conn) == []
+
+
+async def test_passes_build_graph_flag_to_ingest_jobs(tmp_path):
+    (tmp_path / "a.md").write_text("内容A", encoding="utf-8")
+    conn = await _connect()
+
+    summary = await scan_and_enqueue(tmp_path, tenant_id="t1", conn=conn, build_graph=True)
+
+    assert summary == {"new": 1, "changed": 0, "deleted": 0, "unchanged": 0}
+    pending = await list_pending_jobs(conn)
+    assert len(pending) == 1
+    assert pending[0]["action"] == "ingest"
+    assert pending[0]["build_graph"] == 1
+
+
+async def test_passes_build_graph_false_to_delete_jobs(tmp_path):
+    conn = await _connect()
+    missing = tmp_path / "removed.md"
+    await record_ingested(
+        conn, tenant_id="t1", file_path=str(missing), content_hash="h1", chunk_count=1
+    )
+
+    summary = await scan_and_enqueue(tmp_path, tenant_id="t1", conn=conn, build_graph=True)
+
+    assert summary["deleted"] == 1
+    pending = await list_pending_jobs(conn)
+    assert len(pending) == 1
+    assert pending[0]["action"] == "delete"
+    assert pending[0]["build_graph"] == 0
