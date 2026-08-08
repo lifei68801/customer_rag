@@ -1,4 +1,4 @@
-import { useAdminTenant } from './useAdminTenant'
+import { useAdminTenant } from './TenantContext'
 
 export function TenantSwitcher() {
   const { tenantId, setTenantId } = useAdminTenant()

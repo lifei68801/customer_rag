@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { adminFetch } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
-import { useAdminTenant } from './useAdminTenant'
+import { useAdminTenant } from './TenantContext'
 
 interface TrackedDocument {
   file_path: string

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { adminFetch } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
-import { useAdminTenant } from './useAdminTenant'
+import { useAdminTenant } from './TenantContext'
 
 interface PendingReview {
   review_id: number
