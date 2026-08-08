@@ -7,6 +7,7 @@ from typing import Any
 
 import aiosqlite
 
+from app.db_migrations import add_column_if_missing
 from app.graphrag.normalization import GraphWriteClientProtocol
 from app.graphrag.ontology import Term
 from app.ingestion.docx_parser import parse_docx
@@ -48,12 +49,18 @@ _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 async def ensure_ingestion_queue_schema(conn: aiosqlite.Connection) -> None:
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
+    # build_graph 支持逐任务决定是否触发图谱构建，历史任务默认 0（不建图，
+    # 与迁移前的行为一致——迁移前所有任务的图谱资源都是调用方整批统一决定的）。
+    await add_column_if_missing(
+        conn, table="ingestion_jobs", column="build_graph",
+        ddl="INTEGER NOT NULL DEFAULT 0",
+    )
 
 
 def _compute_dedupe_key(
-    *, tenant_id: str, file_path: str, content_hash: str, action: str
+    *, tenant_id: str, file_path: str, content_hash: str, action: str, build_graph: bool
 ) -> str:
-    raw = f"{tenant_id}:{file_path}:{content_hash}:{action}"
+    raw = f"{tenant_id}:{file_path}:{content_hash}:{action}:{build_graph}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -64,20 +71,23 @@ async def enqueue_ingestion_job(
     file_path: str,
     content_hash: str,
     action: str,
+    build_graph: bool = False,
 ) -> str:
     """入队一个摄取任务（action 为 'ingest' 或 'delete'），幂等：同一个
-    (tenant_id, file_path, content_hash, action) 组合重复入队只创建一条记录。
+    (tenant_id, file_path, content_hash, action, build_graph) 组合重复
+    入队只创建一条记录。
     """
     dedupe_key = _compute_dedupe_key(
-        tenant_id=tenant_id, file_path=file_path, content_hash=content_hash, action=action
+        tenant_id=tenant_id, file_path=file_path, content_hash=content_hash,
+        action=action, build_graph=build_graph,
     )
     job_id = str(uuid.uuid4())
     await conn.execute(
         "INSERT INTO ingestion_jobs "
-        "(job_id, dedupe_key, tenant_id, file_path, content_hash, action) "
-        "VALUES (?, ?, ?, ?, ?, ?) "
+        "(job_id, dedupe_key, tenant_id, file_path, content_hash, action, build_graph) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(dedupe_key) DO NOTHING",
-        (job_id, dedupe_key, tenant_id, file_path, content_hash, action),
+        (job_id, dedupe_key, tenant_id, file_path, content_hash, action, int(build_graph)),
     )
     await conn.commit()
     cursor = await conn.execute(
@@ -175,6 +185,7 @@ async def process_pending_jobs(
                 )
             else:
                 chunks = _parse_file(Path(file_path), ocr=ocr)
+                use_graph = bool(job["build_graph"])
                 chunk_count = await _ingest_chunks(
                     chunks,
                     Path(file_path),
@@ -182,11 +193,11 @@ async def process_pending_jobs(
                     embedding_provider_name=embedding_provider_name,
                     vector_store=vector_store,
                     tenant_id=tenant_id,
-                    graph_llm_registry=graph_llm_registry,
-                    graph_llm_provider_name=graph_llm_provider_name,
-                    graph_terms=graph_terms,
-                    graph_client=graph_client,
-                    graph_review_conn=graph_review_conn,
+                    graph_llm_registry=graph_llm_registry if use_graph else None,
+                    graph_llm_provider_name=graph_llm_provider_name if use_graph else None,
+                    graph_terms=graph_terms if use_graph else None,
+                    graph_client=graph_client if use_graph else None,
+                    graph_review_conn=graph_review_conn if use_graph else None,
                 )
                 await record_ingested(
                     conn,
