@@ -40,8 +40,13 @@ export function DocumentsPage() {
   }, [sessionToken, tenantId])
 
   useEffect(() => {
-    refresh()
-    const timer = setInterval(refresh, 3000)
+    const poll = () => {
+      refresh().catch((err) => {
+        console.error('文档列表刷新失败', err)
+      })
+    }
+    poll()
+    const timer = setInterval(poll, 3000)
     return () => clearInterval(timer)
   }, [refresh])
 
@@ -79,12 +84,21 @@ export function DocumentsPage() {
 
   const handleDelete = async (filePath: string) => {
     if (!sessionToken) return
-    await adminFetch(
-      `/admin/documents?tenant_id=${encodeURIComponent(tenantId)}&file_path=${encodeURIComponent(filePath)}`,
-      sessionToken,
-      { method: 'DELETE' },
-    )
-    await refresh()
+    setError(null)
+    try {
+      const response = await adminFetch(
+        `/admin/documents?tenant_id=${encodeURIComponent(tenantId)}&file_path=${encodeURIComponent(filePath)}`,
+        sessionToken,
+        { method: 'DELETE' },
+      )
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { detail?: string }
+        throw new Error(body.detail ?? '删除失败')
+      }
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除失败')
+    }
   }
 
   return (
@@ -120,10 +134,12 @@ export function DocumentsPage() {
           {pendingJobs.map((job) => (
             <div
               key={job.job_id}
-              className="border border-ink bg-accent-yellow px-3 py-2 text-sm text-ink shadow-brutal-sm"
+              className={`border bg-accent-yellow px-3 py-2 text-sm text-ink shadow-brutal-sm ${
+                job.last_error ? 'border-status-error' : 'border-ink'
+              }`}
             >
               {job.file_path} — {job.status}
-              {job.last_error && <span className="text-status-error"> ({job.last_error})</span>}
+              {job.last_error && <span className="text-ink"> (错误：{job.last_error})</span>}
             </div>
           ))}
         </div>
