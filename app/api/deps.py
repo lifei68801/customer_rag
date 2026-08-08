@@ -11,6 +11,7 @@ from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
 from app.ingestion.tracking import ensure_tracking_schema
+from app.graphrag.review_queue import ensure_review_schema
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
     DEFAULT_EMBEDDING_PROVIDER_NAME,
@@ -50,6 +51,7 @@ __all__ = [
     "get_llm_registry",
     "get_memory_conn",
     "get_rerank_provider",
+    "get_review_conn",
     "get_settings",
     "get_terms",
     "get_tts_provider",
@@ -273,3 +275,23 @@ def get_upload_dir(settings: Settings = Depends(get_settings)) -> Path:
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
     return upload_dir
+
+
+_review_conn_cache: aiosqlite.Connection | None = None
+_review_conn_lock = asyncio.Lock()
+
+
+async def get_review_conn(
+    settings: Settings = Depends(get_settings),
+) -> aiosqlite.Connection:
+    """进程内单例 SQLite 连接，模式同 get_memory_conn。"""
+    global _review_conn_cache
+    if _review_conn_cache is None:
+        async with _review_conn_lock:
+            if _review_conn_cache is None:
+                db_path = Path(settings.graph_review_db_path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                conn = await aiosqlite.connect(str(db_path))
+                await ensure_review_schema(conn)
+                _review_conn_cache = conn
+    return _review_conn_cache
