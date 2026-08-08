@@ -15,7 +15,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           isUser
             ? 'border-ink bg-accent-pink text-ink'
             : message.isError
-              ? 'border-status-error bg-card text-status-error'
+              ? 'border-status-error bg-card text-ink'
               : 'border-ink bg-card text-ink'
         }`}
       >
@@ -35,9 +35,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 function ThinkingIndicator() {
   return (
     <div className="flex items-center gap-1 py-1">
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft [animation-delay:-0.3s]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft [animation-delay:-0.15s]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft" />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft motion-reduce:animate-none [animation-delay:-0.3s]" />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft motion-reduce:animate-none [animation-delay:-0.15s]" />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft motion-reduce:animate-none" />
     </div>
   )
 }
