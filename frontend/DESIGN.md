@@ -174,6 +174,12 @@ border-t-2 border-ink bg-ink px-6 py-8 text-accent-yellow/60
 分类小标题/说明文字用 `font-mono text-xs uppercase tracking-widest`；品牌名本身
 （不透明）用 `text-accent-yellow`（不带 `/60`）以示强调。
 
+### 6.10 管理后台侧边栏导航项（`AdminLayout.tsx`）
+
+未激活态：`border-2 border-ink px-3 py-2.5 text-sm font-bold bg-paper text-ink`；
+激活态（当前路由）：`bg-accent-pink text-ink shadow-brutal-sm`（复用主按钮的强调色，
+不新增颜色 token）。用 react-router 的 `NavLink` 的 `isActive` 判断，不手动比较路径字符串。
+
 ## 7. 交互规范
 
 - **按下反馈**：所有按钮类元素必须有 `active:translate-*` + `active:shadow-none` 组合，见第 4 节。

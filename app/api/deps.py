@@ -3,10 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from functools import lru_cache
+from pathlib import Path
 
 from fastapi import Depends, Header, HTTPException
 
+from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
+from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
+from app.ingestion.tracking import ensure_tracking_schema
+from app.graphrag.review_queue import ensure_review_schema
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
     DEFAULT_EMBEDDING_PROVIDER_NAME,
@@ -36,19 +41,24 @@ import aiosqlite
 __all__ = [
     "DEFAULT_EMBEDDING_PROVIDER_NAME",
     "DEFAULT_LLM_PROVIDER_NAME",
+    "get_admin_session_store",
     "get_asr_provider",
     "get_bm25_index",
     "get_embedding_registry",
     "get_gateway_tenant_id",
     "get_graph_client",
+    "get_ingestion_conn",
     "get_llm_registry",
     "get_memory_conn",
     "get_rerank_provider",
+    "get_review_conn",
     "get_settings",
     "get_terms",
     "get_tts_provider",
+    "get_upload_dir",
     "get_vector_store",
     "parse_banned_terms",
+    "require_admin_session",
     "resolve_tenant_id",
 ]
 
@@ -212,3 +222,76 @@ def get_tts_provider(
     settings: Settings = Depends(get_settings),
 ) -> TTSProvider | None:
     return build_tts_provider_from_settings(settings)
+
+
+_admin_session_store_cache: AdminSessionStore | None = None
+
+
+def get_admin_session_store() -> AdminSessionStore:
+    """进程内单例：所有管理员 session 共用同一份内存存储。"""
+    global _admin_session_store_cache
+    if _admin_session_store_cache is None:
+        _admin_session_store_cache = AdminSessionStore()
+    return _admin_session_store_cache
+
+
+async def require_admin_session(
+    authorization: str | None = Header(default=None),
+    session_store: AdminSessionStore = Depends(get_admin_session_store),
+) -> None:
+    """校验 Authorization: Bearer <token> 是否是有效的管理员 session。
+
+    所有 /api/admin/* 路由（登录接口本身除外）都应该依赖这个函数。
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="缺少管理员登录凭证")
+    token = authorization.removeprefix("Bearer ")
+    if not session_store.verify_session(token):
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+
+
+_ingestion_conn_cache: aiosqlite.Connection | None = None
+_ingestion_conn_lock = asyncio.Lock()
+
+
+async def get_ingestion_conn(
+    settings: Settings = Depends(get_settings),
+) -> aiosqlite.Connection:
+    """进程内单例 SQLite 连接，模式同 get_memory_conn。"""
+    global _ingestion_conn_cache
+    if _ingestion_conn_cache is None:
+        async with _ingestion_conn_lock:
+            if _ingestion_conn_cache is None:
+                db_path = Path(settings.ingestion_db_path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                conn = await aiosqlite.connect(str(db_path))
+                await ensure_tracking_schema(conn)
+                await ensure_ingestion_queue_schema(conn)
+                _ingestion_conn_cache = conn
+    return _ingestion_conn_cache
+
+
+def get_upload_dir(settings: Settings = Depends(get_settings)) -> Path:
+    upload_dir = Path(settings.upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    return upload_dir
+
+
+_review_conn_cache: aiosqlite.Connection | None = None
+_review_conn_lock = asyncio.Lock()
+
+
+async def get_review_conn(
+    settings: Settings = Depends(get_settings),
+) -> aiosqlite.Connection:
+    """进程内单例 SQLite 连接，模式同 get_memory_conn。"""
+    global _review_conn_cache
+    if _review_conn_cache is None:
+        async with _review_conn_lock:
+            if _review_conn_cache is None:
+                db_path = Path(settings.graph_review_db_path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                conn = await aiosqlite.connect(str(db_path))
+                await ensure_review_schema(conn)
+                _review_conn_cache = conn
+    return _review_conn_cache

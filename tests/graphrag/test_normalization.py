@@ -129,7 +129,7 @@ async def test_enqueues_unresolved_candidate_for_review_when_review_conn_provide
     )
 
     assert written == 0
-    pending = await list_pending_reviews(review_conn)
+    pending = await list_pending_reviews(review_conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["subject_candidate"] == "网关超时"
     assert pending[0]["object_candidate"] == "不存在的实体"
@@ -154,7 +154,7 @@ async def test_enqueues_invalid_relation_type_for_review_when_review_conn_provid
     )
 
     assert written == 0
-    pending = await list_pending_reviews(review_conn)
+    pending = await list_pending_reviews(review_conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["reason"] == "invalid_relation_type"
 
@@ -233,7 +233,7 @@ async def test_fuzzy_candidate_goes_to_review_queue_instead_of_auto_writing():
 
     assert written == 0
     assert graph_client.written == []
-    pending = await list_pending_reviews(review_conn)
+    pending = await list_pending_reviews(review_conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["reason"] == "fuzzy_match_needs_confirmation"
     assert pending[0]["subject_candidate"] == "网关超时了"
@@ -266,7 +266,7 @@ async def test_totally_unresolved_candidate_still_uses_unresolved_reason_not_fuz
     )
 
     assert written == 0
-    pending = await list_pending_reviews(review_conn)
+    pending = await list_pending_reviews(review_conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["reason"] == "object_unresolved"
     assert pending[0]["suggested_subject_standard_name"] is None

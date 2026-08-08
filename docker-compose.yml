@@ -73,6 +73,12 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
+    volumes:
+      # Dockerfile 的 WORKDIR 是 /app，应用里所有 data/... 的默认路径都是相对
+      # 它解析的：后台管理上传的文件（data/uploads）、摄取队列+追踪库
+      # （data/ingestion.sqlite3）、图谱人工审核队列（data/graph_review_queue.sqlite3）
+      # 全在这个目录下。不挂卷的话容器一重启这些全部丢失。
+      - ./data:/app/data
     environment:
       MILVUS_HOST: milvus
       MILVUS_PORT: "19530"
@@ -80,6 +86,9 @@ services:
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: changeme123
       REDIS_URL: redis://redis:6379/0
+      # 后台管理登录凭证。必须在宿主机 .env / shell 里设置真实值，留空则
+      # /api/admin/auth/login 一律 401，整个后台管理不可用。
+      CUSTOMER_RAG_ADMIN_TOKEN: ${CUSTOMER_RAG_ADMIN_TOKEN:-}
     depends_on:
       - milvus
       - neo4j

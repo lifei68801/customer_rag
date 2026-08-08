@@ -14,6 +14,7 @@ async def scan_and_enqueue(
     *,
     tenant_id: str,
     conn: aiosqlite.Connection,
+    build_graph: bool = False,
 ) -> dict[str, int]:
     """扫描目录，把新增/变更/已删除的文件各自入队，未变的跳过。
 
@@ -21,6 +22,9 @@ async def scan_and_enqueue(
     （ensure_tracking_schema + ensure_ingestion_queue_schema），因为
     scan_for_changes 读 tracking 表，enqueue_ingestion_job 写队列表，
     调用方通常是同一个 SQLite 连接。
+
+    build_graph 控制是否让摄取过程同步做图谱构建，对 ingest 操作有意义，
+    delete 操作忽略此参数（删除不涉及图谱）。
 
     返回各类文件的数量统计，供调用方打印摘要；这一步本身只入队，不做
     真正的解析/向量化/写入——那部分交给 ingestion_queue.process_pending_jobs()。
@@ -34,6 +38,7 @@ async def scan_and_enqueue(
             file_path=str(file_path),
             content_hash=compute_file_hash(file_path),
             action="ingest",
+            build_graph=build_graph,
         )
 
     for deleted_path in change_set.deleted_file_paths:
@@ -43,6 +48,7 @@ async def scan_and_enqueue(
             file_path=deleted_path,
             content_hash="",
             action="delete",
+            build_graph=False,
         )
 
     return {

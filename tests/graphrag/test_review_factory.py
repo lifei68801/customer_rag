@@ -23,8 +23,10 @@ async def test_build_review_conn_from_settings_creates_usable_schema(tmp_path):
         object_candidate="b",
         relation_type="RELATED_TO",
         reason="subject_unresolved",
+        source="test.md",
+        tenant_id="demo",
     )
-    pending = await list_pending_reviews(conn)
+    pending = await list_pending_reviews(conn, tenant_id="demo")
 
     assert len(pending) == 1
     assert db_path.exists()

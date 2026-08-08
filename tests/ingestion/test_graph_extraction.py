@@ -128,7 +128,7 @@ async def test_unresolved_candidate_goes_to_review_queue_when_review_conn_provid
 
     assert written == 0
     assert graph_client.written == []
-    pending = await list_pending_reviews(review_conn)
+    pending = await list_pending_reviews(review_conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["object_candidate"] == "不存在的实体"
 

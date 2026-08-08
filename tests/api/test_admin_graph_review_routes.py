@@ -1,0 +1,171 @@
+import asyncio
+
+import aiosqlite
+import pytest
+from fastapi.testclient import TestClient
+
+from app.api import deps
+from app.api.admin_session import AdminSessionStore
+from app.config.settings import Settings
+from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema
+from app.main import app
+
+
+def _settings(**overrides) -> Settings:
+    defaults = dict(
+        llm_base_url="https://api.deepseek.com/v1",
+        llm_api_key="k",
+        llm_model="deepseek-chat",
+        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        embedding_api_key="k",
+        embedding_model="text-embedding-v3",
+        embedding_dimension=2,
+        admin_token="tok",
+    )
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
+async def _open_review_conn() -> aiosqlite.Connection:
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(conn)
+    return conn
+
+
+@pytest.fixture
+def review_conn():
+    """审核队列库连接。必须显式 close：aiosqlite 的后台工作线程不是 daemon
+    线程，泄漏一个未关闭的连接会让 pytest 进程在跑完全部用例后卡在解释器
+    退出阶段（threading._shutdown 等这个线程），表现为"测试全绿但命令不返回"。
+    做法同 test_admin_document_routes.py 的 ingestion_conn fixture。
+    """
+    conn = asyncio.run(_open_review_conn())
+    try:
+        yield conn
+    finally:
+        asyncio.run(conn.close())
+
+
+def _authed_headers(session_store: AdminSessionStore) -> dict[str, str]:
+    token = session_store.create_session()
+    return {"Authorization": f"Bearer {token}"}
+
+
+class FakeGraphClient:
+    def __init__(self) -> None:
+        self.written: list[dict] = []
+
+    async def merge_relation(self, **kwargs) -> None:
+        self.written.append(kwargs)
+
+
+def test_list_pending_reviews_returns_tenant_scoped_rows(review_conn):
+    asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/graph-reviews", params={"tenant_id": "t1"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert len(response.json()["reviews"]) == 1
+
+
+def test_approve_review_calls_graph_client_and_moves_to_history(review_conn):
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    graph_client = FakeGraphClient()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/admin/graph-reviews/{review_id}/approve",
+            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert graph_client.written == [
+        {
+            "subject_standard_name": "A", "object_standard_name": "B",
+            "relation_type": "RELATED_TO", "source": "s.md", "tenant_id": "t1",
+        }
+    ]
+
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        history_response = TestClient(app)
+        response = history_response.get(
+            "/api/admin/graph-reviews", params={"tenant_id": "t1", "status": "approved"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+    assert len(response.json()["reviews"]) == 1
+
+
+def test_reject_review_marks_rejected(review_conn):
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/admin/graph-reviews/{review_id}/reject",
+            json={"tenant_id": "t1", "note": "噪声"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+
+
+def test_approve_nonexistent_review_returns_404(review_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/graph-reviews/999/approve",
+            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404

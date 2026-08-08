@@ -248,3 +248,69 @@ async def test_process_pending_jobs_marks_failed_job_for_retry_without_crashing_
     pending = await list_pending_jobs(conn)
     assert len(pending) == 1
     assert pending[0]["attempts"] == 1
+
+
+async def test_process_pending_jobs_skips_graph_extraction_when_build_graph_is_false(
+    tmp_path,
+):
+    file_path = tmp_path / "a.md"
+    file_path.write_text("## 主题\n内容。\n", encoding="utf-8")
+    conn = await _connect()
+    content_hash = compute_file_hash(file_path)
+    await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path=str(file_path), content_hash=content_hash,
+        action="ingest", build_graph=False,
+    )
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    graph_calls = {"count": 0}
+
+    class FailingGraphClient:
+        async def merge_relation(self, **kwargs):
+            graph_calls["count"] += 1
+
+    await process_pending_jobs(
+        conn,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        graph_client=FailingGraphClient(),
+        graph_llm_registry="not-none-marker",
+        graph_llm_provider_name="fake-embedding",
+        graph_terms=[],
+    )
+
+    # build_graph=False 时即使外部传了图谱资源，这条任务也不该触发图谱抽取
+    assert graph_calls["count"] == 0
+
+
+async def test_enqueue_records_build_graph_flag():
+    conn = await _connect()
+
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest",
+        build_graph=True,
+    )
+
+    pending = await list_pending_jobs(conn)
+    assert pending[0]["job_id"] == job_id
+    assert pending[0]["build_graph"] == 1
+
+
+async def test_enqueue_different_build_graph_flag_creates_separate_job():
+    conn = await _connect()
+
+    job_id_1 = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest",
+        build_graph=False,
+    )
+    job_id_2 = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest",
+        build_graph=True,
+    )
+
+    assert job_id_1 != job_id_2
+    assert len(await list_pending_jobs(conn)) == 2

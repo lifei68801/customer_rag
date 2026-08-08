@@ -135,7 +135,7 @@ async def test_main_sends_unresolved_graph_candidates_to_injected_review_conn(
     )
 
     assert graph_client.written == []
-    pending = await list_pending_reviews(review_conn)
+    pending = await list_pending_reviews(review_conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["object_candidate"] == "不存在的实体"
 
