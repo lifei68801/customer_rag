@@ -142,8 +142,13 @@ async def _resolve_by_llm(
 
     try:
         payload = json.loads(result.text)
-        start = datetime.fromisoformat(payload["start"])
-        end = datetime.fromisoformat(payload["end"])
+        # reference_time 是 naive 本地时间（无 tz 后缀）传给 LLM 的，但 LLM 有时会自行
+        # 在返回的 ISO8601 里加上 Z/+00:00 之类的时区后缀——这个后缀没有实际依据（LLM并不
+        # 知道本地时区是什么），直接丢弃 tzinfo 而不做时区换算，保持和 reference_time
+        # 同一个 naive 本地时间语义，否则会在下面和 reference_time 比较时抛
+        # TypeError: can't compare offset-naive and offset-aware datetimes。
+        start = datetime.fromisoformat(payload["start"]).replace(tzinfo=None)
+        end = datetime.fromisoformat(payload["end"]).replace(tzinfo=None)
         confidence = float(payload["confidence"])
     except (json.JSONDecodeError, KeyError, ValueError, TypeError):
         logger.warning("时间表达式解析返回格式不合法，回退规则引擎")
