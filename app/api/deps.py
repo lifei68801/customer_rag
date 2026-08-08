@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from functools import lru_cache
+from pathlib import Path
 
 from fastapi import Depends, Header, HTTPException
 
 from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
+from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
+from app.ingestion.tracking import ensure_tracking_schema
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
     DEFAULT_EMBEDDING_PROVIDER_NAME,
@@ -43,12 +46,14 @@ __all__ = [
     "get_embedding_registry",
     "get_gateway_tenant_id",
     "get_graph_client",
+    "get_ingestion_conn",
     "get_llm_registry",
     "get_memory_conn",
     "get_rerank_provider",
     "get_settings",
     "get_terms",
     "get_tts_provider",
+    "get_upload_dir",
     "get_vector_store",
     "parse_banned_terms",
     "require_admin_session",
@@ -241,3 +246,30 @@ async def require_admin_session(
     token = authorization.removeprefix("Bearer ")
     if not session_store.verify_session(token):
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+
+
+_ingestion_conn_cache: aiosqlite.Connection | None = None
+_ingestion_conn_lock = asyncio.Lock()
+
+
+async def get_ingestion_conn(
+    settings: Settings = Depends(get_settings),
+) -> aiosqlite.Connection:
+    """进程内单例 SQLite 连接，模式同 get_memory_conn。"""
+    global _ingestion_conn_cache
+    if _ingestion_conn_cache is None:
+        async with _ingestion_conn_lock:
+            if _ingestion_conn_cache is None:
+                db_path = Path(settings.ingestion_db_path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                conn = await aiosqlite.connect(str(db_path))
+                await ensure_tracking_schema(conn)
+                await ensure_ingestion_queue_schema(conn)
+                _ingestion_conn_cache = conn
+    return _ingestion_conn_cache
+
+
+def get_upload_dir(settings: Settings = Depends(get_settings)) -> Path:
+    upload_dir = Path(settings.upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    return upload_dir

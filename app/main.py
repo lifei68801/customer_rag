@@ -5,6 +5,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 
 from app.api.admin_auth_routes import router as admin_auth_router
+from app.api.admin_document_routes import router as admin_document_router
 from app.api.agent_routes import router as agent_router
 from app.api.qa_routes import router as qa_router
 from app.api.voice_routes import router as voice_router
@@ -43,6 +44,7 @@ app.include_router(qa_router)
 app.include_router(agent_router)
 app.include_router(voice_router)
 app.include_router(admin_auth_router)
+app.include_router(admin_document_router)
 
 
 @app.get("/health")
