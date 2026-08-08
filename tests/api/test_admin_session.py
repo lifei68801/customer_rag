@@ -31,3 +31,15 @@ def test_revoke_session_invalidates_the_token():
     store.revoke_session(token)
 
     assert store.verify_session(token) is False
+
+
+def test_create_session_sweeps_expired_entries_without_needing_verify():
+    store = AdminSessionStore()
+    expired_token = store.create_session(ttl_seconds=-1)
+    # 直接查内部字典，不经过 verify_session（verify_session 自己也会清理，
+    # 这里要证明的是 create_session 本身的顺手清理，两者不能互相掩盖）
+    assert expired_token in store._sessions
+
+    store.create_session()
+
+    assert expired_token not in store._sessions

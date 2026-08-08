@@ -203,8 +203,7 @@ async def list_documents(
     ingestion_conn: aiosqlite.Connection = Depends(deps.get_ingestion_conn),
 ) -> DocumentsListResponse:
     documents = await list_tracked_files(ingestion_conn, tenant_id=tenant_id)
-    all_pending = await list_pending_jobs(ingestion_conn, limit=50)
-    pending_jobs = [job for job in all_pending if job["tenant_id"] == tenant_id]
+    pending_jobs = await list_pending_jobs(ingestion_conn, limit=50, tenant_id=tenant_id)
     return DocumentsListResponse(documents=documents, pending_jobs=pending_jobs)
 
 
@@ -236,9 +235,22 @@ async def delete_document(
     vector_store: VectorStore = Depends(deps.get_vector_store),
 ) -> dict[str, bool]:
     _validate_tenant_id(tenant_id)
-    await vector_store.delete_by_source(source=file_path, tenant_id=tenant_id)
-    await remove_tracked_file(ingestion_conn, tenant_id=tenant_id, file_path=file_path)
-    # 磁盘文件放在最后删：向量/追踪记录任一步失败都会抛出、不会执行到这里，
-    # 保证不会出现"文件已删但索引还在"的不可恢复状态。
+    try:
+        await vector_store.delete_by_source(source=file_path, tenant_id=tenant_id)
+    except Exception as exc:  # noqa: BLE001 - 转成对前端有意义的错误，不裸抛 500
+        logger.warning("删除文档失败（向量库这一步）：file_path=%s error=%s", file_path, exc)
+        raise HTTPException(status_code=502, detail=f"删除向量数据失败：{exc}") from exc
+    try:
+        await remove_tracked_file(ingestion_conn, tenant_id=tenant_id, file_path=file_path)
+    except Exception as exc:  # noqa: BLE001
+        # 向量已经删掉了，这里再失败会留下"向量没了但追踪记录还在"的不一致
+        # 状态——不隐藏这个事实，报错文案里说清楚，让管理员知道要手动核实。
+        logger.warning("删除文档失败（追踪记录这一步）：file_path=%s error=%s", file_path, exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"向量数据已删除，但清理追踪记录失败，可能需要手动核实：{exc}",
+        ) from exc
+    # 磁盘文件放在最后删：向量/追踪记录任一步失败都会在上面抛出、不会执行
+    # 到这里，保证不会出现"文件已删但索引还在"的不可恢复状态。
     _unlink_uploaded_file(file_path, upload_dir)
     return {"deleted": True}

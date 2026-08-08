@@ -441,6 +441,85 @@ def test_delete_document_also_unlinks_uploaded_file(tmp_path, ingestion_conn):
     assert not uploaded.exists()
 
 
+def test_delete_document_returns_502_with_clear_message_when_vector_store_fails(
+    tmp_path, ingestion_conn
+):
+    """向量库删除失败时要返回带明确信息的 502，而不是裸 500。"""
+    asyncio.run(
+        record_ingested(
+            ingestion_conn, tenant_id="t1", file_path="a.md", content_hash="h1", chunk_count=1
+        )
+    )
+
+    class FailingVectorStore(InMemoryVectorStore):
+        async def delete_by_source(self, *, source: str, tenant_id: str) -> None:
+            raise RuntimeError("milvus 连接失败")
+
+    session_store = AdminSessionStore()
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_vector_store] = lambda: FailingVectorStore()
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    try:
+        client = TestClient(app)
+        response = client.request(
+            "DELETE",
+            "/api/admin/documents",
+            params={"tenant_id": "t1", "file_path": "a.md"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502
+    assert "删除向量数据失败" in response.json()["detail"]
+    # 向量库那一步失败，追踪记录不应该被清理，避免"向量还在但追踪记录没了"
+    assert asyncio.run(_tracked_paths(ingestion_conn, "t1")) == ["a.md"]
+
+
+def test_delete_document_returns_502_when_tracking_cleanup_fails_after_vector_delete(
+    tmp_path, ingestion_conn, monkeypatch
+):
+    """追踪记录清理失败时也要给出明确的 502，并提示已产生的不一致状态。"""
+    asyncio.run(
+        record_ingested(
+            ingestion_conn, tenant_id="t1", file_path="a.md", content_hash="h1", chunk_count=1
+        )
+    )
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("数据库锁住了")
+
+    import app.api.admin_document_routes as routes_module
+
+    monkeypatch.setattr(routes_module, "remove_tracked_file", _boom)
+
+    session_store = AdminSessionStore()
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    try:
+        client = TestClient(app)
+        response = client.request(
+            "DELETE",
+            "/api/admin/documents",
+            params={"tenant_id": "t1", "file_path": "a.md"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502
+    assert "可能需要手动核实" in response.json()["detail"]
+
+
 def test_delete_document_keeps_files_outside_upload_dir(tmp_path, ingestion_conn):
     """CLI 摄取的原始语料不在 upload_dir 里，后台删除只清索引，不能删用户的文件。"""
     upload_dir = tmp_path / "uploads"

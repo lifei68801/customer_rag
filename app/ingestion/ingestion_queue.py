@@ -103,13 +103,26 @@ async def enqueue_ingestion_job(
 
 
 async def list_pending_jobs(
-    conn: aiosqlite.Connection, *, limit: int = 10
+    conn: aiosqlite.Connection, *, limit: int = 10, tenant_id: str | None = None
 ) -> list[dict[str, Any]]:
+    """列出待处理任务，`tenant_id=None` 时不区分租户（`process_pending_jobs`
+    批处理场景就是要跨租户轮询）；传了就在 SQL 里过滤，而不是查出来在
+    Python 里筛——否则租户一多，某个租户的任务会被别的租户的任务挤出
+    `limit` 之外，管理页面就看不到自己的处理中任务了。
+    """
     conn.row_factory = aiosqlite.Row
-    cursor = await conn.execute(
-        "SELECT * FROM ingestion_jobs WHERE status = 'pending' ORDER BY created_at LIMIT ?",
-        (limit,),
-    )
+    if tenant_id is None:
+        cursor = await conn.execute(
+            "SELECT * FROM ingestion_jobs WHERE status = 'pending' "
+            "ORDER BY created_at LIMIT ?",
+            (limit,),
+        )
+    else:
+        cursor = await conn.execute(
+            "SELECT * FROM ingestion_jobs WHERE status = 'pending' AND tenant_id = ? "
+            "ORDER BY created_at LIMIT ?",
+            (tenant_id, limit),
+        )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
 

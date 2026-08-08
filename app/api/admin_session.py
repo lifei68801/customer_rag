@@ -16,9 +16,21 @@ class AdminSessionStore:
         self._sessions: dict[str, float] = {}
 
     def create_session(self, *, ttl_seconds: int = 28800) -> str:
+        self._sweep_expired()
         token = secrets.token_urlsafe(32)
         self._sessions[token] = time.time() + ttl_seconds
         return token
+
+    def _sweep_expired(self) -> None:
+        """顺手清掉已过期但从未被 verify_session 主动查询过的 session。
+
+        不引入后台定时任务/线程——管理员场景登录频率很低，"每次新登录时
+        顺便扫一遍"足够避免字典无限增长，不需要额外的调度基础设施。
+        """
+        now = time.time()
+        expired = [token for token, expires_at in self._sessions.items() if now >= expires_at]
+        for token in expired:
+            del self._sessions[token]
 
     def verify_session(self, token: str) -> bool:
         expires_at = self._sessions.get(token)

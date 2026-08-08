@@ -169,3 +169,153 @@ def test_approve_nonexistent_review_returns_404(review_conn):
         app.dependency_overrides.clear()
 
     assert response.status_code == 404
+
+
+def test_list_reviews_without_session_token_returns_401(review_conn):
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: AdminSessionStore()
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        response = client.get("/api/admin/graph-reviews", params={"tenant_id": "t1"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+
+
+def test_approve_already_resolved_review_returns_409(review_conn):
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraphClient()
+    try:
+        client = TestClient(app)
+        payload = {
+            "tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B",
+        }
+        first = client.post(
+            f"/api/admin/graph-reviews/{review_id}/approve",
+            json=payload, headers=_authed_headers(session_store),
+        )
+        second = client.post(
+            f"/api/admin/graph-reviews/{review_id}/approve",
+            json=payload, headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
+def test_reject_already_resolved_review_returns_409(review_conn):
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        payload = {"tenant_id": "t1", "note": "噪声"}
+        first = client.post(
+            f"/api/admin/graph-reviews/{review_id}/reject",
+            json=payload, headers=_authed_headers(session_store),
+        )
+        second = client.post(
+            f"/api/admin/graph-reviews/{review_id}/reject",
+            json=payload, headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
+def test_list_reviews_status_all_returns_both_approved_and_rejected(review_conn):
+    approve_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+    )
+    reject_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="c", object_candidate="d", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraphClient()
+    try:
+        client = TestClient(app)
+        client.post(
+            f"/api/admin/graph-reviews/{approve_id}/approve",
+            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            headers=_authed_headers(session_store),
+        )
+        client.post(
+            f"/api/admin/graph-reviews/{reject_id}/reject",
+            json={"tenant_id": "t1"},
+            headers=_authed_headers(session_store),
+        )
+        response = client.get(
+            "/api/admin/graph-reviews", params={"tenant_id": "t1", "status": "all"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert len(response.json()["reviews"]) == 2
+
+
+def test_reject_review_shows_up_in_rejected_history(review_conn):
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        reject_response = client.post(
+            f"/api/admin/graph-reviews/{review_id}/reject",
+            json={"tenant_id": "t1", "note": "噪声"},
+            headers=_authed_headers(session_store),
+        )
+        history_response = client.get(
+            "/api/admin/graph-reviews", params={"tenant_id": "t1", "status": "rejected"},
+            headers=_authed_headers(session_store),
+        )
+        pending_response = client.get(
+            "/api/admin/graph-reviews", params={"tenant_id": "t1", "status": "pending"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert reject_response.status_code == 200
+    assert len(history_response.json()["reviews"]) == 1
+    assert history_response.json()["reviews"][0]["resolved_note"] == "噪声"
+    assert pending_response.json()["reviews"] == []

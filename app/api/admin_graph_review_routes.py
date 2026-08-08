@@ -46,8 +46,12 @@ async def list_reviews(
         reviews = await list_pending_reviews(review_conn, tenant_id=tenant_id)
     elif status in ("approved", "rejected"):
         reviews = await list_resolved_reviews(review_conn, tenant_id=tenant_id, status=status)
+    elif status == "all":
+        # status=None 让 list_resolved_reviews 同时返回 approved+rejected；
+        # 路由层用 "all" 这个显式值表达"不筛选"，不直接暴露 None 给客户端。
+        reviews = await list_resolved_reviews(review_conn, tenant_id=tenant_id, status=None)
     else:
-        raise HTTPException(status_code=400, detail="status 必须是 pending/approved/rejected")
+        raise HTTPException(status_code=400, detail="status 必须是 pending/approved/rejected/all")
     return ReviewListResponse(reviews=reviews)
 
 

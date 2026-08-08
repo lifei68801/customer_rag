@@ -65,6 +65,16 @@ async def ensure_review_schema(conn: aiosqlite.Connection) -> None:
         conn, table="graph_review_queue", column="source",
         ddl="TEXT NOT NULL DEFAULT ''",
     )
+    # tenant_id 是后加的列，不在 _SCHEMA_SQL 的建表语句里——这个复合索引
+    # 必须放在上面两次 add_column_if_missing 之后创建，否则全新数据库上
+    # 建表时 tenant_id 列还不存在，CREATE INDEX 会报 "no such column"。
+    # list_pending_reviews/list_resolved_reviews 的查询都是
+    # WHERE tenant_id = ? AND status = ...，复合索引比单独的 status 索引更贴合。
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_graph_review_queue_tenant_status "
+        "ON graph_review_queue (tenant_id, status)"
+    )
+    await conn.commit()
 
 
 async def enqueue_for_review(
@@ -194,10 +204,15 @@ async def approve_review(
         source=row["source"],
         tenant_id=tenant_id,
     )
+    # WHERE 里重复加 tenant_id：单看这条语句本身，_fetch_pending_row 已经
+    # 校验过 review_id 属于这个 tenant_id，此刻再查一次理论上多余；但两条
+    # 语句一旦将来被拆开（比如中间插入别的逻辑），少了这层防御就会变成
+    # "校验和实际更新对不上号" 的隐患，多写一个条件的成本很低。
     await conn.execute(
         "UPDATE graph_review_queue SET status='approved', "
-        "resolved_at=datetime('now'), resolved_note=? WHERE review_id=?",
-        (f"{subject_standard_name} -> {object_standard_name}", review_id),
+        "resolved_at=datetime('now'), resolved_note=? "
+        "WHERE review_id=? AND tenant_id=?",
+        (f"{subject_standard_name} -> {object_standard_name}", review_id, tenant_id),
     )
     await conn.commit()
 
@@ -213,7 +228,8 @@ async def reject_review(
     await _fetch_pending_row(conn, review_id, tenant_id=tenant_id)
     await conn.execute(
         "UPDATE graph_review_queue SET status='rejected', "
-        "resolved_at=datetime('now'), resolved_note=? WHERE review_id=?",
-        (note, review_id),
+        "resolved_at=datetime('now'), resolved_note=? "
+        "WHERE review_id=? AND tenant_id=?",
+        (note, review_id, tenant_id),
     )
     await conn.commit()

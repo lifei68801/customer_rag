@@ -118,6 +118,20 @@ async def test_approve_review_from_wrong_tenant_raises_not_found():
     assert graph_client.written == []
 
 
+async def test_reject_review_from_wrong_tenant_raises_not_found():
+    conn = await _connect()
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+        reason="subject_unresolved", source="s.md", tenant_id="t1",
+    )
+
+    with pytest.raises(ReviewNotFoundError):
+        await reject_review(conn, review_id=review_id, tenant_id="t2")
+
+    # 记录还在 t1 的待审核队列里，没有被 t2 的驳回请求误处理掉
+    assert len(await list_pending_reviews(conn, tenant_id="t1")) == 1
+
+
 async def test_reject_review_removes_from_pending_without_writing():
     conn = await _connect()
     graph_client = FakeGraphClient()

@@ -56,6 +56,33 @@ async def test_enqueue_is_idempotent_for_the_same_file_and_hash():
     assert len(await list_pending_jobs(conn)) == 1
 
 
+async def test_list_pending_jobs_filters_by_tenant_id_in_sql():
+    conn = await _connect()
+    await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await enqueue_ingestion_job(
+        conn, tenant_id="t2", file_path="b.md", content_hash="h2", action="ingest"
+    )
+
+    t1_jobs = await list_pending_jobs(conn, tenant_id="t1")
+
+    assert len(t1_jobs) == 1
+    assert t1_jobs[0]["tenant_id"] == "t1"
+
+
+async def test_list_pending_jobs_without_tenant_id_returns_all_tenants():
+    conn = await _connect()
+    await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await enqueue_ingestion_job(
+        conn, tenant_id="t2", file_path="b.md", content_hash="h2", action="ingest"
+    )
+
+    assert len(await list_pending_jobs(conn)) == 2
+
+
 async def test_mark_job_completed_removes_it_from_pending():
     conn = await _connect()
     job_id = await enqueue_ingestion_job(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from app.api import deps
@@ -50,3 +50,19 @@ async def login(
 @router.get("/whoami", dependencies=[Depends(deps.require_admin_session)])
 async def whoami() -> dict[str, bool]:
     return {"authenticated": True}
+
+
+@router.post("/logout", dependencies=[Depends(deps.require_admin_session)])
+async def logout(
+    authorization: str | None = Header(default=None),
+    session_store: AdminSessionStore = Depends(deps.get_admin_session_store),
+) -> dict[str, bool]:
+    """让服务端立即失效这个 session token，而不是只靠客户端清 sessionStorage。
+
+    依赖 require_admin_session 保证走到这里时 authorization 一定是
+    "Bearer <合法未过期 token>" 格式（否则前面已经 401 了），所以这里可以
+    放心地直接 removeprefix 取 token，不用重复判空/判前缀。
+    """
+    token = (authorization or "").removeprefix("Bearer ")
+    session_store.revoke_session(token)
+    return {"logged_out": True}

@@ -67,8 +67,8 @@ async def list_tracked_files(
 ) -> list[dict[str, Any]]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT file_path, content_hash, chunk_count FROM ingested_documents "
-        "WHERE tenant_id = ?",
+        "SELECT file_path, content_hash, chunk_count, last_ingested_at "
+        "FROM ingested_documents WHERE tenant_id = ?",
         (tenant_id,),
     )
     rows = await cursor.fetchall()
