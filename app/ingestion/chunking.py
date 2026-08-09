@@ -38,3 +38,95 @@ def chunk_markdown(text: str, *, source: str) -> list[Chunk]:
             Chunk(text=body, heading_path=[heading], source=source)
         )
     return chunks
+
+
+def _greedy_merge(pieces: list[str], *, join: str, max_len: int) -> list[str]:
+    """把切出来的小片段依次贪心拼接，尽量凑到接近 max_len 但不超过；
+    单个片段本身已经超过 max_len 时原样保留（不在这一步再切，交给调用方
+    用更细的分隔符继续递归）。
+    """
+    merged: list[str] = []
+    current = ""
+    for piece in pieces:
+        candidate = f"{current}{join}{piece}" if current else piece
+        if len(candidate) <= max_len:
+            current = candidate
+            continue
+        if current:
+            merged.append(current)
+        current = piece
+    if current:
+        merged.append(current)
+    return merged
+
+
+def _split_text_recursive(text: str, *, max_len: int) -> list[str]:
+    """递归三级切分：段落（\\n\\n）-> 中文句末标点 -> 硬按字符数截断。
+    每一级先贪心合并到接近 max_len，合并后仍超阈值的单个片段再用下一级
+    更细的分隔符继续递归；硬切这一级没有更细的分隔符可用，直接截断，
+    保证递归一定收敛。
+    """
+    if len(text) <= max_len:
+        return [text]
+
+    paragraphs = [p for p in text.split("\n\n") if p.strip()]
+    if len(paragraphs) > 1:
+        merged = _greedy_merge(paragraphs, join="\n\n", max_len=max_len)
+        result: list[str] = []
+        for piece in merged:
+            result.extend(_split_text_recursive(piece, max_len=max_len))
+        return result
+
+    sentences = [s for s in re.split(r"(?<=[。！？])", text) if s.strip()]
+    if len(sentences) > 1:
+        merged = _greedy_merge(sentences, join="", max_len=max_len)
+        result = []
+        for piece in merged:
+            result.extend(_split_text_recursive(piece, max_len=max_len))
+        return result
+
+    return [text[i : i + max_len] for i in range(0, len(text), max_len)]
+
+
+def _add_overlap(pieces: list[str], *, overlap: int) -> list[str]:
+    """同一个原始 chunk 内部切出的子片段之间加小段重叠，避免硬切边界
+    正好切在关键信息中间。第一个子片段不加前缀（它前面没有"上一段"）。
+    """
+    if overlap <= 0 or len(pieces) <= 1:
+        return pieces
+    result = [pieces[0]]
+    for i in range(1, len(pieces)):
+        prev_tail = pieces[i - 1][-overlap:]
+        result.append(prev_tail + pieces[i])
+    return result
+
+
+def split_oversized_chunks(
+    chunks: list[Chunk], *, max_len: int = 800, overlap: int = 90
+) -> list[Chunk]:
+    """尺寸兜底：结构感知分块本身没有尺寸上限，某个标题下正文很长、或
+    整篇没有任何标题时会产出巨大的 chunk，稀释 embedding 语义。这里对
+    超过 max_len 的 chunk 做递归二次切分，只用于 embedding 路径——图谱
+    抽取需要更完整的上下文，应该继续吃未经切分的原始 chunk（调用方
+    不要把这个函数的输出传给图谱抽取）。
+
+    parent_text 非空的 chunk（PDF 表格行）原样跳过，不做二次切分——那些
+    本来就很小，且切分会破坏 parent-child 对应关系。
+
+    不同原始 chunk 之间不重叠、不合并，重叠只发生在"同一个原始 chunk
+    内部被迫二次切分"这种情况，否则 heading_path 溯源会失真。
+
+    800/90 这两个默认值是参考起点，不是通过真实数据标定的权威值。
+    """
+    result: list[Chunk] = []
+    for chunk in chunks:
+        if chunk.parent_text is not None or len(chunk.text) <= max_len:
+            result.append(chunk)
+            continue
+        pieces = _split_text_recursive(chunk.text, max_len=max_len)
+        pieces = _add_overlap(pieces, overlap=overlap)
+        for piece in pieces:
+            result.append(
+                Chunk(text=piece, heading_path=chunk.heading_path, source=chunk.source)
+            )
+    return result
