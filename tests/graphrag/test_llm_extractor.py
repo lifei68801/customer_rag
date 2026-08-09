@@ -13,6 +13,18 @@ class FixedLLMProvider:
         return ProviderResult(text=self._text)
 
 
+class SpyLLMProvider:
+    """记录收到的完整请求，用来断言 prompt 内容和多片段拼接格式。"""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self.received_requests: list[ProviderRequest] = []
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        self.received_requests.append(request)
+        return ProviderResult(text=self._text)
+
+
 class FailingLLMProvider:
     async def complete(self, request: ProviderRequest) -> ProviderResult:
         raise RuntimeError("provider unavailable")
@@ -31,7 +43,7 @@ async def test_extracts_relations_from_valid_json_response():
         "]}"
     )
     relations = await extract_candidate_relations(
-        "文档片段...",
+        ["文档片段..."],
         llm_registry=_registry(FixedLLMProvider(text)),
         llm_provider_name="llm",
         timeout_sec=1.0,
@@ -48,7 +60,7 @@ async def test_extracts_relations_from_valid_json_response():
 
 async def test_falls_back_to_empty_list_when_llm_fails():
     relations = await extract_candidate_relations(
-        "文档片段...",
+        ["文档片段..."],
         llm_registry=_registry(FailingLLMProvider()),
         llm_provider_name="llm",
         timeout_sec=1.0,
@@ -59,10 +71,59 @@ async def test_falls_back_to_empty_list_when_llm_fails():
 
 async def test_falls_back_to_empty_list_when_response_is_malformed_json():
     relations = await extract_candidate_relations(
-        "文档片段...",
+        ["文档片段..."],
         llm_registry=_registry(FixedLLMProvider("这不是JSON")),
         llm_provider_name="llm",
         timeout_sec=1.0,
     )
 
     assert relations == []
+
+
+async def test_single_segment_is_sent_without_segment_markers():
+    provider = SpyLLMProvider('{"relations": []}')
+
+    await extract_candidate_relations(
+        ["单独一个片段的文本"],
+        llm_registry=_registry(provider),
+        llm_provider_name="llm",
+        timeout_sec=1.0,
+    )
+
+    user_message = provider.received_requests[0].messages[1]
+    assert user_message["content"] == "单独一个片段的文本"
+
+
+async def test_multiple_segments_are_joined_with_segment_markers():
+    provider = SpyLLMProvider('{"relations": []}')
+
+    await extract_candidate_relations(
+        ["第一个片段", "第二个片段"],
+        llm_registry=_registry(provider),
+        llm_provider_name="llm",
+        timeout_sec=1.0,
+    )
+
+    user_message = provider.received_requests[0].messages[1]
+    assert "[片段1]\n第一个片段" in user_message["content"]
+    assert "[片段2]\n第二个片段" in user_message["content"]
+
+
+async def test_system_prompt_lists_all_ten_relation_types_and_forbids_cross_segment_relations():
+    provider = SpyLLMProvider('{"relations": []}')
+
+    await extract_candidate_relations(
+        ["片段"],
+        llm_registry=_registry(provider),
+        llm_provider_name="llm",
+        timeout_sec=1.0,
+    )
+
+    system_message = provider.received_requests[0].messages[0]["content"]
+    for relation_type in [
+        "RELATED_TO", "PART_OF", "IS_A", "REQUIRES", "ALTERNATIVE_TO",
+        "CAUSES", "ADDRESSED_BY", "LOCATED_IN", "APPLIES_TO", "PRECEDES",
+    ]:
+        assert relation_type in system_message
+    assert "BELONGS_TO_MODULE" not in system_message
+    assert "不要把不同片段里的实体强行关联起来" in system_message
