@@ -1,11 +1,19 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAdminAuth } from './useAdminAuth'
+
+const focusRing =
+  'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
 export function LoginPage() {
   const { sessionToken, login } = useAdminAuth()
   const [adminToken, setAdminToken] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [loggingIn, setLoggingIn] = useState(false)
+
+  useEffect(() => {
+    document.title = '管理后台登录 · 客服问答 Demo'
+  }, [])
 
   if (sessionToken) {
     return <Navigate to="/admin" replace />
@@ -14,10 +22,13 @@ export function LoginPage() {
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
     setError(null)
+    setLoggingIn(true)
     try {
       await login(adminToken)
     } catch {
       setError('管理员 token 不正确')
+    } finally {
+      setLoggingIn(false)
     }
   }
 
@@ -28,19 +39,33 @@ export function LoginPage() {
         className="flex w-full max-w-sm flex-col gap-4 border-2 border-ink bg-card p-6 shadow-brutal"
       >
         <h1 className="text-xl font-bold text-ink">管理后台登录</h1>
+        <label htmlFor="admin-token" className="text-sm font-bold text-ink">
+          管理员 token
+        </label>
         <input
+          id="admin-token"
           type="password"
+          autoComplete="current-password"
           value={adminToken}
           onChange={(event) => setAdminToken(event.target.value)}
           placeholder="管理员 token"
-          className="border-2 border-ink bg-paper px-4 py-2.5 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
+          disabled={loggingIn}
+          className={`border-2 border-ink bg-paper px-4 py-2.5 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none disabled:opacity-50 ${focusRing}`}
         />
-        {error && <p className="text-sm text-ink">{error}</p>}
+        {error && (
+          <p
+            role="alert"
+            className="border-2 border-status-error bg-paper px-3 py-2 text-sm text-ink shadow-brutal-sm"
+          >
+            {error}
+          </p>
+        )}
         <button
           type="submit"
-          className="cursor-pointer border-2 border-ink bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+          disabled={loggingIn || !adminToken}
+          className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
-          登录
+          {loggingIn ? '登录中…' : '登录'}
         </button>
       </form>
     </div>

@@ -23,17 +23,29 @@ interface PendingJob {
   last_error: string | null
 }
 
+const focusRing =
+  'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
+
 export function DocumentsPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const [documents, setDocuments] = useState<TrackedDocument[]>([])
   const [pendingJobs, setPendingJobs] = useState<PendingJob[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [buildGraph, setBuildGraph] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deletingPath, setDeletingPath] = useState<string | null>(null)
   // 轮询期间才需要知道"上一次拿到的 pending_jobs 是不是空的"，不需要触发重渲染。
   const hasPendingJobsRef = useRef(false)
+  // 让 handleUpload/handleDelete 能在动作完成后立即"踢"一次轮询循环，
+  // 不用等已经排好队的 setTimeout 走完最坏 15 秒才发现任务状态变了。
+  const pollNowRef = useRef<() => Promise<void>>(async () => {})
+
+  useEffect(() => {
+    document.title = '文档管理 · 管理后台'
+  }, [])
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
@@ -48,25 +60,27 @@ export function DocumentsPage() {
     setDocuments(data.documents)
     setPendingJobs(data.pending_jobs)
     hasPendingJobsRef.current = data.pending_jobs.length > 0
+    setLoaded(true)
   }, [sessionToken, tenantId])
 
   useEffect(() => {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
 
-    const poll = () => {
-      refresh()
-        .catch((err) => {
-          console.error('文档列表刷新失败', err)
-        })
-        .finally(() => {
-          if (cancelled) return
-          // 没有处理中任务时没必要每 3 秒打一次后端——退避到 15 秒，
-          // 一旦又有任务在处理（比如用户上传了新文件）会立刻恢复到 3 秒。
-          const interval = hasPendingJobsRef.current ? 3000 : 15000
-          timer = setTimeout(poll, interval)
-        })
+    const poll = async () => {
+      if (timer) clearTimeout(timer)
+      try {
+        await refresh()
+      } catch (err) {
+        console.error('文档列表刷新失败', err)
+      }
+      if (cancelled) return
+      // 没有处理中任务时没必要每 3 秒打一次后端——退避到 15 秒；上传/删除
+      // 完成后会通过 pollNowRef 主动跳过这次等待，不是真的要等满 15 秒。
+      const interval = hasPendingJobsRef.current ? 3000 : 15000
+      timer = setTimeout(poll, interval)
     }
+    pollNowRef.current = poll
     poll()
     return () => {
       cancelled = true
@@ -98,7 +112,11 @@ export function DocumentsPage() {
         throw new Error(extractErrorDetail(body, '上传失败'))
       }
       form.reset()
-      await refresh()
+      // 复选框是 React 受控组件，form.reset() 只重置原生 file input，
+      // 不重置这个状态——不手动清掉的话下一次上传会在不知情的情况下
+      // 继续带着"构建图谱"参数提交。
+      setBuildGraph(false)
+      await pollNowRef.current()
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : '上传失败')
     } finally {
@@ -107,8 +125,12 @@ export function DocumentsPage() {
   }
 
   const handleDelete = async (filePath: string) => {
-    if (!sessionToken) return
+    if (!sessionToken || deletingPath !== null) return
+    if (!window.confirm(`确定要删除「${displayFileName(filePath)}」吗？此操作不可撤销。`)) {
+      return
+    }
     setDeleteError(null)
+    setDeletingPath(filePath)
     try {
       const response = await adminFetch(
         `/api/admin/documents?tenant_id=${encodeURIComponent(tenantId)}&file_path=${encodeURIComponent(filePath)}`,
@@ -119,9 +141,11 @@ export function DocumentsPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '删除失败'))
       }
-      await refresh()
+      await pollNowRef.current()
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      setDeletingPath(null)
     }
   }
 
@@ -142,11 +166,15 @@ export function DocumentsPage() {
           />
           同时构建知识图谱（LLM 关系抽取，耗时更久）
         </label>
-        {uploadError && <p className="text-sm text-ink">{uploadError}</p>}
+        {uploadError && (
+          <p role="alert" className="text-sm text-ink">
+            {uploadError}
+          </p>
+        )}
         <button
           type="submit"
           disabled={uploading}
-          className="min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50"
+          className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           {uploading ? '上传中…' : '上传文档'}
         </button>
@@ -162,7 +190,7 @@ export function DocumentsPage() {
                 job.last_error ? 'border-status-error' : 'border-ink'
               }`}
             >
-              {job.file_path} — {job.status}
+              {displayFileName(job.file_path)} — {job.status}
               {job.last_error && <span className="text-ink"> (错误：{job.last_error})</span>}
             </div>
           ))}
@@ -172,29 +200,37 @@ export function DocumentsPage() {
       <div className="flex flex-col gap-2">
         <h2 className="font-bold text-ink">已摄取文档</h2>
         {deleteError && (
-          <p className="border-2 border-status-error bg-card px-3 py-2 text-sm text-ink shadow-brutal-sm">
+          <p
+            role="alert"
+            className="border-2 border-status-error bg-card px-3 py-2 text-sm text-ink shadow-brutal-sm"
+          >
             {deleteError}
           </p>
         )}
-        {documents.map((doc) => (
-          <div
-            key={doc.file_path}
-            className="flex items-center justify-between border-2 border-ink bg-card px-4 py-3 shadow-brutal-sm"
-          >
-            <span className="text-ink" title={doc.file_path}>
-              {displayFileName(doc.file_path)}（{doc.chunk_count} chunks，最近摄取：
-              {doc.last_ingested_at}）
-            </span>
-            <button
-              type="button"
-              onClick={() => handleDelete(doc.file_path)}
-              className="min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none"
+        {!loaded && <p className="text-ink-soft">加载中…</p>}
+        {loaded &&
+          documents.map((doc) => (
+            <div
+              key={doc.file_path}
+              className="flex items-center justify-between border-2 border-ink bg-card px-4 py-3 shadow-brutal-sm"
             >
-              删除
-            </button>
-          </div>
-        ))}
-        {documents.length === 0 && <p className="text-ink-soft">当前租户还没有已摄取的文档。</p>}
+              <span className="text-ink" title={doc.file_path}>
+                {displayFileName(doc.file_path)}（{doc.chunk_count} chunks，最近摄取：
+                {doc.last_ingested_at}）
+              </span>
+              <button
+                type="button"
+                onClick={() => handleDelete(doc.file_path)}
+                disabled={deletingPath !== null}
+                className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              >
+                {deletingPath === doc.file_path ? '删除中…' : '删除'}
+              </button>
+            </div>
+          ))}
+        {loaded && documents.length === 0 && (
+          <p className="text-ink-soft">当前租户还没有已摄取的文档。</p>
+        )}
       </div>
     </div>
   )

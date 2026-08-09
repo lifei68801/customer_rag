@@ -35,13 +35,22 @@ export function useAgentChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isSending, setIsSending] = useState(false)
   const sessionIdRef = useRef<string>(createId())
+  // 没有它的话，"重新开始对话"可以在上一轮流式回复还没结束时点击：旧请求
+  // 不会被取消，它的 finally 仍会在之后的某个时刻把 isSending 设回
+  // false——如果那时新一轮请求正在进行中，输入框就会被错误地提前解锁。
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   const resetConversation = useCallback(() => {
+    abortControllerRef.current?.abort()
     setMessages([])
     sessionIdRef.current = createId()
   }, [])
 
   const sendQuestion = useCallback(async (question: string) => {
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
     const userMessage: ChatMessage = {
       id: createId(),
       role: 'user',
@@ -71,6 +80,7 @@ export function useAgentChat() {
           user_id: USER_ID,
           voice_response: false,
         }),
+        signal: controller.signal,
       })
 
       if (!response.ok) {
@@ -106,6 +116,11 @@ export function useAgentChat() {
         }
       }
     } catch (error) {
+      // 主动 abort（重置对话/发下一条消息）不算错误，不应该往气泡里追加
+      // "连接失败"文案——这条消息本来就要被丢弃或已经被新一轮请求取代。
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return
+      }
       const detail = error instanceof Error ? error.message : '未知错误'
       setMessages((prev) =>
         prev.map((message) =>
@@ -123,7 +138,11 @@ export function useAgentChat() {
         ),
       )
     } finally {
-      setIsSending(false)
+      // 只有当前这一轮请求仍然是"活跃"的那一个才允许它解锁输入框——
+      // 被 abort 的旧请求不能覆盖新一轮请求还在进行中的 loading 状态。
+      if (abortControllerRef.current === controller) {
+        setIsSending(false)
+      }
     }
   }, [])
 
