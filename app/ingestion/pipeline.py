@@ -6,7 +6,7 @@ import aiosqlite
 
 from app.graphrag.normalization import GraphWriteClientProtocol
 from app.graphrag.ontology import Term
-from app.ingestion.chunking import Chunk, chunk_markdown
+from app.ingestion.chunking import Chunk, chunk_markdown, split_oversized_chunks
 from app.ingestion.docx_parser import parse_docx
 from app.ingestion.graph_extraction import extract_and_write_graph_relations
 from app.ingestion.ocr_parser import OcrFunction, parse_image
@@ -106,12 +106,18 @@ async def _ingest_chunks(
 ) -> int:
     """已解析出 chunk 之后共用的写入逻辑：向量化+入库，可选做图谱抽取。
 
+    向量化和图谱抽取吃的是两份不同粒度的 chunk：embedding 路径先经过
+    split_oversized_chunks 做尺寸兜底（避免巨大 chunk 稀释 embedding
+    语义），图谱抽取路径吃未经切分的原始 chunks（LLM 关系抽取需要更
+    完整的上下文）。见设计文档第 2.1 节"双视图分叉"。
+
     各文件格式的 ingest_*_file 只负责"怎么把文件解析成 chunk 列表"这一步
     不同，解析完之后的处理管线完全一致，抽出来避免四份文件格式各写一遍
     近乎相同的代码。
     """
+    embedding_chunks = split_oversized_chunks(chunks)
     count = await _embed_and_upsert(
-        chunks,
+        embedding_chunks,
         path,
         embedding_registry=embedding_registry,
         embedding_provider_name=embedding_provider_name,

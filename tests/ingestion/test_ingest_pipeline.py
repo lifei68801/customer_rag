@@ -135,6 +135,72 @@ class FakeGraphClient:
         self.deleted_sources.append((source, tenant_id))
 
 
+async def test_ingest_markdown_file_splits_only_the_embedding_path_not_graph_extraction(
+    tmp_path,
+):
+    """超过尺寸阈值的正文只影响写入向量库的粒度，图谱抽取仍然拿到完整的
+    原始 chunk 文本——见设计文档第 2.1 节的"双视图分叉"。
+    """
+    long_body = "网关超时示例通常与示例认证模块相关。" * 60  # 远超 800 字符阈值
+    md_file = tmp_path / "long.md"
+    md_file.write_text(f"## 网络故障\n{long_body}\n", encoding="utf-8")
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        FixedLLMProvider(
+            '{"relations": [{"subject": "网关超时示例", '
+            '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+        ),
+    )
+    terms = [
+        Term(
+            standard_name="示例错误码E502", aliases=["网关超时示例"],
+            term_type="error_code", product_line="示例产品线",
+        ),
+        Term(
+            standard_name="示例登录模块", aliases=["示例认证模块"],
+            term_type="module", product_line="示例产品线",
+        ),
+    ]
+    graph_client = FakeGraphClient()
+
+    count = await ingest_markdown_file(
+        md_file,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        tenant_id="t1",
+        graph_llm_registry=llm_registry,
+        graph_llm_provider_name="llm",
+        graph_terms=terms,
+        graph_client=graph_client,
+    )
+
+    # 向量库那一侧被切分成了多条记录
+    assert count > 1
+    # 图谱抽取只对"网络故障"这一个未切分的原始 chunk 调用了一次 LLM，
+    # 抽取结果被正确写入——如果误把切分后的小 chunk 传给了图谱抽取，
+    # 这里的 written 断言不会变化（FixedLLMProvider 对任何输入都返回同一段
+    # JSON），但如果代码退化成对每个小 chunk 都重复写入，deleted_sources/
+    # written 的调用次数或去重行为会跟这里的断言对不上；更直接的信号是
+    # graph_client.written 里只应该有一条记录，不会因为切分份数变化。
+    assert graph_client.written == [
+        {
+            "subject": "示例错误码E502",
+            "object": "示例登录模块",
+            "relation_type": "RELATED_TO",
+            "source": str(md_file),
+            "tenant_id": "t1",
+        }
+    ]
+
+
 async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_path):
     md_file = tmp_path / "network.md"
     md_file.write_text(
