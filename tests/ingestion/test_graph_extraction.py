@@ -1,8 +1,12 @@
+import asyncio
 import aiosqlite
 
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
-from app.ingestion.graph_extraction import extract_and_write_graph_relations
+from app.ingestion.graph_extraction import (
+    _batch_chunks_by_char_budget,
+    extract_and_write_graph_relations,
+)
 from app.ingestion.chunking import Chunk
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.registry import ProviderRegistry
@@ -228,3 +232,103 @@ async def test_reingesting_same_source_different_tenant_does_not_delete_other_te
             "tenant_id": "t1",
         }
     ]
+
+
+def test_batch_chunks_by_char_budget_groups_up_to_the_limit():
+    chunks = [
+        Chunk(text="a" * 1000, heading_path=[], source="a.md"),
+        Chunk(text="b" * 1000, heading_path=[], source="a.md"),
+        Chunk(text="c" * 1000, heading_path=[], source="a.md"),
+    ]
+
+    batches = _batch_chunks_by_char_budget(chunks, max_chars=2500)
+
+    assert len(batches) == 2
+    assert len(batches[0]) == 2  # a+b 累计 2000 字符 <= 2500
+    assert len(batches[1]) == 1  # c 单独成批
+
+
+def test_batch_chunks_by_char_budget_keeps_oversized_single_chunk_alone():
+    chunks = [
+        Chunk(text="x" * 5000, heading_path=[], source="a.md"),
+        Chunk(text="y" * 100, heading_path=[], source="a.md"),
+    ]
+
+    batches = _batch_chunks_by_char_budget(chunks, max_chars=3000)
+
+    assert len(batches) == 2
+    assert len(batches[0]) == 1
+    assert batches[0][0].text == "x" * 5000
+    assert len(batches[1]) == 1
+
+
+async def test_extract_and_write_graph_relations_respects_max_concurrency():
+    """并发批次数不能超过 max_concurrency——用一个记录"同时在途请求数"的
+    fake provider，真的 sleep 一下让并发窗口重叠，验证峰值不超过限制、
+    同时确认真的发生了并发（不是退化成串行）。
+    """
+    concurrent_count = {"current": 0, "peak": 0}
+
+    class TrackingLLMProvider:
+        async def complete(self, request):
+            concurrent_count["current"] += 1
+            concurrent_count["peak"] = max(
+                concurrent_count["peak"], concurrent_count["current"]
+            )
+            await asyncio.sleep(0.05)
+            concurrent_count["current"] -= 1
+            return ProviderResult(text='{"relations": []}')
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "llm", TrackingLLMProvider())
+    graph_client = FakeGraphClient()
+    # 20 个 chunk，每个都单独超过 max_chars，逼出 20 个独立批次
+    chunks = [Chunk(text="x" * 4000, heading_path=[], source="a.md") for _ in range(20)]
+
+    await extract_and_write_graph_relations(
+        chunks,
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        terms=_TERMS,
+        graph_client=graph_client,
+        source="a.md",
+        tenant_id="t1",
+        batch_max_chars=3000,
+        max_concurrency=4,
+    )
+
+    assert concurrent_count["peak"] <= 4
+    assert concurrent_count["peak"] > 1
+
+
+async def test_one_failing_batch_does_not_prevent_other_batches_from_writing():
+    class ContentBasedFailingLLMProvider:
+        async def complete(self, request):
+            user_content = request.messages[1]["content"]
+            if "FAIL_MARKER" in user_content:
+                raise RuntimeError("模拟这一批调用失败")
+            return ProviderResult(
+                text='{"relations": [{"subject": "网关超时示例", '
+                '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+            )
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "llm", ContentBasedFailingLLMProvider())
+    graph_client = FakeGraphClient()
+    chunks = [
+        Chunk(text="FAIL_MARKER" + "a" * 4000, heading_path=[], source="a.md"),
+        Chunk(text="网关超时示例通常与示例认证模块相关", heading_path=[], source="a.md"),
+    ]
+
+    written = await extract_and_write_graph_relations(
+        chunks,
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        terms=_TERMS,
+        graph_client=graph_client,
+        source="a.md",
+        tenant_id="t1",
+        batch_max_chars=100,
+    )
+
+    assert written == 1
