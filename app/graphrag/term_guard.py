@@ -41,7 +41,13 @@ async def build_term_guard_context(
             term.standard_name, tenant_id=tenant_id
         )
         for row in subgraph:
+            # hops 字段区分直接事实（1 跳）和推导出的间接事实（2 跳，只有
+            # REQUIRES/PRECEDES/PART_OF 这类链式关系才会出现），标注清楚
+            # 避免 LLM 把两者当同等确定性的信息——见
+            # neo4j_client.py::query_subgraph 的 UNION 查询设计。
+            hops = row.get("hops", 1)
+            label = "关联" if hops == 1 else f"间接关联（经过 {hops} 跳）"
             lines.append(
-                f"  关联: {row['related_name']}（关系: {row['relation_type']}）"
+                f"  {label}: {row['related_name']}（关系: {row['relation_type']}）"
             )
     return "\n".join(lines)
