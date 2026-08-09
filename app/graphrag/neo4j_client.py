@@ -12,7 +12,7 @@ RETURN related.standard_name AS related_name, type(r) AS relation_type, 1 AS hop
 UNION
 
 MATCH (t:Term {standard_name: $standard_name})-[r:REQUIRES|PRECEDES|PART_OF*2..2]-(related:Term)
-WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id)
+WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id) AND related <> t
 RETURN related.standard_name AS related_name,
        [rel IN r | type(rel)][-1] AS relation_type,
        2 AS hops
@@ -27,12 +27,20 @@ RETURN related.standard_name AS related_name,
 # 多个租户共用，如果只检查一跳，2 跳路径有可能"借道"另一个租户写入的边，
 # 把不该出现的信息泄露给当前租户。这是本次改动里唯一一个如果实现疏忽
 # 会导致真实安全问题的点。
+#
+# AND related <> t 是自环守卫：Cypher 的关系唯一性规则只保证一条路径内
+# 不重复使用同一条边，并不能阻止"去程用一条边、回程用另一条边"绕回起点
+# ——关系抽取经常在同一对术语之间产出双向边（如 A-REQUIRES->B 又
+# B-PART_OF->A），若不加这个过滤，2 跳查询会把 t 自己当成"与自己间接
+# 关联"的结果返回。
 
 # 关系类型白名单：10 种跨领域通用拓扑关系，刻意不含任何行业色彩（不是
 # "错误码/模块"这类软件运维语义，也不是"房型/商品"这类某个垂直领域专属
 # 语义）——领域信息由术语表的 term_type/product_line 字段承载，关系类型
 # 词表本身保持跨租户通用。PART_OF 取代了旧的 BELONGS_TO_MODULE（语义
-# 超集），本地无生产数据需要迁移，清理式切换，不写迁移脚本。
+# 超集），本地无生产数据需要迁移，清理式切换，不写迁移脚本。这份白名单
+# 同时是 merge_relation 里那条 Cypher f-string 插值的注入防线——Cypher
+# 关系类型不能参数化绑定，全靠这里的校验挡掉非法值。
 _ALLOWED_RELATION_TYPES = frozenset({
     "RELATED_TO",
     "PART_OF",

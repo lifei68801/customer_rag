@@ -12,6 +12,15 @@ class GraphClientProtocol(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
+def describe_association(hops: int) -> str:
+    """把 hops 转成人类可读的标签：1 跳是直接关联，其余（目前只有 2）
+    是经过 N 跳推导出的间接关联。两个消费 query_subgraph 结果的地方
+    （这里的强制注入路径、app/agent/planner.py 的 Agent 自主查询路径）
+    共用同一份标签文案，不各自维护一份容易语义漂移的重复逻辑。
+    """
+    return "关联" if hops == 1 else f"间接关联（经过 {hops} 跳）"
+
+
 async def build_term_guard_context(
     text: str,
     *,
@@ -46,7 +55,7 @@ async def build_term_guard_context(
             # 避免 LLM 把两者当同等确定性的信息——见
             # neo4j_client.py::query_subgraph 的 UNION 查询设计。
             hops = row.get("hops", 1)
-            label = "关联" if hops == 1 else f"间接关联（经过 {hops} 跳）"
+            label = describe_association(hops)
             lines.append(
                 f"  {label}: {row['related_name']}（关系: {row['relation_type']}）"
             )

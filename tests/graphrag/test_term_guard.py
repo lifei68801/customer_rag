@@ -1,5 +1,5 @@
 from app.graphrag.ontology import Term
-from app.graphrag.term_guard import build_term_guard_context
+from app.graphrag.term_guard import build_term_guard_context, describe_association
 
 _TERMS = [
     Term(
@@ -79,3 +79,8 @@ async def test_defaults_to_direct_association_when_hops_field_is_missing():
 
     assert "关联: 登录模块" in context
     assert "间接关联" not in context
+
+
+def test_describe_association_labels_direct_and_indirect_hops():
+    assert describe_association(1) == "关联"
+    assert describe_association(2) == "间接关联（经过 2 跳）"

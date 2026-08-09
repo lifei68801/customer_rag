@@ -10,7 +10,7 @@ from app.agent.tools import (
     vector_search_tool,
 )
 from app.graphrag.ontology import Term
-from app.graphrag.term_guard import GraphClientProtocol
+from app.graphrag.term_guard import GraphClientProtocol, describe_association
 from app.providers.base import ProviderCapability, ProviderRequest
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
@@ -127,7 +127,10 @@ async def _dispatch_tool_call(
         observation = {
             "resolved": result.resolved,
             "standard_name": result.standard_name,
-            "subgraph": result.subgraph,
+            "subgraph": [
+                {**row, "association": describe_association(row.get("hops", 1))}
+                for row in result.subgraph
+            ],
         }
         return json.dumps(observation, ensure_ascii=False), []
 

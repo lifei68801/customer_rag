@@ -67,6 +67,9 @@ async def extract_candidate_relations(
     normalize_candidate_relations 中完成，二者分开是为了保持每个
     函数职责单一，便于分别测试。
     """
+    if not segments:
+        return []
+
     try:
         result = await asyncio.wait_for(
             llm_registry.run(

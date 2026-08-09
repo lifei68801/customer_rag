@@ -252,6 +252,50 @@ async def test_run_tool_calls_executes_graph_query_tool():
     assert graph_client.queried_tenant_ids == ["t1"]
 
 
+class FakeGraphClientWithTwoHopRow:
+    """返回一条带 hops=2 的子图行，用来验证 planner 给它标注 association 字段。"""
+
+    async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
+        return [
+            {"related_name": "示例登录模块", "relation_type": "RELATED_TO", "hops": 2}
+        ]
+
+
+async def test_run_tool_calls_annotates_two_hop_subgraph_rows_with_association():
+    _, vector_store, bm25_index = _build_store_and_index()
+    embedding_registry = _embedding_registry()
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", ScriptedLLMProvider([]))
+
+    state = {
+        "tenant_id": "t1",
+        "planner_messages": [],
+        "pending_tool_calls": [
+            {
+                "id": "call_2",
+                "name": "graph_query_tool",
+                "arguments": '{"entity_name": "网关超时示例"}',
+            }
+        ],
+    }
+
+    update = await run_tool_calls(
+        state,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        terms=_TERMS,
+        graph_client=FakeGraphClientWithTwoHopRow(),
+    )
+
+    tool_message = update["planner_messages"][-1]
+    parsed = json.loads(tool_message["content"])
+    assert parsed["subgraph"][0]["association"] == "间接关联（经过 2 跳）"
+
+
 async def test_run_tool_calls_reports_error_for_malformed_arguments_without_crashing():
     _, vector_store, bm25_index = _build_store_and_index()
     embedding_registry = _embedding_registry()

@@ -50,7 +50,7 @@ async def test_query_subgraph_returns_related_terms():
 
     assert results == [{"related_name": "登录模块", "relation_type": "RELATED_TO"}]
     assert session.last_parameters == {"standard_name": "错误码E502", "tenant_id": "t1"}
-    assert "tenant_id" in session.last_query
+    assert "WHERE r.tenant_id = $tenant_id" in session.last_query
 
 
 async def test_merge_relation_sends_expected_query_and_parameters():
@@ -224,4 +224,5 @@ async def test_query_subgraph_sends_two_hop_union_query_for_chain_relations():
     assert "UNION" in session.last_query
     assert "REQUIRES|PRECEDES|PART_OF*2..2" in session.last_query
     assert "ALL(rel IN r WHERE rel.tenant_id = $tenant_id)" in session.last_query
+    assert "AND related <> t" in session.last_query
     assert session.last_parameters == {"standard_name": "错误码E502", "tenant_id": "t1"}

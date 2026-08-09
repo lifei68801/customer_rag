@@ -109,6 +109,20 @@ async def test_multiple_segments_are_joined_with_segment_markers():
     assert "[片段2]\n第二个片段" in user_message["content"]
 
 
+async def test_returns_empty_list_for_empty_segments_without_calling_llm():
+    provider = SpyLLMProvider('{"relations": []}')
+
+    relations = await extract_candidate_relations(
+        [],
+        llm_registry=_registry(provider),
+        llm_provider_name="llm",
+        timeout_sec=1.0,
+    )
+
+    assert relations == []
+    assert provider.received_requests == []
+
+
 async def test_system_prompt_lists_all_ten_relation_types_and_forbids_cross_segment_relations():
     provider = SpyLLMProvider('{"relations": []}')
 
