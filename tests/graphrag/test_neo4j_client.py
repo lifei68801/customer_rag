@@ -171,3 +171,57 @@ async def test_sync_terms_syncs_every_term_in_the_list():
     assert len(session.calls) == 2
     synced_names = {call[1]["standard_name"] for call in session.calls}
     assert synced_names == {"错误码E502", "登录模块"}
+
+
+def test_allowed_relation_types_include_all_ten_generic_types_and_not_the_old_one():
+    from app.graphrag.neo4j_client import _ALLOWED_RELATION_TYPES
+
+    assert _ALLOWED_RELATION_TYPES == {
+        "RELATED_TO", "PART_OF", "IS_A", "REQUIRES", "ALTERNATIVE_TO",
+        "CAUSES", "ADDRESSED_BY", "LOCATED_IN", "APPLIES_TO", "PRECEDES",
+    }
+    assert "BELONGS_TO_MODULE" not in _ALLOWED_RELATION_TYPES
+
+
+async def test_merge_relation_accepts_new_part_of_type():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.merge_relation(
+        subject_standard_name="大床房",
+        object_standard_name="酒店",
+        relation_type="PART_OF",
+        source="a.md",
+        tenant_id="t1",
+    )
+
+    assert "PART_OF" in session.last_query
+
+
+async def test_merge_relation_rejects_the_retired_belongs_to_module_type():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    try:
+        await client.merge_relation(
+            subject_standard_name="a",
+            object_standard_name="b",
+            relation_type="BELONGS_TO_MODULE",
+            source="a.md",
+            tenant_id="t1",
+        )
+        assert False, "BELONGS_TO_MODULE 已经被 PART_OF 取代，应该拒绝"
+    except ValueError:
+        pass
+
+
+async def test_query_subgraph_sends_two_hop_union_query_for_chain_relations():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.query_subgraph("错误码E502", tenant_id="t1")
+
+    assert "UNION" in session.last_query
+    assert "REQUIRES|PRECEDES|PART_OF*2..2" in session.last_query
+    assert "ALL(rel IN r WHERE rel.tenant_id = $tenant_id)" in session.last_query
+    assert session.last_parameters == {"standard_name": "错误码E502", "tenant_id": "t1"}

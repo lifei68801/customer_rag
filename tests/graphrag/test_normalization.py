@@ -37,7 +37,10 @@ class FakeGraphClient:
         source,
         tenant_id,
     ) -> None:
-        if relation_type not in {"RELATED_TO", "BELONGS_TO_MODULE"}:
+        if relation_type not in {
+            "RELATED_TO", "PART_OF", "IS_A", "REQUIRES", "ALTERNATIVE_TO",
+            "CAUSES", "ADDRESSED_BY", "LOCATED_IN", "APPLIES_TO", "PRECEDES",
+        }:
             raise ValueError("不允许的关系类型")
         self.written.append(
             {

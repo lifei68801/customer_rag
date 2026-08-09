@@ -7,12 +7,44 @@ from app.graphrag.ontology import Term
 _SUBGRAPH_QUERY = """
 MATCH (t:Term {standard_name: $standard_name})-[r]-(related:Term)
 WHERE r.tenant_id = $tenant_id
-RETURN related.standard_name AS related_name, type(r) AS relation_type
-"""
+RETURN related.standard_name AS related_name, type(r) AS relation_type, 1 AS hops
 
-# Cypher 关系类型不能参数化，必须是查询字符串里的字面量；
-# 用白名单杜绝把未经校验的 LLM 抽取结果拼进 Cypher 语句。
-_ALLOWED_RELATION_TYPES = frozenset({"RELATED_TO", "BELONGS_TO_MODULE"})
+UNION
+
+MATCH (t:Term {standard_name: $standard_name})-[r:REQUIRES|PRECEDES|PART_OF*2..2]-(related:Term)
+WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id)
+RETURN related.standard_name AS related_name,
+       [rel IN r | type(rel)][-1] AS relation_type,
+       2 AS hops
+"""
+# 第二段 UNION 只对 REQUIRES/PRECEDES/PART_OF 这三种"链式"关系放开到
+# 恰好 2 跳（*2..2，不是 *1..2，避免和第一段的 1 跳结果重复）——前提链、
+# 流程顺序、包含层级经常需要连续追问两步；其余关系类型语义上查 1 跳就
+# 有意义，继续放开多跳容易发散、引入噪声上下文。
+#
+# ALL(rel IN r WHERE rel.tenant_id = $tenant_id) 必须校验路径上每一条边
+# 的租户归属，不能只查其中一条——:Term 标准节点本身不分租户、可能被
+# 多个租户共用，如果只检查一跳，2 跳路径有可能"借道"另一个租户写入的边，
+# 把不该出现的信息泄露给当前租户。这是本次改动里唯一一个如果实现疏忽
+# 会导致真实安全问题的点。
+
+# 关系类型白名单：10 种跨领域通用拓扑关系，刻意不含任何行业色彩（不是
+# "错误码/模块"这类软件运维语义，也不是"房型/商品"这类某个垂直领域专属
+# 语义）——领域信息由术语表的 term_type/product_line 字段承载，关系类型
+# 词表本身保持跨租户通用。PART_OF 取代了旧的 BELONGS_TO_MODULE（语义
+# 超集），本地无生产数据需要迁移，清理式切换，不写迁移脚本。
+_ALLOWED_RELATION_TYPES = frozenset({
+    "RELATED_TO",
+    "PART_OF",
+    "IS_A",
+    "REQUIRES",
+    "ALTERNATIVE_TO",
+    "CAUSES",
+    "ADDRESSED_BY",
+    "LOCATED_IN",
+    "APPLIES_TO",
+    "PRECEDES",
+})
 
 # 关系边有向（MERGE (a)-[:TYPE]->(b)），按有向模式匹配删除保证每条边只
 # 命中一次；r.source 只有 merge_relation 写入的抽取关系才有，sync_term/
