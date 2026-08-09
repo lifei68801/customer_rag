@@ -60,6 +60,16 @@ def _greedy_merge(pieces: list[str], *, join: str, max_len: int) -> list[str]:
     return merged
 
 
+def _merge_and_recurse(fragments: list[str], *, join: str, max_len: int) -> list[str]:
+    """贪心合并后对每个片段递归切分。提取的辅助函数，消除 _split_text_recursive
+    中段落和句子分支的重复逻辑。"""
+    merged = _greedy_merge(fragments, join=join, max_len=max_len)
+    result: list[str] = []
+    for piece in merged:
+        result.extend(_split_text_recursive(piece, max_len=max_len))
+    return result
+
+
 def _split_text_recursive(text: str, *, max_len: int) -> list[str]:
     """递归三级切分：段落（\\n\\n）-> 中文句末标点 -> 硬按字符数截断。
     每一级先贪心合并到接近 max_len，合并后仍超阈值的单个片段再用下一级
@@ -71,19 +81,11 @@ def _split_text_recursive(text: str, *, max_len: int) -> list[str]:
 
     paragraphs = [p for p in text.split("\n\n") if p.strip()]
     if len(paragraphs) > 1:
-        merged = _greedy_merge(paragraphs, join="\n\n", max_len=max_len)
-        result: list[str] = []
-        for piece in merged:
-            result.extend(_split_text_recursive(piece, max_len=max_len))
-        return result
+        return _merge_and_recurse(paragraphs, join="\n\n", max_len=max_len)
 
     sentences = [s for s in re.split(r"(?<=[。！？])", text) if s.strip()]
     if len(sentences) > 1:
-        merged = _greedy_merge(sentences, join="", max_len=max_len)
-        result = []
-        for piece in merged:
-            result.extend(_split_text_recursive(piece, max_len=max_len))
-        return result
+        return _merge_and_recurse(sentences, join="", max_len=max_len)
 
     return [text[i : i + max_len] for i in range(0, len(text), max_len)]
 
@@ -127,6 +129,6 @@ def split_oversized_chunks(
         pieces = _add_overlap(pieces, overlap=overlap)
         for piece in pieces:
             result.append(
-                Chunk(text=piece, heading_path=chunk.heading_path, source=chunk.source)
+                Chunk(text=piece, heading_path=list(chunk.heading_path), source=chunk.source)
             )
     return result
