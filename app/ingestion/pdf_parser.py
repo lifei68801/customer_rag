@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.ingestion.chunking import Chunk
@@ -34,22 +34,6 @@ _DEFAULT_OCR_MAX_CONCURRENCY = 8
 排到队尾，不会更快。这个"甜蜜点"因账号/供应商而异，换了 OCR 供应商
 或者账号配额调整后需要重新实测，所以只是 parse_pdf() 的 max_concurrency
 参数没传时的兜底值，调用方应该优先传 Settings.ocr_max_concurrency。"""
-
-
-def _render_page_to_png(
-    fitz_doc, page_index: int, *, tmp_dir: Path, dpi: int
-) -> Path:
-    """把扫描件页面渲染成图片（PyMuPDF，无需 poppler 等系统级二进制依赖）。
-
-    只做渲染，不在这里调用 OCR：渲染要用到 fitz_doc（MuPDF 的 C 层对象），
-    MuPDF 对同一个 Document 的并发访问不是线程安全的，所以渲染这一步必须
-    留在调用方的单线程循环里；真正耗时、且相互独立、可以安全并发的是
-    "拿着已经落盘的图片文件去跑 OCR"这一步，见 parse_pdf() 里的线程池。
-    """
-    pixmap = fitz_doc[page_index].get_pixmap(dpi=dpi)
-    png_path = tmp_dir / f"page_{page_index}.png"
-    pixmap.save(str(png_path))
-    return png_path
 
 
 def _clean_cell(value: str | None) -> str:
@@ -103,7 +87,53 @@ def _table_chunks_for_page(fitz_page, *, page_number: int, source: str) -> list[
     return chunks
 
 
-def parse_pdf(
+def _prepare_pdf_sync(
+    path: Path, *, needs_ocr: bool, render_dpi: int, tmp_dir: Path
+) -> tuple[list[str], list[int], dict[int, Path], list[list[Chunk]]]:
+    """在一个线程里完成所有需要 fitz_doc（MuPDF 的 C 层对象）的同步/CPU
+    密集工作：提取原生文字层、把无文字层的页面渲染成图片、检测每页表格。
+
+    全程只在这一个线程里打开/使用/关闭 fitz_doc——MuPDF 对同一个
+    Document 的并发/跨线程访问不是安全操作，所以不能把"渲染"和"表格
+    检测"拆到不同的 asyncio.to_thread 调用里（那样可能被派发到不同的
+    工作线程）。真正值得并发、且和 fitz_doc 无关的只有"已经落盘的图片
+    发 OCR 请求"这一步，交给 parse_pdf() 里的 asyncio.gather 处理。
+
+    返回 (page_texts, ocr_page_indexes, png_paths, table_chunks_by_page)：
+    page_texts 里 ocr_page_indexes 对应的位置是占位空字符串，调用方 await
+    完 OCR 后再回填。
+    """
+    import fitz
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(path))
+    fitz_doc = fitz.open(str(path))
+    try:
+        page_texts: list[str] = []
+        ocr_page_indexes: list[int] = []
+        png_paths: dict[int, Path] = {}
+        table_chunks_by_page: list[list[Chunk]] = []
+
+        for page_index, page in enumerate(reader.pages):
+            text = page.extract_text().strip()
+            page_texts.append(text)
+            if not text and needs_ocr:
+                ocr_page_indexes.append(page_index)
+                pixmap = fitz_doc[page_index].get_pixmap(dpi=render_dpi)
+                png_path = tmp_dir / f"page_{page_index}.png"
+                pixmap.save(str(png_path))
+                png_paths[page_index] = png_path
+            table_chunks_by_page.append(
+                _table_chunks_for_page(
+                    fitz_doc[page_index], page_number=page_index + 1, source=str(path)
+                )
+            )
+        return page_texts, ocr_page_indexes, png_paths, table_chunks_by_page
+    finally:
+        fitz_doc.close()
+
+
+async def parse_pdf(
     path: Path,
     *,
     ocr: OcrFunction | None = None,
@@ -128,66 +158,52 @@ def parse_pdf(
     传 Settings.ocr_render_dpi/ocr_max_concurrency，不同供应商/账号的
     最优值不一定一样。
 
-    需要 OCR 的页面分两阶段处理：先在主线程里把所有待 OCR 页面顺序渲染成
-    PNG（必须单线程，MuPDF 对同一个 Document 并发访问不安全），再用限并发
-    的线程池对这些已经落盘的图片并发跑 OCR（见 max_concurrency 参数的
-    说明）——网络 I/O 为主的调用完全没必要挨个等，某一页 OCR 抛异常时
-    整份文件的解析直接失败（和之前串行版本的语义一致，不会静默丢页）。
+    分两个阶段：先用 asyncio.to_thread 跑一次同步准备（文字提取+渲染+
+    表格检测，见 _prepare_pdf_sync），不占用事件循环；再用
+    asyncio.Semaphore 限并发、asyncio.gather 并发跑 OCR（纯网络 I/O，
+    和 fitz_doc 无关，可以安全并发）。某一页 OCR 抛异常时，
+    asyncio.gather 默认行为（不传 return_exceptions）会让异常直接从
+    parse_pdf() 抛出，整份文件的解析失败——和串行版本的语义一致，不会
+    静默丢页。
     """
-    import fitz
-    from pypdf import PdfReader
-
-    reader = PdfReader(str(path))
-    fitz_doc = fitz.open(str(path))
-    try:
-        page_texts: list[str] = []
-        ocr_page_indexes: list[int] = []
-        for page in reader.pages:
-            text = page.extract_text().strip()
-            page_texts.append(text)
-            if not text and ocr is not None:
-                ocr_page_indexes.append(len(page_texts) - 1)
+    needs_ocr = ocr is not None
+    with tempfile.TemporaryDirectory() as tmp_dir_str:
+        tmp_dir = Path(tmp_dir_str)
+        page_texts, ocr_page_indexes, png_paths, table_chunks_by_page = (
+            await asyncio.to_thread(
+                _prepare_pdf_sync,
+                path,
+                needs_ocr=needs_ocr,
+                render_dpi=render_dpi,
+                tmp_dir=tmp_dir,
+            )
+        )
 
         if ocr_page_indexes:
-            with tempfile.TemporaryDirectory() as tmp_dir_str:
-                tmp_dir = Path(tmp_dir_str)
-                png_paths = {
-                    page_index: _render_page_to_png(
-                        fitz_doc, page_index, tmp_dir=tmp_dir, dpi=render_dpi
-                    )
-                    for page_index in ocr_page_indexes
-                }
-                with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
-                    ocr_results = dict(
-                        zip(
-                            ocr_page_indexes,
-                            executor.map(
-                                lambda idx: ocr(png_paths[idx]),
-                                ocr_page_indexes,
-                            ),
-                        )
-                    )
-                for page_index, text in ocr_results.items():
-                    page_texts[page_index] = text.strip()
+            assert ocr is not None  # needs_ocr=True 时才会有非空 ocr_page_indexes
+            semaphore = asyncio.Semaphore(max_concurrency)
 
-        chunks: list[Chunk] = []
-        for page_index, text in enumerate(page_texts):
-            page_number = page_index + 1
-            if text:
-                chunks.append(
-                    Chunk(
-                        text=text,
-                        heading_path=[f"第{page_number}页"],
-                        source=str(path),
-                    )
-                )
-            chunks.extend(
-                _table_chunks_for_page(
-                    fitz_doc[page_index],
-                    page_number=page_number,
+            async def _bounded_ocr(page_index: int) -> tuple[int, str]:
+                async with semaphore:
+                    text = await ocr(png_paths[page_index])
+                return page_index, text
+
+            results = await asyncio.gather(
+                *(_bounded_ocr(page_index) for page_index in ocr_page_indexes)
+            )
+            for page_index, text in results:
+                page_texts[page_index] = text.strip()
+
+    chunks: list[Chunk] = []
+    for page_index, text in enumerate(page_texts):
+        page_number = page_index + 1
+        if text:
+            chunks.append(
+                Chunk(
+                    text=text,
+                    heading_path=[f"第{page_number}页"],
                     source=str(path),
                 )
             )
-    finally:
-        fitz_doc.close()
+        chunks.extend(table_chunks_by_page[page_index])
     return chunks

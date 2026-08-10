@@ -195,7 +195,7 @@ async def ingest_pdf_file(
     ocr 可选：提供时，提取不到文字层的扫描件页面会渲染成图片走 OCR
     （见 pdf_parser.py），不提供则保持"跳过无文字层页面"的原有行为。
     """
-    chunks = parse_pdf(path, ocr=ocr)
+    chunks = await parse_pdf(path, ocr=ocr)
     return await _ingest_chunks(
         chunks,
         path,
@@ -260,7 +260,7 @@ async def ingest_image_file(
     ocr 可注入替换默认的 pytesseract 实现，测试/自定义 OCR 引擎时用；
     默认实现需要本机安装 Tesseract 二进制（见 ocr_parser.py 的说明）。
     """
-    chunks = parse_image(path, ocr=ocr)
+    chunks = await parse_image(path, ocr=ocr)
     return await _ingest_chunks(
         chunks,
         path,

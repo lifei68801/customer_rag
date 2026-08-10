@@ -21,6 +21,16 @@ class FakeEmbeddingProvider:
         return EmbeddingResult(vectors=[[0.1, 0.2] for _ in request.texts])
 
 
+def fake_ocr(text: str):
+    """OcrFunction 现在是异步接口（见 ocr_parser.py），返回一个固定
+    输出的假异步 OCR 函数，忽略传入的 path。"""
+
+    async def _ocr(path):
+        return text
+
+    return _ocr
+
+
 async def test_ingest_markdown_file_chunks_embeds_and_upserts(tmp_path):
     md_file = tmp_path / "network.md"
     md_file.write_text(
@@ -353,7 +363,7 @@ async def test_ingest_image_file_uses_injected_ocr_function(tmp_path):
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
         tenant_id="t1",
-        ocr=lambda path: "错误码E502表示网关超时",
+        ocr=fake_ocr("错误码E502表示网关超时"),
     )
 
     assert count == 1
@@ -385,7 +395,7 @@ async def test_ingest_pdf_file_uses_injected_ocr_for_scanned_pages(tmp_path):
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
         tenant_id="t1",
-        ocr=lambda path: "扫描件识别出的文字",
+        ocr=fake_ocr("扫描件识别出的文字"),
     )
 
     assert count == 1

@@ -158,18 +158,23 @@ async def mark_job_failed(
     await conn.commit()
 
 
-def _parse_file(
+async def _parse_file(
     path: Path,
     *,
     ocr: OcrFunction | None,
     ocr_render_dpi: int,
     ocr_max_concurrency: int,
 ):
+    """PDF/图片走原生异步（OCR 内部按 ocr_max_concurrency 并发），其余
+    格式（.md/.docx/.csv）本身是同步解析函数，用 asyncio.to_thread 丢进
+    线程池执行，不让这几种格式的解析占用事件循环——和 PDF/图片路径保持
+    一样的"不阻塞其它请求"保证，不因为格式不同就有不同的行为。
+    """
     suffix = path.suffix.lower()
     if suffix in _IMAGE_SUFFIXES:
-        return parse_image(path, ocr=ocr)
+        return await parse_image(path, ocr=ocr)
     if suffix == ".pdf":
-        return parse_pdf(
+        return await parse_pdf(
             path,
             ocr=ocr,
             render_dpi=ocr_render_dpi,
@@ -178,7 +183,7 @@ def _parse_file(
     parser = _PARSERS.get(suffix)
     if parser is None:
         raise ValueError(f"不支持的文件类型: {suffix}")
-    return parser(path)
+    return await asyncio.to_thread(parser, path)
 
 
 async def process_pending_jobs(
@@ -220,16 +225,13 @@ async def process_pending_jobs(
                     conn, tenant_id=tenant_id, file_path=file_path
                 )
             else:
-                # _parse_file 是同步阻塞调用（表格版面分析是 CPU 密集型，
-                # OCR 兜底路径还会用同步 httpx.Client 逐页发请求，扫描件
-                # 大文件能跑几十分钟）。process_pending_jobs() 本身跑在
-                # FastAPI 后台任务的同一个事件循环里，直接同步调用会把
-                # 循环独占整个处理时长，导致这期间所有其它请求（包括别的
-                # 租户的 /qa、/agent/chat）全部无响应。用 asyncio.to_thread
-                # 丢到线程池执行，和 milvus_store.py 里对同步 pymilvus
-                # 调用的处理方式保持一致。
-                chunks = await asyncio.to_thread(
-                    _parse_file,
+                # _parse_file() 自己是异步的：PDF/图片路径原生走
+                # asyncio（OCR 网络请求用 asyncio.gather 并发，不阻塞
+                # 事件循环），其余同步格式内部用 asyncio.to_thread 兜底
+                # （见 _parse_file 的说明）。process_pending_jobs() 跑在
+                # FastAPI 后台任务的同一个事件循环里，这里不需要再额外包
+                # 一层 asyncio.to_thread。
+                chunks = await _parse_file(
                     Path(file_path),
                     ocr=ocr,
                     ocr_render_dpi=ocr_render_dpi,
