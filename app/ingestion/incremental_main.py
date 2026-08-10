@@ -12,6 +12,7 @@ from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.review_factory import build_review_conn_from_settings
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema, process_pending_jobs
+from app.ingestion.ocr_factory import build_ocr_from_settings
 from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.scan_and_enqueue import scan_and_enqueue
 from app.ingestion.tracking import ensure_tracking_schema
@@ -60,6 +61,10 @@ async def main(
       python -m app.ingestion.incremental_main --dir path/to/docs --tenant-id t1 --build-graph
     """
     resolved_settings = settings or Settings()
+    # ocr 显式传入时（多为测试注入假实现）优先于 settings 派生值；未传入才
+    # 从 OCR_BASE_URL/OCR_API_KEY 构造，未配置则和之前一样保持 None（无
+    # 文字层的页面/图片直接跳过）。
+    resolved_ocr = ocr if ocr is not None else build_ocr_from_settings(resolved_settings)
     conn = ingestion_conn
     if conn is None:
         db_path = Path(resolved_settings.ingestion_db_path)
@@ -102,7 +107,7 @@ async def main(
         graph_terms=resolved_graph_terms,
         graph_client=resolved_graph_client,
         graph_review_conn=resolved_graph_review_conn,
-        ocr=ocr,
+        ocr=resolved_ocr,
         limit=limit,
     )
 

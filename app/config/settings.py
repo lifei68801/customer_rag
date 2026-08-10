@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     rerank_api_key: str | None = None
     rerank_model: str | None = None
 
+    # OCR 为可选项：三项配置任一缺失则 parse_pdf/parse_image 对无文字层的
+    # 页面/图片直接跳过（不报错，但产出 0 chunk）——常见于扫描件 PDF。
+    # 阿里百炼 compatible-mode 端点（EMBEDDING_BASE_URL 同款）本身就能跑
+    # qwen-vl-ocr，同一把 embedding_api_key 通常可以直接复用，不必单独申请。
+    ocr_base_url: str | None = None
+    ocr_api_key: str | None = None
+    ocr_model: str = "qwen-vl-ocr"
+
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "changeme123"

@@ -27,6 +27,7 @@ from app.ingestion.ingestion_queue import (
     list_pending_jobs,
     process_pending_jobs,
 )
+from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.tracking import compute_file_hash, list_tracked_files, remove_tracked_file
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
@@ -100,12 +101,16 @@ async def _run_pending_jobs(
     graph_terms: list[Term],
     graph_client: Neo4jGraphClient,
     graph_review_conn: aiosqlite.Connection | None,
+    ocr: OcrFunction | None,
 ) -> None:
     """后台任务：入队后立即处理一批，不等外部 cron。
 
     图谱资源无条件传入：process_pending_jobs() 内部按每条任务自己的
     build_graph 列决定用不用（见 ingestion_queue.py），所以这里不能因为
     "本次上传没勾选建图"就传 None——同一批里别的任务可能勾了。
+
+    ocr 为 None 时（未配置 OCR_BASE_URL/OCR_API_KEY）行为不变：无文字层的
+    页面/图片直接跳过，产出 0 chunk，不报错——见 deps.get_ocr_function。
     """
     await process_pending_jobs(
         ingestion_conn,
@@ -117,6 +122,7 @@ async def _run_pending_jobs(
         graph_terms=graph_terms,
         graph_client=graph_client,
         graph_review_conn=graph_review_conn,
+        ocr=ocr,
     )
 
 
@@ -157,6 +163,7 @@ async def upload_document(
     terms: list[Term] = Depends(deps.get_terms),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    ocr: OcrFunction | None = Depends(deps.get_ocr_function),
 ) -> UploadResponse:
     # tenant_id/build_graph 必须显式标 Form(...)：混用 UploadFile 和裸标量参数时
     # FastAPI 默认把裸标量参数当 query 参数解析，不会去读 multipart body 里
@@ -193,6 +200,7 @@ async def upload_document(
         terms,
         graph_client,
         review_conn,
+        ocr,
     )
     return UploadResponse(job_id=job_id)
 

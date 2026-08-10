@@ -10,6 +10,8 @@ from fastapi import Depends, Header, HTTPException
 from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
+from app.ingestion.ocr_factory import build_ocr_from_settings
+from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.tracking import ensure_tracking_schema
 from app.graphrag.review_queue import ensure_review_schema
 from app.providers.embedding import EmbeddingRegistry
@@ -50,6 +52,7 @@ __all__ = [
     "get_ingestion_conn",
     "get_llm_registry",
     "get_memory_conn",
+    "get_ocr_function",
     "get_rerank_provider",
     "get_review_conn",
     "get_settings",
@@ -178,6 +181,12 @@ def get_rerank_provider(
     settings: Settings = Depends(get_settings),
 ) -> RerankProvider | None:
     return build_rerank_provider_from_settings(settings)
+
+
+def get_ocr_function(
+    settings: Settings = Depends(get_settings),
+) -> OcrFunction | None:
+    return build_ocr_from_settings(settings)
 
 
 async def get_graph_client(
