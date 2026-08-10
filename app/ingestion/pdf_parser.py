@@ -296,6 +296,8 @@ async def parse_pdf(
     max_concurrency: int = _DEFAULT_OCR_MAX_CONCURRENCY,
     table_extractor: TableExtractionFunction | None = None,
     table_extraction_max_concurrency: int = _DEFAULT_TABLE_EXTRACTION_MAX_CONCURRENCY,
+    ocr_semaphore: asyncio.Semaphore | None = None,
+    table_semaphore: asyncio.Semaphore | None = None,
 ) -> list[Chunk]:
     """逐页提取 PDF 文本，每页作为一个 chunk；额外用 PyMuPDF 检测每页的
     表格，为表格数据行生成 parent-child chunk（见 _table_chunks_from_tables）
@@ -346,6 +348,15 @@ async def parse_pdf(
     一边抛异常会让 gather 立刻返回，另一边可能还在后台裸跑网络请求，
     这份 PDF 对应的临时目录马上就要被清理，会导致后台任务读到已删除
     的图片文件、报一个不会被任何人处理的"未获取异常"。
+
+    ocr_semaphore/table_semaphore 为可选项：不传（默认）时每次调用各自
+    新建一个 Semaphore，行为和之前完全一致（单文档内部按 max_concurrency/
+    table_extraction_max_concurrency 限并发）。跨文档批量摄取场景下，
+    process_pending_jobs() 会在处理一批任务之前构造好这两个 Semaphore
+    并注入给每一份文档的 parse_pdf() 调用，让多份文档共享同一个账号级
+    并发预算，而不是每份文档各自独立地把并发数用满——见
+    docs/superpowers/plans/2026-08-10-qa-and-ingestion-concurrency-
+    optimization.md。
     """
     needs_ocr = ocr is not None
     needs_table_extraction = table_extractor is not None
@@ -369,10 +380,10 @@ async def parse_pdf(
 
         async def _run_ocr_phase() -> None:
             assert ocr is not None  # needs_ocr=True 时才会有非空 ocr_page_indexes
-            ocr_semaphore = asyncio.Semaphore(max_concurrency)
+            semaphore = ocr_semaphore or asyncio.Semaphore(max_concurrency)
 
             async def _bounded_ocr(page_index: int) -> tuple[int, str]:
-                async with ocr_semaphore:
+                async with semaphore:
                     text = await ocr(ocr_png_paths[page_index])
                 return page_index, text
 
@@ -384,12 +395,12 @@ async def parse_pdf(
 
         async def _run_table_extraction_phase() -> None:
             assert table_extractor is not None
-            table_semaphore = asyncio.Semaphore(table_extraction_max_concurrency)
+            semaphore = table_semaphore or asyncio.Semaphore(table_extraction_max_concurrency)
 
             async def _bounded_table_extract(
                 page_index: int,
             ) -> tuple[int, list[str] | BaseException]:
-                async with table_semaphore:
+                async with semaphore:
                     try:
                         facts = await table_extractor(table_llm_png_paths[page_index])
                     except Exception as exc:  # noqa: BLE001 - 兜底已备好，不传染给调用方

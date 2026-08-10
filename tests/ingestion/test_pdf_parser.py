@@ -441,3 +441,34 @@ async def test_parse_pdf_skips_table_detection_for_pages_without_text_layer(tmp_
     assert not any(c.parent_text == "假表格" for c in scanned_chunks), (
         "没有文字层的页面应该跳过表格检测，即使 find_tables() 本可以测出表格"
     )
+
+
+async def test_parse_pdf_uses_injected_ocr_semaphore_instead_of_building_its_own(tmp_path):
+    """传入 ocr_semaphore 时，OCR 阶段应该受这个共享 Semaphore 的并发上限
+    约束，而不是内部按 max_concurrency 另建一个——用并发上限为 1 的共享
+    Semaphore + 两个会记录"当前同时在执行的调用数"的 OCR 请求验证。
+    """
+    pdf_path = tmp_path / "scanned_multi.pdf"
+    _write_image_only_pdf(pdf_path, tmp_path, pages=2)
+
+    shared_semaphore = asyncio.Semaphore(1)
+    concurrent_count = {"current": 0, "max_seen": 0}
+
+    async def tracking_ocr(path):
+        concurrent_count["current"] += 1
+        concurrent_count["max_seen"] = max(concurrent_count["max_seen"], concurrent_count["current"])
+        await asyncio.sleep(0.05)
+        concurrent_count["current"] -= 1
+        return "文字"
+
+    await parse_pdf(
+        pdf_path,
+        ocr=tracking_ocr,
+        max_concurrency=8,  # 内部默认并发上限调高，验证真正生效的是注入的共享 Semaphore（上限1）
+        ocr_semaphore=shared_semaphore,
+    )
+
+    assert concurrent_count["max_seen"] == 1, (
+        f"实际同时并发数 {concurrent_count['max_seen']}，应该被注入的共享 Semaphore(1) 限制住，"
+        "而不是用了内部按 max_concurrency=8 新建的 Semaphore"
+    )
