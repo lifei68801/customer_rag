@@ -2,9 +2,35 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfgen import canvas
 
-from app.ingestion.pdf_parser import parse_pdf
+from app.ingestion.pdf_parser import _table_chunks_for_page, parse_pdf
 
 pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+
+
+class _FakeTable:
+    def __init__(self, rows: list[list[str | None]]) -> None:
+        self._rows = rows
+
+    def extract(self):
+        return self._rows
+
+
+class _FakeTableFinder:
+    def __init__(self, tables: list[_FakeTable]) -> None:
+        self.tables = tables
+
+
+class _FakePage:
+    """模拟 fitz_page.find_tables().tables[i].extract()，不需要真的渲染
+    PDF——用于直接喂给 _table_chunks_for_page 真实的、从有问题的财报
+    PDF 里导出的原始表格行数据（见下面的多分区表格测试）。
+    """
+
+    def __init__(self, tables_rows: list[list[list[str | None]]]) -> None:
+        self._tables_rows = tables_rows
+
+    def find_tables(self):
+        return _FakeTableFinder([_FakeTable(rows) for rows in self._tables_rows])
 
 
 def _write_pdf(path, pages: list[str]) -> None:
@@ -166,6 +192,51 @@ async def test_parse_pdf_skips_header_only_tables(tmp_path):
     chunks = await parse_pdf(pdf_path)
 
     assert all(c.parent_text is None for c in chunks)
+
+
+# 真实财报 PDF（宁德时代 2025 年年报第 56 页"员工数量、专业构成及教育
+# 程度"表）导出的原始行数据，原样保留——这是 2026-08-10 排查"问'博士
+# 有多少人'检索不到"这个 bug 时的真实案例：一个表格框里塞了三个逻辑
+# 分区（基础统计 / 专业构成 / 教育程度），用合并单元格的分区标题行
+# （"专业构成""教育程度"）和各自的子表头分隔。旧实现死用第一行当全局
+# 表头，把"博士"这一行错误拼接成了"16,233：818"，"博士"这个关键词
+# 完全丢失。
+_NINGDE_P56_EMPLOYEE_TABLE_ROWS = [
+    ["", "报告期末母公司在职员工的数量（人）", "", "16,233", None, None],
+    ["", "报告期末主要子公司在职员工的数量（人）", "", "169,606", None, None],
+    ["", "报告期末在职员工的数量合计（人）", "", "185,839", None, None],
+    ["", "当期领取薪酬员工总人数（人）", "", "185,839", None, None],
+    ["", "母公司及主要子公司需承担费用的离退休职工人数（人）", "", "0", None, None],
+    ["", "专业构成", None, None, None, ""],
+    ["", "专业构成类别", "", "", "专业构成人数（人）", ""],
+    ["", "生产人员", "", "145,568", None, None],
+    ["", "销售人员", "", "3,615", None, None],
+    ["", "技术人员", "", "22,901", None, None],
+    ["", "财务人员", "", "780", None, None],
+    ["", "行政人员", "", "12,975", None, None],
+    ["", "合计", "", "185,839", None, None],
+    ["", "教育程度", None, None, None, ""],
+    ["", "教育程度类别", "", "", "数量（人）", ""],
+    ["博士", None, None, "818", None, None],
+]
+
+
+def test_table_chunks_for_page_keeps_phd_row_intact_in_multi_section_table():
+    page = _FakePage([_NINGDE_P56_EMPLOYEE_TABLE_ROWS])
+
+    chunks = _table_chunks_for_page(page, page_number=56, source="ningde.pdf")
+
+    texts = [c.text for c in chunks]
+    assert "博士 818" in texts, (
+        f"'博士'这一行应该同时保留类别名和数值，实际 chunk 文本：{texts}"
+    )
+    # 表头前的基础统计数据（没有关联的子表头）不能被静默丢弃
+    assert any("16,233" in t for t in texts)
+    assert any("报告期末母公司在职员工的数量" in t for t in texts)
+    # 专业构成分区的数据要配对到自己的子表头，不能混进教育程度分区
+    assert any("生产人员" in t and "145,568" in t for t in texts)
+    # 旧 bug 的具体错误输出不应该再出现
+    assert not any("16,233：818" in t for t in texts)
 
 
 async def test_parse_pdf_skips_table_detection_for_pages_without_text_layer(tmp_path, monkeypatch):

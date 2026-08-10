@@ -42,13 +42,75 @@ def _clean_cell(value: str | None) -> str:
     return " ".join(value.split())
 
 
+def _looks_numeric(value: str) -> bool:
+    stripped = value.replace(",", "").replace("%", "").replace("-", "").strip()
+    if not stripped:
+        return False
+    try:
+        float(stripped)
+        return True
+    except ValueError:
+        return False
+
+
+def _looks_like_header_row(row: list[str]) -> bool:
+    """启发式判断一行是不是"表头/分区标题行"，而不是数据行：非空单元格
+    数量很少（<=2——分区标题通常只有 1 个非空值，子表头通常有 2 个：
+    名称列表头 + 数值列表头），且没有一个单元格看起来像数字（数据行
+    至少会有一个数值列，表头/标题不会）。
+    """
+    non_empty = [v for v in row if v]
+    if not non_empty or len(non_empty) > 2:
+        return False
+    return not any(_looks_numeric(v) for v in non_empty)
+
+
+def _split_table_into_sections(
+    rows: list[list[str]],
+) -> list[tuple[list[str], list[list[str]]]]:
+    """财务报表里常见的"一个表格框里塞好几个逻辑分区"布局（比如员工构成
+    表：基础统计 5 行 → "专业构成"分区标题 → 子表头 → 7 行数据 →
+    "教育程度"分区标题 → 子表头 → "博士 818"）——如果整张表死用第一行
+    当全局表头，后面分区的数据行会被错误地和不相关的表头拼在一起。
+    2026-08-10 排查过一个真实案例：某财报"博士"这一行被错误拼接成了
+    "16,233：818"，"博士"这个关键词完全丢失，语义检索命中不到。
+
+    按 _looks_like_header_row 识别出的表头/分区标题行切分成多个
+    (headers, data_rows) 子表；连续出现多个表头行（分区标题紧跟着自己
+    的子表头）时，只有最后一个真正生效——因为分区标题行本身没有数据
+    （current_data_rows 为空），不会被当成一个独立 section 保留下来，
+    效果上等价于"用离数据行最近的表头行"。
+
+    current_headers 初始为 []（不是 None）：表格开头、在遇到第一个表头
+    行之前出现的数据行（比如财报里常见的"先罗列几条汇总统计，再进入
+    分区表格"）也要被保留成一个 section，headers=[]，_table_chunks_for_page
+    对这类"没有关联表头"的行会退化成直接拼接非空值——不能因为还没遇到
+    表头就把这些数据行丢弃。
+    """
+    sections: list[tuple[list[str], list[list[str]]]] = []
+    current_headers: list[str] = []
+    current_data_rows: list[list[str]] = []
+    for row in rows:
+        if _looks_like_header_row(row):
+            if current_data_rows:
+                sections.append((current_headers, current_data_rows))
+            current_headers = row
+            current_data_rows = []
+        else:
+            current_data_rows.append(row)
+    if current_data_rows:
+        sections.append((current_headers, current_data_rows))
+    return sections
+
+
 def _table_chunks_for_page(fitz_page, *, page_number: int, source: str) -> list[Chunk]:
-    """用 PyMuPDF 的版面分析找出页面里的表格，为每个表格生成 parent-child
-    两级 chunk：整张表的完整文本作为 parent_text（命中后返回给 LLM 的
-    完整上下文，避免表格被拆散丢失语义），表头+单行数据拼接后的文本
-    作为每一行的 embedding 目标（child）——真实财报类文档验证过，按整页
-    或整张表做 embedding 会让"某个具体实体的某个具体属性"这类问题的
-    检索精度被一整页/一整表的平均语义稀释掉。
+    """用 PyMuPDF 的版面分析找出页面里的表格，为每个表格（可能会先按
+    _split_table_into_sections 切分成多个逻辑子表）生成 parent-child 两级
+    chunk：子表的完整文本作为 parent_text（命中后返回给 LLM 的完整上下文，
+    避免表格被拆散丢失语义），表头+单行数据拼接后的文本作为每一行的
+    embedding 目标（child）——真实财报类文档验证过，按整页或整张表做
+    embedding 会让"某个具体实体的某个具体属性"这类问题的检索精度被一
+    整页/一整表的平均语义稀释掉。
 
     只有 1 行（纯表头、没有数据行）或数据行全空的表格直接跳过，不生成
     毫无信息量的 chunk。
@@ -58,32 +120,43 @@ def _table_chunks_for_page(fitz_page, *, page_number: int, source: str) -> list[
         rows = [[_clean_cell(cell) for cell in row] for row in table.extract()]
         if len(rows) < 2:
             continue
-        headers, data_rows = rows[0], rows[1:]
-        non_empty_data_rows = [row for row in data_rows if any(row)]
-        if not non_empty_data_rows:
-            continue
 
-        parent_lines = [" | ".join(headers)] + [
-            " | ".join(row) for row in non_empty_data_rows
-        ]
-        parent_text = "\n".join(parent_lines)
-
-        for row in non_empty_data_rows:
-            row_text = "；".join(
-                f"{header}：{value}"
-                for header, value in zip(headers, row)
-                if header and value
-            )
-            if not row_text:
+        for headers, data_rows in _split_table_into_sections(rows):
+            non_empty_data_rows = [row for row in data_rows if any(row)]
+            if not non_empty_data_rows:
                 continue
-            chunks.append(
-                Chunk(
-                    text=row_text,
-                    heading_path=[f"第{page_number}页", "表格"],
-                    source=source,
-                    parent_text=parent_text,
+
+            parent_lines = [" | ".join(headers)] + [
+                " | ".join(row) for row in non_empty_data_rows
+            ]
+            parent_text = "\n".join(parent_lines)
+
+            for row in non_empty_data_rows:
+                paired_parts = [
+                    f"{header}：{value}"
+                    for header, value in zip(headers, row)
+                    if header and value
+                ]
+                row_non_empty_count = sum(1 for v in row if v)
+                if len(paired_parts) < row_non_empty_count:
+                    # 表头配对丢了这一行的部分非空值——不只是"完全配不上"
+                    # 才退化，只要配对结果比这一行本身的非空值少，就说明
+                    # 列对齐发生了漂移（比如某个数值列配对到了空表头，
+                    # 被过滤掉了），退化成直接拼接该行所有非空值，保证不
+                    # 丢数据，总比丢内容或者拼出语义错乱的文本好。
+                    row_text = " ".join(v for v in row if v)
+                else:
+                    row_text = "；".join(paired_parts)
+                if not row_text:
+                    continue
+                chunks.append(
+                    Chunk(
+                        text=row_text,
+                        heading_path=[f"第{page_number}页", "表格"],
+                        source=source,
+                        parent_text=parent_text,
+                    )
                 )
-            )
     return chunks
 
 
