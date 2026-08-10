@@ -262,6 +262,12 @@ async def process_pending_jobs(
                         conn, tenant_id=tenant_id, file_path=file_path
                     )
                 else:
+                    # _parse_file() 自己是异步的：PDF/图片路径原生走
+                    # asyncio（OCR 网络请求用 asyncio.gather 并发，不阻塞
+                    # 事件循环），其余同步格式内部用 asyncio.to_thread 兜底
+                    # （见 _parse_file 的说明）。process_pending_jobs() 跑在
+                    # FastAPI 后台任务的同一个事件循环里，这里不需要再额外包
+                    # 一层 asyncio.to_thread。
                     chunks = await _parse_file(
                         Path(file_path),
                         ocr=ocr,
