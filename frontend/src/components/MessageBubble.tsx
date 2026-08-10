@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../hooks/useAgentChat'
+import { MarkdownContent } from './MarkdownContent'
 import { SourceCitations } from './SourceCitations'
 
 interface MessageBubbleProps {
@@ -20,7 +21,11 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         }`}
       >
         {message.text ? (
-          <p className="whitespace-pre-wrap leading-relaxed">{message.text}</p>
+          isUser ? (
+            <p className="whitespace-pre-wrap leading-relaxed">{message.text}</p>
+          ) : (
+            <MarkdownContent text={message.text} />
+          )
         ) : message.isStreaming ? (
           <ThinkingIndicator />
         ) : null}
