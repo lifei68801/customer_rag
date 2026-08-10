@@ -52,6 +52,26 @@ class Settings(BaseSettings):
     # 2026-08-10 的并发排查记录。
     ocr_max_concurrency: int = 8
 
+    # 表格结构理解为可选项：不配置模型则 parse_pdf 用 PyMuPDF find_tables()
+    # + 规则猜表头的老逻辑（见 pdf_parser.py 的 _table_chunks_for_page）；
+    # 配置了模型则改用视觉大模型直接从页面截图语义提取表格数据，比规则
+    # 更泛化——2026-08-10 用真实财报文档验证过，规则处理不好的"多分区
+    # 表格""逐行 key-value 简介表""双栏并排数据"这几类场景，视觉模型都
+    # 能正确处理。复用 OCR 同一个百炼账号（ocr_base_url/ocr_api_key），
+    # 只是模型必须换成支持指令跟随的通用视觉模型——qwen-vl-ocr 是专用
+    # OCR 模型，会完全无视结构化提取指令；qwen-vl-plus 会漏内容+识别
+    # 错误；只有 qwen-vl-max 实测完整准确，见 table_extraction.py 里
+    # _DEFAULT_MODEL 的说明。
+    table_extraction_model: str | None = None
+    # 并发数默认保守到 1（不并发）——不像 OCR 的 8 是拿真实请求做过并发
+    # 梯度实测（4/6/8/20 对比）才定下来的，这个端点/模型还没有做过同样
+    # 的实测，贸然给个"看起来合理"的默认值风险很高（今天已经因为 embedding
+    # 并发配置偏高连续撞了两次 429，账号进入限流冷却期，教训现成的）。
+    # 要提高并发前必须先用 pdf_parser.py 那次并发排查同样的方法（同一份
+    # 文档、控制变量对比不同并发数的总耗时和是否报错）实测这个端点的
+    # 承受能力，不能直接照抄 OCR 的 8。
+    table_extraction_max_concurrency: int = 1
+
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "changeme123"

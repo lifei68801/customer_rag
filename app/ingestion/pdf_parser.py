@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.ingestion.chunking import Chunk
 from app.ingestion.ocr_parser import OcrFunction
+from app.ingestion.table_extraction import TableExtractionFunction
 
 
 _DEFAULT_OCR_RENDER_DPI = 200
@@ -34,6 +35,14 @@ _DEFAULT_OCR_MAX_CONCURRENCY = 8
 排到队尾，不会更快。这个"甜蜜点"因账号/供应商而异，换了 OCR 供应商
 或者账号配额调整后需要重新实测，所以只是 parse_pdf() 的 max_concurrency
 参数没传时的兜底值，调用方应该优先传 Settings.ocr_max_concurrency。"""
+
+_DEFAULT_TABLE_EXTRACTION_MAX_CONCURRENCY = 1
+"""跟 _DEFAULT_OCR_MAX_CONCURRENCY 不一样，这个数字不是实测出来的——只是
+"不并发"这个最保守的兜底值。这个模型/端点还没有做过 OCR 那样的并发梯度
+实测，贸然给个"看起来合理"的默认值风险很高。只是 parse_pdf() 的
+table_extraction_max_concurrency 参数没传时的兜底值；调用方应该优先传
+Settings.table_extraction_max_concurrency，且提高这个值之前必须先用同样
+的方法（同一份文档、控制变量对比不同并发数）单独实测这个端点。"""
 
 
 def _clean_cell(value: str | None) -> str:
@@ -103,8 +112,14 @@ def _split_table_into_sections(
     return sections
 
 
-def _table_chunks_for_page(fitz_page, *, page_number: int, source: str) -> list[Chunk]:
-    """用 PyMuPDF 的版面分析找出页面里的表格，为每个表格（可能会先按
+def _table_chunks_from_tables(tables, *, page_number: int, source: str) -> list[Chunk]:
+    """接受已经调用过 fitz_page.find_tables().tables 拿到的表格列表——
+    拆出这一层是为了让 _prepare_pdf_sync 只调用一次 find_tables()（本身
+    是 CPU 密集的版面分析），同一份结果既用来判断"这一页要不要额外走
+    视觉模型的表格提取"，也用来算规则兜底的 chunk，不用为了两个目的
+    各调一次。
+
+    用 PyMuPDF 的版面分析找出页面里的表格，为每个表格（可能会先按
     _split_table_into_sections 切分成多个逻辑子表）生成 parent-child 两级
     chunk：子表的完整文本作为 parent_text（命中后返回给 LLM 的完整上下文，
     避免表格被拆散丢失语义），表头+单行数据拼接后的文本作为每一行的
@@ -116,7 +131,7 @@ def _table_chunks_for_page(fitz_page, *, page_number: int, source: str) -> list[
     毫无信息量的 chunk。
     """
     chunks: list[Chunk] = []
-    for table in fitz_page.find_tables().tables:
+    for table in tables:
         rows = [[_clean_cell(cell) for cell in row] for row in table.extract()]
         if len(rows) < 2:
             continue
@@ -160,21 +175,50 @@ def _table_chunks_for_page(fitz_page, *, page_number: int, source: str) -> list[
     return chunks
 
 
+def _table_chunks_for_page(fitz_page, *, page_number: int, source: str) -> list[Chunk]:
+    """薄包装：自己调一次 find_tables()，供测试和其它只有 fitz_page、
+    没有预先算好 tables 列表的调用方使用。_prepare_pdf_sync 内部走的是
+    _table_chunks_from_tables，不经过这层（避免重复调用 find_tables()）。
+    """
+    return _table_chunks_from_tables(
+        fitz_page.find_tables().tables, page_number=page_number, source=source
+    )
+
+
 def _prepare_pdf_sync(
-    path: Path, *, needs_ocr: bool, render_dpi: int, tmp_dir: Path
-) -> tuple[list[str], list[int], dict[int, Path], list[list[Chunk]]]:
+    path: Path,
+    *,
+    needs_ocr: bool,
+    needs_table_extraction: bool,
+    render_dpi: int,
+    tmp_dir: Path,
+) -> tuple[
+    list[str],
+    list[int],
+    dict[int, Path],
+    list[list[Chunk]],
+    list[int],
+    dict[int, Path],
+]:
     """在一个线程里完成所有需要 fitz_doc（MuPDF 的 C 层对象）的同步/CPU
-    密集工作：提取原生文字层、把无文字层的页面渲染成图片、检测每页表格。
+    密集工作：提取原生文字层、把无文字层的页面渲染成图片、检测每页表格
+    （连带渲染有表格的页面截图，供视觉模型做表格提取用）。
 
     全程只在这一个线程里打开/使用/关闭 fitz_doc——MuPDF 对同一个
     Document 的并发/跨线程访问不是安全操作，所以不能把"渲染"和"表格
     检测"拆到不同的 asyncio.to_thread 调用里（那样可能被派发到不同的
     工作线程）。真正值得并发、且和 fitz_doc 无关的只有"已经落盘的图片
-    发 OCR 请求"这一步，交给 parse_pdf() 里的 asyncio.gather 处理。
+    发请求"这一步（OCR 和表格提取都是），交给 parse_pdf() 里的
+    asyncio.gather 处理。
 
-    返回 (page_texts, ocr_page_indexes, png_paths, table_chunks_by_page)：
-    page_texts 里 ocr_page_indexes 对应的位置是占位空字符串，调用方 await
-    完 OCR 后再回填。
+    返回 (page_texts, ocr_page_indexes, ocr_png_paths, table_chunks_by_page,
+    table_llm_page_indexes, table_llm_png_paths)：
+    - page_texts 里 ocr_page_indexes 对应的位置是占位空字符串，调用方
+      await 完 OCR 后再回填。
+    - table_chunks_by_page 里 table_llm_page_indexes 对应的位置，是规则
+      算出来的兜底结果——needs_table_extraction=True 时，调用方会尝试用
+      视觉模型的结果替换掉它；视觉模型调用失败时保留这份兜底，不会因为
+      一次网络请求失败就丢了整页的表格数据。
     """
     import fitz
     from pypdf import PdfReader
@@ -184,8 +228,10 @@ def _prepare_pdf_sync(
     try:
         page_texts: list[str] = []
         ocr_page_indexes: list[int] = []
-        png_paths: dict[int, Path] = {}
+        ocr_png_paths: dict[int, Path] = {}
         table_chunks_by_page: list[list[Chunk]] = []
+        table_llm_page_indexes: list[int] = []
+        table_llm_png_paths: dict[int, Path] = {}
 
         for page_index, page in enumerate(reader.pages):
             text = page.extract_text().strip()
@@ -196,7 +242,7 @@ def _prepare_pdf_sync(
                 pixmap = fitz_doc[page_index].get_pixmap(dpi=render_dpi)
                 png_path = tmp_dir / f"page_{page_index}.png"
                 pixmap.save(str(png_path))
-                png_paths[page_index] = png_path
+                ocr_png_paths[page_index] = png_path
             if has_text_layer:
                 # find_tables() 是基于 PDF 页面自身的矢量内容（文字块、绘制的
                 # 线条）做版面分析，不是基于图片像素做视觉识别——没有文字层
@@ -210,14 +256,31 @@ def _prepare_pdf_sync(
                 # 表格线框"，会同时满足"无文字层"和"find_tables() 本可以测
                 # 出表格"，跳过会真的丢这类页面的表格数据——目前样本里没
                 # 遇到，接受这个小概率风险。
+                tables = fitz_doc[page_index].find_tables().tables
                 table_chunks_by_page.append(
-                    _table_chunks_for_page(
-                        fitz_doc[page_index], page_number=page_index + 1, source=str(path)
+                    _table_chunks_from_tables(
+                        tables, page_number=page_index + 1, source=str(path)
                     )
                 )
+                if needs_table_extraction and tables:
+                    # 视觉模型是对整页截图做提取的（一次调用覆盖这一页
+                    # 所有表格），不需要为每张表单独裁图；只有真的检测到
+                    # 非空表格的页面才值得发这次请求。
+                    table_llm_page_indexes.append(page_index)
+                    pixmap = fitz_doc[page_index].get_pixmap(dpi=render_dpi)
+                    png_path = tmp_dir / f"table_page_{page_index}.png"
+                    pixmap.save(str(png_path))
+                    table_llm_png_paths[page_index] = png_path
             else:
                 table_chunks_by_page.append([])
-        return page_texts, ocr_page_indexes, png_paths, table_chunks_by_page
+        return (
+            page_texts,
+            ocr_page_indexes,
+            ocr_png_paths,
+            table_chunks_by_page,
+            table_llm_page_indexes,
+            table_llm_png_paths,
+        )
     finally:
         fitz_doc.close()
 
@@ -228,9 +291,11 @@ async def parse_pdf(
     ocr: OcrFunction | None = None,
     render_dpi: int = _DEFAULT_OCR_RENDER_DPI,
     max_concurrency: int = _DEFAULT_OCR_MAX_CONCURRENCY,
+    table_extractor: TableExtractionFunction | None = None,
+    table_extraction_max_concurrency: int = _DEFAULT_TABLE_EXTRACTION_MAX_CONCURRENCY,
 ) -> list[Chunk]:
     """逐页提取 PDF 文本，每页作为一个 chunk；额外用 PyMuPDF 检测每页的
-    表格，为表格数据行生成 parent-child chunk（见 _table_chunks_for_page）
+    表格，为表格数据行生成 parent-child chunk（见 _table_chunks_from_tables）
     ——两者是叠加关系，整页文本 chunk 不因为页面里含表格就跳过表格区域，
     表格内容会同时出现在"整页粗粒度 chunk"和"表格行细粒度 chunk"里，
     这点重复没有坏处，只是多了一条能精确命中的检索路径。
@@ -251,41 +316,96 @@ async def parse_pdf(
     传 Settings.ocr_render_dpi/ocr_max_concurrency，不同供应商/账号的
     最优值不一定一样。
 
+    table_extractor 同样可选：提供时，检测到非空表格的页面会额外发一次
+    视觉模型请求，用语义理解直接提取表格数据（见 table_extraction.py），
+    比 _table_chunks_from_tables 的规则更泛化——2026-08-10 用真实财报
+    文档验证过，规则处理不好的"多分区表格""逐行 key-value 简介表""双栏
+    并排数据"这几类场景，视觉模型都能正确处理。不提供则保持规则兜底
+    行为不变。视觉模型调用失败（网络错误/返回格式不对）时不会让整份
+    文件的解析失败——跟 OCR 失败必须让整份文件失败不同（OCR 失败=那一页
+    彻底没有内容），表格提取失败时规则算出来的兜底 chunk 已经在
+    _prepare_pdf_sync 里备好了，静默保留兜底、只记一条 warning 日志。
+
     分两个阶段：先用 asyncio.to_thread 跑一次同步准备（文字提取+渲染+
-    表格检测，见 _prepare_pdf_sync），不占用事件循环；再用
-    asyncio.Semaphore 限并发、asyncio.gather 并发跑 OCR（纯网络 I/O，
-    和 fitz_doc 无关，可以安全并发）。某一页 OCR 抛异常时，
-    asyncio.gather 默认行为（不传 return_exceptions）会让异常直接从
-    parse_pdf() 抛出，整份文件的解析失败——和串行版本的语义一致，不会
-    静默丢页。
+    表格检测，见 _prepare_pdf_sync），不占用事件循环；再分别用
+    asyncio.Semaphore 限并发、asyncio.gather 并发跑 OCR 和表格提取
+    （纯网络 I/O，和 fitz_doc 无关，可以安全并发；两者各自独立限并发，
+    不共用同一个 Semaphore——分别调用不同的模型/端点，没理由绑在一起
+    限流）。某一页 OCR 抛异常时，asyncio.gather 默认行为（不传
+    return_exceptions）会让异常直接从 parse_pdf() 抛出，整份文件的解析
+    失败——和串行版本的语义一致，不会静默丢页；表格提取阶段则显式传
+    return_exceptions=True，单页失败不影响其它页、也不影响 OCR 那部分
+    结果。
     """
     needs_ocr = ocr is not None
+    needs_table_extraction = table_extractor is not None
     with tempfile.TemporaryDirectory() as tmp_dir_str:
         tmp_dir = Path(tmp_dir_str)
-        page_texts, ocr_page_indexes, png_paths, table_chunks_by_page = (
-            await asyncio.to_thread(
-                _prepare_pdf_sync,
-                path,
-                needs_ocr=needs_ocr,
-                render_dpi=render_dpi,
-                tmp_dir=tmp_dir,
-            )
+        (
+            page_texts,
+            ocr_page_indexes,
+            ocr_png_paths,
+            table_chunks_by_page,
+            table_llm_page_indexes,
+            table_llm_png_paths,
+        ) = await asyncio.to_thread(
+            _prepare_pdf_sync,
+            path,
+            needs_ocr=needs_ocr,
+            needs_table_extraction=needs_table_extraction,
+            render_dpi=render_dpi,
+            tmp_dir=tmp_dir,
         )
 
         if ocr_page_indexes:
             assert ocr is not None  # needs_ocr=True 时才会有非空 ocr_page_indexes
-            semaphore = asyncio.Semaphore(max_concurrency)
+            ocr_semaphore = asyncio.Semaphore(max_concurrency)
 
             async def _bounded_ocr(page_index: int) -> tuple[int, str]:
-                async with semaphore:
-                    text = await ocr(png_paths[page_index])
+                async with ocr_semaphore:
+                    text = await ocr(ocr_png_paths[page_index])
                 return page_index, text
 
-            results = await asyncio.gather(
+            ocr_results = await asyncio.gather(
                 *(_bounded_ocr(page_index) for page_index in ocr_page_indexes)
             )
-            for page_index, text in results:
+            for page_index, text in ocr_results:
                 page_texts[page_index] = text.strip()
+
+        if table_llm_page_indexes:
+            assert table_extractor is not None
+            table_semaphore = asyncio.Semaphore(table_extraction_max_concurrency)
+
+            async def _bounded_table_extract(
+                page_index: int,
+            ) -> tuple[int, list[str] | BaseException]:
+                async with table_semaphore:
+                    try:
+                        facts = await table_extractor(table_llm_png_paths[page_index])
+                    except Exception as exc:  # noqa: BLE001 - 兜底已备好，不传染给调用方
+                        return page_index, exc
+                return page_index, facts
+
+            table_results = await asyncio.gather(
+                *(_bounded_table_extract(page_index) for page_index in table_llm_page_indexes)
+            )
+            for page_index, facts_or_exc in table_results:
+                if isinstance(facts_or_exc, BaseException) or not facts_or_exc:
+                    # 视觉模型调用失败，或者返回了空列表（比如模型没能
+                    # 解析出任何数据）——保留 _prepare_pdf_sync 里已经算好
+                    # 的规则兜底结果，不覆盖，不让这一页的表格数据彻底消失。
+                    continue
+                page_number = page_index + 1
+                parent_text = "\n".join(facts_or_exc)
+                table_chunks_by_page[page_index] = [
+                    Chunk(
+                        text=fact,
+                        heading_path=[f"第{page_number}页", "表格"],
+                        source=str(path),
+                        parent_text=parent_text,
+                    )
+                    for fact in facts_or_exc
+                ]
 
     chunks: list[Chunk] = []
     for page_index, text in enumerate(page_texts):

@@ -239,16 +239,133 @@ def test_table_chunks_for_page_keeps_phd_row_intact_in_multi_section_table():
     assert not any("16,233：818" in t for t in texts)
 
 
+async def test_parse_pdf_uses_table_extractor_result_when_table_present(tmp_path):
+    pdf_path = tmp_path / "table.pdf"
+    _write_pdf_with_table(
+        pdf_path,
+        [
+            ["股东名称", "持股比例"],
+            ["武汉金融控股", "75.00%"],
+        ],
+    )
+
+    async def fake_table_extractor(path):
+        return ["股东名称：武汉金融控股，持股比例：75.00%（视觉模型提取）"]
+
+    chunks = await parse_pdf(pdf_path, table_extractor=fake_table_extractor)
+
+    table_chunks = [c for c in chunks if c.parent_text is not None]
+    assert len(table_chunks) == 1
+    assert table_chunks[0].text == "股东名称：武汉金融控股，持股比例：75.00%（视觉模型提取）"
+    assert table_chunks[0].parent_text == table_chunks[0].text
+    assert table_chunks[0].source == str(pdf_path)
+
+
+async def test_parse_pdf_table_extractor_not_called_for_pages_without_tables(tmp_path):
+    pdf_path = tmp_path / "manual.pdf"
+    _write_pdf(pdf_path, ["没有表格的普通文字页面"])
+    calls: list = []
+
+    async def fake_table_extractor(path):
+        calls.append(path)
+        return ["不应该被调用"]
+
+    chunks = await parse_pdf(pdf_path, table_extractor=fake_table_extractor)
+
+    assert calls == []
+    assert all(c.parent_text is None for c in chunks)
+
+
+async def test_parse_pdf_table_extractor_failure_falls_back_to_rule_based_chunks(tmp_path):
+    pdf_path = tmp_path / "table.pdf"
+    _write_pdf_with_table(
+        pdf_path,
+        [
+            ["股东名称", "持股比例"],
+            ["武汉金融控股", "75.00%"],
+        ],
+    )
+
+    async def flaky_table_extractor(path):
+        raise RuntimeError("视觉模型超时")
+
+    chunks = await parse_pdf(pdf_path, table_extractor=flaky_table_extractor)
+
+    table_chunks = [c for c in chunks if c.parent_text is not None]
+    assert len(table_chunks) == 1, "视觉模型调用失败不应该让整份文件的解析失败，应保留规则兜底 chunk"
+    assert "股东名称：武汉金融控股" in table_chunks[0].text
+
+
+async def test_parse_pdf_table_extractor_empty_result_falls_back_to_rule_based_chunks(tmp_path):
+    pdf_path = tmp_path / "table.pdf"
+    _write_pdf_with_table(
+        pdf_path,
+        [
+            ["股东名称", "持股比例"],
+            ["武汉金融控股", "75.00%"],
+        ],
+    )
+
+    async def empty_table_extractor(path):
+        return []
+
+    chunks = await parse_pdf(pdf_path, table_extractor=empty_table_extractor)
+
+    table_chunks = [c for c in chunks if c.parent_text is not None]
+    assert len(table_chunks) == 1, "视觉模型返回空列表时应保留规则兜底 chunk，不能让表格数据消失"
+    assert "股东名称：武汉金融控股" in table_chunks[0].text
+
+
+async def test_parse_pdf_table_extraction_preserves_page_order_under_concurrency(tmp_path):
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+
+    pdf_path = tmp_path / "multi_table.pdf"
+    doc = SimpleDocTemplate(str(pdf_path))
+    flowables = []
+    for i in range(4):
+        table = Table([["名称", "数值"], [f"项目{i}", str(i)]])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                    ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+                ]
+            )
+        )
+        flowables.append(table)
+        from reportlab.platypus import PageBreak
+
+        flowables.append(PageBreak())
+    doc.build(flowables)
+
+    call_count = {"n": 0}
+
+    async def fake_table_extractor(path):
+        call_count["n"] += 1
+        return [f"第{call_count['n']}次被调用提取出的表格事实"]
+
+    chunks = await parse_pdf(pdf_path, table_extractor=fake_table_extractor)
+
+    table_chunks = [c for c in chunks if c.parent_text is not None]
+    assert len(table_chunks) == 4
+    assert call_count["n"] == 4
+    for i, chunk in enumerate(table_chunks, start=1):
+        assert chunk.heading_path == [f"第{i}页", "表格"]
+
+
 async def test_parse_pdf_skips_table_detection_for_pages_without_text_layer(tmp_path, monkeypatch):
     # find_tables() 分析的是页面自身的矢量内容，没有文字层的页面（扫描件）
     # 同样没有可分析的矢量表格结构——用真实财报 PDF 验证过两者从不重叠
     # （见 2026-08-10 的排查记录），_prepare_pdf_sync 因此只对有文字层的
     # 页面跑表格检测。这里用一个"假装总能测出表格"的桩函数验证：真正跳过
     # 的是调用本身，不是巧合地测不出表格——否则这个测试测不出跳过逻辑
-    # 是否真的生效。
+    # 是否真的生效。_prepare_pdf_sync 直接调用 _table_chunks_from_tables
+    # （不经过 _table_chunks_for_page 那层薄包装，避免重复调用
+    # find_tables()），所以要 patch 的是前者。
     import app.ingestion.pdf_parser as pdf_parser_module
 
-    def fake_table_chunks_for_page(fitz_page, *, page_number, source):
+    def fake_table_chunks_from_tables(tables, *, page_number, source):
         from app.ingestion.chunking import Chunk
 
         return [
@@ -261,7 +378,7 @@ async def test_parse_pdf_skips_table_detection_for_pages_without_text_layer(tmp_
         ]
 
     monkeypatch.setattr(
-        pdf_parser_module, "_table_chunks_for_page", fake_table_chunks_for_page
+        pdf_parser_module, "_table_chunks_from_tables", fake_table_chunks_from_tables
     )
 
     text_pdf_path = tmp_path / "text.pdf"

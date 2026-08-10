@@ -15,6 +15,8 @@ from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema, process
 from app.ingestion.ocr_factory import build_ocr_from_settings
 from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.scan_and_enqueue import scan_and_enqueue
+from app.ingestion.table_extraction import TableExtractionFunction
+from app.ingestion.table_extraction_factory import build_table_extractor_from_settings
 from app.ingestion.tracking import ensure_tracking_schema
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
@@ -42,6 +44,7 @@ async def main(
     graph_client: Neo4jGraphClient | None = None,
     graph_review_conn: aiosqlite.Connection | None = None,
     ocr: OcrFunction | None = None,
+    table_extractor: TableExtractionFunction | None = None,
     limit: int = 100,
 ) -> dict:
     """增量摄取脚本入口：扫描目录 -> 只对新增/变更/已删除文件入队 -> 处理队列。
@@ -65,6 +68,14 @@ async def main(
     # 从 OCR_BASE_URL/OCR_API_KEY 构造，未配置则和之前一样保持 None（无
     # 文字层的页面/图片直接跳过）。
     resolved_ocr = ocr if ocr is not None else build_ocr_from_settings(resolved_settings)
+    # table_extractor 同理：显式传入（测试注入假实现）优先，否则从
+    # TABLE_EXTRACTION_MODEL 派生，未配置则保持 None（老的 PyMuPDF 规则猜
+    # 表头行为），见 table_extraction_factory.py。
+    resolved_table_extractor = (
+        table_extractor
+        if table_extractor is not None
+        else build_table_extractor_from_settings(resolved_settings)
+    )
     conn = ingestion_conn
     if conn is None:
         db_path = Path(resolved_settings.ingestion_db_path)
@@ -110,6 +121,8 @@ async def main(
         ocr=resolved_ocr,
         ocr_render_dpi=resolved_settings.ocr_render_dpi,
         ocr_max_concurrency=resolved_settings.ocr_max_concurrency,
+        table_extractor=resolved_table_extractor,
+        table_extraction_max_concurrency=resolved_settings.table_extraction_max_concurrency,
         limit=limit,
     )
 

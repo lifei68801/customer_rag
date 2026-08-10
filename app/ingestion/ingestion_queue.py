@@ -16,9 +16,11 @@ from app.ingestion.ocr_parser import OcrFunction, parse_image
 from app.ingestion.pdf_parser import (
     _DEFAULT_OCR_MAX_CONCURRENCY,
     _DEFAULT_OCR_RENDER_DPI,
+    _DEFAULT_TABLE_EXTRACTION_MAX_CONCURRENCY,
     parse_pdf,
 )
 from app.ingestion.pipeline import _ingest_chunks
+from app.ingestion.table_extraction import TableExtractionFunction
 from app.ingestion.chunking import chunk_markdown
 from app.ingestion.ticket_parser import parse_ticket_csv
 from app.ingestion.tracking import record_ingested, remove_tracked_file
@@ -164,11 +166,16 @@ async def _parse_file(
     ocr: OcrFunction | None,
     ocr_render_dpi: int,
     ocr_max_concurrency: int,
+    table_extractor: TableExtractionFunction | None,
+    table_extraction_max_concurrency: int,
 ):
     """PDF/图片走原生异步（OCR 内部按 ocr_max_concurrency 并发），其余
     格式（.md/.docx/.csv）本身是同步解析函数，用 asyncio.to_thread 丢进
     线程池执行，不让这几种格式的解析占用事件循环——和 PDF/图片路径保持
     一样的"不阻塞其它请求"保证，不因为格式不同就有不同的行为。
+
+    table_extractor 只对 .pdf 有意义（.md/.docx/.csv/图片本身不会有
+    PyMuPDF 意义上的"表格"）。
     """
     suffix = path.suffix.lower()
     if suffix in _IMAGE_SUFFIXES:
@@ -179,6 +186,8 @@ async def _parse_file(
             ocr=ocr,
             render_dpi=ocr_render_dpi,
             max_concurrency=ocr_max_concurrency,
+            table_extractor=table_extractor,
+            table_extraction_max_concurrency=table_extraction_max_concurrency,
         )
     parser = _PARSERS.get(suffix)
     if parser is None:
@@ -200,6 +209,8 @@ async def process_pending_jobs(
     ocr: OcrFunction | None = None,
     ocr_render_dpi: int = _DEFAULT_OCR_RENDER_DPI,
     ocr_max_concurrency: int = _DEFAULT_OCR_MAX_CONCURRENCY,
+    table_extractor: TableExtractionFunction | None = None,
+    table_extraction_max_concurrency: int = _DEFAULT_TABLE_EXTRACTION_MAX_CONCURRENCY,
     limit: int = 10,
     max_attempts: int = 3,
 ) -> int:
@@ -236,6 +247,8 @@ async def process_pending_jobs(
                     ocr=ocr,
                     ocr_render_dpi=ocr_render_dpi,
                     ocr_max_concurrency=ocr_max_concurrency,
+                    table_extractor=table_extractor,
+                    table_extraction_max_concurrency=table_extraction_max_concurrency,
                 )
                 use_graph = bool(job["build_graph"])
                 chunk_count = await _ingest_chunks(

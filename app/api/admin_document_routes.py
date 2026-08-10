@@ -29,6 +29,7 @@ from app.ingestion.ingestion_queue import (
     process_pending_jobs,
 )
 from app.ingestion.ocr_parser import OcrFunction
+from app.ingestion.table_extraction import TableExtractionFunction
 from app.ingestion.tracking import compute_file_hash, list_tracked_files, remove_tracked_file
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
@@ -105,6 +106,8 @@ async def _run_pending_jobs(
     ocr: OcrFunction | None,
     ocr_render_dpi: int,
     ocr_max_concurrency: int,
+    table_extractor: TableExtractionFunction | None,
+    table_extraction_max_concurrency: int,
 ) -> None:
     """后台任务：入队后立即处理一批，不等外部 cron。
 
@@ -114,6 +117,8 @@ async def _run_pending_jobs(
 
     ocr 为 None 时（未配置 OCR_BASE_URL/OCR_API_KEY）行为不变：无文字层的
     页面/图片直接跳过，产出 0 chunk，不报错——见 deps.get_ocr_function。
+    table_extractor 同理，为 None 时（未配置 TABLE_EXTRACTION_MODEL）
+    保持 PyMuPDF 规则猜表头的老行为——见 deps.get_table_extractor。
     """
     await process_pending_jobs(
         ingestion_conn,
@@ -128,6 +133,8 @@ async def _run_pending_jobs(
         ocr=ocr,
         ocr_render_dpi=ocr_render_dpi,
         ocr_max_concurrency=ocr_max_concurrency,
+        table_extractor=table_extractor,
+        table_extraction_max_concurrency=table_extraction_max_concurrency,
     )
 
 
@@ -169,6 +176,7 @@ async def upload_document(
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     ocr: OcrFunction | None = Depends(deps.get_ocr_function),
+    table_extractor: TableExtractionFunction | None = Depends(deps.get_table_extractor),
     settings: Settings = Depends(deps.get_settings),
 ) -> UploadResponse:
     # tenant_id/build_graph 必须显式标 Form(...)：混用 UploadFile 和裸标量参数时
@@ -209,6 +217,8 @@ async def upload_document(
         ocr,
         settings.ocr_render_dpi,
         settings.ocr_max_concurrency,
+        table_extractor,
+        settings.table_extraction_max_concurrency,
     )
     return UploadResponse(job_id=job_id)
 

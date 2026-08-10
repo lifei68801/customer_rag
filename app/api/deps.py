@@ -12,6 +12,8 @@ from app.config.settings import Settings
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
 from app.ingestion.ocr_factory import build_ocr_from_settings
 from app.ingestion.ocr_parser import OcrFunction
+from app.ingestion.table_extraction import TableExtractionFunction
+from app.ingestion.table_extraction_factory import build_table_extractor_from_settings
 from app.ingestion.tracking import ensure_tracking_schema
 from app.graphrag.review_queue import ensure_review_schema
 from app.providers.embedding import EmbeddingRegistry
@@ -56,6 +58,7 @@ __all__ = [
     "get_rerank_provider",
     "get_review_conn",
     "get_settings",
+    "get_table_extractor",
     "get_terms",
     "get_tts_provider",
     "get_upload_dir",
@@ -187,6 +190,12 @@ def get_ocr_function(
     settings: Settings = Depends(get_settings),
 ) -> OcrFunction | None:
     return build_ocr_from_settings(settings)
+
+
+def get_table_extractor(
+    settings: Settings = Depends(get_settings),
+) -> TableExtractionFunction | None:
+    return build_table_extractor_from_settings(settings)
 
 
 async def get_graph_client(
