@@ -166,3 +166,44 @@ async def test_parse_pdf_skips_header_only_tables(tmp_path):
     chunks = await parse_pdf(pdf_path)
 
     assert all(c.parent_text is None for c in chunks)
+
+
+async def test_parse_pdf_skips_table_detection_for_pages_without_text_layer(tmp_path, monkeypatch):
+    # find_tables() 分析的是页面自身的矢量内容，没有文字层的页面（扫描件）
+    # 同样没有可分析的矢量表格结构——用真实财报 PDF 验证过两者从不重叠
+    # （见 2026-08-10 的排查记录），_prepare_pdf_sync 因此只对有文字层的
+    # 页面跑表格检测。这里用一个"假装总能测出表格"的桩函数验证：真正跳过
+    # 的是调用本身，不是巧合地测不出表格——否则这个测试测不出跳过逻辑
+    # 是否真的生效。
+    import app.ingestion.pdf_parser as pdf_parser_module
+
+    def fake_table_chunks_for_page(fitz_page, *, page_number, source):
+        from app.ingestion.chunking import Chunk
+
+        return [
+            Chunk(
+                text="假表格行",
+                heading_path=[f"第{page_number}页", "表格"],
+                source=source,
+                parent_text="假表格",
+            )
+        ]
+
+    monkeypatch.setattr(
+        pdf_parser_module, "_table_chunks_for_page", fake_table_chunks_for_page
+    )
+
+    text_pdf_path = tmp_path / "text.pdf"
+    _write_pdf(text_pdf_path, ["有文字层的页面"])
+    scanned_pdf_path = tmp_path / "scanned.pdf"
+    _write_image_only_pdf(scanned_pdf_path, tmp_path)
+
+    text_chunks = await parse_pdf(text_pdf_path)
+    scanned_chunks = await parse_pdf(scanned_pdf_path)
+
+    assert any(c.parent_text == "假表格" for c in text_chunks), (
+        "有文字层的页面应该照常跑表格检测"
+    )
+    assert not any(c.parent_text == "假表格" for c in scanned_chunks), (
+        "没有文字层的页面应该跳过表格检测，即使 find_tables() 本可以测出表格"
+    )
