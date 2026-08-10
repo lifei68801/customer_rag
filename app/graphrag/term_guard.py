@@ -58,6 +58,10 @@ async def build_term_guard_context(
             f"- {term.standard_name}（类型: {term.term_type}, 产品线: {term.product_line}）"
         )
         for row in subgraph:
+            # hops 字段区分直接事实（1 跳）和推导出的间接事实（2 跳，只有
+            # REQUIRES/PRECEDES/PART_OF 这类链式关系才会出现），标注清楚
+            # 避免 LLM 把两者当同等确定性的信息——见
+            # neo4j_client.py::query_subgraph 的 UNION 查询设计。
             hops = row.get("hops", 1)
             label = describe_association(hops)
             lines.append(
