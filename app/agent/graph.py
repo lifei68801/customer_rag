@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Awaitable, Callable
 
@@ -30,7 +31,7 @@ from app.memory.fact_extractor import extract_facts
 from app.memory.session_window_store import SessionWindowStore, SQLiteSessionWindowStore
 from app.memory.similarity import find_similar_memory_items
 from app.memory.structured_recall import search_turns_by_keyword_and_window
-from app.memory.temporal_resolver import resolve_time_window
+from app.memory.temporal_resolver import TimeWindowResult, resolve_time_window
 from app.providers.base import ProviderCapability, ProviderRequest
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
 from app.providers.registry import ProviderRegistry
@@ -57,6 +58,24 @@ _PLANNER_SYSTEM_PROMPT = (
     "有足够信息时直接给出最终答案，不要编造资料中没有的内容；"
     "信息不足以回答时也不要编造。"
 )
+
+# resolve_time_window 是一次 LLM 调用，之前对每条消息（不管有没有时间
+# 表达）都无条件触发——2026-08-10 真实压测发现这是问答链路里"能跳过就
+# 跳过"的典型例子。这里的正则故意设计得宽松（宁可漏判"跳过"、不能漏判
+# "应该走 LLM"）：只有在完全匹配不到任何时间线索时才跳过 LLM 调用；
+# resolve_time_window 本身对"没有真正解析出时间窗口"的问题就是 no-op
+# （见 memory_recall_node 的说明），所以这里即使漏判了某个生僻的时间
+# 表达没拦下来，最坏结果也只是少了一次本来就是可选加成的结构化历史检索，
+# 不会影响主回答链路。
+_TEMPORAL_CUE_PATTERN = re.compile(
+    r"[今昨前后明][天年月日]|[上下]午|[上下]周|星期|周[一二三四五六天日]|"
+    r"\d+\s*(年|月|日|号|点|时|分钟|小时|天前|天后|周前|周后)|"
+    r"刚才|最近|之前|以前|去年|今年|明年|早上|晚上|凌晨|中午|傍晚"
+)
+
+
+def _looks_temporal(text: str) -> bool:
+    return bool(_TEMPORAL_CUE_PATTERN.search(text))
 
 
 def build_agent_graph(
@@ -295,12 +314,18 @@ def build_agent_graph(
         # 会话轮次+长期记忆条目），两路结果职责不同、互不覆盖。没有可解析
         # 时间表达式，或窗口内没有关键词命中时完全是 no-op，不额外拼接
         # 任何内容，不影响接入前的既有行为。
-        time_result = await resolve_time_window(
-            state["question"],
-            llm_registry=llm_registry,
-            llm_provider_name=llm_provider_name,
-            reference_time=datetime.now(),
-        )
+        if _looks_temporal(state["question"]):
+            time_result = await resolve_time_window(
+                state["question"],
+                llm_registry=llm_registry,
+                llm_provider_name=llm_provider_name,
+                reference_time=datetime.now(),
+            )
+        else:
+            time_result = TimeWindowResult(
+                resolved=False, start=None, end=None, confidence=0.0,
+                is_future=False, source="unresolved",
+            )
         if time_result.resolved and time_result.start and time_result.end:
             structured_turns = await search_turns_by_keyword_and_window(
                 memory_conn,

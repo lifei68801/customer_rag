@@ -100,7 +100,6 @@ async def test_query_rewrite_receives_recent_conversation_turns_as_context():
         await _build_dependencies(
             [
                 '{"is_correction": false}',  # correction_check_node 的纠错意图检测
-                '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，问题里没有时间表达式
                 "错误码E502 网关超时",  # query 改写结果
                 "重启路由器即可解决。",  # responder 的回答
                 '{"is_safe": true}',  # OutputSafety 语义审查
@@ -128,7 +127,7 @@ async def test_query_rewrite_receives_recent_conversation_turns_as_context():
     )
 
     assert len(llm_provider.requests) >= 2
-    rewrite_request = llm_provider.requests[2]
+    rewrite_request = llm_provider.requests[1]
     contents = [message.get("content") for message in rewrite_request.messages]
     assert "我遇到了E502错误" in contents
 
@@ -149,7 +148,6 @@ async def test_memory_enabled_saves_turn_and_injects_context():
         await _build_dependencies(
             [
                 '{"is_correction": false}',  # correction_check_node 的纠错意图检测
-                '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，问题里没有时间表达式
                 "重启路由器即可解决。",  # responder 的回答
                 '{"facts":[]}',  # OutputSafety 语义审查（无 is_safe 字段时默认放行未审查）
             ]
@@ -177,7 +175,7 @@ async def test_memory_enabled_saves_turn_and_injects_context():
 
     assert result["final_text"] == "重启路由器即可解决。"
 
-    responder_request = llm_provider.requests[2]
+    responder_request = llm_provider.requests[1]
     assert any(
         "客户使用企业版套餐" in m["content"]
         for m in responder_request.messages
@@ -200,7 +198,6 @@ async def test_memory_enabled_enqueues_consolidation_job_without_blocking_respon
         await _build_dependencies(
             [
                 '{"is_correction": false}',  # correction_check_node 的纠错意图检测
-                '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，问题里没有时间表达式
                 "重启路由器即可解决。",  # responder 的回答
                 '{"is_safe": true}',  # OutputSafety 语义审查
             ]
@@ -226,8 +223,8 @@ async def test_memory_enabled_enqueues_consolidation_job_without_blocking_respon
         }
     )
 
-    # 只入队，不应该触发事实抽取——上面只准备了纠错意图检测+resolve_time_window+
-    # responder+语义审查四个脚本响应，如果 consolidation 同步跑了，第五次
+    # 只入队，不应该触发事实抽取——上面只准备了纠错意图检测+responder+
+    # 语义审查三个脚本响应，如果 consolidation 同步跑了，第四次
     # LLM 调用会因为脚本响应耗尽而报错，测试本身就会失败。
     pending = await list_pending_jobs(conn)
     assert len(pending) == 1
@@ -246,7 +243,6 @@ async def test_memory_enabled_stores_embedding_for_newly_added_facts_after_worke
         await _build_dependencies(
             [
                 '{"is_correction": false}',  # correction_check_node 的纠错意图检测
-                '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，问题里没有时间表达式
                 "重启路由器即可解决。",  # responder 的回答
                 '{"is_safe": true}',  # OutputSafety 语义审查
                 '{"is_delay": false}',  # consolidation worker 里的 detect_delay_intent
@@ -375,7 +371,6 @@ async def test_memory_recall_stays_noop_when_question_has_no_time_expression():
         await _build_dependencies(
             [
                 '{"is_correction": false}',  # correction_check_node 的纠错意图检测
-                '{"start": null, "end": null, "confidence": 0}',  # resolve_time_window 的LLM调用，问题里没有时间表达式，规则引擎也不命中
                 "重启路由器即可解决。",  # responder
                 '{"is_safe": true}',  # OutputSafety 语义审查
             ]
@@ -401,7 +396,7 @@ async def test_memory_recall_stays_noop_when_question_has_no_time_expression():
         }
     )
 
-    responder_request = llm_provider.requests[2]
+    responder_request = llm_provider.requests[1]
     all_content = " ".join(
         m.get("content", "") for m in responder_request.messages
     )

@@ -1,4 +1,4 @@
-from app.agent.graph import build_agent_graph
+from app.agent.graph import _looks_temporal, build_agent_graph
 from app.graphrag.ontology import Term
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
@@ -764,3 +764,16 @@ async def test_output_safety_does_not_flag_email_in_generated_answer():
 
     assert result["is_output_safe"] is True
     assert result["final_text"] == "如需帮助请联系 support@example.com"
+
+
+def test_looks_temporal_detects_common_chinese_time_expressions():
+    assert _looks_temporal("昨天那个E502问题解决了吗") is True
+    assert _looks_temporal("上周三提交的工单处理了吗") is True
+    assert _looks_temporal("2025年3月15号的账单在哪") is True
+    assert _looks_temporal("刚才说的那个方案") is True
+
+
+def test_looks_temporal_returns_false_for_questions_without_time_cues():
+    assert _looks_temporal("网络连不上怎么办？") is False
+    assert _looks_temporal("这个报错怎么解决") is False
+    assert _looks_temporal("错误码E502网关超时怎么解决") is False
