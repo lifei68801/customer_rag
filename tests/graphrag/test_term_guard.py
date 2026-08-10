@@ -1,3 +1,5 @@
+import asyncio
+
 from app.graphrag.ontology import Term
 from app.graphrag.term_guard import build_term_guard_context, describe_association
 
@@ -84,3 +86,40 @@ async def test_defaults_to_direct_association_when_hops_field_is_missing():
 def test_describe_association_labels_direct_and_indirect_hops():
     assert describe_association(1) == "关联"
     assert describe_association(2) == "间接关联（经过 2 跳）"
+
+
+_TWO_TERMS = [
+    Term(
+        standard_name="错误码E502", aliases=["网关超时"],
+        term_type="error_code", product_line="核心平台",
+    ),
+    Term(
+        standard_name="登录模块", aliases=["登录失败"],
+        term_type="module", product_line="核心平台",
+    ),
+]
+
+
+async def test_build_term_guard_context_queries_multiple_matched_terms_concurrently():
+    """命中两个术语时，两次 query_subgraph 调用应该并发发起，不是排队
+    顺序执行——用两个互等的 asyncio.Event 证明，退化回顺序执行会卡到
+    超时。"""
+    started = {"错误码E502": asyncio.Event(), "登录模块": asyncio.Event()}
+
+    class SyncGraphClient:
+        async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
+            started[standard_name].set()
+            other = "登录模块" if standard_name == "错误码E502" else "错误码E502"
+            await asyncio.wait_for(started[other].wait(), timeout=5)
+            return [{"related_name": f"{standard_name}关联项", "relation_type": "RELATED_TO"}]
+
+    context = await build_term_guard_context(
+        "网关超时导致登录失败", terms=_TWO_TERMS, tenant_id="t1",
+        graph_client=SyncGraphClient(),
+    )
+
+    # 展示顺序必须按 matched（即 terms 表里的原始顺序）排列，不能因为
+    # 并发查询导致谁先完成谁排前面。
+    assert context.index("错误码E502") < context.index("登录模块")
+    assert "错误码E502关联项" in context
+    assert "登录模块关联项" in context

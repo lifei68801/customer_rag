@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Protocol
 
 from app.graphrag.ontology import Term
@@ -41,19 +42,22 @@ async def build_term_guard_context(
     if not matched:
         return None
 
+    # 命中多个术语时，每个术语各自的 query_subgraph 调用彼此没有数据
+    # 依赖——2026-08-10 起改成 asyncio.gather 并发查询，不再是 for 循环
+    # 顺序 await。展示顺序仍然严格按 matched（术语表原始顺序）排列，不
+    # 按查询完成的先后顺序，靠先 gather 再按索引组装文本实现，不是靠
+    # "谁先跑完谁先加进 lines"。
+    async def _query_one(term: Term) -> list[dict[str, Any]]:
+        return await graph_client.query_subgraph(term.standard_name, tenant_id=tenant_id)
+
+    subgraphs = await asyncio.gather(*(_query_one(term) for term in matched))
+
     lines = ["检测到以下专有名词，已强制注入知识图谱上下文（回答时请使用标准名称）："]
-    for term in matched:
+    for term, subgraph in zip(matched, subgraphs):
         lines.append(
             f"- {term.standard_name}（类型: {term.term_type}, 产品线: {term.product_line}）"
         )
-        subgraph = await graph_client.query_subgraph(
-            term.standard_name, tenant_id=tenant_id
-        )
         for row in subgraph:
-            # hops 字段区分直接事实（1 跳）和推导出的间接事实（2 跳，只有
-            # REQUIRES/PRECEDES/PART_OF 这类链式关系才会出现），标注清楚
-            # 避免 LLM 把两者当同等确定性的信息——见
-            # neo4j_client.py::query_subgraph 的 UNION 查询设计。
             hops = row.get("hops", 1)
             label = describe_association(hops)
             lines.append(
