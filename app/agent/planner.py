@@ -199,7 +199,18 @@ async def run_tool_calls(
     # pending_calls 原始顺序组装（asyncio.gather 保证返回顺序和传入协程
     # 顺序一致，不按完成先后），不因为改成并发就打乱 tool_call_id 对应
     # 关系的可读性。
-    outcomes = await asyncio.gather(*(_execute_one(call) for call in pending_calls))
+    # 用 return_exceptions=True 等所有工具调用都跑完（不管成败）再决定要不要
+    # 重新抛出，而不是用 gather 默认行为——默认行为下一个工具调用失败会让
+    # gather 立刻返回，其它还在执行的工具调用变成没人处理的后台任务，可能
+    # 引发不该发生的副作用，也可能在稍后失败时报一个不会被任何人处理的
+    # "未获取异常"。这里等两边都落地再决定要不要抛，语义上仍然和串行版本
+    # 一致：任一工具调用失败都让整个 run_tool_calls() 失败。
+    outcomes = await asyncio.gather(
+        *(_execute_one(call) for call in pending_calls), return_exceptions=True
+    )
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            raise outcome
 
     for tool_result, new_records in outcomes:
         existing_ids = {r.id for r in retrieved_records}

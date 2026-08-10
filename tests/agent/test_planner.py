@@ -383,3 +383,39 @@ async def test_run_tool_calls_executes_multiple_tools_concurrently(monkeypatch):
     assert contents_by_call_id["call_2"] == '{"ok": "call_2"}'
     # 顺序必须和 pending_tool_calls 原始顺序一致，不依赖谁先完成
     assert [r["tool_call_id"] for r in update["tool_results"]] == ["call_1", "call_2"]
+
+
+async def test_run_tool_calls_propagates_exception_from_tool_dispatch(monkeypatch):
+    """当某个工具调用抛异常时，run_tool_calls() 应该立刻抛出该异常，
+    不因为用了 asyncio.gather(return_exceptions=True) 就吞了它。"""
+    import app.agent.planner as planner_module
+
+    async def fake_dispatch_tool_call(name, arguments, **kwargs):
+        if arguments.get("fail"):
+            raise ValueError("模拟工具调用失败")
+        return '{"ok": "success"}', []
+
+    monkeypatch.setattr(planner_module, "_dispatch_tool_call", fake_dispatch_tool_call)
+
+    state = {
+        "tenant_id": "t1",
+        "planner_messages": [],
+        "pending_tool_calls": [
+            {"id": "call_1", "name": "vector_search_tool", "arguments": '{}'},
+            {"id": "call_2", "name": "graph_query_tool", "arguments": '{"fail": true}'},
+        ],
+    }
+
+    try:
+        await run_tool_calls(
+            state,
+            embedding_registry=_embedding_registry(),
+            embedding_provider_name="fake-embedding",
+            vector_store=InMemoryVectorStore(),
+            bm25_index=BM25Index(),
+            llm_registry=ProviderRegistry(),
+            llm_provider_name="fake-llm",
+        )
+        assert False, "应该抛异常"
+    except ValueError as e:
+        assert "模拟工具调用失败" in str(e)
