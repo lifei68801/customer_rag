@@ -7,12 +7,19 @@ from app.ingestion.chunking import Chunk
 from app.ingestion.ocr_parser import OcrFunction
 
 
+_OCR_RENDER_DPI = 200
+"""PyMuPDF get_pixmap() 不传参数默认是 72 DPI（等同 PDF 原始点距 1:1），对
+公式的上下标、数字后缀单位（如"671B"里的"B"）这类细小笔画来说分辨率不够，
+视觉模型容易看漏/看错——实测同一页在 72 DPI 下把"671B"识别成"6718"，公式
+下标大量丢失，200 DPI 能显著改善（见 2026-08-10 的 OCR 精度排查）。"""
+
+
 def _ocr_render_page(fitz_doc, page_index: int, *, ocr: OcrFunction) -> str:
     """把扫描件页面渲染成图片（PyMuPDF，无需 poppler 等系统级二进制依赖），
     落一个临时 PNG 文件后复用现有的 OcrFunction 接口——OCR 函数只认文件
     路径，不需要为"内存渲染的页面"单独定义一套接口。
     """
-    pixmap = fitz_doc[page_index].get_pixmap()
+    pixmap = fitz_doc[page_index].get_pixmap(dpi=_OCR_RENDER_DPI)
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir) / "page.png"
         pixmap.save(str(tmp_path))
