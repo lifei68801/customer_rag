@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from app.agent.planner import route_after_planner, run_planner_turn, run_tool_calls
@@ -339,3 +340,46 @@ def test_route_after_planner_goes_to_fallback_when_gave_up():
 def test_route_after_planner_goes_to_responder_when_answer_ready():
     state = {"answer_text": "答案", "planner_gave_up": False}
     assert route_after_planner(state) == "responder"
+
+
+async def test_run_tool_calls_executes_multiple_tools_concurrently(monkeypatch):
+    """同一轮请求了两个工具时，两次 _dispatch_tool_call 应该并发执行，
+    不是排队顺序执行——用两个互等的 asyncio.Event 证明。"""
+    import app.agent.planner as planner_module
+
+    started = {"call_1": asyncio.Event(), "call_2": asyncio.Event()}
+
+    async def fake_dispatch_tool_call(name, arguments, **kwargs):
+        call_id = arguments["call_id"]
+        started[call_id].set()
+        other = "call_2" if call_id == "call_1" else "call_1"
+        await asyncio.wait_for(started[other].wait(), timeout=5)
+        return f'{{"ok": "{call_id}"}}', []
+
+    monkeypatch.setattr(planner_module, "_dispatch_tool_call", fake_dispatch_tool_call)
+
+    state = {
+        "tenant_id": "t1",
+        "planner_messages": [],
+        "pending_tool_calls": [
+            {"id": "call_1", "name": "vector_search_tool", "arguments": '{"call_id": "call_1"}'},
+            {"id": "call_2", "name": "graph_query_tool", "arguments": '{"call_id": "call_2"}'},
+        ],
+    }
+
+    update = await run_tool_calls(
+        state,
+        embedding_registry=_embedding_registry(),
+        embedding_provider_name="fake-embedding",
+        vector_store=InMemoryVectorStore(),
+        bm25_index=BM25Index(),
+        llm_registry=ProviderRegistry(),
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+    )
+
+    contents_by_call_id = {r["tool_call_id"]: r["content"] for r in update["tool_results"]}
+    assert contents_by_call_id["call_1"] == '{"ok": "call_1"}'
+    assert contents_by_call_id["call_2"] == '{"ok": "call_2"}'
+    # 顺序必须和 pending_tool_calls 原始顺序一致，不依赖谁先完成
+    assert [r["tool_call_id"] for r in update["tool_results"]] == ["call_1", "call_2"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -161,33 +162,50 @@ async def run_tool_calls(
     messages = list(state.get("planner_messages", []))
     retrieved_records = list(state.get("retrieved_records", []))
     tool_results = list(state.get("tool_results", []))
+    pending_calls = state.get("pending_tool_calls", [])
 
-    for call in state.get("pending_tool_calls", []):
+    async def _execute_one(call: dict[str, Any]) -> tuple[dict, list[VectorRecord]]:
         try:
             arguments = json.loads(call["arguments"]) if call["arguments"] else {}
         except json.JSONDecodeError:
             content = json.dumps({"error": "arguments 不是合法 JSON"}, ensure_ascii=False)
-        else:
-            content, new_records = await _dispatch_tool_call(
-                call["name"],
-                arguments,
-                tenant_id=tenant_id,
-                embedding_registry=embedding_registry,
-                embedding_provider_name=embedding_provider_name,
-                vector_store=vector_store,
-                bm25_index=bm25_index,
-                llm_registry=llm_registry,
-                llm_provider_name=llm_provider_name,
-                rerank_provider=rerank_provider,
-                query_rewrite_enabled=query_rewrite_enabled,
-                terms=terms,
-                graph_client=graph_client,
+            return (
+                {"tool_call_id": call["id"], "name": call["name"], "content": content},
+                [],
             )
-            existing_ids = {r.id for r in retrieved_records}
-            retrieved_records.extend(r for r in new_records if r.id not in existing_ids)
+        content, new_records = await _dispatch_tool_call(
+            call["name"],
+            arguments,
+            tenant_id=tenant_id,
+            embedding_registry=embedding_registry,
+            embedding_provider_name=embedding_provider_name,
+            vector_store=vector_store,
+            bm25_index=bm25_index,
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
+            rerank_provider=rerank_provider,
+            query_rewrite_enabled=query_rewrite_enabled,
+            terms=terms,
+            graph_client=graph_client,
+        )
+        return (
+            {"tool_call_id": call["id"], "name": call["name"], "content": content},
+            new_records,
+        )
 
-        tool_results.append({"tool_call_id": call["id"], "name": call["name"], "content": content})
-        messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
+    # 同一轮 LLM 可能同时请求多个工具（比如 vector_search_tool +
+    # graph_query_tool），彼此没有数据依赖——2026-08-10 起改成
+    # asyncio.gather 并发执行，不再是 for 循环顺序 await。结果顺序按
+    # pending_calls 原始顺序组装（asyncio.gather 保证返回顺序和传入协程
+    # 顺序一致，不按完成先后），不因为改成并发就打乱 tool_call_id 对应
+    # 关系的可读性。
+    outcomes = await asyncio.gather(*(_execute_one(call) for call in pending_calls))
+
+    for tool_result, new_records in outcomes:
+        existing_ids = {r.id for r in retrieved_records}
+        retrieved_records.extend(r for r in new_records if r.id not in existing_ids)
+        tool_results.append(tool_result)
+        messages.append({"role": "tool", "tool_call_id": tool_result["tool_call_id"], "content": tool_result["content"]})
 
     return {
         "planner_messages": messages,
