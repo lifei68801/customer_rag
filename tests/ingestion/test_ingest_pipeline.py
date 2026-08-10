@@ -1,4 +1,7 @@
+import asyncio
+
 import aiosqlite
+import pytest
 
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
@@ -319,6 +322,165 @@ async def test_ingest_markdown_file_sends_unresolved_candidates_to_review_queue(
     pending = await list_pending_reviews(review_conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["object_candidate"] == "不存在的实体"
+
+
+async def test_ingest_markdown_file_runs_embedding_and_graph_extraction_concurrently(
+    tmp_path,
+):
+    """_ingest_chunks 把 embedding+入库 和 图谱抽取 两条路径改成
+    asyncio.gather 并发跑（2026-08-10），不再是先后 await。这里用两个
+    asyncio.Event 互相等待对方先启动来证明：如果代码退化回顺序执行，
+    第一个启动的一方会一直等不到另一方启动、卡到 asyncio.wait_for 超时，
+    测试会失败而不是静默通过——比单纯断言总耗时更短更可靠。
+    """
+    md_file = tmp_path / "network.md"
+    md_file.write_text(
+        "## 网络故障\n网关超时示例通常与示例认证模块相关\n", encoding="utf-8"
+    )
+
+    embed_started = asyncio.Event()
+    graph_started = asyncio.Event()
+
+    class SyncEmbeddingProvider:
+        async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+            embed_started.set()
+            await asyncio.wait_for(graph_started.wait(), timeout=5)
+            return EmbeddingResult(vectors=[[0.1, 0.2] for _ in request.texts])
+
+    class SyncLLMProvider:
+        async def complete(self, request: ProviderRequest) -> ProviderResult:
+            graph_started.set()
+            await asyncio.wait_for(embed_started.wait(), timeout=5)
+            return ProviderResult(text='{"relations": []}')
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", SyncEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "llm", SyncLLMProvider())
+    graph_client = FakeGraphClient()
+    # graph_terms 不能传空列表——_maybe_extract_graph_relations 用
+    # `and graph_terms` 短路判断是否要跑图谱抽取，空列表是 falsy，会导致
+    # 图谱抽取整段被跳过、SyncLLMProvider.complete 永远不会被调用，
+    # graph_started 事件永远不会 set，embedding 那边卡到超时——这不是在
+    # 验证并发，只是在验证空列表会被短路跳过，必须给一个非空 terms。
+    terms = [
+        Term(
+            standard_name="示例错误码E502", aliases=["网关超时示例"],
+            term_type="error_code", product_line="示例产品线",
+        ),
+    ]
+
+    count = await ingest_markdown_file(
+        md_file,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        tenant_id="t1",
+        graph_llm_registry=llm_registry,
+        graph_llm_provider_name="llm",
+        graph_terms=terms,
+        graph_client=graph_client,
+    )
+
+    assert count == 1
+
+
+async def test_ingest_markdown_file_propagates_embedding_failure(tmp_path):
+    """embedding 失败必须让整个 _ingest_chunks 失败（任务标记重试），即使
+    图谱抽取那条并发路径本身会成功——asyncio.gather(return_exceptions=True)
+    之后手动重新抛出，不能因为改成并发就吞掉这个异常。
+    """
+    md_file = tmp_path / "network.md"
+    md_file.write_text(
+        "## 网络故障\n网关超时示例通常与示例认证模块相关\n", encoding="utf-8"
+    )
+
+    class FailingEmbeddingProvider:
+        async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+            raise RuntimeError("embedding 服务超时")
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FailingEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, "llm", FixedLLMProvider('{"relations": []}')
+    )
+    graph_client = FakeGraphClient()
+    # 非空 terms：确保图谱抽取那条并发路径真的会跑（而不是被
+    # `and graph_terms` 短路直接跳过），这样才是在验证"embedding 失败时，
+    # 即使图谱抽取并发路径本身会成功，也不能被吞掉"，不是在测一个空操作。
+    terms = [
+        Term(
+            standard_name="示例错误码E502", aliases=["网关超时示例"],
+            term_type="error_code", product_line="示例产品线",
+        ),
+    ]
+
+    with pytest.raises(RuntimeError, match="embedding 服务超时"):
+        await ingest_markdown_file(
+            md_file,
+            embedding_registry=embedding_registry,
+            embedding_provider_name="fake-embedding",
+            vector_store=vector_store,
+            tenant_id="t1",
+            graph_llm_registry=llm_registry,
+            graph_llm_provider_name="llm",
+            graph_terms=terms,
+            graph_client=graph_client,
+        )
+
+
+async def test_ingest_markdown_file_propagates_graph_write_failure(tmp_path):
+    """图谱抽取真正能往外抛的异常来自 Neo4j 写入失败（LLM 调用失败已经在
+    extract_candidate_relations 内部被吞掉、回退空列表，不会传染），这里
+    模拟 graph_client.delete_relations_by_source 失败，验证仍然会让整个
+    _ingest_chunks 失败，即使 embedding 那条并发路径本身会成功。
+    """
+    md_file = tmp_path / "network.md"
+    md_file.write_text(
+        "## 网络故障\n网关超时示例通常与示例认证模块相关\n", encoding="utf-8"
+    )
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, "llm", FixedLLMProvider('{"relations": []}')
+    )
+
+    class FailingGraphClient(FakeGraphClient):
+        async def delete_relations_by_source(self, source: str, *, tenant_id: str) -> None:
+            raise RuntimeError("Neo4j 写入失败")
+
+    # 非空 terms：_maybe_extract_graph_relations 用 `and graph_terms` 短路
+    # 判断要不要跑图谱抽取，空列表是 falsy，会导致 FailingGraphClient 根本
+    # 不会被调用，测试会"意外通过"（没抛异常是因为图谱抽取被跳过，不是因为
+    # 异常真的被正确传播了）。
+    terms = [
+        Term(
+            standard_name="示例错误码E502", aliases=["网关超时示例"],
+            term_type="error_code", product_line="示例产品线",
+        ),
+    ]
+
+    with pytest.raises(RuntimeError, match="Neo4j 写入失败"):
+        await ingest_markdown_file(
+            md_file,
+            embedding_registry=embedding_registry,
+            embedding_provider_name="fake-embedding",
+            vector_store=vector_store,
+            tenant_id="t1",
+            graph_llm_registry=llm_registry,
+            graph_llm_provider_name="llm",
+            graph_terms=terms,
+            graph_client=FailingGraphClient(),
+        )
 
 
 async def test_ingest_docx_file_chunks_embeds_and_upserts(tmp_path):

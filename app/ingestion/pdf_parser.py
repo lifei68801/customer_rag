@@ -330,15 +330,22 @@ async def parse_pdf(
     _prepare_pdf_sync 里备好了，静默保留兜底、只记一条 warning 日志。
 
     分两个阶段：先用 asyncio.to_thread 跑一次同步准备（文字提取+渲染+
-    表格检测，见 _prepare_pdf_sync），不占用事件循环；再分别用
-    asyncio.Semaphore 限并发、asyncio.gather 并发跑 OCR 和表格提取
-    （纯网络 I/O，和 fitz_doc 无关，可以安全并发；两者各自独立限并发，
-    不共用同一个 Semaphore——分别调用不同的模型/端点，没理由绑在一起
-    限流）。某一页 OCR 抛异常时，asyncio.gather 默认行为（不传
-    return_exceptions）会让异常直接从 parse_pdf() 抛出，整份文件的解析
-    失败——和串行版本的语义一致，不会静默丢页；表格提取阶段则显式传
-    return_exceptions=True，单页失败不影响其它页、也不影响 OCR 那部分
-    结果。
+    表格检测，见 _prepare_pdf_sync），不占用事件循环；再并发跑 OCR 和
+    表格提取——两者作用于互斥的页面集合（OCR 只处理无文字层的页面，
+    表格提取只处理有文字层的页面），彼此不读写对方的数据，天然没有
+    先后依赖，2026-08-10 起改成用一个 asyncio.gather 同时发起，而不是
+    OCR 全部跑完才开始表格提取，缩短两者都有工作要做的混合文档（部分
+    扫描页+部分原生文字表格页）的总耗时。各自内部仍然用独立的
+    asyncio.Semaphore 限并发，不共用同一个 Semaphore——分别调用不同的
+    模型/端点，没理由绑在一起限流。
+
+    某一页 OCR 抛异常时，整份文件的解析失败——和串行版本的语义一致，
+    不会静默丢页；表格提取阶段内部单页失败会被捕获、不影响其它页。
+    两个阶段合并后用 return_exceptions=True 等两边都跑完（不管成败）
+    再手动重新抛出 OCR 的异常，而不是用 gather 默认行为——默认行为下
+    一边抛异常会让 gather 立刻返回，另一边可能还在后台裸跑网络请求，
+    这份 PDF 对应的临时目录马上就要被清理，会导致后台任务读到已删除
+    的图片文件、报一个不会被任何人处理的"未获取异常"。
     """
     needs_ocr = ocr is not None
     needs_table_extraction = table_extractor is not None
@@ -360,7 +367,7 @@ async def parse_pdf(
             tmp_dir=tmp_dir,
         )
 
-        if ocr_page_indexes:
+        async def _run_ocr_phase() -> None:
             assert ocr is not None  # needs_ocr=True 时才会有非空 ocr_page_indexes
             ocr_semaphore = asyncio.Semaphore(max_concurrency)
 
@@ -375,7 +382,7 @@ async def parse_pdf(
             for page_index, text in ocr_results:
                 page_texts[page_index] = text.strip()
 
-        if table_llm_page_indexes:
+        async def _run_table_extraction_phase() -> None:
             assert table_extractor is not None
             table_semaphore = asyncio.Semaphore(table_extraction_max_concurrency)
 
@@ -409,6 +416,17 @@ async def parse_pdf(
                     )
                     for fact in facts_or_exc
                 ]
+
+        phases = []
+        if ocr_page_indexes:
+            phases.append(_run_ocr_phase())
+        if table_llm_page_indexes:
+            phases.append(_run_table_extraction_phase())
+        if phases:
+            phase_results = await asyncio.gather(*phases, return_exceptions=True)
+            for result in phase_results:
+                if isinstance(result, BaseException):
+                    raise result
 
     chunks: list[Chunk] = []
     for page_index, text in enumerate(page_texts):

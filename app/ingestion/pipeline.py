@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import aiosqlite
@@ -111,30 +112,48 @@ async def _ingest_chunks(
     语义），图谱抽取路径吃未经切分的原始 chunks（LLM 关系抽取需要更
     完整的上下文）。见设计文档第 2.1 节"双视图分叉"。
 
+    两条路径并发跑：图谱抽取只读 chunks 文本、写 Neo4j/审核队列，向量化
+    只读 embedding_chunks、写 Milvus，彼此不共享任何可变状态（Chunk 是
+    frozen dataclass），也没有谁必须等谁写完的顺序依赖，2026-08-10 起
+    改成 asyncio.gather 同时发起而不是先后 await。用 return_exceptions=True
+    等两边都跑完（不管成败）再手动重新抛出，而不是用 gather 默认行为：
+    默认行为下一边抛异常会让 gather 立刻返回、另一边可能还在后台裸跑，
+    产生不会被任何人处理的"未获取异常"；这里等两边都落地再决定要不要
+    抛，语义上仍然和原来"任一步失败就让整个 _ingest_chunks 失败、任务
+    重试"完全一致（图谱抽取本身在 extract_and_write_graph_relations 开头
+    会先删再写，重试是幂等的）。
+
     各文件格式的 ingest_*_file 只负责"怎么把文件解析成 chunk 列表"这一步
     不同，解析完之后的处理管线完全一致，抽出来避免四份文件格式各写一遍
     近乎相同的代码。
     """
     embedding_chunks = split_oversized_chunks(chunks)
-    count = await _embed_and_upsert(
-        embedding_chunks,
-        path,
-        embedding_registry=embedding_registry,
-        embedding_provider_name=embedding_provider_name,
-        vector_store=vector_store,
-        tenant_id=tenant_id,
+    embed_result, graph_result = await asyncio.gather(
+        _embed_and_upsert(
+            embedding_chunks,
+            path,
+            embedding_registry=embedding_registry,
+            embedding_provider_name=embedding_provider_name,
+            vector_store=vector_store,
+            tenant_id=tenant_id,
+        ),
+        _maybe_extract_graph_relations(
+            chunks,
+            source=str(path),
+            tenant_id=tenant_id,
+            graph_llm_registry=graph_llm_registry,
+            graph_llm_provider_name=graph_llm_provider_name,
+            graph_terms=graph_terms,
+            graph_client=graph_client,
+            graph_review_conn=graph_review_conn,
+        ),
+        return_exceptions=True,
     )
-    await _maybe_extract_graph_relations(
-        chunks,
-        source=str(path),
-        tenant_id=tenant_id,
-        graph_llm_registry=graph_llm_registry,
-        graph_llm_provider_name=graph_llm_provider_name,
-        graph_terms=graph_terms,
-        graph_client=graph_client,
-        graph_review_conn=graph_review_conn,
-    )
-    return count
+    if isinstance(embed_result, BaseException):
+        raise embed_result
+    if isinstance(graph_result, BaseException):
+        raise graph_result
+    return embed_result
 
 
 async def ingest_markdown_file(

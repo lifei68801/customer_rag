@@ -1,3 +1,5 @@
+import asyncio
+
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfgen import canvas
@@ -352,6 +354,50 @@ async def test_parse_pdf_table_extraction_preserves_page_order_under_concurrency
     assert call_count["n"] == 4
     for i, chunk in enumerate(table_chunks, start=1):
         assert chunk.heading_path == [f"第{i}页", "表格"]
+
+
+async def test_parse_pdf_runs_ocr_and_table_extraction_concurrently(tmp_path):
+    """parse_pdf 把 OCR 阶段和表格提取阶段合并成一次 asyncio.gather 并发跑
+    （2026-08-10），不再是 OCR 全部跑完才开始表格提取——两者作用于互斥的
+    页面集合（有无文字层），互不依赖。这里用两个 asyncio.Event 互相等待
+    对方先启动来证明：如果退化回顺序执行，先启动的一方会一直等不到另
+    一方启动、卡到 asyncio.wait_for 超时，测试会失败而不是静默通过。
+    """
+    import fitz
+
+    scanned_path = tmp_path / "_scanned_page.pdf"
+    _write_image_only_pdf(scanned_path, tmp_path)
+    table_path = tmp_path / "_table_page.pdf"
+    _write_pdf_with_table(table_path, [["名称", "数值"], ["项目A", "1"]])
+
+    pdf_path = tmp_path / "mixed.pdf"
+    merged = fitz.open()
+    with fitz.open(str(scanned_path)) as scanned_doc:
+        merged.insert_pdf(scanned_doc)
+    with fitz.open(str(table_path)) as table_doc:
+        merged.insert_pdf(table_doc)
+    merged.save(str(pdf_path))
+    merged.close()
+
+    ocr_started = asyncio.Event()
+    table_started = asyncio.Event()
+
+    async def fake_ocr(path):
+        ocr_started.set()
+        await asyncio.wait_for(table_started.wait(), timeout=5)
+        return "扫描页文字"
+
+    async def fake_table_extractor(path):
+        table_started.set()
+        await asyncio.wait_for(ocr_started.wait(), timeout=5)
+        return ["名称：项目A，数值：1"]
+
+    chunks = await parse_pdf(
+        pdf_path, ocr=fake_ocr, table_extractor=fake_table_extractor
+    )
+
+    assert any("扫描页文字" in c.text for c in chunks)
+    assert any(c.text == "名称：项目A，数值：1" for c in chunks)
 
 
 async def test_parse_pdf_skips_table_detection_for_pages_without_text_layer(tmp_path, monkeypatch):
