@@ -78,10 +78,11 @@ def test_build_dashscope_ocr_returns_ocr_function_with_config_baked_in(tmp_path)
     ocr_fn = build_dashscope_ocr(
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_key="test-key",
+        client=client,
     )
 
-    # 符合 OcrFunction 接口：只传 path 就能调用（base_url/api_key 已经固化）
-    text = ocr_fn(image_path, client=client)
+    # 符合 OcrFunction 接口：只传 path 就能调用（base_url/api_key/client 已经固化）
+    text = ocr_fn(image_path)
 
     assert text == "文字"
     assert captured["auth"] == "Bearer test-key"
