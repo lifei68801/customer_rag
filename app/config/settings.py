@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     # 限制，超过直接 400；不设置则一次性发全部文本（兼容没有这类限制的
     # 供应商）。
     embedding_batch_size: int | None = None
+    # 多个 embeddings 批次间的并发数，默认 1（严格串行，等价于改造前的
+    # 逐批 await 行为）。不像 OCR（见 pdf_parser.py 的 ocr_max_concurrency）
+    # 已经用真实请求测过账号的并发承受能力，embedding 端点还没有实测过，
+    # 默认值保守到"不主动改变现状"，需要时先用小样本实测再调大。
+    embedding_max_concurrency: int = 1
 
     milvus_uri: str = "http://localhost:19530"
     milvus_collection: str = "faq_chunks"

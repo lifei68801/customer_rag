@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import AsyncIterator
 
@@ -120,6 +121,12 @@ class OpenAICompatibleEmbeddingProvider(_OpenAICompatibleClient):
     20 条/请求，超过直接 400），不能假设调用方一次传多少条文本就能一次
     性发出去。不设置则保持原有行为——一次性发全部文本，兼容没有这类
     限制的供应商。
+
+    max_concurrency 控制批次间的并发度，默认 1（严格按提交顺序一批批
+    等，等价于逐个 await 的老行为）——不像 OCR 那边（见 pdf_parser.py）
+    已经用真实请求测过账号的并发承受能力，embedding 端点还没有实测过，
+    不能假设同一账号在不同端点/模型上的限流策略一样，默认值保守到"不
+    主动改变现状"，需要并发时显式调大。
     """
 
     def __init__(
@@ -130,33 +137,52 @@ class OpenAICompatibleEmbeddingProvider(_OpenAICompatibleClient):
         model: str,
         client: httpx.AsyncClient | None = None,
         batch_size: int | None = None,
+        max_concurrency: int = 1,
     ) -> None:
         super().__init__(base_url=base_url, api_key=api_key, model=model, client=client)
         self._batch_size = batch_size
+        self._max_concurrency = max_concurrency
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
         size = self._batch_size or len(request.texts) or 1
+        batches = [
+            request.texts[start : start + size]
+            for start in range(0, len(request.texts), size)
+        ]
+        if not batches:
+            return EmbeddingResult(vectors=[], raw={})
+
+        semaphore = asyncio.Semaphore(self._max_concurrency)
+
+        async def _fetch(batch: list[str]) -> dict:
+            async with semaphore:
+                response = await self._client.post(
+                    f"{self._base_url}/embeddings",
+                    headers=self._headers(),
+                    json={
+                        "model": self._model,
+                        "input": batch,
+                        **request.options,
+                    },
+                )
+                response.raise_for_status()
+                return response.json()
+
+        # asyncio.gather 按传入协程的顺序返回结果（不是完成顺序），所以
+        # 即使某个 batch 因为并发提前/滞后完成，raw_batches 仍然和
+        # batches（也就是原始 texts 的切分顺序）严格一一对应——这个顺序
+        # 保证是正确性的关键：下游 pipeline.py 靠 zip(chunks, vectors) 按
+        # 位置把向量和文本对应起来，错位是不报错、只会让检索结果莫名其
+        # 妙不准的那种 bug。
+        raw_batches = await asyncio.gather(*(_fetch(batch) for batch in batches))
+
         vectors: list[list[float]] = []
-        raw_batches: list[dict] = []
-        for start in range(0, len(request.texts), size):
-            batch = request.texts[start : start + size]
-            response = await self._client.post(
-                f"{self._base_url}/embeddings",
-                headers=self._headers(),
-                json={
-                    "model": self._model,
-                    "input": batch,
-                    **request.options,
-                },
-            )
-            response.raise_for_status()
-            body = response.json()
+        for body in raw_batches:
             vectors.extend(item["embedding"] for item in body["data"])
-            raw_batches.append(body)
 
         raw: dict = {}
         if len(raw_batches) == 1:
             raw = raw_batches[0]
         elif raw_batches:
-            raw = {"batches": raw_batches}
+            raw = {"batches": list(raw_batches)}
         return EmbeddingResult(vectors=vectors, raw=raw)

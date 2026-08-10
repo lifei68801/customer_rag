@@ -45,6 +45,7 @@ def build_embedding_registry_from_settings(
             model=settings.embedding_model,
             client=client,
             batch_size=settings.embedding_batch_size,
+            max_concurrency=settings.embedding_max_concurrency,
         ),
     )
     return registry
