@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.ingestion.chunking import Chunk
@@ -13,17 +14,26 @@ _OCR_RENDER_DPI = 200
 视觉模型容易看漏/看错——实测同一页在 72 DPI 下把"671B"识别成"6718"，公式
 下标大量丢失，200 DPI 能显著改善（见 2026-08-10 的 OCR 精度排查）。"""
 
+_OCR_MAX_CONCURRENCY = 4
+"""扫描件 PDF 逐页 OCR 原来是严格串行的一页一页发请求，106 页这种量级
+实测要跑 1.5-2 小时以上——OCR 调用本身是网络 I/O 为主，串行毫无必要。
+限并发数（而不是无限制全量并发）是为了避免瞬间打出一大批同时在途的
+请求触发供应商限流；具体倍数没有精确标定，4 是"明显比串行快、又不算
+激进"的保守起点。"""
 
-def _ocr_render_page(fitz_doc, page_index: int, *, ocr: OcrFunction) -> str:
-    """把扫描件页面渲染成图片（PyMuPDF，无需 poppler 等系统级二进制依赖），
-    落一个临时 PNG 文件后复用现有的 OcrFunction 接口——OCR 函数只认文件
-    路径，不需要为"内存渲染的页面"单独定义一套接口。
+
+def _render_page_to_png(fitz_doc, page_index: int, *, tmp_dir: Path) -> Path:
+    """把扫描件页面渲染成图片（PyMuPDF，无需 poppler 等系统级二进制依赖）。
+
+    只做渲染，不在这里调用 OCR：渲染要用到 fitz_doc（MuPDF 的 C 层对象），
+    MuPDF 对同一个 Document 的并发访问不是线程安全的，所以渲染这一步必须
+    留在调用方的单线程循环里；真正耗时、且相互独立、可以安全并发的是
+    "拿着已经落盘的图片文件去跑 OCR"这一步，见 parse_pdf() 里的线程池。
     """
     pixmap = fitz_doc[page_index].get_pixmap(dpi=_OCR_RENDER_DPI)
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir) / "page.png"
-        pixmap.save(str(tmp_path))
-        return ocr(tmp_path)
+    png_path = tmp_dir / f"page_{page_index}.png"
+    pixmap.save(str(png_path))
+    return png_path
 
 
 def _clean_cell(value: str | None) -> str:
@@ -91,18 +101,50 @@ def parse_pdf(path: Path, *, ocr: OcrFunction | None = None) -> list[Chunk]:
     ocr 为可选项：某一页提取不到文字层（扫描件 PDF，页面本身是图片）
     时，提供了 ocr 才会把该页渲染成图片再走 OCR；不提供则保持原有行为，
     直接跳过该页——不强制要求调用方总是提供 OCR 函数。
+
+    需要 OCR 的页面分两阶段处理：先在主线程里把所有待 OCR 页面顺序渲染成
+    PNG（必须单线程，MuPDF 对同一个 Document 并发访问不安全），再用限并发
+    的线程池对这些已经落盘的图片并发跑 OCR（见 _OCR_MAX_CONCURRENCY）
+    ——网络 I/O 为主的调用完全没必要挨个等，某一页 OCR 抛异常时整份文件
+    的解析直接失败（和之前串行版本的语义一致，不会静默丢页）。
     """
     import fitz
     from pypdf import PdfReader
 
     reader = PdfReader(str(path))
     fitz_doc = fitz.open(str(path))
-    chunks: list[Chunk] = []
     try:
-        for page_number, page in enumerate(reader.pages, start=1):
+        page_texts: list[str] = []
+        ocr_page_indexes: list[int] = []
+        for page in reader.pages:
             text = page.extract_text().strip()
+            page_texts.append(text)
             if not text and ocr is not None:
-                text = _ocr_render_page(fitz_doc, page_number - 1, ocr=ocr).strip()
+                ocr_page_indexes.append(len(page_texts) - 1)
+
+        if ocr_page_indexes:
+            with tempfile.TemporaryDirectory() as tmp_dir_str:
+                tmp_dir = Path(tmp_dir_str)
+                png_paths = {
+                    page_index: _render_page_to_png(fitz_doc, page_index, tmp_dir=tmp_dir)
+                    for page_index in ocr_page_indexes
+                }
+                with ThreadPoolExecutor(max_workers=_OCR_MAX_CONCURRENCY) as executor:
+                    ocr_results = dict(
+                        zip(
+                            ocr_page_indexes,
+                            executor.map(
+                                lambda idx: ocr(png_paths[idx]),
+                                ocr_page_indexes,
+                            ),
+                        )
+                    )
+                for page_index, text in ocr_results.items():
+                    page_texts[page_index] = text.strip()
+
+        chunks: list[Chunk] = []
+        for page_index, text in enumerate(page_texts):
+            page_number = page_index + 1
             if text:
                 chunks.append(
                     Chunk(
@@ -113,7 +155,7 @@ def parse_pdf(path: Path, *, ocr: OcrFunction | None = None) -> list[Chunk]:
                 )
             chunks.extend(
                 _table_chunks_for_page(
-                    fitz_doc[page_number - 1],
+                    fitz_doc[page_index],
                     page_number=page_number,
                     source=str(path),
                 )
