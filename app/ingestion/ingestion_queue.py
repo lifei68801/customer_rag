@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid
 from pathlib import Path
@@ -202,7 +203,15 @@ async def process_pending_jobs(
                     conn, tenant_id=tenant_id, file_path=file_path
                 )
             else:
-                chunks = _parse_file(Path(file_path), ocr=ocr)
+                # _parse_file 是同步阻塞调用（表格版面分析是 CPU 密集型，
+                # OCR 兜底路径还会用同步 httpx.Client 逐页发请求，扫描件
+                # 大文件能跑几十分钟）。process_pending_jobs() 本身跑在
+                # FastAPI 后台任务的同一个事件循环里，直接同步调用会把
+                # 循环独占整个处理时长，导致这期间所有其它请求（包括别的
+                # 租户的 /qa、/agent/chat）全部无响应。用 asyncio.to_thread
+                # 丢到线程池执行，和 milvus_store.py 里对同步 pymilvus
+                # 调用的处理方式保持一致。
+                chunks = await asyncio.to_thread(_parse_file, Path(file_path), ocr=ocr)
                 use_graph = bool(job["build_graph"])
                 chunk_count = await _ingest_chunks(
                     chunks,
