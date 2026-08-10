@@ -19,6 +19,7 @@ from pydantic import BaseModel
 import aiosqlite
 
 from app.api import deps
+from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.ingestion.ingestion_queue import (
@@ -102,6 +103,8 @@ async def _run_pending_jobs(
     graph_client: Neo4jGraphClient,
     graph_review_conn: aiosqlite.Connection | None,
     ocr: OcrFunction | None,
+    ocr_render_dpi: int,
+    ocr_max_concurrency: int,
 ) -> None:
     """后台任务：入队后立即处理一批，不等外部 cron。
 
@@ -123,6 +126,8 @@ async def _run_pending_jobs(
         graph_client=graph_client,
         graph_review_conn=graph_review_conn,
         ocr=ocr,
+        ocr_render_dpi=ocr_render_dpi,
+        ocr_max_concurrency=ocr_max_concurrency,
     )
 
 
@@ -164,6 +169,7 @@ async def upload_document(
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     ocr: OcrFunction | None = Depends(deps.get_ocr_function),
+    settings: Settings = Depends(deps.get_settings),
 ) -> UploadResponse:
     # tenant_id/build_graph 必须显式标 Form(...)：混用 UploadFile 和裸标量参数时
     # FastAPI 默认把裸标量参数当 query 参数解析，不会去读 multipart body 里
@@ -201,6 +207,8 @@ async def upload_document(
         graph_client,
         review_conn,
         ocr,
+        settings.ocr_render_dpi,
+        settings.ocr_max_concurrency,
     )
     return UploadResponse(job_id=job_id)
 

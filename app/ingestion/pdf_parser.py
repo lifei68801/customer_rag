@@ -8,13 +8,17 @@ from app.ingestion.chunking import Chunk
 from app.ingestion.ocr_parser import OcrFunction
 
 
-_OCR_RENDER_DPI = 200
+_DEFAULT_OCR_RENDER_DPI = 200
 """PyMuPDF get_pixmap() 不传参数默认是 72 DPI（等同 PDF 原始点距 1:1），对
 公式的上下标、数字后缀单位（如"671B"里的"B"）这类细小笔画来说分辨率不够，
 视觉模型容易看漏/看错——实测同一页在 72 DPI 下把"671B"识别成"6718"，公式
-下标大量丢失，200 DPI 能显著改善（见 2026-08-10 的 OCR 精度排查）。"""
+下标大量丢失，200 DPI 能显著改善（见 2026-08-10 的 OCR 精度排查）。
 
-_OCR_MAX_CONCURRENCY = 8
+只是 parse_pdf() 的 render_dpi 参数没传时的兜底值；调用方（如
+ingestion_queue.py）应该优先传 Settings.ocr_render_dpi，不同供应商/账号
+需要的分辨率不一定一样。"""
+
+_DEFAULT_OCR_MAX_CONCURRENCY = 8
 """扫描件 PDF 逐页 OCR 原来是严格串行的一页一页发请求，106 页这种量级
 实测要跑 1.5-2 小时以上——OCR 调用本身是网络 I/O 为主，串行毫无必要。
 
@@ -27,10 +31,14 @@ _OCR_MAX_CONCURRENCY = 8
 排队：前5-6个请求3.5-6秒内返回，之后的请求延迟递增，最慢的单次拖到
 40+秒——这是账号侧未公开的并发排队限制，不是 RPM/TPM，也不是本地
 代码 bug。8 是这几个测试点里最快的，继续往上加并发只会让更多请求
-排到队尾，不会更快。"""
+排到队尾，不会更快。这个"甜蜜点"因账号/供应商而异，换了 OCR 供应商
+或者账号配额调整后需要重新实测，所以只是 parse_pdf() 的 max_concurrency
+参数没传时的兜底值，调用方应该优先传 Settings.ocr_max_concurrency。"""
 
 
-def _render_page_to_png(fitz_doc, page_index: int, *, tmp_dir: Path) -> Path:
+def _render_page_to_png(
+    fitz_doc, page_index: int, *, tmp_dir: Path, dpi: int
+) -> Path:
     """把扫描件页面渲染成图片（PyMuPDF，无需 poppler 等系统级二进制依赖）。
 
     只做渲染，不在这里调用 OCR：渲染要用到 fitz_doc（MuPDF 的 C 层对象），
@@ -38,7 +46,7 @@ def _render_page_to_png(fitz_doc, page_index: int, *, tmp_dir: Path) -> Path:
     留在调用方的单线程循环里；真正耗时、且相互独立、可以安全并发的是
     "拿着已经落盘的图片文件去跑 OCR"这一步，见 parse_pdf() 里的线程池。
     """
-    pixmap = fitz_doc[page_index].get_pixmap(dpi=_OCR_RENDER_DPI)
+    pixmap = fitz_doc[page_index].get_pixmap(dpi=dpi)
     png_path = tmp_dir / f"page_{page_index}.png"
     pixmap.save(str(png_path))
     return png_path
@@ -95,7 +103,13 @@ def _table_chunks_for_page(fitz_page, *, page_number: int, source: str) -> list[
     return chunks
 
 
-def parse_pdf(path: Path, *, ocr: OcrFunction | None = None) -> list[Chunk]:
+def parse_pdf(
+    path: Path,
+    *,
+    ocr: OcrFunction | None = None,
+    render_dpi: int = _DEFAULT_OCR_RENDER_DPI,
+    max_concurrency: int = _DEFAULT_OCR_MAX_CONCURRENCY,
+) -> list[Chunk]:
     """逐页提取 PDF 文本，每页作为一个 chunk；额外用 PyMuPDF 检测每页的
     表格，为表格数据行生成 parent-child chunk（见 _table_chunks_for_page）
     ——两者是叠加关系，整页文本 chunk 不因为页面里含表格就跳过表格区域，
@@ -108,13 +122,17 @@ def parse_pdf(path: Path, *, ocr: OcrFunction | None = None) -> list[Chunk]:
 
     ocr 为可选项：某一页提取不到文字层（扫描件 PDF，页面本身是图片）
     时，提供了 ocr 才会把该页渲染成图片再走 OCR；不提供则保持原有行为，
-    直接跳过该页——不强制要求调用方总是提供 OCR 函数。
+    直接跳过该页——不强制要求调用方总是提供 OCR 函数。render_dpi/
+    max_concurrency 都有默认值（见 _DEFAULT_OCR_RENDER_DPI/
+    _DEFAULT_OCR_MAX_CONCURRENCY），生产调用方（ingestion_queue.py）会
+    传 Settings.ocr_render_dpi/ocr_max_concurrency，不同供应商/账号的
+    最优值不一定一样。
 
     需要 OCR 的页面分两阶段处理：先在主线程里把所有待 OCR 页面顺序渲染成
     PNG（必须单线程，MuPDF 对同一个 Document 并发访问不安全），再用限并发
-    的线程池对这些已经落盘的图片并发跑 OCR（见 _OCR_MAX_CONCURRENCY）
-    ——网络 I/O 为主的调用完全没必要挨个等，某一页 OCR 抛异常时整份文件
-    的解析直接失败（和之前串行版本的语义一致，不会静默丢页）。
+    的线程池对这些已经落盘的图片并发跑 OCR（见 max_concurrency 参数的
+    说明）——网络 I/O 为主的调用完全没必要挨个等，某一页 OCR 抛异常时
+    整份文件的解析直接失败（和之前串行版本的语义一致，不会静默丢页）。
     """
     import fitz
     from pypdf import PdfReader
@@ -134,10 +152,12 @@ def parse_pdf(path: Path, *, ocr: OcrFunction | None = None) -> list[Chunk]:
             with tempfile.TemporaryDirectory() as tmp_dir_str:
                 tmp_dir = Path(tmp_dir_str)
                 png_paths = {
-                    page_index: _render_page_to_png(fitz_doc, page_index, tmp_dir=tmp_dir)
+                    page_index: _render_page_to_png(
+                        fitz_doc, page_index, tmp_dir=tmp_dir, dpi=render_dpi
+                    )
                     for page_index in ocr_page_indexes
                 }
-                with ThreadPoolExecutor(max_workers=_OCR_MAX_CONCURRENCY) as executor:
+                with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
                     ocr_results = dict(
                         zip(
                             ocr_page_indexes,

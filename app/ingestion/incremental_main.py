@@ -108,6 +108,8 @@ async def main(
         graph_client=resolved_graph_client,
         graph_review_conn=resolved_graph_review_conn,
         ocr=resolved_ocr,
+        ocr_render_dpi=resolved_settings.ocr_render_dpi,
+        ocr_max_concurrency=resolved_settings.ocr_max_concurrency,
         limit=limit,
     )
 

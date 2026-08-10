@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     ocr_base_url: str | None = None
     ocr_api_key: str | None = None
     ocr_model: str = "qwen-vl-ocr"
+    # 扫描件 PDF 页面渲染成图片再走 OCR 时的分辨率——72 太低，公式上下标/
+    # 数字后缀单位（如"671B"里的"B"）这类细小笔画容易被识别错，实测 200
+    # 能显著改善（见 app/ingestion/pdf_parser.py 的说明）。
+    ocr_render_dpi: int = 200
+    # 扫描件 PDF 逐页 OCR 的最大并发数：串行处理一份上百页的文档要
+    # 1.5-2 小时以上，OCR 是网络 I/O 为主，值得并发。8 是实测出来的值——
+    # 供应商在更高并发下会排队（不报错，只是变慢），不是并发越高越快，
+    # 具体数值因账号/供应商而异，见 app/ingestion/pdf_parser.py 里
+    # 2026-08-10 的并发排查记录。
+    ocr_max_concurrency: int = 8
 
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"

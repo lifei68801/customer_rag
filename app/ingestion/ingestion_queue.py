@@ -13,7 +13,11 @@ from app.graphrag.normalization import GraphWriteClientProtocol
 from app.graphrag.ontology import Term
 from app.ingestion.docx_parser import parse_docx
 from app.ingestion.ocr_parser import OcrFunction, parse_image
-from app.ingestion.pdf_parser import parse_pdf
+from app.ingestion.pdf_parser import (
+    _DEFAULT_OCR_MAX_CONCURRENCY,
+    _DEFAULT_OCR_RENDER_DPI,
+    parse_pdf,
+)
 from app.ingestion.pipeline import _ingest_chunks
 from app.ingestion.chunking import chunk_markdown
 from app.ingestion.ticket_parser import parse_ticket_csv
@@ -154,12 +158,23 @@ async def mark_job_failed(
     await conn.commit()
 
 
-def _parse_file(path: Path, *, ocr: OcrFunction | None):
+def _parse_file(
+    path: Path,
+    *,
+    ocr: OcrFunction | None,
+    ocr_render_dpi: int,
+    ocr_max_concurrency: int,
+):
     suffix = path.suffix.lower()
     if suffix in _IMAGE_SUFFIXES:
         return parse_image(path, ocr=ocr)
     if suffix == ".pdf":
-        return parse_pdf(path, ocr=ocr)
+        return parse_pdf(
+            path,
+            ocr=ocr,
+            render_dpi=ocr_render_dpi,
+            max_concurrency=ocr_max_concurrency,
+        )
     parser = _PARSERS.get(suffix)
     if parser is None:
         raise ValueError(f"不支持的文件类型: {suffix}")
@@ -178,6 +193,8 @@ async def process_pending_jobs(
     graph_client: GraphWriteClientProtocol | None = None,
     graph_review_conn: aiosqlite.Connection | None = None,
     ocr: OcrFunction | None = None,
+    ocr_render_dpi: int = _DEFAULT_OCR_RENDER_DPI,
+    ocr_max_concurrency: int = _DEFAULT_OCR_MAX_CONCURRENCY,
     limit: int = 10,
     max_attempts: int = 3,
 ) -> int:
@@ -211,7 +228,13 @@ async def process_pending_jobs(
                 # 租户的 /qa、/agent/chat）全部无响应。用 asyncio.to_thread
                 # 丢到线程池执行，和 milvus_store.py 里对同步 pymilvus
                 # 调用的处理方式保持一致。
-                chunks = await asyncio.to_thread(_parse_file, Path(file_path), ocr=ocr)
+                chunks = await asyncio.to_thread(
+                    _parse_file,
+                    Path(file_path),
+                    ocr=ocr,
+                    ocr_render_dpi=ocr_render_dpi,
+                    ocr_max_concurrency=ocr_max_concurrency,
+                )
                 use_graph = bool(job["build_graph"])
                 chunk_count = await _ingest_chunks(
                     chunks,
