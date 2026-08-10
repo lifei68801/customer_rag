@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from app.graphrag.ontology import Term
@@ -50,25 +51,41 @@ async def answer_question(
             text=UNSAFE_INPUT_MESSAGE, used_sources=[], retrieved_context=""
         )
 
-    term_guard_context: str | None = None
-    if terms and graph_client is not None:
-        term_guard_context = await build_term_guard_context(
-            question, terms=terms, tenant_id=tenant_id, graph_client=graph_client
+    async def _maybe_term_guard() -> str | None:
+        if terms and graph_client is not None:
+            return await build_term_guard_context(
+                question, terms=terms, tenant_id=tenant_id, graph_client=graph_client
+            )
+        return None
+
+    async def _do_hybrid_search():
+        return await hybrid_search(
+            question,
+            embedding_registry=embedding_registry,
+            embedding_provider_name=embedding_provider_name,
+            vector_store=vector_store,
+            bm25_index=bm25_index,
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
+            rerank_provider=rerank_provider,
+            query_rewrite_enabled=query_rewrite_enabled,
+            final_top_k=top_k,
+            tenant_id=tenant_id,
         )
 
-    records = await hybrid_search(
-        question,
-        embedding_registry=embedding_registry,
-        embedding_provider_name=embedding_provider_name,
-        vector_store=vector_store,
-        bm25_index=bm25_index,
-        llm_registry=llm_registry,
-        llm_provider_name=llm_provider_name,
-        rerank_provider=rerank_provider,
-        query_rewrite_enabled=query_rewrite_enabled,
-        final_top_k=top_k,
-        tenant_id=tenant_id,
+    # term_guard_context 只依赖 question/terms/graph_client，hybrid_search
+    # 的结果只依赖 question 本身，两者互不依赖，只有拼 prompt 那一步才会
+    # 同时用到——2026-08-10 起改成并发发起。return_exceptions=True 等
+    # 两边都跑完再手动重新抛出：保留"term_guard 失败必须让整个问答请求
+    # 失败"这条现状（改造前也是直接 await、异常直接传染），不能因为改成
+    # 并发就意外吞掉。
+    results = await asyncio.gather(
+        _maybe_term_guard(), _do_hybrid_search(), return_exceptions=True
     )
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    term_guard_context, records = results
     retrieved_context = "\n\n".join(record.text for record in records)
     prompt_context = retrieved_context
     if term_guard_context:

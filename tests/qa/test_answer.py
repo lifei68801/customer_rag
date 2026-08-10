@@ -1,3 +1,7 @@
+import asyncio
+
+import app.qa.answer as answer_module
+
 from app.graphrag.ontology import Term
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
@@ -248,3 +252,51 @@ async def test_answer_question_does_not_flag_email_in_generated_answer():
     )
 
     assert result.text == "如需帮助请联系 support@example.com"
+
+
+async def test_answer_question_runs_term_guard_and_hybrid_search_concurrently(monkeypatch):
+    """用两个互相等待对方先启动的 asyncio.Event 证明 term_guard 和
+    hybrid_search 是并发跑的：如果退化回顺序执行，先启动的一方会一直等
+    不到另一方启动、卡到 asyncio.wait_for 超时，测试会失败而不是静默
+    通过——比断言耗时更短更可靠。
+    """
+    term_guard_started = asyncio.Event()
+    hybrid_search_started = asyncio.Event()
+
+    async def fake_build_term_guard_context(question, *, terms, tenant_id, graph_client):
+        term_guard_started.set()
+        await asyncio.wait_for(hybrid_search_started.wait(), timeout=5)
+        return "检测到专有名词：示例术语"
+
+    async def fake_hybrid_search(question, **kwargs):
+        hybrid_search_started.set()
+        await asyncio.wait_for(term_guard_started.wait(), timeout=5)
+        return []
+
+    monkeypatch.setattr(answer_module, "build_term_guard_context", fake_build_term_guard_context)
+    monkeypatch.setattr(answer_module, "hybrid_search", fake_hybrid_search)
+
+    llm_provider = FakeLLMProvider()
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+
+    result = await answer_question(
+        "网络连不上怎么办？",
+        embedding_registry=EmbeddingRegistry(),
+        embedding_provider_name="fake-embedding",
+        vector_store=InMemoryVectorStore(),
+        bm25_index=BM25Index(),
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        tenant_id="t1",
+        terms=[
+            Term(
+                standard_name="示例术语", aliases=["示例术语"],
+                term_type="module", product_line="示例产品线",
+            )
+        ],
+        graph_client=FakeGraphClient(),
+    )
+
+    assert "检测到专有名词：示例术语" in llm_provider.requests[0].messages[0]["content"]
+    assert result.text == "按资料所述，重启路由器即可解决。"
