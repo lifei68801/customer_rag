@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     # 重新用同样的方法（同一批文档、控制变量对比不同并发数）实测。
     table_extraction_max_concurrency: int = 40
 
+    # 摄取任务队列跨文档并发数。默认 1（严格串行，和这次改造前完全一致）
+    # ——提高这个值前必须先用同一份文档批量、控制变量对比不同并发数的
+    # 方法（本仓库 ocr_max_concurrency/table_extraction_max_concurrency
+    # 都是这么定下来的）实测多文档同时摄取时账号的真实承受能力：之前的
+    # 并发梯度实测都是单文档内部多页并发，没有测过多文档同时发起 OCR/
+    # 表格提取请求这种叠加负载。见 docs/superpowers/plans/2026-08-10-
+    # qa-and-ingestion-concurrency-optimization.md。
+    ingestion_job_concurrency: int = 1
+
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "changeme123"

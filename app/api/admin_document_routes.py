@@ -108,6 +108,7 @@ async def _run_pending_jobs(
     ocr_max_concurrency: int,
     table_extractor: TableExtractionFunction | None,
     table_extraction_max_concurrency: int,
+    job_concurrency: int,
 ) -> None:
     """后台任务：入队后立即处理一批，不等外部 cron。
 
@@ -135,6 +136,7 @@ async def _run_pending_jobs(
         ocr_max_concurrency=ocr_max_concurrency,
         table_extractor=table_extractor,
         table_extraction_max_concurrency=table_extraction_max_concurrency,
+        job_concurrency=job_concurrency,
     )
 
 
@@ -219,6 +221,7 @@ async def upload_document(
         settings.ocr_max_concurrency,
         table_extractor,
         settings.table_extraction_max_concurrency,
+        settings.ingestion_job_concurrency,
     )
     return UploadResponse(job_id=job_id)
 

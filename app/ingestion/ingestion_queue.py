@@ -168,6 +168,8 @@ async def _parse_file(
     ocr_max_concurrency: int,
     table_extractor: TableExtractionFunction | None,
     table_extraction_max_concurrency: int,
+    ocr_semaphore: asyncio.Semaphore | None = None,
+    table_semaphore: asyncio.Semaphore | None = None,
 ):
     """PDF/图片走原生异步（OCR 内部按 ocr_max_concurrency 并发），其余
     格式（.md/.docx/.csv）本身是同步解析函数，用 asyncio.to_thread 丢进
@@ -188,6 +190,8 @@ async def _parse_file(
             max_concurrency=ocr_max_concurrency,
             table_extractor=table_extractor,
             table_extraction_max_concurrency=table_extraction_max_concurrency,
+            ocr_semaphore=ocr_semaphore,
+            table_semaphore=table_semaphore,
         )
     parser = _PARSERS.get(suffix)
     if parser is None:
@@ -211,6 +215,7 @@ async def process_pending_jobs(
     ocr_max_concurrency: int = _DEFAULT_OCR_MAX_CONCURRENCY,
     table_extractor: TableExtractionFunction | None = None,
     table_extraction_max_concurrency: int = _DEFAULT_TABLE_EXTRACTION_MAX_CONCURRENCY,
+    job_concurrency: int = 1,
     limit: int = 10,
     max_attempts: int = 3,
 ) -> int:
@@ -223,59 +228,83 @@ async def process_pending_jobs(
 
     每个任务的失败都单独捕获、单独判定重试/死信，不会因为一条任务出错
     影响同批次其它任务。
+
+    job_concurrency 控制这一批任务里最多同时处理几份文档，默认 1（严格
+    串行，和这次改造前完全一致）——见 Settings.ingestion_job_concurrency
+    的说明，提高这个值前必须先做真实的多文档并发负载测试。
     """
     jobs = await list_pending_jobs(conn, limit=limit)
-    processed = 0
-    for job in jobs:
-        tenant_id = job["tenant_id"]
-        file_path = job["file_path"]
-        try:
-            await vector_store.delete_by_source(source=file_path, tenant_id=tenant_id)
-            if job["action"] == "delete":
-                await remove_tracked_file(
-                    conn, tenant_id=tenant_id, file_path=file_path
+
+    # OCR/表格提取的 Semaphore 只在这一批任务里构造一次、跨文档共享——
+    # 不这样做的话，job_concurrency>1 时每份文档各自在 parse_pdf() 内部
+    # 新建一个 Semaphore，等于每份文档独立拥有一份"满额"的账号并发预算，
+    # 多文档同时摄取会共同把真实请求数顶到远超账号承受能力，而不是像
+    # 现在这样按配置的上限受控地共享。
+    ocr_semaphore = asyncio.Semaphore(ocr_max_concurrency) if ocr is not None else None
+    table_semaphore = (
+        asyncio.Semaphore(table_extraction_max_concurrency)
+        if table_extractor is not None
+        else None
+    )
+    # job_concurrency 控制"同时有几份文档在处理"，默认 1 和改造前完全
+    # 一致；调大之前需要先实测多文档同时摄取时账号的真实承受能力（见
+    # Settings.ingestion_job_concurrency 的说明）。
+    job_semaphore = asyncio.Semaphore(job_concurrency)
+
+    async def _process_one_job(job: dict[str, Any]) -> bool:
+        async with job_semaphore:
+            tenant_id = job["tenant_id"]
+            file_path = job["file_path"]
+            try:
+                await vector_store.delete_by_source(source=file_path, tenant_id=tenant_id)
+                if job["action"] == "delete":
+                    await remove_tracked_file(
+                        conn, tenant_id=tenant_id, file_path=file_path
+                    )
+                else:
+                    chunks = await _parse_file(
+                        Path(file_path),
+                        ocr=ocr,
+                        ocr_render_dpi=ocr_render_dpi,
+                        ocr_max_concurrency=ocr_max_concurrency,
+                        table_extractor=table_extractor,
+                        table_extraction_max_concurrency=table_extraction_max_concurrency,
+                        ocr_semaphore=ocr_semaphore,
+                        table_semaphore=table_semaphore,
+                    )
+                    use_graph = bool(job["build_graph"])
+                    chunk_count = await _ingest_chunks(
+                        chunks,
+                        Path(file_path),
+                        embedding_registry=embedding_registry,
+                        embedding_provider_name=embedding_provider_name,
+                        vector_store=vector_store,
+                        tenant_id=tenant_id,
+                        graph_llm_registry=graph_llm_registry if use_graph else None,
+                        graph_llm_provider_name=graph_llm_provider_name if use_graph else None,
+                        graph_terms=graph_terms if use_graph else None,
+                        graph_client=graph_client if use_graph else None,
+                        graph_review_conn=graph_review_conn if use_graph else None,
+                    )
+                    await record_ingested(
+                        conn,
+                        tenant_id=tenant_id,
+                        file_path=file_path,
+                        content_hash=job["content_hash"],
+                        chunk_count=chunk_count,
+                    )
+            except Exception as exc:  # noqa: BLE001 - 任何异常都要落到重试/死信逻辑
+                await mark_job_failed(
+                    conn, job["job_id"], error=str(exc), max_attempts=max_attempts
                 )
-            else:
-                # _parse_file() 自己是异步的：PDF/图片路径原生走
-                # asyncio（OCR 网络请求用 asyncio.gather 并发，不阻塞
-                # 事件循环），其余同步格式内部用 asyncio.to_thread 兜底
-                # （见 _parse_file 的说明）。process_pending_jobs() 跑在
-                # FastAPI 后台任务的同一个事件循环里，这里不需要再额外包
-                # 一层 asyncio.to_thread。
-                chunks = await _parse_file(
-                    Path(file_path),
-                    ocr=ocr,
-                    ocr_render_dpi=ocr_render_dpi,
-                    ocr_max_concurrency=ocr_max_concurrency,
-                    table_extractor=table_extractor,
-                    table_extraction_max_concurrency=table_extraction_max_concurrency,
-                )
-                use_graph = bool(job["build_graph"])
-                chunk_count = await _ingest_chunks(
-                    chunks,
-                    Path(file_path),
-                    embedding_registry=embedding_registry,
-                    embedding_provider_name=embedding_provider_name,
-                    vector_store=vector_store,
-                    tenant_id=tenant_id,
-                    graph_llm_registry=graph_llm_registry if use_graph else None,
-                    graph_llm_provider_name=graph_llm_provider_name if use_graph else None,
-                    graph_terms=graph_terms if use_graph else None,
-                    graph_client=graph_client if use_graph else None,
-                    graph_review_conn=graph_review_conn if use_graph else None,
-                )
-                await record_ingested(
-                    conn,
-                    tenant_id=tenant_id,
-                    file_path=file_path,
-                    content_hash=job["content_hash"],
-                    chunk_count=chunk_count,
-                )
-        except Exception as exc:  # noqa: BLE001 - 任何异常都要落到重试/死信逻辑
-            await mark_job_failed(
-                conn, job["job_id"], error=str(exc), max_attempts=max_attempts
-            )
-            continue
-        await mark_job_completed(conn, job["job_id"])
-        processed += 1
-    return processed
+                return False
+            await mark_job_completed(conn, job["job_id"])
+            return True
+
+    # job_concurrency=1（默认）时，job_semaphore 让这里退化成事实上的
+    # 逐个处理，行为和改造前完全一致；调大之后才会真的并发跑多份文档，
+    # 每个任务的失败依然单独捕获、单独判定重试/死信，不会因为一条任务
+    # 出错影响同批次其它任务（try/except 在 _process_one_job 内部，不
+    # 会让 gather 提前中断）。
+    results = await asyncio.gather(*(_process_one_job(job) for job in jobs))
+    return sum(1 for ok in results if ok)

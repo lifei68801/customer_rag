@@ -123,6 +123,7 @@ async def main(
         ocr_max_concurrency=resolved_settings.ocr_max_concurrency,
         table_extractor=resolved_table_extractor,
         table_extraction_max_concurrency=resolved_settings.table_extraction_max_concurrency,
+        job_concurrency=resolved_settings.ingestion_job_concurrency,
         limit=limit,
     )
 

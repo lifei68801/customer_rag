@@ -1,3 +1,5 @@
+import asyncio
+
 import aiosqlite
 
 from app.ingestion.ingestion_queue import (
@@ -341,3 +343,47 @@ async def test_enqueue_different_build_graph_flag_creates_separate_job():
 
     assert job_id_1 != job_id_2
     assert len(await list_pending_jobs(conn)) == 2
+
+
+async def test_process_pending_jobs_processes_documents_concurrently_when_job_concurrency_above_one(tmp_path):
+    """job_concurrency=2 时，两份 markdown 文档的摄取应该并发跑，不是排队
+    顺序执行——用两次 embedding 调用互等的方式证明：如果退化回顺序执行，
+    第一份文档的 embedding 调用会一直等不到第二份文档的 embedding 调用
+    启动，卡到 asyncio.wait_for 超时。
+    """
+    conn = await _connect()
+    (tmp_path / "a.md").write_text("## 主题A\n内容A。\n", encoding="utf-8")
+    (tmp_path / "b.md").write_text("## 主题B\n内容B。\n", encoding="utf-8")
+    await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path=str(tmp_path / "a.md"),
+        content_hash="hash-a", action="ingest",
+    )
+    await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path=str(tmp_path / "b.md"),
+        content_hash="hash-b", action="ingest",
+    )
+
+    started_count = {"n": 0}
+    both_started = asyncio.Event()
+
+    class SyncEmbeddingProvider:
+        async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+            started_count["n"] += 1
+            if started_count["n"] >= 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=5)
+            return EmbeddingResult(vectors=[[0.1, 0.2] for _ in request.texts])
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", SyncEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    processed = await process_pending_jobs(
+        conn,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        job_concurrency=2,
+    )
+
+    assert processed == 2
