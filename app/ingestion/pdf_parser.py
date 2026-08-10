@@ -36,13 +36,16 @@ _DEFAULT_OCR_MAX_CONCURRENCY = 8
 或者账号配额调整后需要重新实测，所以只是 parse_pdf() 的 max_concurrency
 参数没传时的兜底值，调用方应该优先传 Settings.ocr_max_concurrency。"""
 
-_DEFAULT_TABLE_EXTRACTION_MAX_CONCURRENCY = 1
-"""跟 _DEFAULT_OCR_MAX_CONCURRENCY 不一样，这个数字不是实测出来的——只是
-"不并发"这个最保守的兜底值。这个模型/端点还没有做过 OCR 那样的并发梯度
-实测，贸然给个"看起来合理"的默认值风险很高。只是 parse_pdf() 的
-table_extraction_max_concurrency 参数没传时的兜底值；调用方应该优先传
-Settings.table_extraction_max_concurrency，且提高这个值之前必须先用同样
-的方法（同一份文档、控制变量对比不同并发数）单独实测这个端点。"""
+_DEFAULT_TABLE_EXTRACTION_MAX_CONCURRENCY = 40
+"""2026-08-10 用真实请求对同一账号做过并发梯度实测（4/8/20/40 对比，每档
+20-40 次真实调用，逐次记录时间戳核对是否有排队现象）：全程 0 个 429/
+超时，且同一页在不同并发档位下耗时几乎不变（耗时由该页输出长度决定，
+不是排队等待）——和 _DEFAULT_OCR_MAX_CONCURRENCY 那次测到明显排队拐点
+不同，这次没有测到拐点。40 是目前测过的最高并发档位，不代表账号真实
+上限就是 40（没有再往上测）。只是 parse_pdf() 的
+table_extraction_max_concurrency 参数没传时的兜底值，调用方应该优先传
+Settings.table_extraction_max_concurrency；换账号/供应商需要重新用同样
+的方法（同一份文档、控制变量对比不同并发数）实测这个端点。"""
 
 
 def _clean_cell(value: str | None) -> str:

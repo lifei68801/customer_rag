@@ -63,14 +63,14 @@ class Settings(BaseSettings):
     # 错误；只有 qwen-vl-max 实测完整准确，见 table_extraction.py 里
     # _DEFAULT_MODEL 的说明。
     table_extraction_model: str | None = None
-    # 并发数默认保守到 1（不并发）——不像 OCR 的 8 是拿真实请求做过并发
-    # 梯度实测（4/6/8/20 对比）才定下来的，这个端点/模型还没有做过同样
-    # 的实测，贸然给个"看起来合理"的默认值风险很高（今天已经因为 embedding
-    # 并发配置偏高连续撞了两次 429，账号进入限流冷却期，教训现成的）。
-    # 要提高并发前必须先用 pdf_parser.py 那次并发排查同样的方法（同一份
-    # 文档、控制变量对比不同并发数的总耗时和是否报错）实测这个端点的
-    # 承受能力，不能直接照抄 OCR 的 8。
-    table_extraction_max_concurrency: int = 1
+    # 2026-08-10 用真实请求对同一账号做过并发梯度实测（4/8/20/40 对比，
+    # 每档 20-40 次真实调用，按时间戳逐次核对）：全程 0 个 429/超时，且
+    # 同一页在不同并发档位下耗时几乎不变（耗时由该页输出长度决定，不是
+    # 排队等待）——不像 qwen-vl-ocr 端点那样存在隐性排队上限（对比见
+    # ocr_max_concurrency 的说明）。默认给 40，这是目前测过的最高并发
+    # 档位，不代表账号真实上限就是 40（没有再往上测）；换账号/供应商需要
+    # 重新用同样的方法（同一批文档、控制变量对比不同并发数）实测。
+    table_extraction_max_concurrency: int = 40
 
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
