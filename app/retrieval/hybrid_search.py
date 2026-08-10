@@ -45,24 +45,13 @@ async def hybrid_search(
     app/qa/query_rewrite.py；不传则只看孤立的当前问题，行为不变。
 
     query_texts（原始问题 + 可能的改写问题）各自的向量检索用 asyncio.gather
-    并发执行，而不是顺序等待——两条链路各自都是一次 embedding API 调用加一次
-    Milvus 查询，顺序执行会让总延迟翻倍。BM25 检索是同步内存操作，没有 IO
-    等待，不需要纳入并发调度。
+    并发执行。bm25 检索（同步、无 IO 等待，纯 CPU 计算）用 asyncio.to_thread
+    包一层，和"改写+向量检索"整条链路并发发起——bm25_search 只依赖原始
+    question，和改写结果没有数据依赖，2026-08-10 起不再排在改写+向量检索
+    之后串行执行；包一层线程同时避免了 bm25 的同步计算独占事件循环。
     """
     candidates: dict[str, VectorRecord] = {}
     ranked_id_lists: list[list[str]] = []
-
-    query_texts = [question]
-    if query_rewrite_enabled:
-        rewritten = await rewrite_query(
-            question,
-            llm_registry=llm_registry,
-            llm_provider_name=llm_provider_name,
-            timeout_sec=query_rewrite_timeout_sec,
-            conversation_context=conversation_context,
-        )
-        if rewritten != question:
-            query_texts.append(rewritten)
 
     async def _vector_search_for_text(text: str) -> list[VectorRecord]:
         embed_result = await embedding_registry.run(
@@ -73,15 +62,48 @@ async def hybrid_search(
             embed_result.vectors[0], top_k=vector_top_k, tenant_id=tenant_id
         )
 
-    per_text_hits = await asyncio.gather(
-        *(_vector_search_for_text(text) for text in query_texts)
+    async def _rewrite_and_vector_search() -> list[list[VectorRecord]]:
+        query_texts = [question]
+        if query_rewrite_enabled:
+            rewritten = await rewrite_query(
+                question,
+                llm_registry=llm_registry,
+                llm_provider_name=llm_provider_name,
+                timeout_sec=query_rewrite_timeout_sec,
+                conversation_context=conversation_context,
+            )
+            if rewritten != question:
+                query_texts.append(rewritten)
+        return await asyncio.gather(
+            *(_vector_search_for_text(text) for text in query_texts)
+        )
+
+    async def _bm25_search() -> list:
+        return await asyncio.to_thread(
+            bm25_index.search, question, top_k=bm25_top_k, tenant_id=tenant_id
+        )
+
+    # bm25_search 只依赖原始 question，和"改写+向量检索"这条链路没有数据
+    # 依赖，2026-08-10 起改成并发发起，不再排在改写+向量检索全部跑完之后；
+    # 同时用 asyncio.to_thread 包一层——bm25 是纯同步 CPU 计算（每次对整个
+    # 租户全量重算 tf/idf，没有预建倒排索引），不包线程会独占事件循环，
+    # 期间同一进程收到的其它请求全部卡住排队，真实测试量过单次 3ms–308ms。
+    # 用 return_exceptions=True 等两边都跑完再手动重新抛出，而不是用 gather
+    # 默认行为：默认行为下一边抛异常会让 gather 立刻返回、另一边可能还在
+    # 后台裸跑，产生不会被任何人处理的"未获取异常"。
+    results = await asyncio.gather(
+        _rewrite_and_vector_search(), _bm25_search(), return_exceptions=True
     )
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    per_text_hits, bm25_hits = results
+
     for vector_hits in per_text_hits:
         ranked_id_lists.append([record.id for record in vector_hits])
         for record in vector_hits:
             candidates[record.id] = record
 
-    bm25_hits = bm25_index.search(question, top_k=bm25_top_k, tenant_id=tenant_id)
     ranked_id_lists.append([hit.id for hit in bm25_hits])
     for hit in bm25_hits:
         candidates.setdefault(

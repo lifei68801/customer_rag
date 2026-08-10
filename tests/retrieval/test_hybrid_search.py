@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
@@ -219,3 +222,56 @@ async def test_hybrid_search_rewrites_score_with_rerank_relevance():
     scores_by_id = {record.id: record.score for record in results}
     assert scores_by_id["vector_hit"] == 0.42
     assert scores_by_id["bm25_hit"] == 0.17
+
+
+async def test_hybrid_search_runs_bm25_concurrently_with_rewrite_and_vector_search():
+    """bm25_search 只依赖原始 question，和"改写+向量检索"那条链路没有数据
+    依赖——用真实耗时差证明两者是并发跑的，不是先后执行。跨线程场景（bm25
+    走 asyncio.to_thread）没法用 asyncio.Event 互等做确定性证明，所以这里
+    退而求其次用耗时差：如果退化回顺序执行，总耗时会 ≈ 0.4s；真正并发时
+    应该 ≈ 0.2s（两段各自 sleep 0.2s，重叠执行）。
+    """
+    records = [
+        VectorRecord(
+            id="doc1", vector=[1.0, 0.0], text="错误码 E502 表示网关超时",
+            tenant_id="t1", metadata={},
+        ),
+    ]
+    store = InMemoryVectorStore()
+    await store.upsert(records)
+
+    class SlowEmbeddingProvider:
+        async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+            await asyncio.sleep(0.2)
+            return EmbeddingResult(vectors=[[1.0, 0.0] for _ in request.texts])
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("slow-embedding", SlowEmbeddingProvider())
+    llm_registry = ProviderRegistry()  # 不注册 provider，query_rewrite_enabled=False 时不会用到
+
+    class SlowBM25Index(BM25Index):
+        def search(self, query: str, *, top_k: int, tenant_id: str):
+            time.sleep(0.2)
+            return super().search(query, top_k=top_k, tenant_id=tenant_id)
+
+    slow_bm25 = SlowBM25Index()
+    slow_bm25.index(records)
+
+    start = time.perf_counter()
+    await hybrid_search(
+        "E502 错误码是什么意思",
+        embedding_registry=embedding_registry,
+        embedding_provider_name="slow-embedding",
+        vector_store=store,
+        bm25_index=slow_bm25,
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        query_rewrite_enabled=False,
+        final_top_k=2,
+        tenant_id="t1",
+    )
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 0.35, (
+        f"耗时 {elapsed:.3f}s 接近 0.4s（两段串行相加），bm25 没有和向量检索并发"
+    )
