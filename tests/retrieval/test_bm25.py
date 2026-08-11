@@ -219,3 +219,30 @@ def test_search_with_single_document_corpus_does_not_divide_by_zero():
     hits = index.search("网络", top_k=5, tenant_id="t1")
     assert len(hits) == 1
     assert hits[0].id == "a"
+
+
+def test_search_breaks_score_ties_by_original_insertion_order_not_set_iteration_order():
+    """两篇文档如果 token multiset 完全相同（因此 BM25 分数在数学上必然
+    相等），排序时应该保持原始插入顺序，和旧的全量扫描实现（按列表原始
+    顺序遍历、稳定排序）行为一致——这是对 search() 里 sorted(candidate_indices)
+    那行代码的真实回归保护：如果退化成直接遍历一个 set（迭代顺序不保证），
+    这个测试会因为两篇文档的相对顺序不确定而不稳定失败。差分测试的固定
+    数据集里恰好没有产生过真正的平局，测不出这个问题，所以需要这个单独
+    聚焦的测试。
+    """
+    tied_records = [
+        VectorRecord(
+            id="first", vector=[], text="网络故障排查手册", tenant_id="t_tie", metadata={}
+        ),
+        VectorRecord(
+            id="second", vector=[], text="网络故障排查手册", tenant_id="t_tie", metadata={}
+        ),
+    ]
+    index = BM25Index()
+    index.index(tied_records)
+
+    hits = index.search("网络故障", top_k=2, tenant_id="t_tie")
+
+    assert len(hits) == 2
+    assert hits[0].score == hits[1].score  # 先确认这真的是一次平局，不是断言本身没验证到位
+    assert [h.id for h in hits] == ["first", "second"]  # 平局时按插入顺序排列
