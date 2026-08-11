@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.retrieval.vector_store import VectorRecord, VectorStore
 
@@ -20,47 +20,80 @@ class BM25Hit:
     score: float
 
 
+@dataclass
+class _TenantIndex:
+    """单个租户的倒排索引状态，`BM25Index` 按 tenant_id 各维护一份，
+    完全独立——查询时直接定位到对应租户，不会扫描或过滤到其它租户的
+    数据，也不会被其它租户的高频词污染候选集。
+    """
+
+    records: list[VectorRecord] = field(default_factory=list)
+    tokenized_docs: list[list[str]] = field(default_factory=list)
+    # token -> 包含它的文档本地下标集合，这就是倒排表本体：以前想知道
+    # "哪些文档包含某个词"要把每篇文档翻一遍，现在直接查表。
+    postings: dict[str, set[int]] = field(default_factory=dict)
+    # token -> 包含它的文档数，随 index() 调用增量维护，不用每次 search()
+    # 都重新扫描全部文档统计一遍。
+    doc_freq: dict[str, int] = field(default_factory=dict)
+    total_token_count: int = 0
+
+
 class BM25Index:
-    """轻量级 BM25Okapi 关键词检索索引，中文按字符切分。"""
+    """BM25Okapi 关键词检索索引，中文按字符切分，按租户维护倒排索引。
+
+    search() 用倒排表（postings）把候选集收窄到"真正包含至少一个查询词
+    的文档"，不是每次都扫描该租户的全部文档——候选集筛选在数学上和全量
+    扫描精确等价（不包含任何查询词的文档，BM25 公式下贡献分数恒为 0），
+    不是用速度换精度的近似优化。见 docs/superpowers/specs/2026-08-11-
+    bm25-inverted-index-design.md。
+    """
 
     def __init__(self, *, k1: float = 1.5, b: float = 0.75) -> None:
         self._k1 = k1
         self._b = b
-        self._records: list[VectorRecord] = []
-        self._tokenized_docs: list[list[str]] = []
+        self._tenants: dict[str, _TenantIndex] = {}
 
     def index(self, records: list[VectorRecord]) -> None:
-        self._records.extend(records)
-        self._tokenized_docs.extend(_tokenize(r.text) for r in records)
+        for record in records:
+            tenant = self._tenants.setdefault(record.tenant_id, _TenantIndex())
+            tokens = _tokenize(record.text)
+            local_idx = len(tenant.records)
+            tenant.records.append(record)
+            tenant.tokenized_docs.append(tokens)
+            tenant.total_token_count += len(tokens)
+            for token in set(tokens):
+                tenant.postings.setdefault(token, set()).add(local_idx)
+                tenant.doc_freq[token] = tenant.doc_freq.get(token, 0) + 1
 
     def search(self, query: str, *, top_k: int, tenant_id: str) -> list[BM25Hit]:
+        tenant = self._tenants.get(tenant_id)
         query_tokens = _tokenize(query)
-        scoped = [
-            (record, tokens)
-            for record, tokens in zip(self._records, self._tokenized_docs)
-            if record.tenant_id == tenant_id
-        ]
-        if not query_tokens or not scoped:
+        if not query_tokens or tenant is None:
             return []
 
-        scoped_docs = [tokens for _, tokens in scoped]
-        doc_count = len(scoped_docs)
-        avgdl = sum(len(d) for d in scoped_docs) / doc_count
+        candidate_indices: set[int] = set()
+        for token in query_tokens:
+            candidate_indices |= tenant.postings.get(token, set())
+        if not candidate_indices:
+            return []
 
-        doc_freq: dict[str, int] = {}
-        for tokens in scoped_docs:
-            for token in set(tokens):
-                doc_freq[token] = doc_freq.get(token, 0) + 1
+        doc_count = len(tenant.records)
+        avgdl = tenant.total_token_count / doc_count
 
         idf: dict[str, float] = {}
         for token in set(query_tokens):
-            freq = doc_freq.get(token, 0)
+            freq = tenant.doc_freq.get(token, 0)
             idf[token] = math.log(1.0 + (doc_count - freq + 0.5) / (freq + 0.5))
 
         scored: list[tuple[float, VectorRecord]] = []
-        for record, tokens in scoped:
-            if not tokens:
-                continue
+        # sorted() 而不是直接遍历 candidate_indices（一个 set，迭代顺序不
+        # 保证稳定）——保证按原始文档插入顺序处理，分数打平时的 tie-break
+        # 顺序才能和旧的全量扫描实现（按 scoped 列表原始顺序遍历）完全
+        # 一致，不然差分测试在遇到同分文档时会因为顺序不同而失败，那不是
+        # 排序逻辑错了，是这里偷懒用了不确定顺序的遍历。
+        for local_idx in sorted(candidate_indices):
+            tokens = tenant.tokenized_docs[local_idx]
+            record = tenant.records[local_idx]
             term_freq: dict[str, int] = {}
             for token in tokens:
                 term_freq[token] = term_freq.get(token, 0) + 1
