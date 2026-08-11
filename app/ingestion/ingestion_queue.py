@@ -307,10 +307,14 @@ async def process_pending_jobs(
             await mark_job_completed(conn, job["job_id"])
             return True
 
-    # job_concurrency=1（默认）时，job_semaphore 让这里退化成事实上的
-    # 逐个处理，行为和改造前完全一致；调大之后才会真的并发跑多份文档，
-    # 每个任务的失败依然单独捕获、单独判定重试/死信，不会因为一条任务
-    # 出错影响同批次其它任务（try/except 在 _process_one_job 内部，不
-    # 会让 gather 提前中断）。
-    results = await asyncio.gather(*(_process_one_job(job) for job in jobs))
-    return sum(1 for ok in results if ok)
+    # 用 return_exceptions=True 等所有任务都跑完（不管成败）再统计结果，
+    # 而不是用 gather 默认行为——_process_one_job 末尾的 mark_job_completed
+    # 在 try/except 之外，万一它本身失败（比如并发场景下 aiosqlite 的偶发
+    # 错误），默认 gather 行为会让这个异常直接从这里抛出，其它还在跑的
+    # 任务变成没人处理的后台任务。这里把"跑出未捕获异常"也算作失败（不
+    # 重新抛出），不影响每个任务真正的成功/失败判定——那部分已经在
+    # _process_one_job 内部的 try/except 完成了，这里只是最后一道防线。
+    results = await asyncio.gather(
+        *(_process_one_job(job) for job in jobs), return_exceptions=True
+    )
+    return sum(1 for ok in results if ok is True)

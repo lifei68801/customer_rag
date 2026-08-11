@@ -73,12 +73,25 @@ class Settings(BaseSettings):
     table_extraction_max_concurrency: int = 40
 
     # 摄取任务队列跨文档并发数。默认 1（严格串行，和这次改造前完全一致）
-    # ——提高这个值前必须先用同一份文档批量、控制变量对比不同并发数的
+    # ——提高这个值前，除了要用同一份文档批量、控制变量对比不同并发数的
     # 方法（本仓库 ocr_max_concurrency/table_extraction_max_concurrency
-    # 都是这么定下来的）实测多文档同时摄取时账号的真实承受能力：之前的
-    # 并发梯度实测都是单文档内部多页并发，没有测过多文档同时发起 OCR/
-    # 表格提取请求这种叠加负载。见 docs/superpowers/plans/2026-08-10-
-    # qa-and-ingestion-concurrency-optimization.md。
+    # 都是这么定下来的）实测多文档同时摄取时账号的真实承受能力，还必须
+    # 先解决三个目前只在 job_concurrency=1 时被"顺序执行"掩盖掉的问题
+    # （2026-08-10 最终代码评审发现，详见
+    # docs/superpowers/plans/2026-08-10-qa-and-ingestion-concurrency-
+    # optimization.md）：
+    # 1) 同一个 (tenant_id, file_path) 可能同时有多条 pending 任务（内容
+    #    改了两次、或 build_graph 标志不同），并发处理会导致
+    #    delete_by_source/ingest 交错执行，两个版本的 chunk 都可能残留
+    #    在向量库里——需要按 (tenant_id, file_path) 分组，组内仍然串行；
+    # 2) embedding/图谱抽取的并发预算目前不是跨文档共享的（每次
+    #    embedding_registry.run() 内部各自新建 Semaphore），job_concurrency
+    #    调高会让这两类调用的实际并发数被乘以 job_concurrency，需要参照
+    #    ocr_semaphore/table_semaphore 的做法做成跨文档共享；
+    # 3) 摄取用到的所有 CPU 密集型同步工作（_prepare_pdf_sync 等）都走
+    #    asyncio 默认线程池，和 BM25 检索、Milvus 调用共用同一个池子，
+    #    job_concurrency 调高可能让长时间的 PDF 渲染任务饿死这些延迟敏感
+    #    的调用，需要单独配一个专用线程池。
     ingestion_job_concurrency: int = 1
 
     neo4j_uri: str = "bolt://localhost:7687"

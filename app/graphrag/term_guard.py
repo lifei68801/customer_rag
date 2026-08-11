@@ -38,7 +38,13 @@ async def build_term_guard_context(
     tenant_id 透传给 query_subgraph，保证强制注入的图谱上下文只包含
     当前租户自己的关系事实，不会把其它租户的知识泄露进来。
     """
-    matched = match_terms(text, terms)
+    # match_terms 是纯 CPU 计算（对整个术语表做模糊匹配），可能有实际
+    # 耗时——包一层 asyncio.to_thread，避免它在事件循环上同步跑完才把
+    # 控制权交还。build_term_guard_context() 会和 hybrid_search() 并发
+    # 跑（见 app/qa/answer.py::answer_question），不这样做的话这段 CPU
+    # 时间会拖慢 hybrid_search() 本该立刻发出的第一次网络请求，抵消掉
+    # 并发本来要换来的收益。
+    matched = await asyncio.to_thread(match_terms, text, terms)
     if not matched:
         return None
 
@@ -47,10 +53,33 @@ async def build_term_guard_context(
     # 顺序 await。展示顺序仍然严格按 matched（术语表原始顺序）排列，不
     # 按查询完成的先后顺序，靠先 gather 再按索引组装文本实现，不是靠
     # "谁先跑完谁先加进 lines"。
-    async def _query_one(term: Term) -> list[dict[str, Any]]:
-        return await graph_client.query_subgraph(term.standard_name, tenant_id=tenant_id)
+    #
+    # 并发数用一个小 Semaphore（8）兜底：match_terms 命中数量取决于文本
+    # 长度和术语表规模，理论上没有上限，不限制在极端情况下（一段话命中
+    # 几十个术语）可能让并发查询数超过 Neo4j 驱动的连接池上限
+    # （max_connection_pool_size 默认 100），造成连接获取超时。8 给得
+    # 很宽松，正常场景（命中几个术语）不会受这层节流影响。
+    #
+    # 用 return_exceptions=True 等所有查询都跑完（不管成败）再决定要不要
+    # 重新抛出，而不是用 gather 默认行为——默认行为下一个查询失败会让
+    # gather 立刻返回，其它还在执行的查询变成没人处理的后台任务。这里
+    # 等全部落地再抛，语义上仍然和改造前一致：任一术语的图谱查询失败都
+    # 让整个 build_term_guard_context() 失败。
+    query_semaphore = asyncio.Semaphore(8)
 
-    subgraphs = await asyncio.gather(*(_query_one(term) for term in matched))
+    async def _query_one(term: Term) -> list[dict[str, Any]]:
+        async with query_semaphore:
+            return await graph_client.query_subgraph(
+                term.standard_name, tenant_id=tenant_id
+            )
+
+    results = await asyncio.gather(
+        *(_query_one(term) for term in matched), return_exceptions=True
+    )
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    subgraphs = results
 
     lines = ["检测到以下专有名词，已强制注入知识图谱上下文（回答时请使用标准名称）："]
     for term, subgraph in zip(matched, subgraphs):
