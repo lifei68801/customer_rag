@@ -22,6 +22,34 @@ class FakeLLMProvider:
         return ProviderResult(text=self._text)
 
 
+class DispatchingLLMProvider:
+    """按请求内容路由到对应响应，而不是假设 LLM 调用严格按位置发生。
+
+    correction_check 与 clarification_check->term_guard->memory_recall 这两
+    条分支自 2026-08-12 起并行执行（见 app/agent/graph.py），且
+    correction_check 内部还会先过一道规则前置过滤、不像纠正的问题直接跳过
+    LLM 调用（app/memory/correction_intent.py）——同一轮里到底会发生哪几次
+    LLM 调用、谁先谁后不再是写死的顺序，用位置弹队列的旧写法在这两种改动
+    下都不稳定。按请求消息里出现的关键词（各调用点的系统提示词彼此不同，
+    足够区分是谁发起的）匹配到对应的响应队列。
+    """
+
+    def __init__(self, rules: list[tuple[str, list[str]]]) -> None:
+        self._rules = [(key, list(responses)) for key, responses in rules]
+        self.requests: list[ProviderRequest] = []
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        self.requests.append(request)
+        haystack = " ".join(m.get("content") or "" for m in request.messages)
+        for key, responses in self._rules:
+            if key in haystack and responses:
+                return ProviderResult(text=responses.pop(0))
+        raise AssertionError(
+            f"DispatchingLLMProvider 没有匹配到任何规则（或规则响应已耗尽）："
+            f"{haystack[:200]!r}"
+        )
+
+
 async def _build_dependencies(*, with_records: bool, llm_text: str):
     embedding_registry = EmbeddingRegistry()
     embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
@@ -295,24 +323,17 @@ async def test_time_reply_merges_with_pending_clarification_before_retrieval():
     )
     from app.memory.schema import ensure_schema
 
-    class RecordingLLMProvider:
-        def __init__(self, responses: list[str]) -> None:
-            self._responses = list(responses)
-            self.requests: list[ProviderRequest] = []
-
-        async def complete(self, request: ProviderRequest) -> ProviderResult:
-            self.requests.append(request)
-            return ProviderResult(text=self._responses.pop(0))
-
     embedding_registry, vector_store, bm25_index, _unused_llm_registry, _unused_llm_provider = (
         await _build_dependencies(with_records=True, llm_text="不应该被用到")
     )
-    llm_provider = RecordingLLMProvider(
+    # "上周三"不含任何纠正类线索，correction_check 的规则前置过滤会直接跳过
+    # 这次 LLM 调用（不需要为它准备响应）；resolve_time_window 故意给低置信度，
+    # 回退规则引擎判"上周三"（规则引擎也不覆盖，最终 unresolved）。
+    llm_provider = DispatchingLLMProvider(
         [
-            '{"is_correction": false}',  # correction_check_node 对原始问题"上周三"的意图检测
-            '{"start": null, "end": null, "confidence": 0}',  # memory_recall_node 的 resolve_time_window，低置信度回退规则引擎（"上周三"规则引擎也不覆盖，最终 unresolved）
-            "重启路由器即可解决。",  # responder（第三次 LLM 调用）
-            '{"is_safe": true}',  # output_safety 的语义审查
+            ("时间表达式解析器", ['{"start": null, "end": null, "confidence": 0}']),
+            ("根据以下资料回答问题", ["重启路由器即可解决。"]),
+            ("语义级安全审查员", ['{"is_safe": true}']),
         ]
     )
     llm_registry = ProviderRegistry()
@@ -344,11 +365,13 @@ async def test_time_reply_merges_with_pending_clarification_before_retrieval():
         {"question": "上周三", "tenant_id": "t1", "session_id": "s1", "user_id": "c1"}
     )
 
-    # 短时间回复应该和原问题拼接后再走检索，responder（第三次 LLM 调用：
-    # correction_check=0，memory_recall_node 的 resolve_time_window=1，
-    # responder=2）拿到的是合并后的问题
-    assert len(llm_provider.requests) >= 3
-    prompt_text = llm_provider.requests[2].messages[-1]["content"]
+    # 短时间回复应该和原问题拼接后再走检索，responder 拿到的是合并后的问题
+    responder_requests = [
+        req for req in llm_provider.requests
+        if "根据以下资料回答问题" in req.messages[-1]["content"]
+    ]
+    assert len(responder_requests) == 1
+    prompt_text = responder_requests[0].messages[-1]["content"]
     assert "工单进度怎么样" in prompt_text
     assert "上周三" in prompt_text
 

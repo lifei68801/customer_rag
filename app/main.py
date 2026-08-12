@@ -4,11 +4,13 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI
 
+from app.api import deps
 from app.api.admin_auth_routes import router as admin_auth_router
 from app.api.admin_document_routes import router as admin_document_router
 from app.api.admin_graph_review_routes import router as admin_graph_review_router
 from app.api.agent_routes import router as agent_router
 from app.api.qa_routes import router as qa_router
+from app.api.session_routes import router as session_router
 from app.api.voice_routes import router as voice_router
 from app.config.settings import Settings
 
@@ -37,12 +39,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "生产环境多租户部署必须配置 CUSTOMER_RAG_GATEWAY_SHARED_SECRET，"
             "否则这条安全修复不会实际生效。"
         )
+
+    # 预热向量库连接 + BM25 索引：get_bm25_index（app/api/deps.py）是进程内
+    # 单例，首次调用时才会同步全量扫描向量库重建索引——不预热的话这笔耗时
+    # （叠加 Milvus 刚启动/集合刚恢复时的额外延迟）会摊在启动后第一个真实
+    # 用户请求上，表现为"偶尔某一次问答格外慢"。这里在启动阶段提前把它
+    # 跑一遍，后续请求的同一个 Depends(get_bm25_index) 会直接命中缓存。
+    # 失败（比如 Milvus 还没就绪）只告警不阻断启动——不能让向量库暂时不可用
+    # 拖垮整个应用的启动，后续请求仍会按原有的"首次访问时重建"逻辑兜底。
+    try:
+        vector_store = deps.get_vector_store(settings)
+        await deps.get_bm25_index(vector_store)
+        logger.info("BM25 索引预热完成")
+    except Exception:
+        logger.warning("启动预热 BM25 索引失败，将在首个请求时重试", exc_info=True)
+
     yield
 
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(qa_router)
 app.include_router(agent_router)
+app.include_router(session_router)
 app.include_router(voice_router)
 app.include_router(admin_auth_router)
 app.include_router(admin_document_router)

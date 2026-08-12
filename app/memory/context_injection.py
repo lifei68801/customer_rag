@@ -23,15 +23,23 @@ async def inject_memory_context(
     question: str | None = None,
     embedding_registry: EmbeddingRegistry | None = None,
     embedding_provider_name: str | None = None,
+    use_embedding_recall: bool = True,
 ) -> list[dict[str, Any]]:
     """组装记忆上下文消息：长期记忆条目 + （压缩后的）近期会话轮次。
 
-    question/embedding_registry/embedding_provider_name 均提供时，长期记忆
-    条目改用 recall_memory_items() 的多源召回融合+MMR 结果（跟当前问题的
-    相关性排序），而不是"全部 active 条目按更新时间截断"；三者任一缺失
-    则保留旧行为，向后兼容不传这些参数的调用方。
+    question 提供时，长期记忆条目改用 recall_memory_items() 的多源召回
+    融合+MMR 结果（跟当前问题的相关性排序），而不是"全部 active 条目按
+    更新时间截断"；question 缺失则保留旧行为，向后兼容不传这个参数的
+    调用方。
+
+    use_embedding_recall=False 时 recall_memory_items 只用 BM25 关键词排名，
+    不需要 embedding_registry/embedding_provider_name（可以不传）——见
+    Settings.memory_recall_use_embedding 的说明。
     """
-    if question is not None and embedding_registry is not None and embedding_provider_name is not None:
+    if question is not None and (
+        use_embedding_recall is False
+        or (embedding_registry is not None and embedding_provider_name is not None)
+    ):
         memory_items = await recall_memory_items(
             conn,
             tenant_id=tenant_id,
@@ -40,6 +48,7 @@ async def inject_memory_context(
             embedding_registry=embedding_registry,
             embedding_provider_name=embedding_provider_name,
             top_k=memory_item_limit,
+            use_embedding=use_embedding_recall,
         )
     else:
         memory_items = await list_active_memory_items(

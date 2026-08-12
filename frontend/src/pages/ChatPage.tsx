@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { Hero } from '../components/Hero'
 import { ChatWindow } from '../components/ChatWindow'
 import { ChatInput } from '../components/ChatInput'
+import { ChatSidebar } from '../components/ChatSidebar'
 import { Footer } from '../components/Footer'
 import { useAgentChat } from '../hooks/useAgentChat'
 
@@ -28,42 +29,56 @@ function GearIcon() {
 }
 
 export function ChatPage() {
-  const { messages, isSending, sendQuestion, resetConversation } = useAgentChat()
+  const {
+    messages,
+    isSending,
+    sendQuestion,
+    resetConversation,
+    sessions,
+    sessionsError,
+    activeSessionId,
+    selectSession,
+    deleteSession,
+  } = useAgentChat()
 
   useEffect(() => {
-    document.title = '客服智能问答 Demo'
+    document.title = '企业数字员工'
   }, [])
 
   return (
     <div className="flex min-h-dvh flex-col bg-paper">
       <div className="border-b-2 border-ink bg-ink px-4 py-2 text-center font-mono text-xs uppercase tracking-widest text-accent-yellow">
-        检索增强生成 + 知识图谱驱动的客服问答演示
+        知识驱动的企业数字员工
       </div>
       <nav className="flex items-center justify-between border-b-2 border-ink bg-accent-yellow px-6 py-4">
-        <span className="font-bold text-ink">客服智能问答 Demo</span>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={resetConversation}
-            disabled={messages.length === 0}
-            className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
-          >
-            重新开始对话
-          </button>
-          <Link
-            to="/admin"
-            className={`flex min-h-[44px] cursor-pointer items-center gap-1.5 border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
-          >
-            <GearIcon />
-            管理后台
-          </Link>
-        </div>
+        <span className="font-bold text-ink">企业数字员工</span>
+        <Link
+          to="/admin"
+          className={`flex min-h-[44px] cursor-pointer items-center gap-1.5 border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+        >
+          <GearIcon />
+          管理后台
+        </Link>
       </nav>
-      <Hero />
-      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
-        <ChatWindow messages={messages} />
-        <ChatInput disabled={isSending} onSend={sendQuestion} />
-      </main>
+      {/* 侧边栏在窄屏（<768px）下改成顶部横条（ChatSidebar 内部处理），
+          和 AdminLayout 的响应式方案同一个思路。 */}
+      <div className="flex flex-1 flex-col md:flex-row">
+        <ChatSidebar
+          sessions={sessions}
+          sessionsError={sessionsError}
+          activeSessionId={activeSessionId}
+          onSelectSession={selectSession}
+          onNewSession={resetConversation}
+          onDeleteSession={deleteSession}
+        />
+        <div className="flex flex-1 flex-col">
+          <Hero />
+          <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
+            <ChatWindow messages={messages} />
+            <ChatInput disabled={isSending} onSend={sendQuestion} />
+          </main>
+        </div>
+      </div>
       <Footer />
     </div>
   )

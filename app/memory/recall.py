@@ -74,10 +74,11 @@ async def recall_memory_items(
     tenant_id: str,
     user_id: str,
     question: str,
-    embedding_registry: EmbeddingRegistry,
-    embedding_provider_name: str,
+    embedding_registry: EmbeddingRegistry | None = None,
+    embedding_provider_name: str | None = None,
     top_k: int = 5,
     mmr_lambda: float = 0.5,
+    use_embedding: bool = True,
 ) -> list[dict[str, Any]]:
     """多源召回融合 + MMR 去重，取代"返回全部 active 记忆条目按更新时间截断"。
 
@@ -95,6 +96,12 @@ async def recall_memory_items(
     完全不参与排名，只能靠 BM25 关键词命中才可能被召回——如果关键词也
     不重合就会被漏掉，不再像旧版"全部返回"那样兜底。要解决需要对存量
     memory_items 跑一次 embedding 回填脚本，这里不做，仅记录风险。
+
+    use_embedding=False 时完全跳过语义这一路（不发起 embedding API 调用，
+    此时 embedding_registry/embedding_provider_name 可以不传），只用 BM25
+    关键词排名——2026-08-12 排查响应延迟时加的临时降级开关（见
+    Settings.memory_recall_use_embedding），单路排名直接当最终排名用，
+    不需要跟自己做 RRF 融合。
     """
     items = await list_active_memory_items(conn, tenant_id=tenant_id, user_id=user_id)
     if not items:
@@ -117,19 +124,22 @@ async def recall_memory_items(
     bm25_hits = bm25_index.search(question, top_k=len(items), tenant_id=tenant_id)
     bm25_rank_ids = [hit.id for hit in bm25_hits]
 
-    embed_result = await embedding_registry.run(
-        EmbeddingRequest(texts=[question]), provider_name=embedding_provider_name
-    )
-    query_vector = embed_result.vectors[0]
-    semantic_scored = [
-        (item["memory_id"], _cosine_similarity(query_vector, item["embedding"]))
-        for item in items
-        if item.get("embedding") is not None
-    ]
-    semantic_scored.sort(key=lambda pair: pair[1], reverse=True)
-    semantic_rank_ids = [memory_id for memory_id, _ in semantic_scored]
-
-    fused = reciprocal_rank_fusion(semantic_rank_ids, bm25_rank_ids)
+    if use_embedding:
+        assert embedding_registry is not None and embedding_provider_name is not None
+        embed_result = await embedding_registry.run(
+            EmbeddingRequest(texts=[question]), provider_name=embedding_provider_name
+        )
+        query_vector = embed_result.vectors[0]
+        semantic_scored = [
+            (item["memory_id"], _cosine_similarity(query_vector, item["embedding"]))
+            for item in items
+            if item.get("embedding") is not None
+        ]
+        semantic_scored.sort(key=lambda pair: pair[1], reverse=True)
+        semantic_rank_ids = [memory_id for memory_id, _ in semantic_scored]
+        fused = reciprocal_rank_fusion(semantic_rank_ids, bm25_rank_ids)
+    else:
+        fused = reciprocal_rank_fusion(bm25_rank_ids)
 
     items_by_id = {item["memory_id"]: item for item in items}
     candidates: list[tuple[dict[str, Any], float]] = []

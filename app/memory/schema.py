@@ -41,6 +41,18 @@ CREATE TABLE IF NOT EXISTS memory_history (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    tenant_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (tenant_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
+    ON chat_sessions (tenant_id, user_id, updated_at);
+
 CREATE TABLE IF NOT EXISTS consolidation_jobs (
     job_id TEXT PRIMARY KEY,
     dedupe_key TEXT NOT NULL UNIQUE,

@@ -15,6 +15,8 @@ class ProviderConfig:
     base_url: str
     api_key: str
     model: str
+    # 见 Settings.llm_enable_thinking 的说明。
+    enable_thinking: bool = False
 
 
 def build_llm_registry(
@@ -33,6 +35,7 @@ def build_llm_registry(
                 api_key=cfg.api_key,
                 model=cfg.model,
                 client=client,
+                enable_thinking=cfg.enable_thinking,
             ),
         )
     return registry

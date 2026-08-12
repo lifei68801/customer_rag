@@ -14,6 +14,7 @@ from app.agent.state import AgentState
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.term_guard import build_term_guard_context
+from app.memory.chat_sessions import touch_session
 from app.memory.clarification import (
     clear_pending_clarification,
     ensure_clarification_schema,
@@ -45,7 +46,14 @@ from app.safety.rules import UNSAFE_INPUT_MESSAGE, UNSAFE_OUTPUT_MESSAGE, check_
 from app.safety.semantic_review import semantic_safety_review
 from app.voice.streaming_responder import stream_sentences
 
-_PROMPT_TEMPLATE = "根据以下资料回答问题。\n资料：\n{context}\n\n问题：{question}"
+_PROMPT_TEMPLATE = (
+    "根据以下资料回答问题。请使用 markdown 排版（分点用列表、强调用加粗、"
+    "代码用代码块）；涉及数学公式时用 LaTeX 语法，行内公式用 $...$ 包裹，"
+    "独立公式用 $$...$$ 包裹且必须单独成行、前后各空一行；连续多个独立公式"
+    "之间也要用空行分隔，禁止把两个 $$...$$ 紧挨着写（如 $$A$$$$B$$），"
+    "否则会导致公式无法正确解析。\n"
+    "资料：\n{context}\n\n问题：{question}"
+)
 _FALLBACK_MESSAGE = "抱歉，暂时没有找到确切答案，已为您转接人工客服处理。"
 _FUTURE_TIME_CLARIFICATION_PROMPT = (
     "您提到的时间似乎是将来的日期，我们暂时没有对应的记录。"
@@ -93,6 +101,7 @@ def build_agent_graph(
     banned_terms: list[str] | None = None,
     memory_conn: aiosqlite.Connection | None = None,
     ticket_conn: aiosqlite.Connection | None = None,
+    memory_recall_use_embedding: bool = True,
     top_k: int = 3,
     min_relevance_score: float | None = None,
     enable_autonomous_planning: bool = False,
@@ -102,20 +111,31 @@ def build_agent_graph(
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     """构建 Agent 推理状态图。
 
-    enable_autonomous_planning=False（默认）：InputSafety -> TermGuard ->
-    MemoryRecall -> 检索 -> Responder/Fallback -> OutputSafety -> MemorySave。
-    检索固定跑一次，按"是否检索到结果"这一确定性信号路由——这是阶段4
-    落地时的简化实现，保留作为默认值，是新 Planner 路径出问题时的回退。
+    enable_autonomous_planning=False（默认）：InputSafety -> {CorrectionCheck,
+    ClarificationCheck -> TermGuard -> MemoryRecall} 并行 -> 汇合 -> 检索 ->
+    Responder/Fallback -> OutputSafety -> MemorySave。检索固定跑一次，按
+    "是否检索到结果"这一确定性信号路由——这是阶段4落地时的简化实现，保留
+    作为默认值，是新 Planner 路径出问题时的回退。
 
-    enable_autonomous_planning=True：InputSafety -> TermGuard -> MemoryRecall
-    -> Planner -> ToolCall（循环回 Planner，最多 max_tool_call_rounds 轮）
-    -> Responder/Fallback -> OutputSafety -> MemorySave。LLM 自主决定调用
+    enable_autonomous_planning=True：InputSafety -> {CorrectionCheck,
+    ClarificationCheck -> TermGuard -> MemoryRecall} 并行 -> 汇合 -> Planner
+    -> ToolCall（循环回 Planner，最多 max_tool_call_rounds 轮）->
+    Responder/Fallback -> OutputSafety -> MemorySave。LLM 自主决定调用
     vector_search_tool/graph_query_tool 还是直接回答，真正的 ReAct 风格
     多轮工具决策，对应架构文档 §3.2 的完整设计。详见
     docs/AGENT_PLANNER_DESIGN.md。
 
     两种模式下 TermGuard 强制注入都不受影响——TermGuard 是独立于 Planner
     的安全网，不因为换了推理路径就失效。
+
+    CorrectionCheck 与 {ClarificationCheck, TermGuard, MemoryRecall} 这条链路
+    并行发起（2026-08-12 排查"响应到第一个字之前等太久"时改的）：两者数据
+    上互不依赖——是不是纠正消息只影响汇合节点之后该走 OutputSafety 还是
+    继续走检索/Planner，不影响这两条分支各自该不该跑。即使最终判定是纠正
+    消息，ClarificationCheck/TermGuard/MemoryRecall 提前算出的结果也只是被
+    路由丢弃，不产生错误行为，代价仅限于极少数"这轮恰好是纠正"的消息里
+    被浪费的算力。汇合节点（merge_after_parallel）本身是空节点，只用来让
+    LangGraph 在两条分支都完成后再触发一次路由判断，不做任何状态变更。
 
     memory_conn 为可选项：不传则完全跳过记忆召回/写入，图的行为与
     阶段4完全一致；传入则在 Responder 前注入长期记忆+近期会话上下文，
@@ -165,6 +185,12 @@ def build_agent_graph(
     防御纵深，不是用轻量检查取代它。这一权衡（先播出部分内容、完整审查
     在后）已与产品方确认，如果 provider 不支持流式，自动退化为一次性
     生成+审查，不会强行流式。
+
+    memory_recall_use_embedding 默认 True（行为不变，长期记忆召回融合
+    BM25+embedding 两路语义/关键词排名）；置 False 时 memory_recall_node
+    跳过这次 embedding API 调用，只用 BM25 关键词排名，见
+    Settings.memory_recall_use_embedding 的说明——2026-08-12 排查响应延迟
+    时加的临时降级开关。
 
     session_window_store 为可选项：不传（默认）则等价于用
     SQLiteSessionWindowStore 包装同一个 memory_conn，行为和接入前完全
@@ -306,6 +332,7 @@ def build_agent_graph(
             question=state["question"],
             embedding_registry=embedding_registry,
             embedding_provider_name=embedding_provider_name,
+            use_embedding_recall=memory_recall_use_embedding,
         )
         # P1 结构化历史检索（架构文档 §6.3）：问题里带可解析的时间表达式
         # 时（"昨天""上周三"），额外按 tenant+user+时间窗口做一次跨 session
@@ -485,6 +512,19 @@ def build_agent_graph(
         session_id = state.get("session_id", "")
         user_id = state.get("user_id", "")
         final_text = state.get("final_text", "")
+        # 左边栏会话列表要用的元信息（标题/最近活跃时间），跟对话轮次本身
+        # 是否走 SQLite 还是 Redis（session_window_backend）无关——chat_sessions
+        # 这张表只在 memory_conn 这个 SQLite 连接上，所以直接用它，不经过
+        # resolved_session_window_store 抽象。每轮对话只调一次，不随
+        # append_turn 调两次（一问一答）而调两次。
+        await touch_session(
+            memory_conn,
+            tenant_id=state["tenant_id"],
+            session_id=session_id,
+            user_id=user_id,
+            first_message=state["question"],
+            now=datetime.now(),
+        )
         assert resolved_session_window_store is not None
         await resolved_session_window_store.append_turn(
             tenant_id=state["tenant_id"],
@@ -563,13 +603,30 @@ def build_agent_graph(
             "fallback_triggered": False,
         }
 
-    def route_after_input_safety(state: AgentState) -> str:
-        return (
-            "correction_check" if state.get("is_input_safe", True) else "output_safety"
-        )
+    def route_after_input_safety(state: AgentState) -> list[str] | str:
+        if not state.get("is_input_safe", True):
+            return "output_safety"
+        return ["correction_check", "clarification_check"]
 
-    def route_after_correction_check(state: AgentState) -> str:
-        return "output_safety" if state.get("is_correction_handled") else "clarification_check"
+    def route_after_parallel_merge(state: AgentState) -> str:
+        if state.get("is_correction_handled"):
+            return "output_safety"
+        return "planner" if enable_autonomous_planning else "retrieval"
+
+    async def merge_after_parallel_node(state: AgentState) -> dict[str, Any]:
+        # 空节点，只用来让 correction_check 与 clarification_check->term_guard
+        # ->memory_recall 这两条并行分支在这里汇合，不做任何状态变更。
+        #
+        # 必须用 add_node(..., defer=True) 注册（见下面 graph.add_node 调用）：
+        # 两条分支长度不同（前者 1 跳、后者 3 跳），LangGraph 的普通多入边
+        # 节点只在"所有入边在同一个 superstep 内都到达"时才合并成一次调用——
+        # 分支长度不一致时，短分支会在自己那个 superstep 提前触发这个节点
+        # 一次，长分支完成后再触发第二次，导致下游 retrieval/responder/
+        # output_safety/memory_save 整条尾巴跑两遍（实测把 memory_save 写入
+        # 的会话轮次数翻了倍）。defer=True 让这个节点无视各分支长度，等图里
+        # 当前这一轮所有已调度但还没跑完的任务都结束后再触发且只触发一次，
+        # 这正是 LangGraph 为"不等长并行分支汇合"这个场景提供的机制。
+        return {}
 
     def route_after_retrieval(state: AgentState) -> str:
         records = state.get("retrieved_records")
@@ -590,6 +647,7 @@ def build_agent_graph(
     graph.add_node("clarification_check", clarification_check_node)
     graph.add_node("term_guard", term_guard_node)
     graph.add_node("memory_recall", memory_recall_node)
+    graph.add_node("merge_after_parallel", merge_after_parallel_node, defer=True)
     graph.add_node("fallback", fallback_node)
     graph.add_node("create_ticket", create_ticket_node)
     graph.add_node("output_safety", output_safety_node)
@@ -599,15 +657,16 @@ def build_agent_graph(
     graph.add_conditional_edges(
         "input_safety",
         route_after_input_safety,
-        {"correction_check": "correction_check", "output_safety": "output_safety"},
+        {
+            "output_safety": "output_safety",
+            "correction_check": "correction_check",
+            "clarification_check": "clarification_check",
+        },
     )
-    graph.add_conditional_edges(
-        "correction_check",
-        route_after_correction_check,
-        {"output_safety": "output_safety", "clarification_check": "clarification_check"},
-    )
+    graph.add_edge("correction_check", "merge_after_parallel")
     graph.add_edge("clarification_check", "term_guard")
     graph.add_edge("term_guard", "memory_recall")
+    graph.add_edge("memory_recall", "merge_after_parallel")
     graph.add_conditional_edges(
         "fallback",
         route_after_fallback,
@@ -622,7 +681,11 @@ def build_agent_graph(
         graph.add_node("tool_call", tool_call_node)
         graph.add_node("planner_responder", planner_responder_node)
 
-        graph.add_edge("memory_recall", "planner")
+        graph.add_conditional_edges(
+            "merge_after_parallel",
+            route_after_parallel_merge,
+            {"output_safety": "output_safety", "planner": "planner"},
+        )
         graph.add_conditional_edges(
             "planner",
             route_after_planner,
@@ -638,7 +701,11 @@ def build_agent_graph(
         graph.add_node("retrieval", retrieval_node)
         graph.add_node("responder", responder_node)
 
-        graph.add_edge("memory_recall", "retrieval")
+        graph.add_conditional_edges(
+            "merge_after_parallel",
+            route_after_parallel_merge,
+            {"output_safety": "output_safety", "retrieval": "retrieval"},
+        )
         graph.add_conditional_edges(
             "retrieval",
             route_after_retrieval,

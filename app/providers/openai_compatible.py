@@ -44,12 +44,39 @@ class _OpenAICompatibleClient:
 
 
 class OpenAICompatibleChatProvider(_OpenAICompatibleClient):
-    async def complete(self, request: ProviderRequest) -> ProviderResult:
+    """enable_thinking 见 Settings.llm_enable_thinking 的说明：DeepSeek 一类
+    推理模型请求体里的 thinking.type 参数，False 时显式传 "disabled" 关闭
+    隐藏思维链（实测对不支持这个参数的供应商无害，会被当未知字段忽略）；
+    True 时不传这个字段，沿用模型自己的默认行为（实测等价于 "enabled"）。
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        client: httpx.AsyncClient | None = None,
+        timeout: float = _DEFAULT_TIMEOUT_SECONDS,
+        enable_thinking: bool = False,
+    ) -> None:
+        super().__init__(
+            base_url=base_url, api_key=api_key, model=model, client=client, timeout=timeout
+        )
+        self._enable_thinking = enable_thinking
+
+    def _base_payload(self, request: ProviderRequest) -> dict:
         payload: dict = {
             "model": self._model,
             "messages": request.messages,
             **request.options,
         }
+        if not self._enable_thinking:
+            payload.setdefault("thinking", {"type": "disabled"})
+        return payload
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        payload = self._base_payload(request)
         if request.tools:
             payload["tools"] = request.tools
         if request.tool_choice:
@@ -90,12 +117,8 @@ class OpenAICompatibleChatProvider(_OpenAICompatibleClient):
         语音输出这个场景，用的是静态 Responder 路径，不涉及 Planner
         工具调用；需要"流式+工具调用"两者都要的场景出现时再扩展。
         """
-        payload: dict = {
-            "model": self._model,
-            "messages": request.messages,
-            "stream": True,
-            **request.options,
-        }
+        payload = self._base_payload(request)
+        payload["stream"] = True
         async with self._client.stream(
             "POST",
             f"{self._base_url}/chat/completions",

@@ -11,6 +11,16 @@ class Settings(BaseSettings):
     llm_base_url: str
     llm_api_key: str
     llm_model: str
+    # 部分推理模型（如 DeepSeek 的 v4-flash/v4-pro）默认会在 reasoning_content
+    # 字段里先输出一大段隐藏思维链再给正式回答——2026-08-12 实测简单技术
+    # 问题就有 47 秒纯思考、期间前端完全收不到任何输出（stream_complete()
+    # 只转发 content，不转发 reasoning_content），表现为"迟迟不出字"。这里
+    # 按 DeepSeek 请求体的 thinking.type 参数（实测 "disabled"/"enabled"
+    # 两个值都生效，不传该字段时默认等价于 "enabled"）把开关做成配置项，
+    # 默认关闭：客服问答场景不需要这种深度推理，值得关闭换响应速度。
+    # 仅对 OpenAI 兼容 LLM provider 生效（app/providers/openai_compatible.py），
+    # 不支持这个参数的供应商预期会直接忽略未知字段，不受影响。
+    llm_enable_thinking: bool = False
 
     embedding_base_url: str
     embedding_api_key: str
@@ -147,6 +157,16 @@ class Settings(BaseSettings):
     # 分布，不能沿用向量相似度的经验值。未配置 rerank_provider 时才是
     # 比较向量相似度。
     agent_min_relevance_score: float | None = None
+
+    # 长期记忆召回（app/memory/recall.py::recall_memory_items）默认融合
+    # BM25 关键词排名 + embedding 语义排名两路做 RRF。语义这一路每次问答
+    # 都要多打一次 embedding API 请求，且是 memory_recall_node 里在拿到
+    # 检索结果之前就必须等完的一跳——2026-08-12 排查"响应到第一个字之前
+    # 等太久"时，作为临时降级手段加的开关：置 False 时只用 BM25 关键词
+    # 排名，跳过这次 embedding 调用。这是纯粹的延迟/召回质量取舍，不是
+    # 默认应该关闭的功能，等前面几跳（correction_check、query 改写等）的
+    # 延迟优化验证有效后，应该重新评估要不要打开。
+    memory_recall_use_embedding: bool = True
 
     # 会话滑窗存储后端："sqlite"（默认，复用 memory_conn）或 "redis"
     # （并发扩展性考虑，见 app/memory/session_window_store.py）。类型限定

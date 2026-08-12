@@ -30,6 +30,34 @@ class ScriptedLLMProvider:
         return ProviderResult(text=text)
 
 
+class DispatchingLLMProvider:
+    """按请求内容路由到对应响应，而不是假设 LLM 调用严格按位置发生。
+
+    correction_check 与 clarification_check->term_guard->memory_recall 这两
+    条分支自 2026-08-12 起并行执行（见 app/agent/graph.py），且
+    correction_check 内部还会先过一道规则前置过滤、不像纠正的问题直接跳过
+    LLM 调用（app/memory/correction_intent.py）——同一轮里到底会发生哪几次
+    LLM 调用、谁先谁后不再是写死的顺序，用 ScriptedLLMProvider 那种位置
+    弹队列的写法在这两种改动下都不稳定。按请求消息里出现的关键词（各调用
+    点的系统提示词彼此不同，足够区分是谁发起的）匹配到对应的响应队列。
+    """
+
+    def __init__(self, rules: list[tuple[str, list[str]]]) -> None:
+        self._rules = [(key, list(responses)) for key, responses in rules]
+        self.requests: list[ProviderRequest] = []
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        self.requests.append(request)
+        haystack = " ".join(m.get("content") or "" for m in request.messages)
+        for key, responses in self._rules:
+            if key in haystack and responses:
+                return ProviderResult(text=responses.pop(0))
+        raise AssertionError(
+            f"DispatchingLLMProvider 没有匹配到任何规则（或规则响应已耗尽）："
+            f"{haystack[:200]!r}"
+        )
+
+
 async def _build_dependencies(llm_responses: list[str]):
     embedding_registry = EmbeddingRegistry()
     embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
@@ -49,6 +77,34 @@ async def _build_dependencies(llm_responses: list[str]):
     bm25_index.index(records)
 
     llm_provider = ScriptedLLMProvider(llm_responses)
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+
+    return embedding_registry, vector_store, bm25_index, llm_registry, llm_provider
+
+
+async def _build_dependencies_dispatching(rules: list[tuple[str, list[str]]]):
+    """同 _build_dependencies，但 LLM 用 DispatchingLLMProvider——用于图里
+    多次 LLM 调用不再有确定先后顺序的测试场景（并行分支/规则前置过滤后）。
+    """
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+
+    vector_store = InMemoryVectorStore()
+    records = [
+        VectorRecord(
+            id="faq/network.md",
+            vector=[1.0, 0.0],
+            text="网络断开时，请先重启路由器。",
+            tenant_id="t1",
+            metadata={},
+        )
+    ]
+    await vector_store.upsert(records)
+    bm25_index = BM25Index()
+    bm25_index.index(records)
+
+    llm_provider = DispatchingLLMProvider(rules)
     llm_registry = ProviderRegistry()
     llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
 
@@ -144,12 +200,14 @@ async def test_memory_enabled_saves_turn_and_injects_context():
         embedding=[1.0, 0.0],
     )
 
+    # "网络连不上怎么办？"不含任何纠正类线索，correction_check 的规则前置
+    # 过滤会直接跳过这次 LLM 调用（不需要为它准备响应）。
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
-        await _build_dependencies(
+        await _build_dependencies_dispatching(
             [
-                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
-                "重启路由器即可解决。",  # responder 的回答
-                '{"facts":[]}',  # OutputSafety 语义审查（无 is_safe 字段时默认放行未审查）
+                ("根据以下资料回答问题", ["重启路由器即可解决。"]),
+                # 无 is_safe 字段时默认放行未审查
+                ("语义级安全审查员", ['{"facts":[]}']),
             ]
         )
     )
@@ -175,10 +233,14 @@ async def test_memory_enabled_saves_turn_and_injects_context():
 
     assert result["final_text"] == "重启路由器即可解决。"
 
-    responder_request = llm_provider.requests[1]
+    responder_requests = [
+        req for req in llm_provider.requests
+        if "根据以下资料回答问题" in req.messages[-1]["content"]
+    ]
+    assert len(responder_requests) == 1
     assert any(
         "客户使用企业版套餐" in m["content"]
-        for m in responder_request.messages
+        for m in responder_requests[0].messages
         if m["role"] == "system"
     )
 
@@ -195,11 +257,10 @@ async def test_memory_enabled_enqueues_consolidation_job_without_blocking_respon
     await ensure_schema(conn)
 
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
-        await _build_dependencies(
+        await _build_dependencies_dispatching(
             [
-                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
-                "重启路由器即可解决。",  # responder 的回答
-                '{"is_safe": true}',  # OutputSafety 语义审查
+                ("根据以下资料回答问题", ["重启路由器即可解决。"]),
+                ("语义级安全审查员", ['{"is_safe": true}']),
             ]
         )
     )
@@ -223,9 +284,9 @@ async def test_memory_enabled_enqueues_consolidation_job_without_blocking_respon
         }
     )
 
-    # 只入队，不应该触发事实抽取——上面只准备了纠错意图检测+responder+
-    # 语义审查三个脚本响应，如果 consolidation 同步跑了，第四次
-    # LLM 调用会因为脚本响应耗尽而报错，测试本身就会失败。
+    # 只入队，不应该触发事实抽取——上面只准备了 responder+语义审查两条规则，
+    # 没给事实抽取/冲突决策准备响应，如果 consolidation 同步跑了，
+    # DispatchingLLMProvider 会因为找不到匹配规则而报错，测试本身就会失败。
     pending = await list_pending_jobs(conn)
     assert len(pending) == 1
     assert pending[0]["user_input"] == "网络连不上怎么办？"
@@ -240,15 +301,21 @@ async def test_memory_enabled_stores_embedding_for_newly_added_facts_after_worke
     await ensure_schema(conn)
 
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
-        await _build_dependencies(
+        await _build_dependencies_dispatching(
             [
-                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
-                "重启路由器即可解决。",  # responder 的回答
-                '{"is_safe": true}',  # OutputSafety 语义审查
-                '{"is_delay": false}',  # consolidation worker 里的 detect_delay_intent
-                '{"facts": ["客户使用企业版套餐"]}',  # 事实抽取（worker 处理阶段）
-                '{"actions": [{"event": "ADD", "target_memory_id": "", '
-                '"text": "客户使用企业版套餐", "reason": "首次提及"}]}',  # 冲突决策
+                ("根据以下资料回答问题", ["重启路由器即可解决。"]),
+                ("语义级安全审查员", ['{"is_safe": true}']),
+                # consolidation worker 处理阶段（graph.ainvoke() 返回之后才跑，
+                # 严格顺序发生，不受并行分支影响）：
+                ("稍后再自己尝试", ['{"is_delay": false}']),  # detect_delay_intent
+                ("长期记忆事实抽取器", ['{"facts": ["客户使用企业版套餐"]}']),
+                (
+                    "记忆冲突决策器",
+                    [
+                        '{"actions": [{"event": "ADD", "target_memory_id": "", '
+                        '"text": "客户使用企业版套餐", "reason": "首次提及"}]}'
+                    ],
+                ),
             ]
         )
     )
@@ -317,13 +384,14 @@ async def test_memory_recall_injects_structured_history_for_time_bearing_questio
     )
     await conn.commit()
 
+    # 问题不含任何纠正类线索，correction_check 的规则前置过滤会直接跳过这次
+    # LLM 调用；resolve_time_window 故意给低置信度，回退规则引擎判"昨天"。
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
-        await _build_dependencies(
+        await _build_dependencies_dispatching(
             [
-                '{"is_correction": false}',  # correction_check_node 的纠错意图检测
-                '{"start": null, "end": null, "confidence": 0}',  # resolve_time_window 的LLM调用故意给低置信度，回退规则引擎判"昨天"
-                "重启路由器即可解决。",  # responder
-                '{"is_safe": true}',  # OutputSafety 语义审查
+                ("时间表达式解析器", ['{"start": null, "end": null, "confidence": 0}']),
+                ("根据以下资料回答问题", ["重启路由器即可解决。"]),
+                ("语义级安全审查员", ['{"is_safe": true}']),
             ]
         )
     )
@@ -347,12 +415,13 @@ async def test_memory_recall_injects_structured_history_for_time_bearing_questio
         }
     )
 
-    # 请求顺序：correction_check(0) -> memory_recall 的 resolve_time_window(1)
-    # -> responder(2) -> output_safety 的语义审查(3)
-    assert len(llm_provider.requests) >= 3
-    responder_request = llm_provider.requests[2]
+    responder_requests = [
+        req for req in llm_provider.requests
+        if "根据以下资料回答问题" in req.messages[-1]["content"]
+    ]
+    assert len(responder_requests) == 1
     all_content = " ".join(
-        m.get("content", "") for m in responder_request.messages
+        m.get("content", "") for m in responder_requests[0].messages
     )
     assert "E502网关超时怎么解决" in all_content
 

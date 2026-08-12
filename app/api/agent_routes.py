@@ -130,6 +130,7 @@ async def agent_chat_endpoint(
             graph_client=graph_client,
             memory_conn=memory_conn,
             ticket_conn=memory_conn,
+            memory_recall_use_embedding=settings.memory_recall_use_embedding,
             min_relevance_score=settings.agent_min_relevance_score,
             enable_autonomous_planning=enable_autonomous_planning,
             max_tool_call_rounds=settings.agent_max_tool_call_rounds,

@@ -25,6 +25,7 @@ def build_llm_registry_from_settings(
                 base_url=settings.llm_base_url,
                 api_key=settings.llm_api_key,
                 model=settings.llm_model,
+                enable_thinking=settings.llm_enable_thinking,
             )
         ],
         client=client,
