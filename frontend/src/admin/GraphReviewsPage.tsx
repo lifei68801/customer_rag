@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
+import { Pager } from './Pager'
+
+const PAGE_SIZE = 20
 
 interface PendingReview {
   review_id: number
@@ -45,6 +48,10 @@ export function GraphReviewsPage() {
   // 只锁一行的话，点另一行会因为下面的 processingId 二次校验静默 return，
   // 但那一行看起来还是"启用"的，等于按钮看着能点、点了却没反应。
   const [processingId, setProcessingId] = useState<number | null>(null)
+  const [pendingPage, setPendingPage] = useState(1)
+  const [pendingTotal, setPendingTotal] = useState(0)
+  const [historyPage, setHistoryPage] = useState(1)
+  const [historyTotal, setHistoryTotal] = useState(0)
 
   useEffect(() => {
     document.title = '知识图谱审核 · 管理后台'
@@ -54,21 +61,38 @@ export function GraphReviewsPage() {
   // 筛选条件的结果、却顶着新筛选条件的标签，看起来像是查询结果。
   useEffect(() => {
     setHistoryLoaded(false)
+    setHistoryPage(1)
   }, [historyFilter])
+
+  // 批准/驳回把当前页清空后（比如最后一页只剩一条、处理完变空），自动
+  // 退回上一页，而不是让用户停留在一个明明还有数据、只是 offset 超出
+  // 范围而显示"没有记录"的空页面。
+  useEffect(() => {
+    if (pendingLoaded && pending.length === 0 && pendingPage > 1) {
+      setPendingPage((page) => page - 1)
+    }
+  }, [pendingLoaded, pending.length, pendingPage])
+
+  useEffect(() => {
+    if (historyLoaded && history.length === 0 && historyPage > 1) {
+      setHistoryPage((page) => page - 1)
+    }
+  }, [historyLoaded, history.length, historyPage])
 
   const refreshPending = useCallback(async () => {
     if (!sessionToken) return
     try {
       const response = await adminFetch(
-        `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=pending`,
+        `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=pending&page=${pendingPage}&page_size=${PAGE_SIZE}`,
         sessionToken,
       )
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '加载待审核列表失败'))
       }
-      const data = (await response.json()) as { reviews: PendingReview[] }
+      const data = (await response.json()) as { reviews: PendingReview[]; total: number }
       setPending(data.reviews)
+      setPendingTotal(data.total)
       setDrafts(
         Object.fromEntries(
           data.reviews.map((review) => [
@@ -85,27 +109,28 @@ export function GraphReviewsPage() {
     } finally {
       setPendingLoaded(true)
     }
-  }, [sessionToken, tenantId])
+  }, [sessionToken, tenantId, pendingPage])
 
   const refreshHistory = useCallback(async () => {
     if (!sessionToken) return
     try {
       const response = await adminFetch(
-        `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=${historyFilter}`,
+        `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=${historyFilter}&page=${historyPage}&page_size=${PAGE_SIZE}`,
         sessionToken,
       )
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '加载历史记录失败'))
       }
-      const data = (await response.json()) as { reviews: ResolvedReview[] }
+      const data = (await response.json()) as { reviews: ResolvedReview[]; total: number }
       setHistory(data.reviews)
+      setHistoryTotal(data.total)
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载历史记录失败')
     } finally {
       setHistoryLoaded(true)
     }
-  }, [sessionToken, tenantId, historyFilter])
+  }, [sessionToken, tenantId, historyFilter, historyPage])
 
   useEffect(() => {
     setError(null)
@@ -294,6 +319,13 @@ export function GraphReviewsPage() {
       {tab === 'pending' && pendingLoaded && pending.length === 0 && (
         <p className="text-ink-soft">当前没有待审核的候选关系。</p>
       )}
+      {tab === 'pending' && pendingLoaded && pending.length > 0 && (
+        <Pager
+          page={pendingPage}
+          totalPages={Math.max(1, Math.ceil(pendingTotal / PAGE_SIZE))}
+          onPageChange={setPendingPage}
+        />
+      )}
 
       {tab === 'history' && (
         <div className="flex gap-2">
@@ -333,6 +365,13 @@ export function GraphReviewsPage() {
         ))}
       {tab === 'history' && historyLoaded && history.length === 0 && (
         <p className="text-ink-soft">还没有处理过的记录。</p>
+      )}
+      {tab === 'history' && historyLoaded && history.length > 0 && (
+        <Pager
+          page={historyPage}
+          totalPages={Math.max(1, Math.ceil(historyTotal / PAGE_SIZE))}
+          onPageChange={setHistoryPage}
+        />
       )}
     </div>
   )
