@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
@@ -57,6 +57,15 @@ export function GraphReviewsPage() {
     document.title = '知识图谱审核 · 管理后台'
   }, [])
 
+  // 切换租户时两个 tab 的页码都要回到第一页——不然停留在深页码切租户，
+  // 新租户数据少的话会连续触发好几轮"清空自动退页"，页面在几个请求
+  // 之间来回闪烁；数据多的话则是静默停在中间某一页，用户看不出发生了
+  // 什么。
+  useEffect(() => {
+    setPendingPage(1)
+    setHistoryPage(1)
+  }, [tenantId])
+
   // 切换历史筛选条件时，先假定"还没加载"，避免在新数据到达前继续展示上一个
   // 筛选条件的结果、却顶着新筛选条件的标签，看起来像是查询结果。
   useEffect(() => {
@@ -79,8 +88,15 @@ export function GraphReviewsPage() {
     }
   }, [historyLoaded, history.length, historyPage])
 
+  // 快速连续翻页会同时有多个请求在途；每次发起请求前递增各自的序号，
+  // 响应回来时只有序号仍是"最新"的那一个才允许写入 state——旧请求的
+  // 响应即使后到，也不会覆盖新请求已经写入的数据。
+  const pendingRequestIdRef = useRef(0)
+  const historyRequestIdRef = useRef(0)
+
   const refreshPending = useCallback(async () => {
     if (!sessionToken) return
+    const requestId = ++pendingRequestIdRef.current
     try {
       const response = await adminFetch(
         `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=pending&page=${pendingPage}&page_size=${PAGE_SIZE}`,
@@ -91,6 +107,7 @@ export function GraphReviewsPage() {
         throw new Error(extractErrorDetail(body, '加载待审核列表失败'))
       }
       const data = (await response.json()) as { reviews: PendingReview[]; total: number }
+      if (requestId !== pendingRequestIdRef.current) return
       setPending(data.reviews)
       setPendingTotal(data.total)
       setDrafts(
@@ -105,14 +122,18 @@ export function GraphReviewsPage() {
         ),
       )
     } catch (err) {
+      if (requestId !== pendingRequestIdRef.current) return
       setError(err instanceof Error ? err.message : '加载待审核列表失败')
     } finally {
-      setPendingLoaded(true)
+      if (requestId === pendingRequestIdRef.current) {
+        setPendingLoaded(true)
+      }
     }
   }, [sessionToken, tenantId, pendingPage])
 
   const refreshHistory = useCallback(async () => {
     if (!sessionToken) return
+    const requestId = ++historyRequestIdRef.current
     try {
       const response = await adminFetch(
         `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=${historyFilter}&page=${historyPage}&page_size=${PAGE_SIZE}`,
@@ -123,12 +144,16 @@ export function GraphReviewsPage() {
         throw new Error(extractErrorDetail(body, '加载历史记录失败'))
       }
       const data = (await response.json()) as { reviews: ResolvedReview[]; total: number }
+      if (requestId !== historyRequestIdRef.current) return
       setHistory(data.reviews)
       setHistoryTotal(data.total)
     } catch (err) {
+      if (requestId !== historyRequestIdRef.current) return
       setError(err instanceof Error ? err.message : '加载历史记录失败')
     } finally {
-      setHistoryLoaded(true)
+      if (requestId === historyRequestIdRef.current) {
+        setHistoryLoaded(true)
+      }
     }
   }, [sessionToken, tenantId, historyFilter, historyPage])
 

@@ -154,7 +154,30 @@ async def test_system_prompt_requires_concrete_entities_and_excludes_generic_cat
     )
 
     system_message = provider.received_requests[0].messages[0]["content"]
-    assert "专有名词指具体、可命名的业务实体" in system_message
+    assert "专有名词指在这门具体生意里有实际业务含义" in system_message
     for excluded_word in ["设备", "问题", "服务", "顾客", "流程"]:
         assert excluded_word in system_message
-    assert "不算专有名词" in system_message
+    assert "没有具体指代对象的泛称" in system_message
+
+
+async def test_system_prompt_explains_taxonomy_examples_are_not_excluded():
+    """回归测试：新加的实体范围约束不能和下面 10 种 relation_type 的例子
+    自相矛盾——模型必须能同时看到"入住登记"这类词被列为合法专有名词的
+    例子，和它在 PRECEDES 类型例子里被使用，不能一边说"不要抽类别/动作/
+    状态词"一边又指望模型抽出这些类型。
+    """
+    provider = SpyLLMProvider('{"relations": []}')
+
+    await extract_candidate_relations(
+        ["片段"],
+        llm_registry=_registry(provider),
+        llm_provider_name="llm",
+        timeout_sec=1.0,
+    )
+
+    system_message = provider.received_requests[0].messages[0]["content"]
+    assert "入住登记" in system_message
+    assert "IS_A" in system_message
+    assert "PART_OF" in system_message
+    assert "PRECEDES" in system_message
+    assert "ADDRESSED_BY" in system_message

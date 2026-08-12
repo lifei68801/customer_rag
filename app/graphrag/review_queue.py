@@ -172,7 +172,7 @@ async def list_resolved_reviews(
             "reason, status, resolved_at, resolved_note, source, created_at "
             "FROM graph_review_queue "
             "WHERE tenant_id = ? AND status IN ('approved', 'rejected') "
-            "ORDER BY resolved_at DESC LIMIT ? OFFSET ?",
+            "ORDER BY resolved_at DESC, review_id DESC LIMIT ? OFFSET ?",
             (tenant_id, limit, offset),
         )
     else:
@@ -181,7 +181,7 @@ async def list_resolved_reviews(
             "reason, status, resolved_at, resolved_note, source, created_at "
             "FROM graph_review_queue "
             "WHERE tenant_id = ? AND status = ? "
-            "ORDER BY resolved_at DESC LIMIT ? OFFSET ?",
+            "ORDER BY resolved_at DESC, review_id DESC LIMIT ? OFFSET ?",
             (tenant_id, status, limit, offset),
         )
     rows = await cursor.fetchall()

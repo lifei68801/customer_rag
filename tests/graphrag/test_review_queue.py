@@ -349,3 +349,23 @@ async def test_count_resolved_reviews_matches_status_filter():
     assert await count_resolved_reviews(conn, tenant_id="t1") == 2
     assert await count_resolved_reviews(conn, tenant_id="t1", status="approved") == 1
     assert await count_resolved_reviews(conn, tenant_id="t1", status="rejected") == 1
+
+
+async def test_list_resolved_reviews_breaks_resolved_at_ties_by_review_id_desc():
+    conn = await _connect()
+    ids = []
+    for i in range(3):
+        review_id = await enqueue_for_review(
+            conn, subject_candidate=f"s{i}", object_candidate=f"o{i}", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+        ids.append(review_id)
+    for review_id in ids:
+        await reject_review(conn, review_id=review_id, tenant_id="t1")
+
+    resolved = await list_resolved_reviews(conn, tenant_id="t1")
+
+    # 同一秒内驳回的三条记录 resolved_at 完全相同，必须靠 review_id 兜底
+    # 排序，保证结果稳定——不然分页边界处会出现同一条记录跨页重复、或者
+    # 彻底消失的问题。
+    assert [r["review_id"] for r in resolved] == list(reversed(ids))
