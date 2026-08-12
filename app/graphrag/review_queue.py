@@ -78,6 +78,14 @@ async def ensure_review_schema(conn: aiosqlite.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_graph_review_queue_tenant_status "
         "ON graph_review_queue (tenant_id, status)"
     )
+    # 分页查询历史记录时 ORDER BY resolved_at DESC 需要排序，上面的
+    # (tenant_id, status) 索引只能命中过滤条件、排序仍需额外一步；这个
+    # 三列复合索引让 tenant_id+status 精确匹配的历史记录分页查询可以直接
+    # 走索引有序扫描，不用每次都对候选行做一次排序。
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_graph_review_queue_tenant_status_resolved "
+        "ON graph_review_queue (tenant_id, status, resolved_at)"
+    )
     await conn.commit()
 
 
@@ -121,15 +129,24 @@ async def enqueue_for_review(
 
 
 async def list_pending_reviews(
-    conn: aiosqlite.Connection, *, tenant_id: str
+    conn: aiosqlite.Connection,
+    *,
+    tenant_id: str,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
+    """limit=None（默认）返回该租户全部待审核记录，保持 review_cli.py 等
+    既有调用方不传这两个参数时的行为不变；管理后台分页时显式传入具体的
+    limit/offset。SQLite 的 LIMIT 取负数即表示不限制行数，用 -1 承载
+    limit=None 这个语义，不需要为"要不要拼 LIMIT 子句"写分支 SQL。
+    """
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT review_id, subject_candidate, object_candidate, relation_type, "
         "reason, suggested_subject_standard_name, suggested_object_standard_name, "
         "source, created_at FROM graph_review_queue "
-        "WHERE status = 'pending' AND tenant_id = ? ORDER BY review_id",
-        (tenant_id,),
+        "WHERE status = 'pending' AND tenant_id = ? ORDER BY review_id LIMIT ? OFFSET ?",
+        (tenant_id, limit if limit is not None else -1, offset),
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
@@ -169,6 +186,34 @@ async def list_resolved_reviews(
         )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
+
+
+async def count_pending_reviews(conn: aiosqlite.Connection, *, tenant_id: str) -> int:
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM graph_review_queue WHERE status = 'pending' AND tenant_id = ?",
+        (tenant_id,),
+    )
+    row = await cursor.fetchone()
+    return row[0]
+
+
+async def count_resolved_reviews(
+    conn: aiosqlite.Connection, *, tenant_id: str, status: str | None = None
+) -> int:
+    """status=None 统计 approved+rejected 两种之和，语义与 list_resolved_reviews 一致。"""
+    if status is None:
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM graph_review_queue "
+            "WHERE tenant_id = ? AND status IN ('approved', 'rejected')",
+            (tenant_id,),
+        )
+    else:
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM graph_review_queue WHERE tenant_id = ? AND status = ?",
+            (tenant_id, status),
+        )
+    row = await cursor.fetchone()
+    return row[0]
 
 
 async def _fetch_pending_row(

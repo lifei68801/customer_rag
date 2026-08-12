@@ -7,6 +7,8 @@ from app.graphrag.review_queue import (
     ReviewAlreadyResolvedError,
     ReviewNotFoundError,
     approve_review,
+    count_pending_reviews,
+    count_resolved_reviews,
     enqueue_for_review,
     ensure_review_schema,
     list_pending_reviews,
@@ -278,3 +280,72 @@ async def test_list_resolved_reviews_does_not_include_pending():
     )
 
     assert await list_resolved_reviews(conn, tenant_id="t1") == []
+
+
+async def test_list_pending_reviews_respects_limit_and_offset():
+    conn = await _connect()
+    for i in range(5):
+        await enqueue_for_review(
+            conn, subject_candidate=f"s{i}", object_candidate=f"o{i}", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+
+    page1 = await list_pending_reviews(conn, tenant_id="t1", limit=2, offset=0)
+    page2 = await list_pending_reviews(conn, tenant_id="t1", limit=2, offset=2)
+
+    assert [r["subject_candidate"] for r in page1] == ["s0", "s1"]
+    assert [r["subject_candidate"] for r in page2] == ["s2", "s3"]
+
+
+async def test_list_pending_reviews_without_limit_returns_everything():
+    conn = await _connect()
+    for i in range(3):
+        await enqueue_for_review(
+            conn, subject_candidate=f"s{i}", object_candidate=f"o{i}", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+
+    pending = await list_pending_reviews(conn, tenant_id="t1")
+
+    assert len(pending) == 3
+
+
+async def test_count_pending_reviews_matches_tenant_scoped_total():
+    conn = await _connect()
+    await enqueue_for_review(
+        conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+        reason="subject_unresolved", source="s.md", tenant_id="t1",
+    )
+    await enqueue_for_review(
+        conn, subject_candidate="c", object_candidate="d", relation_type="RELATED_TO",
+        reason="subject_unresolved", source="s.md", tenant_id="t1",
+    )
+    await enqueue_for_review(
+        conn, subject_candidate="e", object_candidate="f", relation_type="RELATED_TO",
+        reason="subject_unresolved", source="s.md", tenant_id="t2",
+    )
+
+    assert await count_pending_reviews(conn, tenant_id="t1") == 2
+    assert await count_pending_reviews(conn, tenant_id="t2") == 1
+
+
+async def test_count_resolved_reviews_matches_status_filter():
+    conn = await _connect()
+    graph_client = FakeGraphClient()
+    approved_id = await enqueue_for_review(
+        conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+        reason="subject_unresolved", source="s.md", tenant_id="t1",
+    )
+    rejected_id = await enqueue_for_review(
+        conn, subject_candidate="c", object_candidate="d", relation_type="RELATED_TO",
+        reason="subject_unresolved", source="s.md", tenant_id="t1",
+    )
+    await approve_review(
+        conn, review_id=approved_id, subject_standard_name="A", object_standard_name="B",
+        tenant_id="t1", graph_client=graph_client, now=_NOW,
+    )
+    await reject_review(conn, review_id=rejected_id, tenant_id="t1", note="噪声")
+
+    assert await count_resolved_reviews(conn, tenant_id="t1") == 2
+    assert await count_resolved_reviews(conn, tenant_id="t1", status="approved") == 1
+    assert await count_resolved_reviews(conn, tenant_id="t1", status="rejected") == 1
