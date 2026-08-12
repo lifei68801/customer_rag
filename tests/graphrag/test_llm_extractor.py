@@ -208,6 +208,30 @@ async def test_falls_back_to_empty_string_evidence_when_llm_omits_it():
     ]
 
 
+async def test_falls_back_to_empty_string_evidence_when_llm_returns_null():
+    text = (
+        '{"relations": ['
+        '{"subject": "错误码E502", "object": "登录模块", "relation_type": "RELATED_TO", '
+        '"evidence": null}'
+        "]}"
+    )
+    relations = await extract_candidate_relations(
+        ["文档片段..."],
+        llm_registry=_registry(FixedLLMProvider(text)),
+        llm_provider_name="llm",
+        timeout_sec=1.0,
+    )
+
+    assert relations == [
+        {
+            "subject": "错误码E502",
+            "object": "登录模块",
+            "relation_type": "RELATED_TO",
+            "evidence": "",
+        }
+    ]
+
+
 async def test_system_prompt_requires_evidence_quote_in_output_schema():
     provider = SpyLLMProvider('{"relations": []}')
 

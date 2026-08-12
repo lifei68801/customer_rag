@@ -121,7 +121,7 @@ async def extract_candidate_relations(
         subject = str(item.get("subject", "")).strip()
         obj = str(item.get("object", "")).strip()
         relation_type = str(item.get("relation_type", "")).strip()
-        evidence = str(item.get("evidence", "")).strip()
+        evidence = str(item.get("evidence") or "").strip()
         if subject and obj and relation_type:
             relations.append(
                 {
