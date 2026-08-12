@@ -25,7 +25,11 @@ _SYSTEM_PROMPT = (
     'PART_OF/PRECEDES/ADDRESSED_BY/RELATED_TO 的例子都依赖这类词）；不要'
     '抽取脱离具体业务场景、换成任何行业都通用的空泛填充词，例如孤立出现'
     '的"设备""问题""服务""顾客""流程"这类没有具体指代对象的泛称。'
-    '只输出 JSON：{"relations":[{"subject":"...","object":"...","relation_type":"RELATED_TO"}]}。'
+    '只输出 JSON：{"relations":[{"subject":"...","object":"...",'
+    '"relation_type":"RELATED_TO","evidence":"..."}]}。evidence 是原文里'
+    '支持这条关系的一句话原文摘录，给人工审核用，必须是原文摘录、不能'
+    '改写或概括；实在找不到能直接引用的完整单句时，摘取最贴近的一小段'
+    '原文，不要留空。'
     "relation_type 仅允许以下 10 种，每种给一个例子帮助理解：\n"
     'RELATED_TO（兜底弱关联，如"促销活动 RELATED_TO 会员日"）、\n'
     'PART_OF（部分-整体，如"客房 PART_OF 酒店"）、\n'
@@ -117,8 +121,14 @@ async def extract_candidate_relations(
         subject = str(item.get("subject", "")).strip()
         obj = str(item.get("object", "")).strip()
         relation_type = str(item.get("relation_type", "")).strip()
+        evidence = str(item.get("evidence", "")).strip()
         if subject and obj and relation_type:
             relations.append(
-                {"subject": subject, "object": obj, "relation_type": relation_type}
+                {
+                    "subject": subject,
+                    "object": obj,
+                    "relation_type": relation_type,
+                    "evidence": evidence,
+                }
             )
     return relations

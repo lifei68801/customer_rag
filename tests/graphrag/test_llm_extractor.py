@@ -39,7 +39,8 @@ def _registry(provider) -> ProviderRegistry:
 async def test_extracts_relations_from_valid_json_response():
     text = (
         '{"relations": ['
-        '{"subject": "错误码E502", "object": "登录模块", "relation_type": "RELATED_TO"}'
+        '{"subject": "错误码E502", "object": "登录模块", "relation_type": "RELATED_TO", '
+        '"evidence": "出现错误码E502时请检查登录模块状态"}'
         "]}"
     )
     relations = await extract_candidate_relations(
@@ -54,6 +55,7 @@ async def test_extracts_relations_from_valid_json_response():
             "subject": "错误码E502",
             "object": "登录模块",
             "relation_type": "RELATED_TO",
+            "evidence": "出现错误码E502时请检查登录模块状态",
         }
     ]
 
@@ -181,3 +183,41 @@ async def test_system_prompt_explains_taxonomy_examples_are_not_excluded():
     assert "PART_OF" in system_message
     assert "PRECEDES" in system_message
     assert "ADDRESSED_BY" in system_message
+
+
+async def test_falls_back_to_empty_string_evidence_when_llm_omits_it():
+    text = (
+        '{"relations": ['
+        '{"subject": "错误码E502", "object": "登录模块", "relation_type": "RELATED_TO"}'
+        "]}"
+    )
+    relations = await extract_candidate_relations(
+        ["文档片段..."],
+        llm_registry=_registry(FixedLLMProvider(text)),
+        llm_provider_name="llm",
+        timeout_sec=1.0,
+    )
+
+    assert relations == [
+        {
+            "subject": "错误码E502",
+            "object": "登录模块",
+            "relation_type": "RELATED_TO",
+            "evidence": "",
+        }
+    ]
+
+
+async def test_system_prompt_requires_evidence_quote_in_output_schema():
+    provider = SpyLLMProvider('{"relations": []}')
+
+    await extract_candidate_relations(
+        ["片段"],
+        llm_registry=_registry(provider),
+        llm_provider_name="llm",
+        timeout_sec=1.0,
+    )
+
+    system_message = provider.received_requests[0].messages[0]["content"]
+    assert '"evidence":"..."' in system_message
+    assert "原文摘录" in system_message
