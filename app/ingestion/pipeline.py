@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
@@ -61,6 +62,7 @@ async def _maybe_extract_graph_relations(
     *,
     source: str,
     tenant_id: str,
+    now: datetime,
     graph_llm_registry: ProviderRegistry | None,
     graph_llm_provider_name: str | None,
     graph_terms: list[Term] | None,
@@ -87,6 +89,7 @@ async def _maybe_extract_graph_relations(
         graph_client=graph_client,
         source=source,
         tenant_id=tenant_id,
+        now=now,
         review_conn=graph_review_conn,
     )
 
@@ -141,6 +144,7 @@ async def _ingest_chunks(
             chunks,
             source=str(path),
             tenant_id=tenant_id,
+            now=datetime.now(),
             graph_llm_registry=graph_llm_registry,
             graph_llm_provider_name=graph_llm_provider_name,
             graph_terms=graph_terms,

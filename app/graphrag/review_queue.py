@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol
 
 import aiosqlite
 
 from app.db_migrations import add_column_if_missing
+from app.graphrag.provenance import HUMAN_APPROVED
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS graph_review_queue (
@@ -34,6 +36,8 @@ class ReviewGraphClientProtocol(Protocol):
         relation_type: str,
         source: str,
         tenant_id: str,
+        provenance: str,
+        recorded_at: datetime,
     ) -> None: ...
 
 
@@ -194,8 +198,15 @@ async def approve_review(
     object_standard_name: str,
     tenant_id: str,
     graph_client: ReviewGraphClientProtocol,
+    now: datetime,
 ) -> None:
-    """人工确认候选关系对应的标准名称后，写入图谱并把队列状态标记为已批准。"""
+    """人工确认候选关系对应的标准名称后，写入图谱并把队列状态标记为已批准。
+
+    写入的边标记 provenance=HUMAN_APPROVED（见 app/graphrag/provenance.py）
+    ——这是这条边第一次、也是唯一一次被写入图谱的时刻（进了审核队列的
+    候选，在此之前从未调用过 merge_relation），与自动写入路径共用同一个
+    Neo4jGraphClient.merge_relation，只是 provenance 标记不同。
+    """
     row = await _fetch_pending_row(conn, review_id, tenant_id=tenant_id)
     await graph_client.merge_relation(
         subject_standard_name=subject_standard_name,
@@ -203,6 +214,8 @@ async def approve_review(
         relation_type=row["relation_type"],
         source=row["source"],
         tenant_id=tenant_id,
+        provenance=HUMAN_APPROVED,
+        recorded_at=now,
     )
     # WHERE 里重复加 tenant_id：单看这条语句本身，_fetch_pending_row 已经
     # 校验过 review_id 属于这个 tenant_id，此刻再查一次理论上多余；但两条

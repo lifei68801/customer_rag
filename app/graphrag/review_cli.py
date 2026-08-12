@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime
 from typing import Any
 
 import aiosqlite
@@ -55,6 +56,7 @@ async def cmd_approve(
         object_standard_name=object_standard_name,
         tenant_id=tenant_id,
         graph_client=graph_client,
+        now=datetime.now(),
     )
     print(
         f"已批准 review_id={review_id}，写入图谱："

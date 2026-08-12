@@ -1,4 +1,6 @@
 import asyncio
+from datetime import datetime
+
 import aiosqlite
 
 from app.graphrag.ontology import Term
@@ -10,6 +12,8 @@ from app.ingestion.graph_extraction import (
 from app.ingestion.chunking import Chunk
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.registry import ProviderRegistry
+
+_NOW = datetime(2026, 8, 12, 12, 0, 0)
 
 _TERMS = [
     Term(
@@ -48,6 +52,8 @@ class FakeGraphClient:
         relation_type,
         source,
         tenant_id,
+        provenance,
+        recorded_at,
     ) -> None:
         self.written.append(
             {
@@ -56,6 +62,8 @@ class FakeGraphClient:
                 "relation_type": relation_type,
                 "source": source,
                 "tenant_id": tenant_id,
+                "provenance": provenance,
+                "recorded_at": recorded_at,
             }
         )
 
@@ -89,6 +97,7 @@ async def test_extracts_normalizes_and_writes_relations_from_chunks():
         graph_client=graph_client,
         source="a.md",
         tenant_id="t1",
+        now=_NOW,
     )
 
     assert written == 1
@@ -99,6 +108,8 @@ async def test_extracts_normalizes_and_writes_relations_from_chunks():
             "relation_type": "RELATED_TO",
             "source": "a.md",
             "tenant_id": "t1",
+            "provenance": "auto_merged",
+            "recorded_at": _NOW,
         }
     ]
     assert graph_client.deleted_sources == [("a.md", "t1")]
@@ -127,6 +138,7 @@ async def test_unresolved_candidate_goes_to_review_queue_when_review_conn_provid
         graph_client=graph_client,
         source="a.md",
         tenant_id="t1",
+        now=_NOW,
         review_conn=review_conn,
     )
 
@@ -158,6 +170,7 @@ async def test_reingesting_same_source_clears_stale_relations_no_longer_present(
         graph_client=graph_client,
         source="a.md",
         tenant_id="t1",
+        now=_NOW,
     )
     assert len(graph_client.written) == 1
 
@@ -176,6 +189,7 @@ async def test_reingesting_same_source_clears_stale_relations_no_longer_present(
         graph_client=graph_client,
         source="a.md",
         tenant_id="t1",
+        now=_NOW,
     )
 
     assert graph_client.written == []
@@ -206,6 +220,7 @@ async def test_reingesting_same_source_different_tenant_does_not_delete_other_te
         graph_client=graph_client,
         source="a.md",
         tenant_id="t1",
+        now=_NOW,
     )
     assert len(graph_client.written) == 1
 
@@ -221,6 +236,7 @@ async def test_reingesting_same_source_different_tenant_does_not_delete_other_te
         graph_client=graph_client,
         source="a.md",
         tenant_id="t2",
+        now=_NOW,
     )
 
     assert graph_client.written == [
@@ -230,6 +246,8 @@ async def test_reingesting_same_source_different_tenant_does_not_delete_other_te
             "relation_type": "RELATED_TO",
             "source": "a.md",
             "tenant_id": "t1",
+            "provenance": "auto_merged",
+            "recorded_at": _NOW,
         }
     ]
 
@@ -293,6 +311,7 @@ async def test_extract_and_write_graph_relations_respects_max_concurrency():
         graph_client=graph_client,
         source="a.md",
         tenant_id="t1",
+        now=_NOW,
         batch_max_chars=3000,
         max_concurrency=4,
     )
@@ -328,6 +347,7 @@ async def test_one_failing_batch_does_not_prevent_other_batches_from_writing():
         graph_client=graph_client,
         source="a.md",
         tenant_id="t1",
+        now=_NOW,
         batch_max_chars=100,
     )
 

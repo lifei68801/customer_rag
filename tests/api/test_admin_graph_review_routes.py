@@ -107,12 +107,16 @@ def test_approve_review_calls_graph_client_and_moves_to_history(review_conn):
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert graph_client.written == [
-        {
-            "subject_standard_name": "A", "object_standard_name": "B",
-            "relation_type": "RELATED_TO", "source": "s.md", "tenant_id": "t1",
-        }
-    ]
+    # 路由层内部用 datetime.now() 生成 recorded_at，测试跑的时刻不可预知
+    # 具体值，只断言其它字段+provenance（走的是 human_approved 路径）。
+    assert len(graph_client.written) == 1
+    written = graph_client.written[0]
+    assert written["subject_standard_name"] == "A"
+    assert written["object_standard_name"] == "B"
+    assert written["relation_type"] == "RELATED_TO"
+    assert written["source"] == "s.md"
+    assert written["tenant_id"] == "t1"
+    assert written["provenance"] == "human_approved"
 
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store

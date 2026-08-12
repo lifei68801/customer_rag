@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import aiosqlite
 import pytest
 
@@ -12,6 +14,8 @@ from app.graphrag.review_queue import (
     reject_review,
 )
 
+_NOW = datetime(2026, 8, 12, 12, 0, 0)
+
 
 async def _connect() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
@@ -24,7 +28,15 @@ class FakeGraphClient:
         self.written: list[dict] = []
 
     async def merge_relation(
-        self, *, subject_standard_name, object_standard_name, relation_type, source, tenant_id
+        self,
+        *,
+        subject_standard_name,
+        object_standard_name,
+        relation_type,
+        source,
+        tenant_id,
+        provenance,
+        recorded_at,
     ) -> None:
         self.written.append(
             {
@@ -33,6 +45,8 @@ class FakeGraphClient:
                 "relation_type": relation_type,
                 "source": source,
                 "tenant_id": tenant_id,
+                "provenance": provenance,
+                "recorded_at": recorded_at,
             }
         )
 
@@ -88,6 +102,7 @@ async def test_approve_review_writes_relation_with_source_and_tenant_and_removes
         object_standard_name="示例登录模块",
         tenant_id="t1",
         graph_client=graph_client,
+        now=_NOW,
     )
 
     assert graph_client.written == [
@@ -97,6 +112,8 @@ async def test_approve_review_writes_relation_with_source_and_tenant_and_removes
             "relation_type": "RELATED_TO",
             "source": "faq.md",
             "tenant_id": "t1",
+            "provenance": "human_approved",
+            "recorded_at": _NOW,
         }
     ]
     assert await list_pending_reviews(conn, tenant_id="t1") == []
@@ -114,6 +131,7 @@ async def test_approve_review_from_wrong_tenant_raises_not_found():
         await approve_review(
             conn, review_id=review_id, subject_standard_name="x",
             object_standard_name="y", tenant_id="t2", graph_client=graph_client,
+            now=_NOW,
         )
     assert graph_client.written == []
 
@@ -163,6 +181,7 @@ async def test_approve_unknown_review_id_raises():
             object_standard_name="b",
             tenant_id="t1",
             graph_client=graph_client,
+            now=_NOW,
         )
 
 
@@ -183,6 +202,7 @@ async def test_approve_already_resolved_review_raises():
             object_standard_name="b",
             tenant_id="t1",
             graph_client=graph_client,
+            now=_NOW,
         )
 
 
@@ -239,7 +259,7 @@ async def test_list_resolved_reviews_returns_approved_and_rejected_ordered_by_re
     )
     await approve_review(
         conn, review_id=approved_id, subject_standard_name="A", object_standard_name="B",
-        tenant_id="t1", graph_client=graph_client,
+        tenant_id="t1", graph_client=graph_client, now=_NOW,
     )
     await reject_review(conn, review_id=rejected_id, tenant_id="t1", note="噪声")
 

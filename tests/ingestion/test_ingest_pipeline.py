@@ -133,6 +133,8 @@ class FakeGraphClient:
         relation_type,
         source,
         tenant_id,
+        provenance,
+        recorded_at,
     ) -> None:
         self.written.append(
             {
@@ -141,6 +143,7 @@ class FakeGraphClient:
                 "relation_type": relation_type,
                 "source": source,
                 "tenant_id": tenant_id,
+                "provenance": provenance,
             }
         )
 
@@ -210,6 +213,7 @@ async def test_ingest_markdown_file_splits_only_the_embedding_path_not_graph_ext
             "relation_type": "RELATED_TO",
             "source": str(md_file),
             "tenant_id": "t1",
+            "provenance": "auto_merged",
         }
     ]
 
@@ -268,6 +272,7 @@ async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_p
             "relation_type": "RELATED_TO",
             "source": str(md_file),
             "tenant_id": "t1",
+            "provenance": "auto_merged",
         }
     ]
 

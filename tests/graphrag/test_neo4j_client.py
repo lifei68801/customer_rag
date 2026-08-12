@@ -1,5 +1,9 @@
+from datetime import datetime
+
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
+
+_NOW = datetime(2026, 8, 12, 12, 0, 0)
 
 
 class FakeResult:
@@ -63,6 +67,8 @@ async def test_merge_relation_sends_expected_query_and_parameters():
         relation_type="RELATED_TO",
         source="a.md",
         tenant_id="t1",
+        provenance="auto_merged",
+        recorded_at=_NOW,
     )
 
     assert session.last_parameters == {
@@ -70,10 +76,16 @@ async def test_merge_relation_sends_expected_query_and_parameters():
         "object_name": "登录模块",
         "source": "a.md",
         "tenant_id": "t1",
+        "provenance": "auto_merged",
+        "recorded_at": "2026-08-12 12:00:00",
     }
     assert "RELATED_TO" in session.last_query
     assert "MERGE" in session.last_query
     assert "tenant_id" in session.last_query
+    # tenant_id 必须在 MERGE 的匹配模式本身里（不能只在匹配到之后才 SET），
+    # 否则两个租户各自抽取出同一对标准术语间的同类型关系时，后写入的会
+    # 命中并覆盖先写入的那条边——见 merge_relation 的说明。
+    assert "MERGE (a)-[r:RELATED_TO {tenant_id: $tenant_id}]->(b)" in session.last_query
 
 
 async def test_delete_relations_by_source_sends_expected_query_and_parameters():
@@ -98,6 +110,8 @@ async def test_merge_relation_rejects_unrecognized_relation_type():
             relation_type="DROP TABLE",
             source="a.md",
             tenant_id="t1",
+            provenance="auto_merged",
+            recorded_at=_NOW,
         )
         assert False, "应拒绝非法关系类型"
     except ValueError:
@@ -115,6 +129,8 @@ async def test_merge_relation_rejects_alias_of():
             relation_type="ALIAS_OF",
             source="a.md",
             tenant_id="t1",
+            provenance="auto_merged",
+            recorded_at=_NOW,
         )
         assert False, "应拒绝 ALIAS_OF：该关系类型只能由 sync_term 写入，不设置 tenant_id"
     except ValueError:
@@ -193,6 +209,8 @@ async def test_merge_relation_accepts_new_part_of_type():
         relation_type="PART_OF",
         source="a.md",
         tenant_id="t1",
+        provenance="auto_merged",
+        recorded_at=_NOW,
     )
 
     assert "PART_OF" in session.last_query
@@ -209,6 +227,8 @@ async def test_merge_relation_rejects_the_retired_belongs_to_module_type():
             relation_type="BELONGS_TO_MODULE",
             source="a.md",
             tenant_id="t1",
+            provenance="auto_merged",
+            recorded_at=_NOW,
         )
         assert False, "BELONGS_TO_MODULE 已经被 PART_OF 取代，应该拒绝"
     except ValueError:

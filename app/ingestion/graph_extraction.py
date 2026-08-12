@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 import aiosqlite
 
@@ -46,6 +47,7 @@ async def extract_and_write_graph_relations(
     graph_client: GraphWriteClientProtocol,
     source: str,
     tenant_id: str,
+    now: datetime,
     review_conn: aiosqlite.Connection | None = None,
     extract_timeout_sec: float = 30.0,
     batch_max_chars: int = 3000,
@@ -101,6 +103,7 @@ async def extract_and_write_graph_relations(
             graph_client=graph_client,
             source=source,
             tenant_id=tenant_id,
+            now=now,
             review_conn=review_conn,
         )
     return total_written

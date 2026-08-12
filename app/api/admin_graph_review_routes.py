@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -70,6 +72,7 @@ async def approve(
             object_standard_name=payload.object_standard_name,
             tenant_id=payload.tenant_id,
             graph_client=graph_client,
+            now=datetime.now(),
         )
     except ReviewNotFoundError:
         raise HTTPException(status_code=404, detail="待审核记录不存在")

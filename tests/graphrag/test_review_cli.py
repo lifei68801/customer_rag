@@ -15,7 +15,15 @@ class FakeGraphClient:
         self.written: list[dict] = []
 
     async def merge_relation(
-        self, *, subject_standard_name, object_standard_name, relation_type, source, tenant_id
+        self,
+        *,
+        subject_standard_name,
+        object_standard_name,
+        relation_type,
+        source,
+        tenant_id,
+        provenance,
+        recorded_at,
     ) -> None:
         self.written.append(
             {
@@ -24,6 +32,8 @@ class FakeGraphClient:
                 "relation_type": relation_type,
                 "source": source,
                 "tenant_id": tenant_id,
+                "provenance": provenance,
+                "recorded_at": recorded_at,
             }
         )
 
@@ -78,15 +88,17 @@ async def test_cmd_approve_writes_relation_via_graph_client():
         graph_client=graph_client,
     )
 
-    assert graph_client.written == [
-        {
-            "subject": "示例错误码E502",
-            "object": "示例登录模块",
-            "relation_type": "RELATED_TO",
-            "source": "faq.md",
-            "tenant_id": "t1",
-        }
-    ]
+    # cmd_approve 内部用 datetime.now() 生成 recorded_at，测试跑的时刻不可
+    # 预知具体值，只断言其它字段+provenance（这是 human_approved 路径，
+    # 不是自动写入）。
+    assert len(graph_client.written) == 1
+    written = graph_client.written[0]
+    assert written["subject"] == "示例错误码E502"
+    assert written["object"] == "示例登录模块"
+    assert written["relation_type"] == "RELATED_TO"
+    assert written["source"] == "faq.md"
+    assert written["tenant_id"] == "t1"
+    assert written["provenance"] == "human_approved"
     assert await list_pending_reviews(conn, tenant_id="t1") == []
 
 

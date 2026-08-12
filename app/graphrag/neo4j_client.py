@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol
 
 from app.graphrag.ontology import Term
@@ -121,6 +122,8 @@ class Neo4jGraphClient:
         relation_type: str,
         source: str,
         tenant_id: str,
+        provenance: str,
+        recorded_at: datetime,
     ) -> None:
         """幂等写入一条术语间关系（MERGE，不存在则创建，存在则不重复）。
 
@@ -129,8 +132,21 @@ class Neo4jGraphClient:
         delete_relations_by_source），避免文档内容变更后旧关系永久
         残留在图谱里，和 vector_store.delete_by_source() 是同一个思路。
 
-        tenant_id 同样写在边的属性上，query_subgraph 按它强制过滤，
-        防止不同租户的关系事实互相可见。
+        tenant_id 必须写进 MERGE 的匹配模式本身（不能只在匹配到之后才
+        SET）——:Term 标准节点不分租户、可能被多个租户共用，如果匹配
+        条件只看 (a, 关系类型, b) 不看 tenant_id，两个租户各自抽取出同一对
+        标准术语间的同类型关系时，第二次 merge_relation 会命中并覆盖第一
+        个租户写的那条边（同一条边的 tenant_id/source/provenance 被悄悄
+        改写成后来者的），而不是各自新建一条边——这是 2026-08-12 修的
+        真实跨租户数据覆盖问题，不是假设性风险。
+
+        provenance 标记这条边是怎么进来的（app/graphrag/provenance.py 的
+        AUTO_MERGED："摄取时术语表精确对齐后自动写入"，或
+        HUMAN_APPROVED："未对齐候选经人工审核批准后写入"）；recorded_at
+        是这次写入发生的时间。两者都只是可观测性字段，不参与
+        query_subgraph 的检索过滤——检索侧目前仍然不区分来源，一视同仁
+        地返回，这是刻意保留的现状（见该模块的说明），加这两个字段只是
+        让"这条边有没有被人看过"这件事变得可事后追查。
         """
         if relation_type not in _ALLOWED_RELATION_TYPES:
             raise ValueError(
@@ -140,8 +156,9 @@ class Neo4jGraphClient:
         query = (
             "MERGE (a:Term {standard_name: $subject_name}) "
             "MERGE (b:Term {standard_name: $object_name}) "
-            f"MERGE (a)-[r:{relation_type}]->(b) "
-            "SET r.source = $source, r.tenant_id = $tenant_id"
+            f"MERGE (a)-[r:{relation_type} {{tenant_id: $tenant_id}}]->(b) "
+            "SET r.source = $source, r.provenance = $provenance, "
+            "r.recorded_at = $recorded_at"
         )
         async with self._driver.session() as session:
             await session.run(
@@ -151,6 +168,8 @@ class Neo4jGraphClient:
                     "object_name": object_standard_name,
                     "source": source,
                     "tenant_id": tenant_id,
+                    "provenance": provenance,
+                    "recorded_at": recorded_at.strftime("%Y-%m-%d %H:%M:%S"),
                 },
             )
 

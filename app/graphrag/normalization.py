@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import difflib
 import logging
+from datetime import datetime
 from typing import Any, Protocol
 
 import aiosqlite
 
 from app.graphrag.ontology import Term
+from app.graphrag.provenance import AUTO_MERGED
 from app.graphrag.review_queue import enqueue_for_review
 
 logger = logging.getLogger(__name__)
@@ -21,6 +23,8 @@ class GraphWriteClientProtocol(Protocol):
         relation_type: str,
         source: str,
         tenant_id: str,
+        provenance: str,
+        recorded_at: datetime,
     ) -> None: ...
 
     async def delete_relations_by_source(self, source: str, *, tenant_id: str) -> None: ...
@@ -75,6 +79,7 @@ async def normalize_and_write_relations(
     graph_client: GraphWriteClientProtocol,
     source: str,
     tenant_id: str,
+    now: datetime,
     review_conn: aiosqlite.Connection | None = None,
 ) -> int:
     """候选关系归一化对齐术语表后写入图谱，返回成功写入数。
@@ -85,6 +90,12 @@ async def normalize_and_write_relations(
     - 传入：候选改为写入持久化的人工待审核队列（见 review_queue.py），
       而不是随日志一起消失——对应架构文档"低置信度新实体进入人工待
       审核队列，而非直接自动入库/直接丢弃"的完整实现。
+
+    这条路径写入的边一律标记 provenance=AUTO_MERGED（见
+    app/graphrag/provenance.py）——两侧实体精确对齐了术语表，不代表 LLM
+    抽取出的这条关系本身就是对的，只是它没有进人工审核；调用方传入的
+    now 统一作为这批关系的写入时间（不在循环内部逐条调用 datetime.now()，
+    避免同一批次内的边打上有细微先后差异的时间戳，也方便测试用固定时钟）。
     """
     written = 0
     for relation in relations:
@@ -147,6 +158,8 @@ async def normalize_and_write_relations(
                 relation_type=relation["relation_type"],
                 source=source,
                 tenant_id=tenant_id,
+                provenance=AUTO_MERGED,
+                recorded_at=now,
             )
         except ValueError:
             logger.warning(

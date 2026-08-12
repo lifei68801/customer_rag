@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import aiosqlite
 
 from app.graphrag.normalization import (
@@ -6,6 +8,8 @@ from app.graphrag.normalization import (
 )
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
+
+_NOW = datetime(2026, 8, 12, 12, 0, 0)
 
 _TERMS = [
     Term(
@@ -36,6 +40,8 @@ class FakeGraphClient:
         relation_type,
         source,
         tenant_id,
+        provenance,
+        recorded_at,
     ) -> None:
         if relation_type not in {
             "RELATED_TO", "PART_OF", "IS_A", "REQUIRES", "ALTERNATIVE_TO",
@@ -49,6 +55,8 @@ class FakeGraphClient:
                 "relation_type": relation_type,
                 "source": source,
                 "tenant_id": tenant_id,
+                "provenance": provenance,
+                "recorded_at": recorded_at,
             }
         )
 
@@ -63,7 +71,8 @@ async def test_writes_relation_when_both_sides_resolve_via_alias():
     ]
 
     written = await normalize_and_write_relations(
-        relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1"
+        relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1",
+        now=_NOW,
     )
 
     assert written == 1
@@ -74,6 +83,8 @@ async def test_writes_relation_when_both_sides_resolve_via_alias():
             "relation_type": "RELATED_TO",
             "source": "a.md",
             "tenant_id": "t1",
+            "provenance": "auto_merged",
+            "recorded_at": _NOW,
         }
     ]
 
@@ -89,7 +100,8 @@ async def test_drops_relation_when_one_side_unresolved():
     ]
 
     written = await normalize_and_write_relations(
-        relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1"
+        relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1",
+        now=_NOW,
     )
 
     assert written == 0
@@ -104,7 +116,8 @@ async def test_drops_relation_with_invalid_relation_type_without_crashing_batch(
     ]
 
     written = await normalize_and_write_relations(
-        relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1"
+        relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1",
+        now=_NOW,
     )
 
     assert written == 1
@@ -128,6 +141,7 @@ async def test_enqueues_unresolved_candidate_for_review_when_review_conn_provide
         graph_client=graph_client,
         source="a.md",
         tenant_id="t1",
+        now=_NOW,
         review_conn=review_conn,
     )
 
@@ -153,6 +167,7 @@ async def test_enqueues_invalid_relation_type_for_review_when_review_conn_provid
         graph_client=graph_client,
         source="a.md",
         tenant_id="t1",
+        now=_NOW,
         review_conn=review_conn,
     )
 
@@ -174,7 +189,8 @@ async def test_does_not_enqueue_when_review_conn_not_provided():
     ]
 
     written = await normalize_and_write_relations(
-        relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1"
+        relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1",
+        now=_NOW,
     )
 
     assert written == 0
@@ -231,6 +247,7 @@ async def test_fuzzy_candidate_goes_to_review_queue_instead_of_auto_writing():
         graph_client=graph_client,
         source="a.md",
         tenant_id="t1",
+        now=_NOW,
         review_conn=review_conn,
     )
 
@@ -265,6 +282,7 @@ async def test_totally_unresolved_candidate_still_uses_unresolved_reason_not_fuz
         graph_client=graph_client,
         source="a.md",
         tenant_id="t1",
+        now=_NOW,
         review_conn=review_conn,
     )
 

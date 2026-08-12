@@ -40,7 +40,15 @@ class SpyGraphClient:
         self.deleted_sources: list[tuple[str, str]] = []
 
     async def merge_relation(
-        self, *, subject_standard_name, object_standard_name, relation_type, source, tenant_id
+        self,
+        *,
+        subject_standard_name,
+        object_standard_name,
+        relation_type,
+        source,
+        tenant_id,
+        provenance,
+        recorded_at,
     ) -> None:
         self.written.append(
             {
@@ -48,6 +56,7 @@ class SpyGraphClient:
                 "object": object_standard_name,
                 "relation_type": relation_type,
                 "tenant_id": tenant_id,
+                "provenance": provenance,
             }
         )
 
