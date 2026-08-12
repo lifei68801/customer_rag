@@ -69,6 +69,14 @@ async def ensure_review_schema(conn: aiosqlite.Connection) -> None:
         conn, table="graph_review_queue", column="source",
         ddl="TEXT NOT NULL DEFAULT ''",
     )
+    # evidence 记录支持这条候选关系的原文引用（见 llm_extractor.py），
+    # 人工审核时用来判断"文档里是不是真的这么说的"——历史数据没有这个
+    # 信息，回填空字符串（不是 NULL，跟 source 同样的理由：下游拼接/
+    # 展示时不用到处判空）。
+    await add_column_if_missing(
+        conn, table="graph_review_queue", column="evidence",
+        ddl="TEXT NOT NULL DEFAULT ''",
+    )
     # tenant_id 是后加的列，不在 _SCHEMA_SQL 的建表语句里——这个复合索引
     # 必须放在上面两次 add_column_if_missing 之后创建，否则全新数据库上
     # 建表时 tenant_id 列还不存在，CREATE INDEX 会报 "no such column"。
@@ -100,19 +108,24 @@ async def enqueue_for_review(
     tenant_id: str,
     suggested_subject_standard_name: str | None = None,
     suggested_object_standard_name: str | None = None,
+    evidence: str = "",
 ) -> int:
     """把未能对齐术语表（或关系类型不合法）的候选关系存入待审核队列，返回 review_id。
 
     source/tenant_id 是批准时写入图谱边所必需的信息，来自调用方
     normalize_and_write_relations() 本身已有的同名参数，这里改为必填，
     不给默认值——遗漏它们会让批准动作在写图谱这一步直接失败。
+
+    evidence 是抽取阶段 LLM 给出的原文引用（见 llm_extractor.py），给
+    人工审核用；默认空字符串——不是所有调用方都一定拿得到这个信息
+    （比如未来可能有的非 LLM 抽取来源），不强制要求。
     """
     cursor = await conn.execute(
         "INSERT INTO graph_review_queue "
         "(subject_candidate, object_candidate, relation_type, reason, "
         "suggested_subject_standard_name, suggested_object_standard_name, "
-        "source, tenant_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "source, tenant_id, evidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             subject_candidate,
             object_candidate,
@@ -122,6 +135,7 @@ async def enqueue_for_review(
             suggested_object_standard_name,
             source,
             tenant_id,
+            evidence,
         ),
     )
     await conn.commit()
@@ -144,7 +158,7 @@ async def list_pending_reviews(
     cursor = await conn.execute(
         "SELECT review_id, subject_candidate, object_candidate, relation_type, "
         "reason, suggested_subject_standard_name, suggested_object_standard_name, "
-        "source, created_at FROM graph_review_queue "
+        "source, evidence, created_at FROM graph_review_queue "
         "WHERE status = 'pending' AND tenant_id = ? ORDER BY review_id LIMIT ? OFFSET ?",
         (tenant_id, limit if limit is not None else -1, offset),
     )
@@ -169,7 +183,7 @@ async def list_resolved_reviews(
     if status is None:
         cursor = await conn.execute(
             "SELECT review_id, subject_candidate, object_candidate, relation_type, "
-            "reason, status, resolved_at, resolved_note, source, created_at "
+            "reason, status, resolved_at, resolved_note, source, evidence, created_at "
             "FROM graph_review_queue "
             "WHERE tenant_id = ? AND status IN ('approved', 'rejected') "
             "ORDER BY resolved_at DESC, review_id DESC LIMIT ? OFFSET ?",
@@ -178,7 +192,7 @@ async def list_resolved_reviews(
     else:
         cursor = await conn.execute(
             "SELECT review_id, subject_candidate, object_candidate, relation_type, "
-            "reason, status, resolved_at, resolved_note, source, created_at "
+            "reason, status, resolved_at, resolved_note, source, evidence, created_at "
             "FROM graph_review_queue "
             "WHERE tenant_id = ? AND status = ? "
             "ORDER BY resolved_at DESC, review_id DESC LIMIT ? OFFSET ?",

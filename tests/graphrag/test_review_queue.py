@@ -369,3 +369,46 @@ async def test_list_resolved_reviews_breaks_resolved_at_ties_by_review_id_desc()
     # 排序，保证结果稳定——不然分页边界处会出现同一条记录跨页重复、或者
     # 彻底消失的问题。
     assert [r["review_id"] for r in resolved] == list(reversed(ids))
+
+
+async def test_enqueue_with_evidence_is_returned_by_list_pending():
+    conn = await _connect()
+
+    await enqueue_for_review(
+        conn,
+        subject_candidate="网关超时",
+        object_candidate="登录模块",
+        relation_type="RELATED_TO",
+        reason="subject_unresolved",
+        source="s.md",
+        tenant_id="t1",
+        evidence="文档提到网关超时会影响登录模块",
+    )
+
+    pending = await list_pending_reviews(conn, tenant_id="t1")
+    assert pending[0]["evidence"] == "文档提到网关超时会影响登录模块"
+
+
+async def test_enqueue_without_evidence_defaults_to_empty_string():
+    conn = await _connect()
+
+    await enqueue_for_review(
+        conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+        reason="subject_unresolved", source="s.md", tenant_id="t1",
+    )
+
+    pending = await list_pending_reviews(conn, tenant_id="t1")
+    assert pending[0]["evidence"] == ""
+
+
+async def test_list_resolved_reviews_includes_evidence():
+    conn = await _connect()
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+        reason="subject_unresolved", source="s.md", tenant_id="t1",
+        evidence="原文引用示例",
+    )
+    await reject_review(conn, review_id=review_id, tenant_id="t1")
+
+    resolved = await list_resolved_reviews(conn, tenant_id="t1")
+    assert resolved[0]["evidence"] == "原文引用示例"
