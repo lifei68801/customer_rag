@@ -141,3 +141,20 @@ async def test_system_prompt_lists_all_ten_relation_types_and_forbids_cross_segm
         assert relation_type in system_message
     assert "BELONGS_TO_MODULE" not in system_message
     assert "不要把不同片段里的实体强行关联起来" in system_message
+
+
+async def test_system_prompt_requires_concrete_entities_and_excludes_generic_category_words():
+    provider = SpyLLMProvider('{"relations": []}')
+
+    await extract_candidate_relations(
+        ["片段"],
+        llm_registry=_registry(provider),
+        llm_provider_name="llm",
+        timeout_sec=1.0,
+    )
+
+    system_message = provider.received_requests[0].messages[0]["content"]
+    assert "专有名词指具体、可命名的业务实体" in system_message
+    for excluded_word in ["设备", "问题", "服务", "顾客", "流程"]:
+        assert excluded_word in system_message
+    assert "不算专有名词" in system_message
