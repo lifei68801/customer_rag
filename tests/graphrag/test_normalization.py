@@ -317,3 +317,30 @@ def test_find_fuzzy_candidate_standard_name_picks_highest_ratio_not_first_match(
     result = find_fuzzy_candidate_standard_name("网关超时了", multi_candidate_terms)
 
     assert result == "错误码E502"
+
+
+async def test_enqueued_review_carries_evidence_from_relation_candidate():
+    graph_client = FakeGraphClient()
+    review_conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(review_conn)
+    relations = [
+        {
+            "subject": "网关超时",
+            "object": "不存在的实体",
+            "relation_type": "RELATED_TO",
+            "evidence": "文档中提到网关超时时会影响不存在的实体",
+        }
+    ]
+
+    await normalize_and_write_relations(
+        relations,
+        terms=_TERMS,
+        graph_client=graph_client,
+        source="a.md",
+        tenant_id="t1",
+        now=_NOW,
+        review_conn=review_conn,
+    )
+
+    pending = await list_pending_reviews(review_conn, tenant_id="t1")
+    assert pending[0]["evidence"] == "文档中提到网关超时时会影响不存在的实体"

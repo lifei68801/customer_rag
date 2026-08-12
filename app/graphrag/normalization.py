@@ -132,6 +132,7 @@ async def normalize_and_write_relations(
                         tenant_id=tenant_id,
                         suggested_subject_standard_name=suggested_subject,
                         suggested_object_standard_name=suggested_object,
+                        evidence=relation.get("evidence", ""),
                     )
                 continue
             logger.info(
@@ -149,6 +150,7 @@ async def normalize_and_write_relations(
                     reason=reason,
                     source=source,
                     tenant_id=tenant_id,
+                    evidence=relation.get("evidence", ""),
                 )
             continue
         try:
@@ -175,6 +177,7 @@ async def normalize_and_write_relations(
                     reason="invalid_relation_type",
                     source=source,
                     tenant_id=tenant_id,
+                    evidence=relation.get("evidence", ""),
                 )
             continue
         written += 1
