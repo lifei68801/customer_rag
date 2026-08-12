@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 import aiosqlite
@@ -13,6 +13,8 @@ from app.graphrag.review_queue import (
     ReviewAlreadyResolvedError,
     ReviewNotFoundError,
     approve_review,
+    count_pending_reviews,
+    count_resolved_reviews,
     list_pending_reviews,
     list_resolved_reviews,
     reject_review,
@@ -25,6 +27,7 @@ router = APIRouter(
 
 class ReviewListResponse(BaseModel):
     reviews: list[dict]
+    total: int
 
 
 class ApproveRequest(BaseModel):
@@ -42,19 +45,32 @@ class RejectRequest(BaseModel):
 async def list_reviews(
     tenant_id: str,
     status: str = "pending",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> ReviewListResponse:
+    offset = (page - 1) * page_size
     if status == "pending":
-        reviews = await list_pending_reviews(review_conn, tenant_id=tenant_id)
+        reviews = await list_pending_reviews(
+            review_conn, tenant_id=tenant_id, limit=page_size, offset=offset
+        )
+        total = await count_pending_reviews(review_conn, tenant_id=tenant_id)
     elif status in ("approved", "rejected"):
-        reviews = await list_resolved_reviews(review_conn, tenant_id=tenant_id, status=status)
+        reviews = await list_resolved_reviews(
+            review_conn, tenant_id=tenant_id, status=status, limit=page_size, offset=offset
+        )
+        total = await count_resolved_reviews(review_conn, tenant_id=tenant_id, status=status)
     elif status == "all":
-        # status=None 让 list_resolved_reviews 同时返回 approved+rejected；
-        # 路由层用 "all" 这个显式值表达"不筛选"，不直接暴露 None 给客户端。
-        reviews = await list_resolved_reviews(review_conn, tenant_id=tenant_id, status=None)
+        # status=None 让 list_resolved_reviews/count_resolved_reviews 同时
+        # 统计 approved+rejected；路由层用 "all" 这个显式值表达"不筛选"，
+        # 不直接暴露 None 给客户端。
+        reviews = await list_resolved_reviews(
+            review_conn, tenant_id=tenant_id, status=None, limit=page_size, offset=offset
+        )
+        total = await count_resolved_reviews(review_conn, tenant_id=tenant_id, status=None)
     else:
         raise HTTPException(status_code=400, detail="status 必须是 pending/approved/rejected/all")
-    return ReviewListResponse(reviews=reviews)
+    return ReviewListResponse(reviews=reviews, total=total)
 
 
 @router.post("/{review_id}/approve")

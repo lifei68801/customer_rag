@@ -323,3 +323,62 @@ def test_reject_review_shows_up_in_rejected_history(review_conn):
     assert len(history_response.json()["reviews"]) == 1
     assert history_response.json()["reviews"][0]["resolved_note"] == "噪声"
     assert pending_response.json()["reviews"] == []
+
+
+def test_list_pending_reviews_returns_total_count_and_respects_page_size(review_conn):
+    for i in range(3):
+        asyncio.run(
+            enqueue_for_review(
+                review_conn, subject_candidate=f"s{i}", object_candidate=f"o{i}",
+                relation_type="RELATED_TO", reason="subject_unresolved",
+                source="s.md", tenant_id="t1",
+            )
+        )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/graph-reviews",
+            params={"tenant_id": "t1", "status": "pending", "page": 1, "page_size": 2},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["reviews"]) == 2
+    assert body["total"] == 3
+
+
+def test_list_pending_reviews_second_page_returns_remaining_rows(review_conn):
+    for i in range(3):
+        asyncio.run(
+            enqueue_for_review(
+                review_conn, subject_candidate=f"s{i}", object_candidate=f"o{i}",
+                relation_type="RELATED_TO", reason="subject_unresolved",
+                source="s.md", tenant_id="t1",
+            )
+        )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/graph-reviews",
+            params={"tenant_id": "t1", "status": "pending", "page": 2, "page_size": 2},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["reviews"]) == 1
+    assert body["reviews"][0]["subject_candidate"] == "s2"
+    assert body["total"] == 3
