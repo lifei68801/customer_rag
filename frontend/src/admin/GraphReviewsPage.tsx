@@ -12,6 +12,8 @@ interface PendingReview {
   object_candidate: string
   relation_type: string
   reason: string
+  source: string
+  evidence: string
   suggested_subject_standard_name: string | null
   suggested_object_standard_name: string | null
 }
@@ -21,6 +23,8 @@ interface ResolvedReview {
   subject_candidate: string
   object_candidate: string
   relation_type: string
+  source: string
+  evidence: string
   status: string
   resolved_at: string
   resolved_note: string | null
@@ -275,6 +279,12 @@ export function GraphReviewsPage() {
               候选：{review.subject_candidate} —[{review.relation_type}]→{' '}
               {review.object_candidate}（原因：{review.reason}）
             </p>
+            <p className="text-xs text-ink-soft">来源文档：{review.source || '（无记录）'}</p>
+            {review.evidence && (
+              <p className="border-l-2 border-ink pl-2 text-sm italic text-ink">
+                原文引用："{review.evidence}"
+              </p>
+            )}
             <div className="flex gap-3">
               <input
                 value={drafts[review.review_id]?.subject ?? ''}
@@ -382,6 +392,12 @@ export function GraphReviewsPage() {
             <p className="text-sm text-ink">
               {review.subject_candidate} —[{review.relation_type}]→ {review.object_candidate}
             </p>
+            <p className="text-xs text-ink-soft">来源文档：{review.source || '（无记录）'}</p>
+            {review.evidence && (
+              <p className="border-l-2 border-ink pl-2 text-sm italic text-ink">
+                原文引用："{review.evidence}"
+              </p>
+            )}
             <p className="text-xs text-ink-soft">
               {review.status === 'approved' ? '已批准' : '已驳回'} · {review.resolved_at}
               {review.resolved_note && ` · ${review.resolved_note}`}
