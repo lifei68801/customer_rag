@@ -29,6 +29,8 @@ interface DeadJob {
   last_error: string | null
 }
 
+type ChunkPreview = { chunks: string[]; total: number }
+
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
@@ -46,6 +48,11 @@ export function DocumentsPage() {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
+  const [expandedChunks, setExpandedChunks] = useState<
+    Record<string, ChunkPreview | 'loading'>
+  >({})
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
   // 轮询期间才需要知道"上一次拿到的 pending_jobs 是不是空的"，不需要触发重渲染。
   const hasPendingJobsRef = useRef(false)
   // 让 handleUpload/handleDelete 能在动作完成后立即"踢"一次轮询循环，
@@ -211,6 +218,71 @@ export function DocumentsPage() {
     }
   }
 
+  const handleTogglePreview = async (filePath: string) => {
+    if (!sessionToken) return
+    const current = expandedChunks[filePath]
+    if (current === 'loading') return
+    if (current) {
+      setExpandedChunks((prev) => {
+        const next = { ...prev }
+        delete next[filePath]
+        return next
+      })
+      return
+    }
+    setPreviewError(null)
+    setExpandedChunks((prev) => ({ ...prev, [filePath]: 'loading' }))
+    try {
+      const response = await adminFetch(
+        `/api/admin/documents/chunks?tenant_id=${encodeURIComponent(tenantId)}&file_path=${encodeURIComponent(filePath)}`,
+        sessionToken,
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '加载预览失败'))
+      }
+      const data = (await response.json()) as { chunks: { text: string }[]; total: number }
+      setExpandedChunks((prev) => ({
+        ...prev,
+        [filePath]: { chunks: data.chunks.map((c) => c.text), total: data.total },
+      }))
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : '加载预览失败')
+      setExpandedChunks((prev) => {
+        const next = { ...prev }
+        delete next[filePath]
+        return next
+      })
+    }
+  }
+
+  const handleDownloadFile = async (filePath: string) => {
+    if (!sessionToken || downloadingPath !== null) return
+    setPreviewError(null)
+    setDownloadingPath(filePath)
+    try {
+      const response = await adminFetch(
+        `/api/admin/documents/file?tenant_id=${encodeURIComponent(tenantId)}&file_path=${encodeURIComponent(filePath)}`,
+        sessionToken,
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '查看原文件失败'))
+      }
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      window.open(url, '_blank')
+      // 新标签页/浏览器内置查看器（比如 PDF）此时可能还没读完这个
+      // blob URL 的内容，不能在 window.open 后立即 revoke；60 秒后统一
+      // 释放，足够覆盖打开+渲染的时间。
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : '查看原文件失败')
+    } finally {
+      setDownloadingPath(null)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-xl font-bold text-ink">文档管理（租户：{tenantId}）</h1>
@@ -313,26 +385,81 @@ export function DocumentsPage() {
           </p>
         )}
         {!loaded && <p className="text-ink-soft">加载中…</p>}
+        {previewError && (
+          <p
+            role="alert"
+            className="border-2 border-status-error bg-card px-3 py-2 text-sm text-ink shadow-brutal-sm"
+          >
+            {previewError}
+          </p>
+        )}
         {loaded &&
-          documents.map((doc) => (
-            <div
-              key={doc.file_path}
-              className="flex items-center justify-between border-2 border-ink bg-card px-4 py-3 shadow-brutal-sm"
-            >
-              <span className="text-ink" title={doc.file_path}>
-                {displayFileName(doc.file_path)}（{doc.chunk_count} chunks，最近摄取：
-                {doc.last_ingested_at}）
-              </span>
-              <button
-                type="button"
-                onClick={() => handleDelete(doc.file_path)}
-                disabled={deletingPath !== null}
-                className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          documents.map((doc) => {
+            const preview = expandedChunks[doc.file_path]
+            return (
+              <div
+                key={doc.file_path}
+                className="flex flex-col gap-2 border-2 border-ink bg-card px-4 py-3 shadow-brutal-sm"
               >
-                {deletingPath === doc.file_path ? '删除中…' : '删除'}
-              </button>
-            </div>
-          ))}
+                <div className="flex items-center justify-between">
+                  <span className="text-ink" title={doc.file_path}>
+                    {displayFileName(doc.file_path)}（{doc.chunk_count} chunks，最近摄取：
+                    {doc.last_ingested_at}）
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleTogglePreview(doc.file_path)}
+                      disabled={preview === 'loading'}
+                      className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    >
+                      {preview === 'loading'
+                        ? '加载中…'
+                        : preview
+                          ? '收起预览'
+                          : '预览'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadFile(doc.file_path)}
+                      disabled={downloadingPath !== null}
+                      className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    >
+                      {downloadingPath === doc.file_path ? '打开中…' : '查看原文件'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(doc.file_path)}
+                      disabled={deletingPath !== null}
+                      className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    >
+                      {deletingPath === doc.file_path ? '删除中…' : '删除'}
+                    </button>
+                  </div>
+                </div>
+                {preview && preview !== 'loading' && (
+                  <div className="flex flex-col gap-1 border-t-2 border-ink pt-2">
+                    {preview.chunks.map((text, i) => (
+                      <p
+                        key={i}
+                        className="border-2 border-ink bg-paper px-2 py-1 text-xs text-ink-soft"
+                      >
+                        [{i}] {text}
+                      </p>
+                    ))}
+                    {preview.total > preview.chunks.length && (
+                      <p className="text-xs text-ink-soft">
+                        仅显示前 {preview.chunks.length} / 共 {preview.total} 条
+                      </p>
+                    )}
+                    {preview.chunks.length === 0 && (
+                      <p className="text-xs text-ink-soft">向量库里没有找到这份文档的 chunk。</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
         {loaded && documents.length === 0 && (
           <p className="text-ink-soft">当前租户还没有已摄取的文档。</p>
         )}
