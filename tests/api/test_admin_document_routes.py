@@ -738,7 +738,11 @@ def test_list_documents_includes_dead_jobs(ingestion_conn):
 
 
 def test_retry_job_resets_to_pending_and_returns_200(tmp_path, ingestion_conn):
-    from app.ingestion.ingestion_queue import enqueue_ingestion_job, mark_job_failed
+    from app.ingestion.ingestion_queue import (
+        enqueue_ingestion_job,
+        list_pending_jobs,
+        mark_job_failed,
+    )
 
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir()
@@ -772,14 +776,16 @@ def test_retry_job_resets_to_pending_and_returns_200(tmp_path, ingestion_conn):
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    # a.md 实际不存在磁盘上，BackgroundTasks 在 TestClient 里同步执行完
-    # 后，这条任务会再次失败——但 attempts 已经被 retry_job() 清零，
-    # 一次新失败只会把它计到 1/3 次，还不会打回 dead（重试耗尽变 dead
-    # 是 process_pending_jobs/mark_job_failed 自己的行为，已经在
-    # tests/ingestion/test_ingestion_queue.py 里覆盖过）。这里只断言
-    # 接口本身把 dead 重置回 pending 并成功触发了一次处理这一步没有
-    # 抛出未捕获异常（response.status_code == 200），不重复断言最终
-    # 任务状态。
+    # a.md 实际不存在磁盘上，所以下面两个断言一起证明了两件事：(1) retry_job()
+    # 真的把 dead 重置回了 pending（不是仍然 dead 或者被删掉了），(2)
+    # background_tasks.add_task(_run_pending_jobs, ...) 真的被调用并且
+    # TestClient 同步跑完了它——如果这次重试处理从没被触发，attempts 会
+    # 停在 retry_job() 刚重置时的 0，而不是变成 1（一次失败的处理尝试）。
+    # 重试耗尽变 dead 的行为本身已经在 tests/ingestion/test_ingestion_queue.py
+    # 里覆盖过，这里不重复断言那一层。
+    pending = asyncio.run(list_pending_jobs(ingestion_conn, tenant_id="t1"))
+    assert [j["job_id"] for j in pending] == [job_id]
+    assert pending[0]["attempts"] == 1
 
 
 def test_retry_job_returns_404_for_unknown_job(ingestion_conn):
@@ -860,6 +866,7 @@ def test_delete_job_removes_it_and_unlinks_orphaned_file(tmp_path, ingestion_con
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     try:
         client = TestClient(app)
         response = client.request(
@@ -873,6 +880,61 @@ def test_delete_job_removes_it_and_unlinks_orphaned_file(tmp_path, ingestion_con
 
     assert response.status_code == 200
     assert not orphaned.exists()
+
+
+def test_delete_job_removes_orphaned_vector_chunks(tmp_path, ingestion_conn):
+    from app.ingestion.ingestion_queue import enqueue_ingestion_job, mark_job_failed
+
+    upload_dir = tmp_path / "uploads"
+    tenant_dir = upload_dir / "t1"
+    tenant_dir.mkdir(parents=True)
+    orphaned = tenant_dir / "abc_a.md"
+    orphaned.write_text("内容", encoding="utf-8")
+    job_id = asyncio.run(
+        enqueue_ingestion_job(
+            ingestion_conn, tenant_id="t1", file_path=str(orphaned),
+            content_hash="h1", action="ingest",
+        )
+    )
+    asyncio.run(mark_job_failed(ingestion_conn, job_id, error="解析失败", max_attempts=1))
+
+    # 模拟一个在"部分 chunk 已经写进向量库"之后才失败的任务——record_ingested
+    # 从没跑过（所以不在已摄取文档列表里），但这些 chunk 已经真实存在于
+    # 向量库中，删除失败任务时必须一并清掉。
+    vector_store = InMemoryVectorStore()
+    asyncio.run(
+        vector_store.upsert(
+            [
+                VectorRecord(
+                    id=f"{orphaned}#0", vector=[0.1, 0.2], text="部分写入的内容",
+                    tenant_id="t1", metadata={"source": str(orphaned)},
+                )
+            ]
+        )
+    )
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    try:
+        client = TestClient(app)
+        response = client.request(
+            "DELETE",
+            f"/api/admin/documents/jobs/{job_id}",
+            params={"tenant_id": "t1"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    remaining = asyncio.run(
+        vector_store.search(query_vector=[0.1, 0.2], top_k=10, tenant_id="t1")
+    )
+    assert remaining == []
 
 
 def test_delete_job_returns_409_when_job_is_not_dead(ingestion_conn):
@@ -890,6 +952,7 @@ def test_delete_job_returns_409_when_job_is_not_dead(ingestion_conn):
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_upload_dir] = lambda: None
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     try:
         client = TestClient(app)
         response = client.request(

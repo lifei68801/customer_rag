@@ -362,6 +362,7 @@ async def delete_ingestion_job(
     tenant_id: str,
     upload_dir: Path = Depends(deps.get_upload_dir),
     ingestion_conn: aiosqlite.Connection = Depends(deps.get_ingestion_conn),
+    vector_store: VectorStore = Depends(deps.get_vector_store),
 ) -> DeleteJobResponse:
     _validate_tenant_id(tenant_id)
     try:
@@ -370,6 +371,13 @@ async def delete_ingestion_job(
         raise HTTPException(status_code=404, detail="任务不存在")
     except JobNotDeadError:
         raise HTTPException(status_code=409, detail="该任务当前不是失败状态，无法删除")
+    # 任务是失败状态才会走到这一步，而失败可能发生在部分 chunk 已经写进
+    # 向量库之后（_embed_and_upsert 分批 upsert，中途失败不会回滚已经
+    # upsert 的批次）；这些孤儿 chunk 没有对应的 ingested_documents 记录，
+    # 普通的 delete_document() 流程找不到它们，必须在这里主动清理，否则
+    # 会永久留在向量库里继续参与检索。retry 路径不需要这一步，因为
+    # process_pending_jobs 重新处理前总会先调用同一个 delete_by_source()。
+    await vector_store.delete_by_source(source=file_path, tenant_id=tenant_id)
     _unlink_uploaded_file(file_path, upload_dir, tenant_id=tenant_id)
     return DeleteJobResponse(deleted=True)
 
