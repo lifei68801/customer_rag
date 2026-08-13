@@ -246,3 +246,51 @@ async def test_query_subgraph_sends_two_hop_union_query_for_chain_relations():
     assert "ALL(rel IN r WHERE rel.tenant_id = $tenant_id)" in session.last_query
     assert "AND related <> t" in session.last_query
     assert session.last_parameters == {"standard_name": "错误码E502", "tenant_id": "t1"}
+
+
+async def test_count_relation_edges_for_term_returns_edge_count():
+    session = FakeSession(rows=[{"edge_count": 3}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    count = await client.count_relation_edges_for_term("错误码E502")
+
+    assert count == 3
+    assert session.last_parameters == {"standard_name": "错误码E502"}
+    assert "ALIAS_OF" in session.last_query
+
+
+async def test_count_relation_edges_for_term_returns_zero_when_no_rows():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    count = await client.count_relation_edges_for_term("孤立术语")
+
+    assert count == 0
+
+
+async def test_rename_term_node_sends_expected_query_and_parameters():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.rename_term_node(old_name="错误码E502", new_name="错误码E502v2")
+
+    assert session.last_parameters == {
+        "old_name": "错误码E502",
+        "new_name": "错误码E502v2",
+    }
+    assert "MATCH" in session.last_query
+    assert "SET t.standard_name = $new_name" in session.last_query
+    # 必须是 MATCH+SET 原地改属性，不能是先删再建——删了再建会让节点
+    # 已有的关系边找不到挂载对象，变成孤儿边
+    assert "DELETE" not in session.last_query
+    assert "CREATE" not in session.last_query
+
+
+async def test_delete_term_node_sends_detach_delete_query():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.delete_term_node("废弃术语")
+
+    assert session.last_parameters == {"standard_name": "废弃术语"}
+    assert "DETACH DELETE" in session.last_query

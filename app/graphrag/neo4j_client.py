@@ -78,6 +78,38 @@ MERGE (a:Term {alias_name: alias_name})
 MERGE (a)-[:ALIAS_OF]->(t)
 """
 
+_COUNT_TERM_RELATION_EDGES_QUERY = """
+MATCH (t:Term {standard_name: $standard_name})-[r]-()
+WHERE type(r) <> 'ALIAS_OF'
+RETURN count(r) AS edge_count
+"""
+# ALIAS_OF 是术语表→图谱的结构性同步边（sync_term 写入，见上面
+# _SYNC_TERM_QUERY），不代表"这个术语已经出现在真实知识图谱数据里"；
+# 删除前的守卫检查只关心 LLM 抽取/人工审核产出的关系边（merge_relation
+# 写入的 RELATED_TO/PART_OF/... 这些），排除 ALIAS_OF 避免每个术语只要
+# 有别名就永远无法删除。
+
+_RENAME_TERM_NODE_QUERY = """
+MATCH (t:Term {standard_name: $old_name})
+SET t.standard_name = $new_name
+"""
+# 必须是对同一个节点对象做属性 SET，不能先 DELETE 再 CREATE——Neo4j 的
+# 关系边挂在节点对象上，不是按属性值查找的，原地改属性不会影响节点
+# 已有的任何关系边；新名字如果已经是另一个节点在用，调用方必须在此之前
+# 自己校验过（见 app/graphrag/terms_store.py 的唯一性校验），这里不做
+# 校验，重复调用会导致两个不同节点各自拥有同一个 standard_name 属性值
+# （Neo4j 不会阻止，只是后续按 standard_name MATCH 会命中两个节点）。
+
+_DELETE_TERM_NODE_QUERY = """
+MATCH (t:Term {standard_name: $standard_name})
+OPTIONAL MATCH (a:Term)-[:ALIAS_OF]->(t)
+DETACH DELETE t, a
+"""
+# 连同别名节点一起删——sync_term() 建的别名节点除了指向这个标准术语
+# 没有其它用途，标准术语被删后别名节点留着就是纯垃圾数据。OPTIONAL
+# MATCH 让"没有别名"的术语也能正常匹配到 t（DELETE 一个 null 值是
+# Cypher 里的合法操作，不会报错）。
+
 
 class Neo4jSessionProtocol(Protocol):
     async def run(
@@ -206,3 +238,30 @@ class Neo4jGraphClient:
     async def sync_terms(self, terms: list[Term]) -> None:
         for term in terms:
             await self.sync_term(term)
+
+    async def count_relation_edges_for_term(self, standard_name: str) -> int:
+        """统计该术语节点参与的、非结构性同步边（ALIAS_OF）的关系边数量，
+        供管理后台删除术语前的守卫检查用——见 _COUNT_TERM_RELATION_EDGES_QUERY
+        的说明。"""
+        async with self._driver.session() as session:
+            result = await session.run(
+                _COUNT_TERM_RELATION_EDGES_QUERY, {"standard_name": standard_name}
+            )
+            rows = await result.data()
+            return rows[0]["edge_count"] if rows else 0
+
+    async def rename_term_node(self, *, old_name: str, new_name: str) -> None:
+        """把一个术语节点的 standard_name 属性原地改成新值，不影响节点
+        已有的关系边——见 _RENAME_TERM_NODE_QUERY 的说明。调用方必须自己
+        先确认 new_name 不会跟另一个已存在的术语节点冲突。"""
+        async with self._driver.session() as session:
+            await session.run(
+                _RENAME_TERM_NODE_QUERY, {"old_name": old_name, "new_name": new_name}
+            )
+
+    async def delete_term_node(self, standard_name: str) -> None:
+        """删除一个术语节点及其别名节点——只应该在确认过
+        count_relation_edges_for_term() 返回 0 之后调用，见
+        _DELETE_TERM_NODE_QUERY 的说明。"""
+        async with self._driver.session() as session:
+            await session.run(_DELETE_TERM_NODE_QUERY, {"standard_name": standard_name})
