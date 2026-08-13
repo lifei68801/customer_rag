@@ -937,3 +937,124 @@ def test_delete_document_does_not_unlink_file_under_a_different_tenant_directory
 
     assert response.status_code == 200
     assert other_tenants_file.exists()
+
+
+def test_list_document_chunks_returns_texts_and_total(ingestion_conn):
+    vector_store = InMemoryVectorStore()
+    asyncio.run(
+        vector_store.upsert(
+            [
+                VectorRecord(
+                    id="a.md#0", vector=[0.1], text="第一段",
+                    tenant_id="t1", metadata={"source": "a.md"},
+                ),
+                VectorRecord(
+                    id="a.md#1", vector=[0.1], text="第二段",
+                    tenant_id="t1", metadata={"source": "a.md"},
+                ),
+            ]
+        )
+    )
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/documents/chunks",
+            params={"tenant_id": "t1", "file_path": "a.md"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    assert [c["text"] for c in body["chunks"]] == ["第一段", "第二段"]
+
+
+def test_list_document_chunks_caps_at_200_but_reports_true_total(ingestion_conn):
+    vector_store = InMemoryVectorStore()
+    asyncio.run(
+        vector_store.upsert(
+            [
+                VectorRecord(
+                    id=f"a.md#{i}", vector=[0.1], text=f"第{i}段",
+                    tenant_id="t1", metadata={"source": "a.md"},
+                )
+                for i in range(250)
+            ]
+        )
+    )
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/documents/chunks",
+            params={"tenant_id": "t1", "file_path": "a.md"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    body = response.json()
+    assert len(body["chunks"]) == 200
+    assert body["total"] == 250
+
+
+def test_download_document_file_returns_file_content(tmp_path, ingestion_conn):
+    upload_dir = tmp_path / "uploads"
+    tenant_dir = upload_dir / "t1"
+    tenant_dir.mkdir(parents=True)
+    the_file = tenant_dir / "abc_a.md"
+    the_file.write_text("文件内容", encoding="utf-8")
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/documents/file",
+            params={"tenant_id": "t1", "file_path": str(the_file)},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.content.decode("utf-8") == "文件内容"
+
+
+def test_download_document_file_returns_404_for_file_outside_own_tenant_directory(
+    tmp_path, ingestion_conn
+):
+    upload_dir = tmp_path / "uploads"
+    t2_dir = upload_dir / "t2"
+    t2_dir.mkdir(parents=True)
+    other_tenants_file = t2_dir / "abc_secret.md"
+    other_tenants_file.write_text("t2 的私有内容", encoding="utf-8")
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/documents/file",
+            params={"tenant_id": "t1", "file_path": str(other_tenants_file)},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404

@@ -14,6 +14,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import aiosqlite
@@ -371,3 +372,71 @@ async def delete_ingestion_job(
         raise HTTPException(status_code=409, detail="该任务当前不是失败状态，无法删除")
     _unlink_uploaded_file(file_path, upload_dir, tenant_id=tenant_id)
     return DeleteJobResponse(deleted=True)
+
+
+class ChunkResponse(BaseModel):
+    text: str
+
+
+class ChunksListResponse(BaseModel):
+    chunks: list[ChunkResponse]
+    total: int
+
+
+_CHUNK_PREVIEW_LIMIT = 200
+
+
+@router.get("/chunks", response_model=ChunksListResponse)
+async def list_document_chunks(
+    tenant_id: str,
+    file_path: str,
+    vector_store: VectorStore = Depends(deps.get_vector_store),
+) -> ChunksListResponse:
+    _validate_tenant_id(tenant_id)
+    records = await vector_store.list_by_source(source=file_path, tenant_id=tenant_id)
+    return ChunksListResponse(
+        chunks=[ChunkResponse(text=r.text) for r in records[:_CHUNK_PREVIEW_LIMIT]],
+        total=len(records),
+    )
+
+
+# PDF/图片浏览器能原生渲染，用 inline 直接在新标签页里打开看；其它格式
+# （docx/csv/md）浏览器没法渲染，走 attachment 触发下载，不是打开一堆
+# 乱码/纯文本。
+_INLINE_SUFFIXES = frozenset({".pdf", ".png", ".jpg", ".jpeg"})
+_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".csv": "text/csv",
+    ".md": "text/markdown",
+}
+
+
+@router.get("/file")
+async def download_document_file(
+    tenant_id: str,
+    file_path: str,
+    upload_dir: Path = Depends(deps.get_upload_dir),
+) -> FileResponse:
+    _validate_tenant_id(tenant_id)
+    try:
+        resolved = Path(file_path).resolve()
+        tenant_root = (upload_dir / tenant_id).resolve()
+    except OSError:
+        raise HTTPException(status_code=404, detail="文件不存在") from None
+    # 校验规则跟 _unlink_uploaded_file() 完全一致（同样必须落在
+    # upload_dir/{tenant_id} 内），理由见那个函数的说明——这里额外要求
+    # is_file()：目录本身也可能落在这个前缀下，不该被当成"文件"读出去。
+    if not resolved.is_relative_to(tenant_root) or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    suffix = resolved.suffix.lower()
+    media_type = _MEDIA_TYPES.get(suffix, "application/octet-stream")
+    return FileResponse(
+        resolved,
+        media_type=media_type,
+        filename=resolved.name,
+        content_disposition_type="inline" if suffix in _INLINE_SUFFIXES else "attachment",
+    )
