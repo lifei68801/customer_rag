@@ -1,4 +1,5 @@
 ﻿# 启动前端（Vite + React 开发服务器），后台运行，日志重定向到 frontend.log
+# 启动前会先停止已在运行的旧进程，避免端口占用或残留旧代码在跑
 # 用法: powershell -File scripts/start-frontend.ps1
 # 停止: powershell -File scripts/stop-frontend.ps1
 
@@ -7,6 +8,11 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $FrontendDir = Join-Path $RepoRoot "frontend"
 Set-Location $FrontendDir
 
+& (Join-Path $PSScriptRoot "stop-frontend.ps1")
+# 给操作系统一点时间真正释放端口，避免新进程绑定时撞上旧进程刚退出、
+# 端口还没完全放出来的极短窗口期
+Start-Sleep -Milliseconds 500
+
 if (-not (Test-Path (Join-Path $FrontendDir "node_modules"))) {
     Write-Host "未发现 node_modules，先执行 npm install ..."
     npm install
@@ -14,14 +20,6 @@ if (-not (Test-Path (Join-Path $FrontendDir "node_modules"))) {
 
 $LogFile = Join-Path $RepoRoot "frontend.log"
 $PidFile = Join-Path $RepoRoot "frontend.pid"
-
-if (Test-Path $PidFile) {
-    $ExistingPid = Get-Content $PidFile
-    if (Get-Process -Id $ExistingPid -ErrorAction SilentlyContinue) {
-        Write-Error "前端似乎已在运行 (PID=$ExistingPid)。先执行 scripts/stop-frontend.ps1 再重新启动。"
-        exit 1
-    }
-}
 
 # 用 WMI（Win32_Process.Create）而不是 Start-Process 拉起子进程：
 # Start-Process 创建的子进程仍然挂在调用者所在的 Windows Job Object 下——
@@ -46,4 +44,26 @@ $NewPid = $result.ProcessId
 $NewPid | Out-File -FilePath $PidFile -Encoding ascii -NoNewline
 
 Write-Host "前端已在后台启动 (PID=$NewPid)，日志: $LogFile"
+
+# Vite 实际监听的端口可能因为默认的 5173 被占用而自动往后跳（5174、5175...），
+# 所以访问地址不能硬编码，去日志里等它自己打印出的地址为准。实测哪怕输出被
+# 重定向到文件，vite 仍然会带 ANSI 颜色控制码（\x1b[1m 等）——不剥掉的话
+# "\S+" 会把控制码也当成 URL 的一部分吞进去，取到的地址点不开。
+$AccessUrl = $null
+$AnsiEscapePattern = [char]27 + "\[[0-9;]*[a-zA-Z]"
+for ($i = 0; $i -lt 30; $i++) {
+    if (Test-Path $LogFile) {
+        $CleanContent = (Get-Content -Path $LogFile -Raw -ErrorAction SilentlyContinue) -replace $AnsiEscapePattern, ""
+        if ($CleanContent -match "http://\S+") {
+            $AccessUrl = $Matches[0]
+            break
+        }
+    }
+    Start-Sleep -Milliseconds 500
+}
+if ($AccessUrl) {
+    Write-Host "访问地址: $AccessUrl"
+} else {
+    Write-Host "访问地址: 暂未在日志中检测到（默认应为 http://localhost:5173），请查看 $LogFile"
+}
 Write-Host "停止: powershell -File scripts/stop-frontend.ps1"

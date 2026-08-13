@@ -1,4 +1,5 @@
 ﻿# 启动后端（FastAPI + Uvicorn），后台运行，日志重定向到 backend.log
+# 启动前会先停止已在运行的旧进程，避免端口占用或残留旧代码在跑
 # 用法: powershell -File scripts/start-backend.ps1 [-Reload]
 # 停止: powershell -File scripts/stop-backend.ps1
 
@@ -10,6 +11,11 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
+& (Join-Path $PSScriptRoot "stop-backend.ps1")
+# 给操作系统一点时间真正释放端口，避免新进程绑定 0.0.0.0:8000 时撞上
+# 旧进程刚退出、端口还没完全放出来的极短窗口期
+Start-Sleep -Milliseconds 500
+
 $Python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $Python)) {
     Write-Error "找不到虚拟环境: $Python 。请先创建 .venv 并安装依赖。"
@@ -18,16 +24,9 @@ if (-not (Test-Path $Python)) {
 
 $LogFile = Join-Path $RepoRoot "backend.log"
 $PidFile = Join-Path $RepoRoot "backend.pid"
+$Port = 8000
 
-if (Test-Path $PidFile) {
-    $ExistingPid = Get-Content $PidFile
-    if (Get-Process -Id $ExistingPid -ErrorAction SilentlyContinue) {
-        Write-Error "后端似乎已在运行 (PID=$ExistingPid)。先执行 scripts/stop-backend.ps1 再重新启动。"
-        exit 1
-    }
-}
-
-$UvicornArgs = "-m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+$UvicornArgs = "-m uvicorn app.main:app --host 0.0.0.0 --port $Port"
 if ($Reload) {
     $UvicornArgs += " --reload"
 }
@@ -55,4 +54,5 @@ $NewPid = $result.ProcessId
 $NewPid | Out-File -FilePath $PidFile -Encoding ascii -NoNewline
 
 Write-Host "后端已在后台启动 (PID=$NewPid)，日志: $LogFile"
+Write-Host "访问地址: http://localhost:$Port  (API 文档: http://localhost:$Port/docs)"
 Write-Host "停止: powershell -File scripts/stop-backend.ps1"
