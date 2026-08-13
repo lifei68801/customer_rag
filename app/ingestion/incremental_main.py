@@ -7,10 +7,11 @@ from pathlib import Path
 import aiosqlite
 
 from app.config.settings import Settings
-from app.graphrag.factory import build_graph_client_from_settings, load_terms_from_settings
+from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.review_factory import build_review_conn_from_settings
+from app.graphrag.terms_store import list_terms
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema, process_pending_jobs
 from app.ingestion.ocr_factory import build_ocr_from_settings
 from app.ingestion.ocr_parser import OcrFunction
@@ -97,13 +98,13 @@ async def main(
         resolved_graph_llm_registry = (
             graph_llm_registry or build_llm_registry_from_settings(resolved_settings)
         )
-        resolved_graph_terms = graph_terms or load_terms_from_settings(resolved_settings)
         resolved_graph_client = graph_client or build_graph_client_from_settings(
             resolved_settings
         )
         resolved_graph_review_conn = (
             graph_review_conn or await build_review_conn_from_settings(resolved_settings)
         )
+        resolved_graph_terms = graph_terms or await list_terms(resolved_graph_review_conn)
 
     scan_summary = await scan_and_enqueue(
         directory, tenant_id=tenant_id, conn=conn, build_graph=build_graph

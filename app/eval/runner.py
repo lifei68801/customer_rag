@@ -13,10 +13,12 @@ from app.eval.dataset import EvalCase, load_eval_cases
 from app.eval.llm_judged_metrics import score_answer_relevancy, score_faithfulness
 from app.eval.metrics import score_context_recall
 from app.eval.terminology_accuracy import score_terminology_accuracy
-from app.graphrag.factory import build_graph_client_from_settings, load_terms_from_settings
+from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
+from app.graphrag.review_factory import build_review_conn_from_settings
 from app.graphrag.term_guard import GraphClientProtocol
+from app.graphrag.terms_store import list_terms
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
     DEFAULT_EMBEDDING_PROVIDER_NAME,
@@ -371,7 +373,11 @@ async def main(
     resolved_terms = None
     resolved_graph_client = None
     if use_graph:
-        resolved_terms = terms or load_terms_from_settings(resolved_settings)
+        resolved_review_conn = await build_review_conn_from_settings(resolved_settings)
+        try:
+            resolved_terms = terms or await list_terms(resolved_review_conn)
+        finally:
+            await resolved_review_conn.close()
         resolved_graph_client = graph_client or build_graph_client_from_settings(
             resolved_settings
         )

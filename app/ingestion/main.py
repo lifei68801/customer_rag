@@ -7,10 +7,11 @@ from pathlib import Path
 import aiosqlite
 
 from app.config.settings import Settings
-from app.graphrag.factory import build_graph_client_from_settings, load_terms_from_settings
+from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.review_factory import build_review_conn_from_settings
+from app.graphrag.terms_store import list_terms
 from app.ingestion.pipeline import ingest_directory
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
@@ -64,9 +65,6 @@ async def main(
             graph_llm_registry
             or build_llm_registry_from_settings(resolved_settings)
         )
-        resolved_graph_terms = graph_terms or load_terms_from_settings(
-            resolved_settings
-        )
         resolved_graph_client = graph_client or build_graph_client_from_settings(
             resolved_settings
         )
@@ -74,6 +72,7 @@ async def main(
             graph_review_conn
             or await build_review_conn_from_settings(resolved_settings)
         )
+        resolved_graph_terms = graph_terms or await list_terms(resolved_graph_review_conn)
         # 术语表（基准真相）先同步进图谱：写入/更新标准节点的 type/product_line
         # 属性 + 别名节点，再进入下面的文档摄取+关系抽取——保证图谱里不只有
         # LLM 抽取出的关系边，也有完整的实体+别名+分类信息（架构文档 §4.1）。
