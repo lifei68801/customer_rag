@@ -9,6 +9,7 @@ from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema
+from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 
 
@@ -30,6 +31,7 @@ def _settings(**overrides) -> Settings:
 async def _open_review_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(conn)
+    await ensure_terms_schema(conn)
     return conn
 
 
