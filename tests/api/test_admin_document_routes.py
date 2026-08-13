@@ -704,3 +704,236 @@ async def _tracked_paths(conn: aiosqlite.Connection, tenant_id: str) -> list[str
 
     rows = await list_tracked_files(conn, tenant_id=tenant_id)
     return [row["file_path"] for row in rows]
+
+
+def test_list_documents_includes_dead_jobs(ingestion_conn):
+    from app.ingestion.ingestion_queue import enqueue_ingestion_job, mark_job_failed
+
+    job_id = asyncio.run(
+        enqueue_ingestion_job(
+            ingestion_conn, tenant_id="t1", file_path="a.md",
+            content_hash="h1", action="ingest",
+        )
+    )
+    asyncio.run(mark_job_failed(ingestion_conn, job_id, error="解析失败", max_attempts=1))
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/documents", params={"tenant_id": "t1"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["dead_jobs"]) == 1
+    assert body["dead_jobs"][0]["job_id"] == job_id
+    assert body["dead_jobs"][0]["last_error"] == "解析失败"
+
+
+def test_retry_job_resets_to_pending_and_returns_200(tmp_path, ingestion_conn):
+    from app.ingestion.ingestion_queue import enqueue_ingestion_job, mark_job_failed
+
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    job_id = asyncio.run(
+        enqueue_ingestion_job(
+            ingestion_conn, tenant_id="t1", file_path="a.md",
+            content_hash="h1", action="ingest",
+        )
+    )
+    asyncio.run(mark_job_failed(ingestion_conn, job_id, error="解析失败", max_attempts=1))
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: EmbeddingRegistry()
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_llm_registry] = lambda: ProviderRegistry()
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    app.dependency_overrides[deps.get_review_conn] = lambda: None
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/admin/documents/jobs/{job_id}/retry",
+            params={"tenant_id": "t1"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    # a.md 实际不存在磁盘上，BackgroundTasks 在 TestClient 里同步执行完
+    # 后，这条任务会再次失败——但 attempts 已经被 retry_job() 清零，
+    # 一次新失败只会把它计到 1/3 次，还不会打回 dead（重试耗尽变 dead
+    # 是 process_pending_jobs/mark_job_failed 自己的行为，已经在
+    # tests/ingestion/test_ingestion_queue.py 里覆盖过）。这里只断言
+    # 接口本身把 dead 重置回 pending 并成功触发了一次处理这一步没有
+    # 抛出未捕获异常（response.status_code == 200），不重复断言最终
+    # 任务状态。
+
+
+def test_retry_job_returns_404_for_unknown_job(ingestion_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: EmbeddingRegistry()
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_llm_registry] = lambda: ProviderRegistry()
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    app.dependency_overrides[deps.get_review_conn] = lambda: None
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/documents/jobs/unknown-id/retry",
+            params={"tenant_id": "t1"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+
+
+def test_retry_job_returns_409_when_job_is_not_dead(ingestion_conn):
+    from app.ingestion.ingestion_queue import enqueue_ingestion_job
+
+    job_id = asyncio.run(
+        enqueue_ingestion_job(
+            ingestion_conn, tenant_id="t1", file_path="a.md",
+            content_hash="h1", action="ingest",
+        )
+    )
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: EmbeddingRegistry()
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_llm_registry] = lambda: ProviderRegistry()
+    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    app.dependency_overrides[deps.get_review_conn] = lambda: None
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/admin/documents/jobs/{job_id}/retry",
+            params={"tenant_id": "t1"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+
+
+def test_delete_job_removes_it_and_unlinks_orphaned_file(tmp_path, ingestion_conn):
+    from app.ingestion.ingestion_queue import enqueue_ingestion_job, mark_job_failed
+
+    upload_dir = tmp_path / "uploads"
+    tenant_dir = upload_dir / "t1"
+    tenant_dir.mkdir(parents=True)
+    orphaned = tenant_dir / "abc_a.md"
+    orphaned.write_text("内容", encoding="utf-8")
+    job_id = asyncio.run(
+        enqueue_ingestion_job(
+            ingestion_conn, tenant_id="t1", file_path=str(orphaned),
+            content_hash="h1", action="ingest",
+        )
+    )
+    asyncio.run(mark_job_failed(ingestion_conn, job_id, error="解析失败", max_attempts=1))
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    try:
+        client = TestClient(app)
+        response = client.request(
+            "DELETE",
+            f"/api/admin/documents/jobs/{job_id}",
+            params={"tenant_id": "t1"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert not orphaned.exists()
+
+
+def test_delete_job_returns_409_when_job_is_not_dead(ingestion_conn):
+    from app.ingestion.ingestion_queue import enqueue_ingestion_job
+
+    job_id = asyncio.run(
+        enqueue_ingestion_job(
+            ingestion_conn, tenant_id="t1", file_path="a.md",
+            content_hash="h1", action="ingest",
+        )
+    )
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_upload_dir] = lambda: None
+    try:
+        client = TestClient(app)
+        response = client.request(
+            "DELETE",
+            f"/api/admin/documents/jobs/{job_id}",
+            params={"tenant_id": "t1"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+
+
+def test_delete_document_does_not_unlink_file_under_a_different_tenant_directory(
+    tmp_path, ingestion_conn
+):
+    """跨租户越权删除的回归测试：file_path 指向 t2 的子目录，但请求用
+    tenant_id=t1——向量库/追踪表两处因为 tenant_id 不匹配会是空操作，
+    磁盘文件这一步在修复前不会做同样的租户校验，直接被删掉；修复后
+    应该被拦下来，文件保持原样。
+    """
+    upload_dir = tmp_path / "uploads"
+    t2_dir = upload_dir / "t2"
+    t2_dir.mkdir(parents=True)
+    other_tenants_file = t2_dir / "abc_secret.md"
+    other_tenants_file.write_text("t2 的私有内容", encoding="utf-8")
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    try:
+        client = TestClient(app)
+        response = client.request(
+            "DELETE",
+            "/api/admin/documents",
+            params={"tenant_id": "t1", "file_path": str(other_tenants_file)},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert other_tenants_file.exists()

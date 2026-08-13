@@ -24,9 +24,14 @@ from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.ingestion.ingestion_queue import (
     SUPPORTED_SUFFIXES,
+    JobNotDeadError,
+    JobNotFoundError,
+    delete_job,
     enqueue_ingestion_job,
+    list_dead_jobs,
     list_pending_jobs,
     process_pending_jobs,
+    retry_job,
 )
 from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.table_extraction import TableExtractionFunction
@@ -89,6 +94,7 @@ def _validate_upload_suffix(filename: str | None) -> None:
 class DocumentsListResponse(BaseModel):
     documents: list[dict]
     pending_jobs: list[dict]
+    dead_jobs: list[dict]
 
 
 class UploadResponse(BaseModel):
@@ -233,24 +239,36 @@ async def list_documents(
 ) -> DocumentsListResponse:
     documents = await list_tracked_files(ingestion_conn, tenant_id=tenant_id)
     pending_jobs = await list_pending_jobs(ingestion_conn, limit=50, tenant_id=tenant_id)
-    return DocumentsListResponse(documents=documents, pending_jobs=pending_jobs)
+    dead_jobs = await list_dead_jobs(ingestion_conn, limit=50, tenant_id=tenant_id)
+    return DocumentsListResponse(
+        documents=documents, pending_jobs=pending_jobs, dead_jobs=dead_jobs
+    )
 
 
-def _unlink_uploaded_file(file_path: str, upload_dir: Path) -> None:
+def _unlink_uploaded_file(file_path: str, upload_dir: Path, *, tenant_id: str) -> None:
     """删掉后台上传落盘的原始文件，避免删除文档后磁盘上的副本永久残留。
 
-    只删 upload_dir 之内的文件：追踪表里的 file_path 理论上都是本系统自己
-    写进去的，但同一张表也记录 CLI 摄取（app/ingestion/main.py）扫描的
-    任意目录，那些文件不归后台管理，误删会毁掉用户的原始语料。所以这里
-    先 resolve 再确认它确实在 upload_dir 底下，否则静默跳过。
+    只删 upload_dir/{tenant_id} 之内的文件——不是"只要在 upload_dir 内随便
+    哪个子目录就删"：上传路径本身就是按租户分子目录落盘的（tenant_dir =
+    upload_dir / tenant_id，见 upload_document()），只校验到 upload_dir
+    这一级会放过"file_path 指向别的租户子目录、tenant_id 却填自己的"这种
+    跨租户请求——向量库和追踪表两处的删除都会因为 tenant_id 不匹配而是
+    空操作，唯独磁盘文件这一步如果不做同样的租户级别校验就会被删掉，
+    造成跨租户越权删除。追踪表里的 file_path 理论上都是本系统自己写
+    进去的，但同一张表也记录 CLI 摄取（app/ingestion/main.py）扫描的
+    任意目录，那些文件不归后台管理，误删会毁掉用户的原始语料——所以除了
+    租户目录校验，仍然保留"必须在 upload_dir 之内"这道前提。
     """
     try:
         resolved = Path(file_path).resolve()
-        root = upload_dir.resolve()
+        tenant_root = (upload_dir / tenant_id).resolve()
     except OSError:  # pragma: no cover - 路径本身非法（比如带 NUL 字符）
         return
-    if not resolved.is_relative_to(root):
-        logger.info("删除文档：%s 不在上传目录内，仅清理索引，不动磁盘文件", file_path)
+    if not resolved.is_relative_to(tenant_root):
+        logger.info(
+            "删除文档：%s 不在租户 %s 的上传目录内，仅清理索引，不动磁盘文件",
+            file_path, tenant_id,
+        )
         return
     resolved.unlink(missing_ok=True)
 
@@ -281,5 +299,75 @@ async def delete_document(
         ) from exc
     # 磁盘文件放在最后删：向量/追踪记录任一步失败都会在上面抛出、不会执行
     # 到这里，保证不会出现"文件已删但索引还在"的不可恢复状态。
-    _unlink_uploaded_file(file_path, upload_dir)
+    _unlink_uploaded_file(file_path, upload_dir, tenant_id=tenant_id)
     return {"deleted": True}
+
+
+class RetryJobResponse(BaseModel):
+    retried: bool
+
+
+class DeleteJobResponse(BaseModel):
+    deleted: bool
+
+
+@router.post("/jobs/{job_id}/retry", response_model=RetryJobResponse)
+async def retry_ingestion_job(
+    job_id: str,
+    tenant_id: str,
+    background_tasks: BackgroundTasks,
+    ingestion_conn: aiosqlite.Connection = Depends(deps.get_ingestion_conn),
+    embedding_registry: EmbeddingRegistry = Depends(deps.get_embedding_registry),
+    vector_store: VectorStore = Depends(deps.get_vector_store),
+    llm_registry: ProviderRegistry = Depends(deps.get_llm_registry),
+    terms: list[Term] = Depends(deps.get_terms),
+    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    ocr: OcrFunction | None = Depends(deps.get_ocr_function),
+    table_extractor: TableExtractionFunction | None = Depends(deps.get_table_extractor),
+    settings: Settings = Depends(deps.get_settings),
+) -> RetryJobResponse:
+    _validate_tenant_id(tenant_id)
+    try:
+        await retry_job(ingestion_conn, job_id, tenant_id=tenant_id)
+    except JobNotFoundError:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    except JobNotDeadError:
+        raise HTTPException(status_code=409, detail="该任务当前不是失败状态，无法重试")
+    # 重置成 pending 后立即触发一次处理，跟上传文档时的行为一致——不用等
+    # 外部轮询/下一次上传才把这条任务捡起来。
+    background_tasks.add_task(
+        _run_pending_jobs,
+        ingestion_conn,
+        embedding_registry,
+        vector_store,
+        llm_registry,
+        terms,
+        graph_client,
+        review_conn,
+        ocr,
+        settings.ocr_render_dpi,
+        settings.ocr_max_concurrency,
+        table_extractor,
+        settings.table_extraction_max_concurrency,
+        settings.ingestion_job_concurrency,
+    )
+    return RetryJobResponse(retried=True)
+
+
+@router.delete("/jobs/{job_id}", response_model=DeleteJobResponse)
+async def delete_ingestion_job(
+    job_id: str,
+    tenant_id: str,
+    upload_dir: Path = Depends(deps.get_upload_dir),
+    ingestion_conn: aiosqlite.Connection = Depends(deps.get_ingestion_conn),
+) -> DeleteJobResponse:
+    _validate_tenant_id(tenant_id)
+    try:
+        file_path = await delete_job(ingestion_conn, job_id, tenant_id=tenant_id)
+    except JobNotFoundError:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    except JobNotDeadError:
+        raise HTTPException(status_code=409, detail="该任务当前不是失败状态，无法删除")
+    _unlink_uploaded_file(file_path, upload_dir, tenant_id=tenant_id)
+    return DeleteJobResponse(deleted=True)
