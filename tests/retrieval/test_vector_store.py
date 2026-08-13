@@ -1,4 +1,4 @@
-from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
+from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord, chunk_index_from_id
 
 
 async def test_search_returns_closest_record_first():
@@ -105,3 +105,63 @@ async def test_delete_by_source_only_affects_the_matching_tenant():
 
     remaining = await store.list_all()
     assert [r.tenant_id for r in remaining] == ["t2"]
+
+
+async def test_list_by_source_returns_only_matching_records_in_chunk_order():
+    store = InMemoryVectorStore()
+    await store.upsert(
+        [
+            VectorRecord(
+                id="a.md#1", vector=[0.1], text="第二段",
+                tenant_id="t1", metadata={"source": "a.md"},
+            ),
+            VectorRecord(
+                id="b.md#0", vector=[0.1], text="不相关文档",
+                tenant_id="t1", metadata={"source": "b.md"},
+            ),
+            VectorRecord(
+                id="a.md#0", vector=[0.1], text="第一段",
+                tenant_id="t1", metadata={"source": "a.md"},
+            ),
+            VectorRecord(
+                id="a.md#10", vector=[0.1], text="第十一段",
+                tenant_id="t1", metadata={"source": "a.md"},
+            ),
+        ]
+    )
+
+    records = await store.list_by_source(source="a.md", tenant_id="t1")
+
+    # a.md#1 排在 a.md#10 前面证明是按数字序号排序，不是按字符串字典序
+    # （字典序会把 "a.md#1" 排在 "a.md#10" 之后，"1" < "10" 的字符串比较
+    # 结果和期望的数值顺序相反）
+    assert [r.text for r in records] == ["第一段", "第二段", "第十一段"]
+
+
+async def test_list_by_source_only_matches_the_given_tenant():
+    store = InMemoryVectorStore()
+    await store.upsert(
+        [
+            VectorRecord(
+                id="a.md#0", vector=[0.1], text="t1的内容",
+                tenant_id="t1", metadata={"source": "a.md"},
+            ),
+            VectorRecord(
+                id="a.md#0", vector=[0.1], text="t2的内容",
+                tenant_id="t2", metadata={"source": "a.md"},
+            ),
+        ]
+    )
+
+    records = await store.list_by_source(source="a.md", tenant_id="t1")
+
+    assert [r.text for r in records] == ["t1的内容"]
+
+
+def test_chunk_index_from_id_parses_trailing_numeric_suffix():
+    assert chunk_index_from_id("data/uploads/a.md#0") == 0
+    assert chunk_index_from_id("data/uploads/a.md#10") == 10
+
+
+def test_chunk_index_from_id_defaults_to_zero_for_malformed_id():
+    assert chunk_index_from_id("no-hash-separator") == 0

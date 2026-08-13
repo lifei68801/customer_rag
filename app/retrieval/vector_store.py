@@ -31,6 +31,8 @@ class VectorStore(Protocol):
 
     async def list_all(self) -> list[VectorRecord]: ...
 
+    async def list_by_source(self, *, source: str, tenant_id: str) -> list[VectorRecord]: ...
+
     async def delete_by_source(self, *, source: str, tenant_id: str) -> None: ...
 
 
@@ -41,6 +43,23 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+def chunk_index_from_id(record_id: str) -> int:
+    """从 f"{path}#{i}" 形式的 id 里取出序号 i（见
+    app/ingestion/pipeline.py::_embed_and_upsert 写入时的编号方式）。
+
+    向量库本身（Milvus 的 query()、InMemoryVectorStore 内部的 list）都不
+    保证任何返回顺序，list_by_source() 靠这个函数重新按文档原始 chunk
+    顺序排序，预览页面才能按写入时的先后展示，而不是一堆乱序的片段。
+    id 不含 "#" 或后缀不是数字（理论上不会发生，写入路径固定用这个格式，
+    这里只是防御性兜底）时返回 0，不抛异常中断整个排序。
+    """
+    _, _, suffix = record_id.rpartition("#")
+    try:
+        return int(suffix)
+    except ValueError:
+        return 0
 
 
 class InMemoryVectorStore:
@@ -71,6 +90,17 @@ class InMemoryVectorStore:
 
     async def list_all(self) -> list[VectorRecord]:
         return list(self._records)
+
+    async def list_by_source(
+        self, *, source: str, tenant_id: str
+    ) -> list[VectorRecord]:
+        matched = [
+            r
+            for r in self._records
+            if r.tenant_id == tenant_id and r.metadata.get("source") == source
+        ]
+        matched.sort(key=lambda r: chunk_index_from_id(r.id))
+        return matched
 
     async def delete_by_source(self, *, source: str, tenant_id: str) -> None:
         self._records = [

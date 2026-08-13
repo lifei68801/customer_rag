@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Protocol
 
-from app.retrieval.vector_store import VectorRecord
+from app.retrieval.vector_store import VectorRecord, chunk_index_from_id
 from app.tenancy import validate_tenant_id as _validate_tenant_id
 
 # tenant_id 会被拼进 Milvus 过滤表达式字符串，不能参数化传递；白名单校验
@@ -120,6 +120,47 @@ class MilvusVectorStore:
             collection_name=self._collection_name,
             filter=f'tenant_id == "{tenant_id}" && source == "{escaped_source}"',
         )
+
+    async def list_by_source(
+        self, *, source: str, tenant_id: str
+    ) -> list[VectorRecord]:
+        """查某个来源文件（同一 tenant_id 下）写入过的全部 chunk，供管理后台
+        预览"这份文档到底被切成了什么、能不能被检索到"用。过滤表达式和
+        转义规则跟 delete_by_source() 完全一致（同一个 source+tenant_id
+        过滤维度），只是这里是只读查询不是删除——具体转义原因见
+        delete_by_source() 的说明，这里不重复。
+
+        Milvus 的 query() 不保证返回顺序，这里按 chunk_index_from_id()
+        重新排成文档原始顺序，调用方（管理后台预览接口）不需要自己再排
+        一遍。10000 这个上限跟 list_all() 用的是同一个值——单份文档不
+        可能切出比这更多的 chunk，纯粹是防御性上限，不是"只看前一部分"
+        的截断（预览要看的是"从头开始的前 N 条"，不是"随便一批 10000
+        条里的前 N 条"，所以这里必须先查全量再排序，不能反过来先截断）。
+        """
+        _validate_tenant_id(tenant_id)
+        escaped_source = source.replace("\\", "\\\\").replace('"', '\\"')
+        rows = await asyncio.to_thread(
+            self._client.query,
+            collection_name=self._collection_name,
+            filter=f'tenant_id == "{tenant_id}" && source == "{escaped_source}"',
+            limit=10000,
+        )
+        records = [
+            VectorRecord(
+                id=str(row["id"]),
+                vector=[],
+                text=str(row.get("text", "")),
+                tenant_id=str(row.get("tenant_id", "")),
+                metadata={
+                    k: v
+                    for k, v in row.items()
+                    if k not in {"id", "text", "tenant_id"}
+                },
+            )
+            for row in rows
+        ]
+        records.sort(key=lambda r: chunk_index_from_id(r.id))
+        return records
 
     async def list_all(self, *, limit: int = 10000) -> list[VectorRecord]:
         """取出 collection 内全部记录（不区分租户），供 BM25 等需要全量语料的

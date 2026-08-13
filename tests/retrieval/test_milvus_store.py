@@ -9,6 +9,7 @@ class FakeMilvusClient:
         self.inserted: dict | None = None
         self.last_search_kwargs: dict | None = None
         self.last_delete_kwargs: dict | None = None
+        self.last_query_kwargs: dict | None = None
 
     def insert(self, *, collection_name: str, data: list[dict]) -> None:
         self.inserted = {"collection_name": collection_name, "data": data}
@@ -34,6 +35,24 @@ class FakeMilvusClient:
         ]
 
     def query(self, *, collection_name: str, filter: str, **kwargs):
+        self.last_query_kwargs = {"collection_name": collection_name, "filter": filter}
+        # For list_by_source calls with a source filter, return chunked data
+        if 'source == "faq/network.md"' in filter:
+            return [
+                {
+                    "id": "faq/network.md#1",
+                    "text": "第二段",
+                    "tenant_id": "t1",
+                    "source": "faq/network.md",
+                },
+                {
+                    "id": "faq/network.md#0",
+                    "text": "第一段",
+                    "tenant_id": "t1",
+                    "source": "faq/network.md",
+                },
+            ]
+        # For list_all calls with filter='id != ""', return the original test data
         return [
             {
                 "id": "faq/network.md",
@@ -165,3 +184,46 @@ async def test_list_all_maps_milvus_query_rows_to_vector_records():
     assert network_record.text == "网络断开时请先重启路由器。"
     assert network_record.tenant_id == "t1"
     assert network_record.metadata == {"source": "faq/network.md"}
+
+
+async def test_list_by_source_sends_expected_filter_expression():
+    client = FakeMilvusClient()
+    store = MilvusVectorStore(client=client, collection_name="faq_chunks")
+
+    await store.list_by_source(source="faq/network.md", tenant_id="t1")
+
+    assert client.last_query_kwargs["collection_name"] == "faq_chunks"
+    assert client.last_query_kwargs["filter"] == (
+        'tenant_id == "t1" && source == "faq/network.md"'
+    )
+
+
+async def test_list_by_source_returns_records_in_chunk_order():
+    client = FakeMilvusClient()
+    store = MilvusVectorStore(client=client, collection_name="faq_chunks")
+
+    records = await store.list_by_source(source="faq/network.md", tenant_id="t1")
+
+    # FakeMilvusClient.query 故意按 #1、#0 的顺序返回（模拟向量库不保证
+    # 顺序），list_by_source 必须自己按 chunk 序号重新排序成 #0、#1
+    assert [r.id for r in records] == ["faq/network.md#0", "faq/network.md#1"]
+    assert [r.text for r in records] == ["第一段", "第二段"]
+
+
+async def test_list_by_source_escapes_backslashes_and_quotes_in_source():
+    client = FakeMilvusClient()
+    store = MilvusVectorStore(client=client, collection_name="faq_chunks")
+
+    await store.list_by_source(source=r'data\uploads\weird"path.md', tenant_id="t1")
+
+    assert client.last_query_kwargs["filter"] == (
+        'tenant_id == "t1" && source == "data\\\\uploads\\\\weird\\"path.md"'
+    )
+
+
+async def test_list_by_source_rejects_unsafe_tenant_id():
+    client = FakeMilvusClient()
+    store = MilvusVectorStore(client=client, collection_name="faq_chunks")
+
+    with pytest.raises(ValueError):
+        await store.list_by_source(source="doc.md", tenant_id='t1" or "1"=="1')
