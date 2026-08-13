@@ -3,6 +3,8 @@ import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { Pager } from './Pager'
+import { StandardNameInput } from './StandardNameInput'
+import { fetchGraphTerms, type GraphTerm } from './termsApi'
 
 const PAGE_SIZE = 20
 
@@ -52,6 +54,7 @@ export function GraphReviewsPage() {
   // 只锁一行的话，点另一行会因为下面的 processingId 二次校验静默 return，
   // 但那一行看起来还是"启用"的，等于按钮看着能点、点了却没反应。
   const [processingId, setProcessingId] = useState<number | null>(null)
+  const [graphTerms, setGraphTerms] = useState<GraphTerm[]>([])
   const [pendingPage, setPendingPage] = useState(1)
   const [pendingTotal, setPendingTotal] = useState(0)
   const [historyPage, setHistoryPage] = useState(1)
@@ -60,6 +63,15 @@ export function GraphReviewsPage() {
   useEffect(() => {
     document.title = '知识图谱审核 · 管理后台'
   }, [])
+
+  useEffect(() => {
+    if (!sessionToken) return
+    fetchGraphTerms(sessionToken)
+      .then(setGraphTerms)
+      .catch((err) => {
+        console.error('加载术语表失败', err)
+      })
+  }, [sessionToken])
 
   // 切换租户时两个 tab 的页码都要回到第一页——不然停留在深页码切租户，
   // 新租户数据少的话会连续触发好几轮"清空自动退页"，页面在几个请求
@@ -286,35 +298,35 @@ export function GraphReviewsPage() {
               </p>
             )}
             <div className="flex gap-3">
-              <input
+              <StandardNameInput
                 value={drafts[review.review_id]?.subject ?? ''}
-                onChange={(event) =>
+                onChange={(value) =>
                   setDrafts((prev) => ({
                     ...prev,
                     [review.review_id]: {
                       ...prev[review.review_id],
-                      subject: event.target.value,
+                      subject: value,
                     },
                   }))
                 }
+                terms={graphTerms}
                 placeholder="subject 标准名"
-                aria-label="subject 标准名"
-                className="flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
+                ariaLabel="subject 标准名"
               />
-              <input
+              <StandardNameInput
                 value={drafts[review.review_id]?.object ?? ''}
-                onChange={(event) =>
+                onChange={(value) =>
                   setDrafts((prev) => ({
                     ...prev,
                     [review.review_id]: {
                       ...prev[review.review_id],
-                      object: event.target.value,
+                      object: value,
                     },
                   }))
                 }
+                terms={graphTerms}
                 placeholder="object 标准名"
-                aria-label="object 标准名"
-                className="flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
+                ariaLabel="object 标准名"
               />
             </div>
             <textarea
