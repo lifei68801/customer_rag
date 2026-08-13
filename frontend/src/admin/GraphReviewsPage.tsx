@@ -154,9 +154,12 @@ export function GraphReviewsPage() {
     }
   }, [sessionToken, tenantId, pendingPage])
 
+  // 只清选中状态，不清 batchResult——batchResult 要留到用户看到汇总为止。
+  // 批量提交结束后会调用 refreshPending()，那会产生一个新的 pending 数组
+  // 引用，如果这个 effect 也把 batchResult 清掉，汇总面板会在填完的瞬间
+  // 就随着 selectedReviews 归零一起消失，用户根本来不及看。
   useEffect(() => {
     setSelectedIds(new Set())
-    setBatchResult(null)
   }, [pending])
 
   const selectedReviews = pending.filter((review) => selectedIds.has(review.review_id))
@@ -480,7 +483,8 @@ export function GraphReviewsPage() {
                 disabled={
                   !drafts[review.review_id]?.subject ||
                   !drafts[review.review_id]?.object ||
-                  processingId !== null
+                  processingId !== null ||
+                  batchProcessing
                 }
                 className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
               >
@@ -489,7 +493,7 @@ export function GraphReviewsPage() {
               <button
                 type="button"
                 onClick={() => handleReject(review.review_id)}
-                disabled={processingId !== null}
+                disabled={processingId !== null || batchProcessing}
                 className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
               >
                 {processingId === review.review_id ? '驳回中…' : '驳回'}
@@ -497,39 +501,43 @@ export function GraphReviewsPage() {
             </div>
           </div>
         ))}
-      {tab === 'pending' && selectedReviews.length > 0 && (
+      {tab === 'pending' && (selectedReviews.length > 0 || batchResult) && (
         <div className="flex flex-col gap-3 border-2 border-ink bg-card p-4 shadow-brutal">
-          <p className="text-sm font-bold text-ink">已选中 {selectedReviews.length} 条</p>
-          <textarea
-            value={batchRejectNote}
-            onChange={(event) => setBatchRejectNote(event.target.value)}
-            placeholder="批量驳回备注（可选，应用到本次选中的所有记录）"
-            aria-label="批量驳回备注"
-            rows={2}
-            className="border-2 border-ink bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
-          />
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={handleBatchApprove}
-              disabled={!canBatchApprove || batchProcessing || processingId !== null}
-              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
-            >
-              {batchProcessing ? '批量处理中…' : '批量通过'}
-            </button>
-            <button
-              type="button"
-              onClick={handleBatchReject}
-              disabled={batchProcessing || processingId !== null}
-              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
-            >
-              {batchProcessing ? '批量处理中…' : '批量驳回'}
-            </button>
-          </div>
-          {!canBatchApprove && (
-            <p className="text-xs text-ink-soft">
-              批量通过要求选中的每一条都已填好 subject/object 标准名。
-            </p>
+          {selectedReviews.length > 0 && (
+            <>
+              <p className="text-sm font-bold text-ink">已选中 {selectedReviews.length} 条</p>
+              <textarea
+                value={batchRejectNote}
+                onChange={(event) => setBatchRejectNote(event.target.value)}
+                placeholder="批量驳回备注（可选，应用到本次选中的所有记录）"
+                aria-label="批量驳回备注"
+                rows={2}
+                className="border-2 border-ink bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
+              />
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={handleBatchApprove}
+                  disabled={!canBatchApprove || batchProcessing || processingId !== null}
+                  className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                >
+                  {batchProcessing ? '批量处理中…' : '批量通过'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBatchReject}
+                  disabled={batchProcessing || processingId !== null}
+                  className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                >
+                  {batchProcessing ? '批量处理中…' : '批量驳回'}
+                </button>
+              </div>
+              {!canBatchApprove && (
+                <p className="text-xs text-ink-soft">
+                  批量通过要求选中的每一条都已填好 subject/object 标准名。
+                </p>
+              )}
+            </>
           )}
           {batchResult && (
             <p className="text-sm text-ink">
