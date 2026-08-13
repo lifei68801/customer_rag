@@ -335,3 +335,118 @@ def test_delete_term_with_graph_edges_returns_409(terms_conn):
     # SQLite 记录也不该被删掉——409 之后术语表和图谱两边都保持原样
     remaining = asyncio.run(list_terms(terms_conn))
     assert [t.standard_name for t in remaining] == ["使用中"]
+
+
+def test_create_term_with_empty_standard_name_returns_422(terms_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/terms",
+            json={"standard_name": "   ", "aliases": [], "term_type": "t", "product_line": "p"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
+def test_create_term_with_slash_in_standard_name_returns_422(terms_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/terms",
+            json={"standard_name": "A/B测试", "aliases": [], "term_type": "t", "product_line": "p"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
+def test_update_term_rename_into_name_with_slash_returns_422(terms_conn):
+    asyncio.run(
+        create_term(terms_conn, standard_name="旧名字", aliases=[], term_type="t", product_line="p")
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.put(
+            "/api/admin/terms/旧名字",
+            json={"standard_name": "A/B", "aliases": [], "term_type": "t", "product_line": "p"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
+def test_create_term_drops_blank_aliases(terms_conn):
+    session_store = AdminSessionStore()
+    graph_client = SpyGraphClient()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/terms",
+            json={
+                "standard_name": "新术语",
+                "aliases": ["别名1", "  ", "", "别名2"],
+                "term_type": "t",
+                "product_line": "p",
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["aliases"] == ["别名1", "别名2"]
+
+
+def test_update_term_drops_blank_aliases(terms_conn):
+    asyncio.run(
+        create_term(terms_conn, standard_name="术语A", aliases=[], term_type="t", product_line="p")
+    )
+    session_store = AdminSessionStore()
+    graph_client = SpyGraphClient()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        response = client.put(
+            "/api/admin/terms/术语A",
+            json={
+                "standard_name": "术语A",
+                "aliases": ["  别名1  ", "", "   "],
+                "term_type": "t",
+                "product_line": "p",
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["aliases"] == ["别名1"]

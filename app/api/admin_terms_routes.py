@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 import aiosqlite
 
@@ -17,6 +19,8 @@ from app.graphrag.terms_store import (
     list_terms,
     update_term,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/terms", dependencies=[Depends(deps.require_admin_session)])
 
@@ -37,6 +41,29 @@ class TermWriteRequest(BaseModel):
     aliases: list[str]
     term_type: str
     product_line: str
+
+    @field_validator("standard_name")
+    @classmethod
+    def _validate_standard_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("standard_name 不能为空")
+        if "/" in stripped:
+            raise ValueError("standard_name 不能包含 /")
+        return stripped
+
+    @field_validator("term_type", "product_line")
+    @classmethod
+    def _validate_required_field(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("字段不能为空")
+        return stripped
+
+    @field_validator("aliases")
+    @classmethod
+    def _clean_aliases(cls, value: list[str]) -> list[str]:
+        return [alias.strip() for alias in value if alias.strip()]
 
 
 def _to_response(term: Term) -> TermResponse:
@@ -79,7 +106,14 @@ async def create_new_term(
         product_line=payload.product_line,
     )
     # 新增成功后立即同步进图谱（属性+别名节点），不留图谱异步落后的窗口。
-    await graph_client.sync_term(term)
+    try:
+        await graph_client.sync_term(term)
+    except Exception:
+        logger.exception(
+            "术语 %r 已写入 SQLite 但同步进图谱失败——两侧数据已不一致，需要人工核对",
+            term.standard_name,
+        )
+        raise
     return _to_response(term)
 
 
@@ -107,14 +141,31 @@ async def update_existing_term(
         # 改名：先对同一个图节点做属性级联更新（保留已有关系边），再用
         # sync_term 刷新 type/product_line/别名——顺序不能反过来，
         # sync_term 是按"当前"standard_name MERGE 匹配节点的。
-        await graph_client.rename_term_node(old_name=standard_name, new_name=payload.standard_name)
+        try:
+            await graph_client.rename_term_node(
+                old_name=standard_name, new_name=payload.standard_name
+            )
+        except Exception:
+            logger.exception(
+                "术语 %r 重命名为 %r 已写入 SQLite 但图谱改名失败——两侧数据已不一致，需要人工核对",
+                standard_name,
+                payload.standard_name,
+            )
+            raise
     term = Term(
         standard_name=payload.standard_name,
         aliases=payload.aliases,
         term_type=payload.term_type,
         product_line=payload.product_line,
     )
-    await graph_client.sync_term(term)
+    try:
+        await graph_client.sync_term(term)
+    except Exception:
+        logger.exception(
+            "术语 %r 已写入 SQLite 但同步进图谱失败——两侧数据已不一致，需要人工核对",
+            term.standard_name,
+        )
+        raise
     return _to_response(term)
 
 
@@ -138,5 +189,13 @@ async def delete_existing_term(
     if edge_count > 0:
         raise HTTPException(status_code=409, detail="该术语已在图谱中使用，无法删除")
     await delete_term(review_conn, standard_name)
-    await graph_client.delete_term_node(standard_name)
+    try:
+        await graph_client.delete_term_node(standard_name)
+    except Exception:
+        logger.exception(
+            "术语 %r 已从 SQLite 删除，但图谱节点删除失败——SQLite 记录已不存在，"
+            "图谱节点仍然存在且对管理后台不可见，需要人工核对",
+            standard_name,
+        )
+        raise
     return {"deleted": True}
