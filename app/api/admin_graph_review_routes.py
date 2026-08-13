@@ -32,15 +32,6 @@ class ReviewListResponse(BaseModel):
     total: int
 
 
-class TermResponse(BaseModel):
-    standard_name: str
-    aliases: list[str]
-
-
-class TermListResponse(BaseModel):
-    terms: list[TermResponse]
-
-
 class ApproveRequest(BaseModel):
     tenant_id: str
     subject_standard_name: str
@@ -82,16 +73,6 @@ async def list_reviews(
     else:
         raise HTTPException(status_code=400, detail="status 必须是 pending/approved/rejected/all")
     return ReviewListResponse(reviews=reviews, total=total)
-
-
-@router.get("/terms", response_model=TermListResponse)
-async def list_terms(terms: list[Term] = Depends(deps.get_terms)) -> TermListResponse:
-    return TermListResponse(
-        terms=[
-            TermResponse(standard_name=term.standard_name, aliases=term.aliases)
-            for term in terms
-        ]
-    )
 
 
 @router.post("/{review_id}/approve")

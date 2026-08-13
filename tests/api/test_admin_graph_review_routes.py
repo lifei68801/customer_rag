@@ -404,48 +404,6 @@ def test_list_pending_reviews_second_page_returns_remaining_rows(review_conn):
     assert body["total"] == 3
 
 
-def test_list_terms_returns_all_terms_from_settings():
-    session_store = AdminSessionStore()
-    app.dependency_overrides[deps.get_settings] = lambda: _settings()
-    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
-    app.dependency_overrides[deps.get_terms] = lambda: [
-        Term(
-            standard_name="示例错误码E502", aliases=["网关超时"],
-            term_type="error_code", product_line="核心平台",
-        ),
-        Term(
-            standard_name="示例登录模块", aliases=["认证模块"],
-            term_type="module", product_line="核心平台",
-        ),
-    ]
-    try:
-        client = TestClient(app)
-        response = client.get(
-            "/api/admin/graph-reviews/terms",
-            headers=_authed_headers(session_store),
-        )
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    assert response.json()["terms"] == [
-        {"standard_name": "示例错误码E502", "aliases": ["网关超时"]},
-        {"standard_name": "示例登录模块", "aliases": ["认证模块"]},
-    ]
-
-
-def test_list_terms_without_session_token_returns_401():
-    app.dependency_overrides[deps.get_settings] = lambda: _settings()
-    app.dependency_overrides[deps.get_admin_session_store] = lambda: AdminSessionStore()
-    try:
-        client = TestClient(app)
-        response = client.get("/api/admin/graph-reviews/terms")
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 401
-
-
 def test_approve_review_with_invalid_relation_type_returns_400(review_conn):
     review_id = asyncio.run(
         enqueue_for_review(

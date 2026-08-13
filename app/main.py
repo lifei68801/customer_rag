@@ -8,6 +8,7 @@ from app.api import deps
 from app.api.admin_auth_routes import router as admin_auth_router
 from app.api.admin_document_routes import router as admin_document_router
 from app.api.admin_graph_review_routes import router as admin_graph_review_router
+from app.api.admin_terms_routes import router as admin_terms_router
 from app.api.agent_routes import router as agent_router
 from app.api.qa_routes import router as qa_router
 from app.api.session_routes import router as session_router
@@ -65,6 +66,7 @@ app.include_router(voice_router)
 app.include_router(admin_auth_router)
 app.include_router(admin_document_router)
 app.include_router(admin_graph_review_router)
+app.include_router(admin_terms_router)
 
 
 @app.get("/health")
