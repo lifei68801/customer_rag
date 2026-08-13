@@ -177,6 +177,12 @@ async def normalize_and_write_relations(
                     reason="invalid_relation_type",
                     source=source,
                     tenant_id=tenant_id,
+                    # 走到这个分支说明两侧都已经精确对齐过术语表了（见函数
+                    # 顶部 subject_std/object_std 的计算），只是 relation_type
+                    # 不合法——不是"建议"而是已知事实，直接回传，省得审核员
+                    # 重新输入系统已经算出来的正确答案
+                    suggested_subject_standard_name=subject_std,
+                    suggested_object_standard_name=object_std,
                     evidence=relation.get("evidence", ""),
                 )
             continue

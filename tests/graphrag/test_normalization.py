@@ -175,6 +175,11 @@ async def test_enqueues_invalid_relation_type_for_review_when_review_conn_provid
     pending = await list_pending_reviews(review_conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["reason"] == "invalid_relation_type"
+    # 两侧实体在这个分支里已经精确对齐过术语表了（只是 relation_type 不
+    # 合法才被拦下来），这两个标准名不是"建议"而是已知事实，审核员不该
+    # 再重新输入一遍系统已经算出来的正确答案
+    assert pending[0]["suggested_subject_standard_name"] == "错误码E502"
+    assert pending[0]["suggested_object_standard_name"] == "登录模块"
 
 
 async def test_does_not_enqueue_when_review_conn_not_provided():
