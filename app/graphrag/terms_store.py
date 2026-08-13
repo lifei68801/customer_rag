@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
-from typing import Any
 
 import aiosqlite
 
 from app.graphrag.ontology import Term, load_terminology
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS terms (
@@ -48,18 +50,34 @@ async def ensure_terms_schema(
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
     if not table_already_existed and seed_yaml_path is not None and seed_yaml_path.exists():
-        for term in load_terminology(seed_yaml_path):
-            await conn.execute(
-                "INSERT OR IGNORE INTO terms "
-                "(standard_name, aliases, term_type, product_line) VALUES (?, ?, ?, ?)",
-                (
-                    term.standard_name,
-                    json.dumps(term.aliases, ensure_ascii=False),
-                    term.term_type,
-                    term.product_line,
-                ),
+        try:
+            for term in load_terminology(seed_yaml_path):
+                await conn.execute(
+                    "INSERT OR IGNORE INTO terms "
+                    "(standard_name, aliases, term_type, product_line) VALUES (?, ?, ?, ?)",
+                    (
+                        term.standard_name,
+                        json.dumps(term.aliases, ensure_ascii=False),
+                        term.term_type,
+                        term.product_line,
+                    ),
+                )
+            await conn.commit()
+            cursor = await conn.execute("SELECT COUNT(*) FROM terms")
+            row = await cursor.fetchone()
+            logger.info("术语表首次建表：从 %s 导入了 %d 条术语", seed_yaml_path, row[0])
+        except Exception:
+            logger.warning(
+                "术语表首次建表，种子文件 %s 解析/导入失败，术语表保持为空",
+                seed_yaml_path, exc_info=True,
             )
-        await conn.commit()
+    elif not table_already_existed:
+        logger.warning(
+            "术语表首次建表，但未找到种子文件%s——术语表当前为空，"
+            "需要通过管理后台手动添加术语，否则知识图谱抽取的术语归一化"
+            "将始终落到人工审核队列",
+            f"（{seed_yaml_path}）" if seed_yaml_path is not None else "",
+        )
 
 
 def _row_to_term(row: aiosqlite.Row) -> Term:

@@ -302,10 +302,14 @@ async def get_review_conn(
                 db_path = Path(settings.graph_review_db_path)
                 db_path.parent.mkdir(parents=True, exist_ok=True)
                 conn = await aiosqlite.connect(str(db_path))
-                await ensure_review_schema(conn)
-                await ensure_terms_schema(
-                    conn, seed_yaml_path=Path(settings.terminology_path)
-                )
+                try:
+                    await ensure_review_schema(conn)
+                    await ensure_terms_schema(
+                        conn, seed_yaml_path=Path(settings.terminology_path)
+                    )
+                except Exception:
+                    await conn.close()
+                    raise
                 _review_conn_cache = conn
     return _review_conn_cache
 
@@ -316,5 +320,6 @@ async def get_terms(
     """每次请求都查 terms 表，不再进程级缓存——术语表现在可以通过管理
     后台在线增删改（见 app/api/admin_terms_routes.py），继续用进程级
     缓存会导致改了却要重启服务才能生效，这正是引入这份缓存之前留下的
-    真实痛点。"""
+    真实痛点。（定义放在 get_review_conn 之后：Depends(get_review_conn)
+    要求该函数已经定义）"""
     return await list_terms(review_conn)
