@@ -119,6 +119,8 @@ async def approve(
         raise HTTPException(status_code=409, detail="该记录已经处理过")
     except StandardNameNotInTermsError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"approved": True}
 
 

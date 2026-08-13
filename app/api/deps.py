@@ -211,7 +211,13 @@ async def get_graph_client(
 
 
 def get_terms(settings: Settings = Depends(get_settings)) -> list[Term]:
-    """进程内单例：术语表文件在服务启动期间视为不变，避免逐请求重新解析。"""
+    """进程内单例：术语表文件在服务启动期间视为不变，避免逐请求重新解析。
+
+    这意味着编辑术语表 YAML 文件后必须重启服务才能生效——不只影响摄取
+    时的自动对齐，人工审核批准时的标准名校验（见
+    review_queue.py::StandardNameNotInTermsError）现在也读的是这份缓存，
+    没重启的话新加的术语在审核页面里查不到、批准也会被拒。
+    """
     global _terms_cache
     if _terms_cache is None:
         _terms_cache = load_terms_from_settings(settings)

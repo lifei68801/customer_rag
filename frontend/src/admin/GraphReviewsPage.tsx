@@ -77,6 +77,7 @@ export function GraphReviewsPage() {
       .then(setGraphTerms)
       .catch((err) => {
         console.error('加载术语表失败', err)
+        setError(err instanceof Error ? err.message : '加载术语表失败，标准名自动补全不可用')
       })
   }, [sessionToken])
 
@@ -168,7 +169,10 @@ export function GraphReviewsPage() {
   const canBatchApprove =
     selectedReviews.length > 0 &&
     selectedReviews.every(
-      (review) => drafts[review.review_id]?.subject && drafts[review.review_id]?.object,
+      (review) =>
+        review.reason !== 'invalid_relation_type' &&
+        drafts[review.review_id]?.subject &&
+        drafts[review.review_id]?.object,
     )
 
   const toggleSelected = (reviewId: number) => {
@@ -428,6 +432,11 @@ export function GraphReviewsPage() {
               候选：{review.subject_candidate} —[{review.relation_type}]→{' '}
               {review.object_candidate}（原因：{review.reason}）
             </p>
+            {review.reason === 'invalid_relation_type' && (
+              <p className="text-xs text-status-error">
+                关系类型不合法，无法批准，请驳回。
+              </p>
+            )}
             <p className="text-xs text-ink-soft">来源文档：{review.source || '（无记录）'}</p>
             {review.evidence && (
               <p className="border-l-2 border-ink pl-2 text-sm italic text-ink">
@@ -483,6 +492,7 @@ export function GraphReviewsPage() {
                 disabled={
                   !drafts[review.review_id]?.subject ||
                   !drafts[review.review_id]?.object ||
+                  review.reason === 'invalid_relation_type' ||
                   processingId !== null ||
                   batchProcessing
                 }

@@ -60,6 +60,11 @@ class FakeGraphClient:
         self.written.append(kwargs)
 
 
+class RelationTypeRejectingGraphClient:
+    async def merge_relation(self, **kwargs) -> None:
+        raise ValueError(f"不允许的关系类型: {kwargs['relation_type']!r}")
+
+
 def test_list_pending_reviews_returns_tenant_scoped_rows(review_conn):
     asyncio.run(
         enqueue_for_review(
@@ -437,6 +442,36 @@ def test_list_terms_without_session_token_returns_401():
         app.dependency_overrides.clear()
 
     assert response.status_code == 401
+
+
+def test_approve_review_with_invalid_relation_type_returns_400(review_conn):
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b",
+            relation_type="不存在的关系", reason="invalid_relation_type",
+            source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: RelationTypeRejectingGraphClient()
+    app.dependency_overrides[deps.get_terms] = lambda: [
+        Term(standard_name="A", aliases=[], term_type="", product_line=""),
+        Term(standard_name="B", aliases=[], term_type="", product_line=""),
+    ]
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/admin/graph-reviews/{review_id}/approve",
+            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
 
 
 def test_approve_review_with_standard_name_not_in_terms_returns_400(review_conn):

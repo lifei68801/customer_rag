@@ -452,3 +452,29 @@ async def test_approve_review_rejects_standard_name_not_in_terms():
     pending = await list_pending_reviews(conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["review_id"] == review_id
+
+
+async def test_approve_review_rejects_all_names_when_terms_list_is_empty():
+    conn = await _connect()
+    graph_client = FakeGraphClient()
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+        reason="subject_unresolved", source="s.md", tenant_id="t1",
+    )
+
+    with pytest.raises(StandardNameNotInTermsError):
+        await approve_review(
+            conn,
+            review_id=review_id,
+            subject_standard_name="随便什么名字",
+            object_standard_name="随便什么名字",
+            tenant_id="t1",
+            graph_client=graph_client,
+            terms=[],
+            now=_NOW,
+        )
+
+    assert graph_client.written == []
+    pending = await list_pending_reviews(conn, tenant_id="t1")
+    assert len(pending) == 1
+    assert pending[0]["review_id"] == review_id
