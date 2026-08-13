@@ -4,6 +4,7 @@ import { AdminLayout } from './admin/AdminLayout'
 import { LoginPage } from './admin/LoginPage'
 import { DocumentsPage } from './admin/DocumentsPage'
 import { GraphReviewsPage } from './admin/GraphReviewsPage'
+import { TermsPage } from './admin/TermsPage'
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
         <Route index element={<Navigate to="documents" replace />} />
         <Route path="documents" element={<DocumentsPage />} />
         <Route path="graph-reviews" element={<GraphReviewsPage />} />
+        <Route path="terms" element={<TermsPage />} />
       </Route>
     </Routes>
   )

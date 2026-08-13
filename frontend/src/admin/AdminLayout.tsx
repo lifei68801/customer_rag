@@ -35,6 +35,9 @@ export function AdminLayout() {
             <NavLink to="/admin/graph-reviews" className={navLinkClass}>
               知识图谱审核
             </NavLink>
+            <NavLink to="/admin/terms" className={navLinkClass}>
+              术语库管理
+            </NavLink>
           </nav>
           <div className="flex flex-row flex-wrap gap-3 md:flex-col">
             <TenantSwitcher />
