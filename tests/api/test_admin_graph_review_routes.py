@@ -97,6 +97,10 @@ def test_approve_review_calls_graph_client_and_moves_to_history(review_conn):
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    app.dependency_overrides[deps.get_terms] = lambda: [
+        Term(standard_name="A", aliases=[], term_type="", product_line=""),
+        Term(standard_name="B", aliases=[], term_type="", product_line=""),
+    ]
     try:
         client = TestClient(app)
         response = client.post(
@@ -201,6 +205,10 @@ def test_approve_already_resolved_review_returns_409(review_conn):
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraphClient()
+    app.dependency_overrides[deps.get_terms] = lambda: [
+        Term(standard_name="A", aliases=[], term_type="", product_line=""),
+        Term(standard_name="B", aliases=[], term_type="", product_line=""),
+    ]
     try:
         client = TestClient(app)
         payload = {
@@ -268,6 +276,10 @@ def test_list_reviews_status_all_returns_both_approved_and_rejected(review_conn)
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraphClient()
+    app.dependency_overrides[deps.get_terms] = lambda: [
+        Term(standard_name="A", aliases=[], term_type="", product_line=""),
+        Term(standard_name="B", aliases=[], term_type="", product_line=""),
+    ]
     try:
         client = TestClient(app)
         client.post(
@@ -425,3 +437,31 @@ def test_list_terms_without_session_token_returns_401():
         app.dependency_overrides.clear()
 
     assert response.status_code == 401
+
+
+def test_approve_review_with_standard_name_not_in_terms_returns_400(review_conn):
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraphClient()
+    app.dependency_overrides[deps.get_terms] = lambda: [
+        Term(standard_name="B", aliases=[], term_type="", product_line=""),
+    ]
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/admin/graph-reviews/{review_id}/approve",
+            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400

@@ -8,7 +8,8 @@ from typing import Any
 import aiosqlite
 
 from app.config.settings import Settings
-from app.graphrag.factory import build_graph_client_from_settings
+from app.graphrag.factory import build_graph_client_from_settings, load_terms_from_settings
+from app.graphrag.ontology import Term
 from app.graphrag.review_factory import build_review_conn_from_settings
 from app.graphrag.review_queue import (
     ReviewGraphClientProtocol,
@@ -48,6 +49,7 @@ async def cmd_approve(
     object_standard_name: str,
     tenant_id: str,
     graph_client: ReviewGraphClientProtocol,
+    terms: list[Term],
 ) -> None:
     await approve_review(
         review_conn,
@@ -56,6 +58,7 @@ async def cmd_approve(
         object_standard_name=object_standard_name,
         tenant_id=tenant_id,
         graph_client=graph_client,
+        terms=terms,
         now=datetime.now(),
     )
     print(
@@ -114,6 +117,7 @@ async def _main() -> None:
         await cmd_list(review_conn=review_conn, tenant_id=args.tenant_id)
     elif args.command == "approve":
         graph_client = build_graph_client_from_settings(settings)
+        terms = load_terms_from_settings(settings)
         await cmd_approve(
             review_conn=review_conn,
             review_id=args.review_id,
@@ -121,6 +125,7 @@ async def _main() -> None:
             object_standard_name=args.object,
             tenant_id=args.tenant_id,
             graph_client=graph_client,
+            terms=terms,
         )
     elif args.command == "reject":
         await cmd_reject(

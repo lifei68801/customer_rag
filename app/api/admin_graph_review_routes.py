@@ -13,6 +13,7 @@ from app.graphrag.ontology import Term
 from app.graphrag.review_queue import (
     ReviewAlreadyResolvedError,
     ReviewNotFoundError,
+    StandardNameNotInTermsError,
     approve_review,
     count_pending_reviews,
     count_resolved_reviews,
@@ -99,6 +100,7 @@ async def approve(
     payload: ApproveRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    terms: list[Term] = Depends(deps.get_terms),
 ) -> dict[str, bool]:
     try:
         await approve_review(
@@ -108,12 +110,15 @@ async def approve(
             object_standard_name=payload.object_standard_name,
             tenant_id=payload.tenant_id,
             graph_client=graph_client,
+            terms=terms,
             now=datetime.now(),
         )
     except ReviewNotFoundError:
         raise HTTPException(status_code=404, detail="待审核记录不存在")
     except ReviewAlreadyResolvedError:
         raise HTTPException(status_code=409, detail="该记录已经处理过")
+    except StandardNameNotInTermsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"approved": True}
 
 

@@ -3,9 +3,11 @@ from datetime import datetime
 import aiosqlite
 import pytest
 
+from app.graphrag.ontology import Term
 from app.graphrag.review_queue import (
     ReviewAlreadyResolvedError,
     ReviewNotFoundError,
+    StandardNameNotInTermsError,
     approve_review,
     count_pending_reviews,
     count_resolved_reviews,
@@ -17,6 +19,13 @@ from app.graphrag.review_queue import (
 )
 
 _NOW = datetime(2026, 8, 12, 12, 0, 0)
+
+
+def _terms(*standard_names: str) -> list[Term]:
+    return [
+        Term(standard_name=name, aliases=[], term_type="", product_line="")
+        for name in standard_names
+    ]
 
 
 async def _connect() -> aiosqlite.Connection:
@@ -104,6 +113,7 @@ async def test_approve_review_writes_relation_with_source_and_tenant_and_removes
         object_standard_name="示例登录模块",
         tenant_id="t1",
         graph_client=graph_client,
+        terms=_terms("示例错误码E502", "示例登录模块"),
         now=_NOW,
     )
 
@@ -133,7 +143,7 @@ async def test_approve_review_from_wrong_tenant_raises_not_found():
         await approve_review(
             conn, review_id=review_id, subject_standard_name="x",
             object_standard_name="y", tenant_id="t2", graph_client=graph_client,
-            now=_NOW,
+            terms=[], now=_NOW,
         )
     assert graph_client.written == []
 
@@ -183,6 +193,7 @@ async def test_approve_unknown_review_id_raises():
             object_standard_name="b",
             tenant_id="t1",
             graph_client=graph_client,
+            terms=[],
             now=_NOW,
         )
 
@@ -204,6 +215,7 @@ async def test_approve_already_resolved_review_raises():
             object_standard_name="b",
             tenant_id="t1",
             graph_client=graph_client,
+            terms=[],
             now=_NOW,
         )
 
@@ -261,7 +273,7 @@ async def test_list_resolved_reviews_returns_approved_and_rejected_ordered_by_re
     )
     await approve_review(
         conn, review_id=approved_id, subject_standard_name="A", object_standard_name="B",
-        tenant_id="t1", graph_client=graph_client, now=_NOW,
+        tenant_id="t1", graph_client=graph_client, terms=_terms("A", "B"), now=_NOW,
     )
     await reject_review(conn, review_id=rejected_id, tenant_id="t1", note="噪声")
 
@@ -342,7 +354,7 @@ async def test_count_resolved_reviews_matches_status_filter():
     )
     await approve_review(
         conn, review_id=approved_id, subject_standard_name="A", object_standard_name="B",
-        tenant_id="t1", graph_client=graph_client, now=_NOW,
+        tenant_id="t1", graph_client=graph_client, terms=_terms("A", "B"), now=_NOW,
     )
     await reject_review(conn, review_id=rejected_id, tenant_id="t1", note="噪声")
 
@@ -412,3 +424,31 @@ async def test_list_resolved_reviews_includes_evidence():
 
     resolved = await list_resolved_reviews(conn, tenant_id="t1")
     assert resolved[0]["evidence"] == "原文引用示例"
+
+
+async def test_approve_review_rejects_standard_name_not_in_terms():
+    conn = await _connect()
+    graph_client = FakeGraphClient()
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+        reason="subject_unresolved", source="s.md", tenant_id="t1",
+    )
+
+    with pytest.raises(StandardNameNotInTermsError):
+        await approve_review(
+            conn,
+            review_id=review_id,
+            subject_standard_name="不在术语表里的名字",
+            object_standard_name="示例登录模块",
+            tenant_id="t1",
+            graph_client=graph_client,
+            terms=_terms("示例登录模块"),
+            now=_NOW,
+        )
+
+    # 校验失败不写图谱、也不改变 review 状态——还留在待审核队列里，
+    # 方便审核员改对了标准名之后重新提交
+    assert graph_client.written == []
+    pending = await list_pending_reviews(conn, tenant_id="t1")
+    assert len(pending) == 1
+    assert pending[0]["review_id"] == review_id

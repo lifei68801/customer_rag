@@ -1,5 +1,6 @@
 import aiosqlite
 
+from app.graphrag.ontology import Term
 from app.graphrag.review_cli import cmd_approve, cmd_list, cmd_reject
 from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema, list_pending_reviews
 
@@ -86,6 +87,16 @@ async def test_cmd_approve_writes_relation_via_graph_client():
         object_standard_name="示例登录模块",
         tenant_id="t1",
         graph_client=graph_client,
+        terms=[
+            Term(
+                standard_name="示例错误码E502", aliases=[],
+                term_type="", product_line="",
+            ),
+            Term(
+                standard_name="示例登录模块", aliases=[],
+                term_type="", product_line="",
+            ),
+        ],
     )
 
     # cmd_approve 内部用 datetime.now() 生成 recorded_at，测试跑的时刻不可

@@ -7,6 +7,7 @@ import aiosqlite
 
 from app.db_migrations import add_column_if_missing
 from app.graphrag.provenance import HUMAN_APPROVED
+from app.graphrag.ontology import Term
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS graph_review_queue (
@@ -49,6 +50,14 @@ class ReviewNotFoundError(Exception):
 
 class ReviewAlreadyResolvedError(Exception):
     """指定的 review_id 已经被批准或驳回过，不能重复处理。"""
+
+
+class StandardNameNotInTermsError(Exception):
+    """人工确认的标准名（subject 或 object）不在当前术语表里——阻止绕开
+    封闭词表的强约束、把术语表里没有的任意字符串当成新术语写进图谱。
+    前端自动补全只是体验层面的约束，这里才是真正的安全边界：API 路由和
+    review_cli.py 两个批准入口都调用同一个 approve_review()，校验只需要
+    加在这一处。"""
 
 
 async def ensure_review_schema(conn: aiosqlite.Connection) -> None:
@@ -257,6 +266,7 @@ async def approve_review(
     object_standard_name: str,
     tenant_id: str,
     graph_client: ReviewGraphClientProtocol,
+    terms: list[Term],
     now: datetime,
 ) -> None:
     """人工确认候选关系对应的标准名称后，写入图谱并把队列状态标记为已批准。
@@ -265,8 +275,22 @@ async def approve_review(
     ——这是这条边第一次、也是唯一一次被写入图谱的时刻（进了审核队列的
     候选，在此之前从未调用过 merge_relation），与自动写入路径共用同一个
     Neo4jGraphClient.merge_relation，只是 provenance 标记不同。
+
+    terms 是当前生效的封闭词表，两侧标准名必须在其中，见
+    StandardNameNotInTermsError 的说明。校验失败时不写图谱、也不改变
+    review 状态（仍是 pending），方便审核员改对后重新提交，而不是必须
+    先驳回再重新走一遍抽取流程。
     """
     row = await _fetch_pending_row(conn, review_id, tenant_id=tenant_id)
+    valid_standard_names = {term.standard_name for term in terms}
+    if subject_standard_name not in valid_standard_names:
+        raise StandardNameNotInTermsError(
+            f"subject_standard_name 不在术语表中: {subject_standard_name!r}"
+        )
+    if object_standard_name not in valid_standard_names:
+        raise StandardNameNotInTermsError(
+            f"object_standard_name 不在术语表中: {object_standard_name!r}"
+        )
     await graph_client.merge_relation(
         subject_standard_name=subject_standard_name,
         object_standard_name=object_standard_name,
