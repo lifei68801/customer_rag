@@ -55,6 +55,13 @@ export function GraphReviewsPage() {
   // 但那一行看起来还是"启用"的，等于按钮看着能点、点了却没反应。
   const [processingId, setProcessingId] = useState<number | null>(null)
   const [graphTerms, setGraphTerms] = useState<GraphTerm[]>([])
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [batchRejectNote, setBatchRejectNote] = useState('')
+  const [batchProcessing, setBatchProcessing] = useState(false)
+  const [batchResult, setBatchResult] = useState<{
+    success: number
+    failures: { id: number; error: string }[]
+  } | null>(null)
   const [pendingPage, setPendingPage] = useState(1)
   const [pendingTotal, setPendingTotal] = useState(0)
   const [historyPage, setHistoryPage] = useState(1)
@@ -147,6 +154,36 @@ export function GraphReviewsPage() {
     }
   }, [sessionToken, tenantId, pendingPage])
 
+  useEffect(() => {
+    setSelectedIds(new Set())
+    setBatchResult(null)
+  }, [pending])
+
+  const selectedReviews = pending.filter((review) => selectedIds.has(review.review_id))
+  const allOnPageSelected =
+    pending.length > 0 && pending.every((review) => selectedIds.has(review.review_id))
+  const canBatchApprove =
+    selectedReviews.length > 0 &&
+    selectedReviews.every(
+      (review) => drafts[review.review_id]?.subject && drafts[review.review_id]?.object,
+    )
+
+  const toggleSelected = (reviewId: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(reviewId)) {
+        next.delete(reviewId)
+      } else {
+        next.add(reviewId)
+      }
+      return next
+    })
+  }
+
+  const toggleSelectAllOnPage = () => {
+    setSelectedIds(allOnPageSelected ? new Set() : new Set(pending.map((r) => r.review_id)))
+  }
+
   const refreshHistory = useCallback(async () => {
     if (!sessionToken) return
     const requestId = ++historyRequestIdRef.current
@@ -190,7 +227,7 @@ export function GraphReviewsPage() {
     if (!sessionToken) return
     // UI 上按钮已经用 disabled 挡了，这里再查一次 processingId 是双保险：
     // disabled 只挡鼠标/键盘触发，挡不住代码里其它路径直接调这个函数。
-    if (processingId !== null) return
+    if (processingId !== null || batchProcessing) return
     const draft = drafts[reviewId]
     if (!draft?.subject || !draft?.object) return
     setError(null)
@@ -219,7 +256,7 @@ export function GraphReviewsPage() {
 
   const handleReject = async (reviewId: number) => {
     if (!sessionToken) return
-    if (processingId !== null) return
+    if (processingId !== null || batchProcessing) return
     setError(null)
     setProcessingId(reviewId)
     try {
@@ -243,6 +280,83 @@ export function GraphReviewsPage() {
     } finally {
       setProcessingId(null)
     }
+  }
+
+  const handleBatchApprove = async () => {
+    if (!sessionToken || batchProcessing || processingId !== null || !canBatchApprove) return
+    setBatchProcessing(true)
+    setBatchResult(null)
+    setError(null)
+    const failures: { id: number; error: string }[] = []
+    let success = 0
+    for (const review of selectedReviews) {
+      const draft = drafts[review.review_id]
+      try {
+        const response = await adminFetch(
+          `/api/admin/graph-reviews/${review.review_id}/approve`,
+          sessionToken,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              tenant_id: tenantId,
+              subject_standard_name: draft.subject,
+              object_standard_name: draft.object,
+            }),
+          },
+        )
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(extractErrorDetail(body, '批准失败'))
+        }
+        success += 1
+      } catch (err) {
+        failures.push({
+          id: review.review_id,
+          error: err instanceof Error ? err.message : '批准失败',
+        })
+      }
+    }
+    setBatchResult({ success, failures })
+    setBatchProcessing(false)
+    await refreshPending()
+  }
+
+  const handleBatchReject = async () => {
+    if (!sessionToken || batchProcessing || processingId !== null) return
+    if (selectedReviews.length === 0) return
+    setBatchProcessing(true)
+    setBatchResult(null)
+    setError(null)
+    const failures: { id: number; error: string }[] = []
+    let success = 0
+    for (const review of selectedReviews) {
+      try {
+        const response = await adminFetch(
+          `/api/admin/graph-reviews/${review.review_id}/reject`,
+          sessionToken,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tenant_id: tenantId, note: batchRejectNote || null }),
+          },
+        )
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(extractErrorDetail(body, '驳回失败'))
+        }
+        success += 1
+      } catch (err) {
+        failures.push({
+          id: review.review_id,
+          error: err instanceof Error ? err.message : '驳回失败',
+        })
+      }
+    }
+    setBatchResult({ success, failures })
+    setBatchRejectNote('')
+    setBatchProcessing(false)
+    await refreshPending()
   }
 
   return (
@@ -280,6 +394,17 @@ export function GraphReviewsPage() {
       )}
 
       {tab === 'pending' && !pendingLoaded && <p className="text-ink-soft">加载中…</p>}
+      {tab === 'pending' && pendingLoaded && pending.length > 0 && (
+        <label className="flex items-center gap-2 text-sm text-ink">
+          <input
+            type="checkbox"
+            checked={allOnPageSelected}
+            onChange={toggleSelectAllOnPage}
+            aria-label="全选本页"
+          />
+          全选本页（{pending.length} 条）
+        </label>
+      )}
       {tab === 'pending' &&
         pendingLoaded &&
         pending.map((review) => (
@@ -287,6 +412,15 @@ export function GraphReviewsPage() {
             key={review.review_id}
             className="flex flex-col gap-3 border-2 border-ink bg-card p-4 shadow-brutal"
           >
+            <label className="flex items-center gap-2 text-sm text-ink">
+              <input
+                type="checkbox"
+                checked={selectedIds.has(review.review_id)}
+                onChange={() => toggleSelected(review.review_id)}
+                aria-label={`选中候选 ${review.review_id}`}
+              />
+              选中批量处理
+            </label>
             <p className="text-sm text-ink-soft">
               候选：{review.subject_candidate} —[{review.relation_type}]→{' '}
               {review.object_candidate}（原因：{review.reason}）
@@ -363,6 +497,51 @@ export function GraphReviewsPage() {
             </div>
           </div>
         ))}
+      {tab === 'pending' && selectedReviews.length > 0 && (
+        <div className="flex flex-col gap-3 border-2 border-ink bg-card p-4 shadow-brutal">
+          <p className="text-sm font-bold text-ink">已选中 {selectedReviews.length} 条</p>
+          <textarea
+            value={batchRejectNote}
+            onChange={(event) => setBatchRejectNote(event.target.value)}
+            placeholder="批量驳回备注（可选，应用到本次选中的所有记录）"
+            aria-label="批量驳回备注"
+            rows={2}
+            className="border-2 border-ink bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
+          />
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={handleBatchApprove}
+              disabled={!canBatchApprove || batchProcessing || processingId !== null}
+              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+            >
+              {batchProcessing ? '批量处理中…' : '批量通过'}
+            </button>
+            <button
+              type="button"
+              onClick={handleBatchReject}
+              disabled={batchProcessing || processingId !== null}
+              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+            >
+              {batchProcessing ? '批量处理中…' : '批量驳回'}
+            </button>
+          </div>
+          {!canBatchApprove && (
+            <p className="text-xs text-ink-soft">
+              批量通过要求选中的每一条都已填好 subject/object 标准名。
+            </p>
+          )}
+          {batchResult && (
+            <p className="text-sm text-ink">
+              成功 {batchResult.success} 条
+              {batchResult.failures.length > 0 &&
+                `，失败 ${batchResult.failures.length} 条：${batchResult.failures
+                  .map((f) => `#${f.id} ${f.error}`)
+                  .join('；')}`}
+            </p>
+          )}
+        </div>
+      )}
       {tab === 'pending' && pendingLoaded && pending.length === 0 && (
         <p className="text-ink-soft">当前没有待审核的候选关系。</p>
       )}
