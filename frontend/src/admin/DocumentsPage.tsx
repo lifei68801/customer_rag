@@ -23,6 +23,12 @@ interface PendingJob {
   last_error: string | null
 }
 
+interface DeadJob {
+  job_id: string
+  file_path: string
+  last_error: string | null
+}
+
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
@@ -31,6 +37,9 @@ export function DocumentsPage() {
   const { tenantId } = useAdminTenant()
   const [documents, setDocuments] = useState<TrackedDocument[]>([])
   const [pendingJobs, setPendingJobs] = useState<PendingJob[]>([])
+  const [deadJobs, setDeadJobs] = useState<DeadJob[]>([])
+  const [jobActionId, setJobActionId] = useState<string | null>(null)
+  const [jobError, setJobError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [buildGraph, setBuildGraph] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -56,9 +65,11 @@ export function DocumentsPage() {
     const data = (await response.json()) as {
       documents: TrackedDocument[]
       pending_jobs: PendingJob[]
+      dead_jobs: DeadJob[]
     }
     setDocuments(data.documents)
     setPendingJobs(data.pending_jobs)
+    setDeadJobs(data.dead_jobs)
     hasPendingJobsRef.current = data.pending_jobs.length > 0
     setLoaded(true)
   }, [sessionToken, tenantId])
@@ -149,6 +160,57 @@ export function DocumentsPage() {
     }
   }
 
+  const handleRetryJob = async (jobId: string) => {
+    if (!sessionToken || jobActionId !== null) return
+    setJobError(null)
+    setJobActionId(jobId)
+    try {
+      const response = await adminFetch(
+        `/api/admin/documents/jobs/${jobId}/retry?tenant_id=${encodeURIComponent(tenantId)}`,
+        sessionToken,
+        { method: 'POST' },
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '重试失败'))
+      }
+      await pollNowRef.current()
+    } catch (err) {
+      setJobError(err instanceof Error ? err.message : '重试失败')
+    } finally {
+      setJobActionId(null)
+    }
+  }
+
+  const handleDeleteJob = async (jobId: string, filePath: string) => {
+    if (!sessionToken || jobActionId !== null) return
+    if (
+      !window.confirm(
+        `确定要删除失败任务「${displayFileName(filePath)}」吗？关联的上传文件也会被清理，此操作不可撤销。`,
+      )
+    ) {
+      return
+    }
+    setJobError(null)
+    setJobActionId(jobId)
+    try {
+      const response = await adminFetch(
+        `/api/admin/documents/jobs/${jobId}?tenant_id=${encodeURIComponent(tenantId)}`,
+        sessionToken,
+        { method: 'DELETE' },
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '删除失败'))
+      }
+      await pollNowRef.current()
+    } catch (err) {
+      setJobError(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      setJobActionId(null)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-xl font-bold text-ink">文档管理（租户：{tenantId}）</h1>
@@ -192,6 +254,49 @@ export function DocumentsPage() {
             >
               {displayFileName(job.file_path)} — {job.status}
               {job.last_error && <span className="text-ink"> (错误：{job.last_error})</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {deadJobs.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <h2 className="font-bold text-ink">失败任务</h2>
+          {jobError && (
+            <p
+              role="alert"
+              className="border-2 border-status-error bg-card px-3 py-2 text-sm text-ink shadow-brutal-sm"
+            >
+              {jobError}
+            </p>
+          )}
+          {deadJobs.map((job) => (
+            <div
+              key={job.job_id}
+              className="flex items-center justify-between border-2 border-status-error bg-card px-4 py-3 shadow-brutal-sm"
+            >
+              <span className="text-ink">
+                {displayFileName(job.file_path)}
+                {job.last_error && `（${job.last_error}）`}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleRetryJob(job.job_id)}
+                  disabled={jobActionId !== null}
+                  className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                >
+                  {jobActionId === job.job_id ? '处理中…' : '重试'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteJob(job.job_id, job.file_path)}
+                  disabled={jobActionId !== null}
+                  className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                >
+                  {jobActionId === job.job_id ? '处理中…' : '删除'}
+                </button>
+              </div>
             </div>
           ))}
         </div>
