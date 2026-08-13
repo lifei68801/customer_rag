@@ -7,6 +7,7 @@ import '@fontsource/space-grotesk/700.css'
 import '@fontsource/space-mono/400.css'
 import '@fontsource/space-mono/700.css'
 import './styles/index.css'
+import 'katex/dist/katex.min.css'
 
 const rootElement = document.getElementById('root')
 if (!rootElement) {

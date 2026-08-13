@@ -17,7 +17,14 @@ from app.safety.prompt_injection import detect_prompt_injection
 from app.safety.rules import UNSAFE_INPUT_MESSAGE, UNSAFE_OUTPUT_MESSAGE, check_text
 from app.safety.semantic_review import semantic_safety_review
 
-_PROMPT_TEMPLATE = "根据以下资料回答问题。\n资料：\n{context}\n\n问题：{question}"
+_PROMPT_TEMPLATE = (
+    "根据以下资料回答问题。请使用 markdown 排版（分点用列表、强调用加粗、"
+    "代码用代码块）；涉及数学公式时用 LaTeX 语法，行内公式用 $...$ 包裹，"
+    "独立公式用 $$...$$ 包裹且必须单独成行、前后各空一行；连续多个独立公式"
+    "之间也要用空行分隔，禁止把两个 $$...$$ 紧挨着写（如 $$A$$$$B$$），"
+    "否则会导致公式无法正确解析。\n"
+    "资料：\n{context}\n\n问题：{question}"
+)
 
 
 @dataclass(frozen=True)
