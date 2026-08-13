@@ -16,6 +16,7 @@ from app.ingestion.table_extraction import TableExtractionFunction
 from app.ingestion.table_extraction_factory import build_table_extractor_from_settings
 from app.ingestion.tracking import ensure_tracking_schema
 from app.graphrag.review_queue import ensure_review_schema
+from app.graphrag.terms_store import ensure_terms_schema, list_terms
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
     DEFAULT_EMBEDDING_PROVIDER_NAME,
@@ -29,7 +30,7 @@ from app.providers.rerank_factory import build_rerank_provider_from_settings
 from app.retrieval.bm25 import BM25Index, build_bm25_index_from_store
 from app.retrieval.factory import build_vector_store_from_settings
 from app.retrieval.vector_store import VectorStore
-from app.graphrag.factory import build_graph_client_from_settings, load_terms_from_settings
+from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.memory.factory import build_memory_conn_from_settings
@@ -72,7 +73,6 @@ _bm25_index_cache: BM25Index | None = None
 _bm25_index_lock = asyncio.Lock()
 _graph_client_cache: Neo4jGraphClient | None = None
 _graph_client_lock = asyncio.Lock()
-_terms_cache: list[Term] | None = None
 _memory_conn_cache: aiosqlite.Connection | None = None
 _memory_conn_lock = asyncio.Lock()
 
@@ -210,20 +210,6 @@ async def get_graph_client(
     return _graph_client_cache
 
 
-def get_terms(settings: Settings = Depends(get_settings)) -> list[Term]:
-    """进程内单例：术语表文件在服务启动期间视为不变，避免逐请求重新解析。
-
-    这意味着编辑术语表 YAML 文件后必须重启服务才能生效——不只影响摄取
-    时的自动对齐，人工审核批准时的标准名校验（见
-    review_queue.py::StandardNameNotInTermsError）现在也读的是这份缓存，
-    没重启的话新加的术语在审核页面里查不到、批准也会被拒。
-    """
-    global _terms_cache
-    if _terms_cache is None:
-        _terms_cache = load_terms_from_settings(settings)
-    return _terms_cache
-
-
 async def get_memory_conn(
     settings: Settings = Depends(get_settings),
 ) -> aiosqlite.Connection:
@@ -317,5 +303,18 @@ async def get_review_conn(
                 db_path.parent.mkdir(parents=True, exist_ok=True)
                 conn = await aiosqlite.connect(str(db_path))
                 await ensure_review_schema(conn)
+                await ensure_terms_schema(
+                    conn, seed_yaml_path=Path(settings.terminology_path)
+                )
                 _review_conn_cache = conn
     return _review_conn_cache
+
+
+async def get_terms(
+    review_conn: aiosqlite.Connection = Depends(get_review_conn),
+) -> list[Term]:
+    """每次请求都查 terms 表，不再进程级缓存——术语表现在可以通过管理
+    后台在线增删改（见 app/api/admin_terms_routes.py），继续用进程级
+    缓存会导致改了却要重启服务才能生效，这正是引入这份缓存之前留下的
+    真实痛点。"""
+    return await list_terms(review_conn)

@@ -8,7 +8,7 @@ from typing import Any
 import aiosqlite
 
 from app.config.settings import Settings
-from app.graphrag.factory import build_graph_client_from_settings, load_terms_from_settings
+from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.ontology import Term
 from app.graphrag.review_factory import build_review_conn_from_settings
 from app.graphrag.review_queue import (
@@ -17,6 +17,7 @@ from app.graphrag.review_queue import (
     list_pending_reviews,
     reject_review,
 )
+from app.graphrag.terms_store import list_terms
 
 
 async def cmd_list(*, review_conn: aiosqlite.Connection, tenant_id: str) -> list[dict[str, Any]]:
@@ -117,7 +118,7 @@ async def _main() -> None:
         await cmd_list(review_conn=review_conn, tenant_id=args.tenant_id)
     elif args.command == "approve":
         graph_client = build_graph_client_from_settings(settings)
-        terms = load_terms_from_settings(settings)
+        terms = await list_terms(review_conn)
         await cmd_approve(
             review_conn=review_conn,
             review_id=args.review_id,

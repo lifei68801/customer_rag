@@ -1121,3 +1121,35 @@ def test_download_document_file_returns_404_for_file_outside_own_tenant_director
         app.dependency_overrides.clear()
 
     assert response.status_code == 404
+
+
+def test_get_terms_queries_the_review_conn_terms_table():
+    """回归测试：get_terms() 迁移前是进程级 YAML 缓存，迁移后必须真的从
+    传入的连接查 terms 表——这里往一个全新连接插入一条术语，直接调用
+    get_terms() 本身（不经过任何路由），验证它查到了这条数据（如果
+    get_terms 还在读旧缓存/YAML，这条术语不会出现）。
+    """
+    from app.graphrag.terms_store import create_term, ensure_terms_schema
+
+    async def _open_conn() -> aiosqlite.Connection:
+        # aiosqlite.connect() 返回的是一个自带 __await__ 的 Connection 代理对象，
+        # 不是真正的 coroutine，不能直接传给 asyncio.run()（Python 3.12 严格要求
+        # coroutine），所以这里包一层跟本文件其它地方（_open_review_conn 等）
+        # 一致的小 async helper。
+        return await aiosqlite.connect(":memory:")
+
+    review_conn = asyncio.run(_open_conn())
+    try:
+        asyncio.run(ensure_terms_schema(review_conn))
+        asyncio.run(
+            create_term(
+                review_conn, standard_name="集成测试术语", aliases=[],
+                term_type="t", product_line="p",
+            )
+        )
+
+        resolved_terms = asyncio.run(deps.get_terms(review_conn=review_conn))
+    finally:
+        asyncio.run(review_conn.close())
+
+    assert [t.standard_name for t in resolved_terms] == ["集成测试术语"]

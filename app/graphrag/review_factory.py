@@ -6,6 +6,7 @@ import aiosqlite
 
 from app.config.settings import Settings
 from app.graphrag.review_queue import ensure_review_schema
+from app.graphrag.terms_store import ensure_terms_schema
 
 
 async def build_review_conn_from_settings(settings: Settings) -> aiosqlite.Connection:
@@ -13,4 +14,5 @@ async def build_review_conn_from_settings(settings: Settings) -> aiosqlite.Conne
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = await aiosqlite.connect(str(db_path))
     await ensure_review_schema(conn)
+    await ensure_terms_schema(conn, seed_yaml_path=Path(settings.terminology_path))
     return conn
