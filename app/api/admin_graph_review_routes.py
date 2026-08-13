@@ -9,6 +9,7 @@ import aiosqlite
 
 from app.api import deps
 from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.ontology import Term
 from app.graphrag.review_queue import (
     ReviewAlreadyResolvedError,
     ReviewNotFoundError,
@@ -28,6 +29,15 @@ router = APIRouter(
 class ReviewListResponse(BaseModel):
     reviews: list[dict]
     total: int
+
+
+class TermResponse(BaseModel):
+    standard_name: str
+    aliases: list[str]
+
+
+class TermListResponse(BaseModel):
+    terms: list[TermResponse]
 
 
 class ApproveRequest(BaseModel):
@@ -71,6 +81,16 @@ async def list_reviews(
     else:
         raise HTTPException(status_code=400, detail="status 必须是 pending/approved/rejected/all")
     return ReviewListResponse(reviews=reviews, total=total)
+
+
+@router.get("/terms", response_model=TermListResponse)
+async def list_terms(terms: list[Term] = Depends(deps.get_terms)) -> TermListResponse:
+    return TermListResponse(
+        terms=[
+            TermResponse(standard_name=term.standard_name, aliases=term.aliases)
+            for term in terms
+        ]
+    )
 
 
 @router.post("/{review_id}/approve")
