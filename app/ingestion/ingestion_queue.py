@@ -45,6 +45,19 @@ CREATE TABLE IF NOT EXISTS ingestion_jobs (
 CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status ON ingestion_jobs (status);
 """
 
+
+class JobNotFoundError(Exception):
+    """指定的 job_id 在该租户下不存在（包括存在于别的租户名下的情况——
+    不做区分，统一按"不存在"处理，避免向调用方泄露"这个任务属于别的
+    租户"这个信息）。"""
+
+
+class JobNotDeadError(Exception):
+    """指定的 job_id 存在，但当前状态不是 dead（可能还在 pending 排队/
+    处理中，或已经 completed）——重试/删除只对确认失败的任务开放，不该
+    误伤正常任务的进度。"""
+
+
 _PARSERS = {
     ".md": lambda path: chunk_markdown(path.read_text(encoding="utf-8"), source=str(path)),
     ".docx": parse_docx,
@@ -132,6 +145,76 @@ async def list_pending_jobs(
         )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
+
+
+async def list_dead_jobs(
+    conn: aiosqlite.Connection, *, limit: int = 50, tenant_id: str | None = None
+) -> list[dict[str, Any]]:
+    """列出重试耗尽、彻底失败的任务，按最近失败的排前面（updated_at 倒序）
+    ——管理后台展示"失败任务"区块用，参数含义和 list_pending_jobs() 一致。
+    """
+    conn.row_factory = aiosqlite.Row
+    if tenant_id is None:
+        cursor = await conn.execute(
+            "SELECT * FROM ingestion_jobs WHERE status = 'dead' "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        )
+    else:
+        cursor = await conn.execute(
+            "SELECT * FROM ingestion_jobs WHERE status = 'dead' AND tenant_id = ? "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (tenant_id, limit),
+        )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def _fetch_job(
+    conn: aiosqlite.Connection, job_id: str, *, tenant_id: str
+) -> dict[str, Any]:
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute(
+        "SELECT * FROM ingestion_jobs WHERE job_id = ? AND tenant_id = ?",
+        (job_id, tenant_id),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise JobNotFoundError(f"任务不存在: {job_id}")
+    return dict(row)
+
+
+async def retry_job(conn: aiosqlite.Connection, job_id: str, *, tenant_id: str) -> None:
+    """人工点击重试：把一个 dead 任务重新拉回 pending 队列，attempts 清零、
+    last_error 清空——下一轮处理会把它当成一个全新任务重新尝试一次完整的
+    3 次自动重试，不受它之前已经用完的重试次数影响。
+    """
+    job = await _fetch_job(conn, job_id, tenant_id=tenant_id)
+    if job["status"] != "dead":
+        raise JobNotDeadError(f"任务不是失败状态，无法重试: {job_id}")
+    await conn.execute(
+        "UPDATE ingestion_jobs SET status='pending', attempts=0, last_error=NULL, "
+        "updated_at=datetime('now') WHERE job_id=? AND tenant_id=?",
+        (job_id, tenant_id),
+    )
+    await conn.commit()
+
+
+async def delete_job(conn: aiosqlite.Connection, job_id: str, *, tenant_id: str) -> str:
+    """删除一条失败任务记录，返回它的 file_path 供调用方清理磁盘上的孤儿
+    文件——这个函数本身不碰文件系统，"删磁盘文件"这个副作用留给调用方
+    （app/api/admin_document_routes.py 已经有 _unlink_uploaded_file()
+    做路径安全校验，delete_document() 也在用同一个函数，不重复实现一遍）。
+    """
+    job = await _fetch_job(conn, job_id, tenant_id=tenant_id)
+    if job["status"] != "dead":
+        raise JobNotDeadError(f"任务不是失败状态，无法删除: {job_id}")
+    await conn.execute(
+        "DELETE FROM ingestion_jobs WHERE job_id=? AND tenant_id=?",
+        (job_id, tenant_id),
+    )
+    await conn.commit()
+    return job["file_path"]
 
 
 async def mark_job_completed(conn: aiosqlite.Connection, job_id: str) -> None:

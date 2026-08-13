@@ -1,14 +1,20 @@
 import asyncio
 
 import aiosqlite
+import pytest
 
 from app.ingestion.ingestion_queue import (
+    JobNotDeadError,
+    JobNotFoundError,
+    delete_job,
     enqueue_ingestion_job,
     ensure_ingestion_queue_schema,
+    list_dead_jobs,
     list_pending_jobs,
     mark_job_completed,
     mark_job_failed,
     process_pending_jobs,
+    retry_job,
 )
 from app.ingestion.tracking import (
     compute_file_hash,
@@ -387,3 +393,88 @@ async def test_process_pending_jobs_processes_documents_concurrently_when_job_co
     )
 
     assert processed == 2
+
+
+async def test_list_dead_jobs_returns_only_dead_status_scoped_to_tenant():
+    conn = await _connect()
+    dead_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await mark_job_failed(conn, dead_id, error="解析失败", max_attempts=1)
+    pending_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="b.md", content_hash="h2", action="ingest"
+    )
+    other_tenant_dead_id = await enqueue_ingestion_job(
+        conn, tenant_id="t2", file_path="c.md", content_hash="h3", action="ingest"
+    )
+    await mark_job_failed(conn, other_tenant_dead_id, error="解析失败", max_attempts=1)
+
+    dead_jobs = await list_dead_jobs(conn, tenant_id="t1")
+
+    assert [j["job_id"] for j in dead_jobs] == [dead_id]
+    assert pending_id not in [j["job_id"] for j in dead_jobs]
+
+
+async def test_retry_job_resets_dead_job_to_pending_with_attempts_cleared():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await mark_job_failed(conn, job_id, error="解析失败", max_attempts=1)
+    assert await list_dead_jobs(conn, tenant_id="t1") != []
+
+    await retry_job(conn, job_id, tenant_id="t1")
+
+    dead_after = await list_dead_jobs(conn, tenant_id="t1")
+    assert dead_after == []
+    pending_after = await list_pending_jobs(conn, tenant_id="t1")
+    assert len(pending_after) == 1
+    assert pending_after[0]["job_id"] == job_id
+    assert pending_after[0]["attempts"] == 0
+    assert pending_after[0]["last_error"] is None
+
+
+async def test_retry_job_raises_when_job_belongs_to_another_tenant():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await mark_job_failed(conn, job_id, error="解析失败", max_attempts=1)
+
+    with pytest.raises(JobNotFoundError):
+        await retry_job(conn, job_id, tenant_id="t2")
+
+
+async def test_retry_job_raises_when_job_is_not_dead():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+
+    with pytest.raises(JobNotDeadError):
+        await retry_job(conn, job_id, tenant_id="t1")
+
+
+async def test_delete_job_removes_dead_job_and_returns_its_file_path():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await mark_job_failed(conn, job_id, error="解析失败", max_attempts=1)
+
+    file_path = await delete_job(conn, job_id, tenant_id="t1")
+
+    assert file_path == "a.md"
+    assert await list_dead_jobs(conn, tenant_id="t1") == []
+
+
+async def test_delete_job_raises_when_job_is_not_dead():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+
+    with pytest.raises(JobNotDeadError):
+        await delete_job(conn, job_id, tenant_id="t1")
+    # 还在 pending，没有被误删
+    assert len(await list_pending_jobs(conn, tenant_id="t1")) == 1
