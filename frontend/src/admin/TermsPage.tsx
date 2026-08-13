@@ -299,7 +299,7 @@ export function TermsPage() {
             </div>
           )
         })}
-      {loaded && terms.length === 0 && (
+      {loaded && !error && terms.length === 0 && (
         <p className="text-ink-soft">还没有任何术语，用上面的表单新增一个。</p>
       )}
     </div>
