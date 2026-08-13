@@ -243,7 +243,7 @@ export function TermsPage() {
                         )
                       }
                       placeholder="标准名"
-                      aria-label="标准名"
+                      aria-label={`标准名（${term.standard_name}）`}
                       className="min-w-[10rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
                     />
                     <input
@@ -252,7 +252,7 @@ export function TermsPage() {
                         setEditDraft((prev) => (prev ? { ...prev, aliases: event.target.value } : prev))
                       }
                       placeholder="别名（逗号分隔）"
-                      aria-label="别名"
+                      aria-label={`别名（${term.standard_name}）`}
                       className="min-w-[10rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
                     />
                     <input
@@ -261,7 +261,7 @@ export function TermsPage() {
                         setEditDraft((prev) => (prev ? { ...prev, term_type: event.target.value } : prev))
                       }
                       placeholder="类型"
-                      aria-label="类型"
+                      aria-label={`类型（${term.standard_name}）`}
                       className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
                     />
                     <input
@@ -272,7 +272,7 @@ export function TermsPage() {
                         )
                       }
                       placeholder="产品线"
-                      aria-label="产品线"
+                      aria-label={`产品线（${term.standard_name}）`}
                       className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
                     />
                   </div>

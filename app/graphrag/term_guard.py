@@ -50,9 +50,10 @@ async def build_term_guard_context(
 
     # 命中多个术语时，每个术语各自的 query_subgraph 调用彼此没有数据
     # 依赖——2026-08-10 起改成 asyncio.gather 并发查询，不再是 for 循环
-    # 顺序 await。展示顺序仍然严格按 matched（术语表原始顺序）排列，不
-    # 按查询完成的先后顺序，靠先 gather 再按索引组装文本实现，不是靠
-    # "谁先跑完谁先加进 lines"。
+    # 顺序 await。展示顺序仍然严格按 matched 排列（术语表现在按
+    # standard_name 字母序排列——terms 表的 list_terms() 用
+    # ORDER BY standard_name），不按查询完成的先后顺序，靠先 gather 再
+    # 按索引组装文本实现，不是靠"谁先跑完谁先加进 lines"。
     #
     # 并发数用一个小 Semaphore（8）兜底：match_terms 命中数量取决于文本
     # 长度和术语表规模，理论上没有上限，不限制在极端情况下（一段话命中

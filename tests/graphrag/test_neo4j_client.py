@@ -256,7 +256,7 @@ async def test_count_relation_edges_for_term_returns_edge_count():
 
     assert count == 3
     assert session.last_parameters == {"standard_name": "错误码E502"}
-    assert "ALIAS_OF" in session.last_query
+    assert "type(r) <> 'ALIAS_OF'" in session.last_query
 
 
 async def test_count_relation_edges_for_term_returns_zero_when_no_rows():
