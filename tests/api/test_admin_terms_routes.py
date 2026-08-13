@@ -58,8 +58,15 @@ class SpyGraphClient:
         self.renamed: list[tuple[str, str]] = []
         self.deleted: list[str] = []
         self._edge_count = edge_count
+        # 记录 rename/sync 两类调用的相对顺序——renamed/synced 是两个独立列表，
+        # 光看它们各自的内容看不出谁先谁后；改名场景要求 rename_term_node 必须
+        # 在 sync_term 之前调用（sync_term 是按"当前"standard_name MERGE 匹配
+        # 节点的，调用顺序反了会在旧名字下留一个没同步到的节点、新名字下多建
+        # 一个空节点），这个列表就是用来证明调用顺序没被后续改动意外交换的。
+        self.call_order: list[str] = []
 
     async def sync_term(self, term) -> None:
+        self.call_order.append("sync_term")
         self.synced.append(
             {
                 "standard_name": term.standard_name,
@@ -70,6 +77,7 @@ class SpyGraphClient:
         )
 
     async def rename_term_node(self, *, old_name: str, new_name: str) -> None:
+        self.call_order.append("rename_term_node")
         self.renamed.append((old_name, new_name))
 
     async def count_relation_edges_for_term(self, standard_name: str) -> int:
@@ -217,6 +225,7 @@ def test_update_term_with_rename_calls_rename_then_sync(terms_conn):
     assert response.status_code == 200
     assert graph_client.renamed == [("旧名字", "新名字")]
     assert graph_client.synced[0]["standard_name"] == "新名字"
+    assert graph_client.call_order == ["rename_term_node", "sync_term"]
 
 
 def test_update_term_rename_into_existing_name_returns_400(terms_conn):
