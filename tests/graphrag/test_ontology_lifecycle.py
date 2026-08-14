@@ -111,3 +111,39 @@ async def test_confirm_ontology_promotes_constraints_too():
             subject_term_type="客房", relation_type="PART_OF", object_term_type="酒店"
         )
     ]
+
+
+async def test_confirm_ontology_is_idempotent_no_op_without_draft():
+    """Regression test: confirm called without draft should be a no-op, not data loss."""
+    conn = await _conn()
+    await checkout_draft(conn, "t1")
+    await confirm_ontology(conn, "t1")
+
+    confirmed_after_first = await list_relation_types(conn, "t1", status="confirmed")
+    assert len(confirmed_after_first) == 10
+
+    # Second confirm without checkout should be a no-op
+    await confirm_ontology(conn, "t1")
+
+    confirmed_after_second = await list_relation_types(conn, "t1", status="confirmed")
+    assert len(confirmed_after_second) == 10
+    assert confirmed_after_second == confirmed_after_first
+
+
+async def test_confirm_ontology_with_no_draft_does_not_delete_confirmed():
+    """Regression test: confirm on a tenant with only confirmed data should not wipe it."""
+    conn = await _conn()
+    await checkout_draft(conn, "t1")
+    await confirm_ontology(conn, "t1")
+
+    # Verify 10 confirmed rows exist
+    confirmed = await list_relation_types(conn, "t1", status="confirmed")
+    assert len(confirmed) == 10
+
+    # Call confirm again without any draft
+    await confirm_ontology(conn, "t1")
+
+    # Confirmed data should still be intact
+    confirmed_after = await list_relation_types(conn, "t1", status="confirmed")
+    assert len(confirmed_after) == 10
+    assert {r.relation_type for r in confirmed_after} == {r.relation_type for r in confirmed}

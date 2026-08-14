@@ -70,7 +70,18 @@ async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
     改成 confirmed——两张表（关系类型、约束）在同一次 commit 里一起提交，不会出现
     "关系类型确认了但约束表没确认"这种半提交状态。确认之后草稿即被清空（status
     改写成 confirmed，不再是 draft），下一次编辑需要重新调用 checkout_draft。
+
+    防护：如果没有任何草稿行，直接返回（不操作已确认的数据），防止重复确认导致
+    数据丢失。这使得函数对重复/重试请求自然幂等。
     """
+    # 如果两个表都没有草稿，说明没有新的内容要提升，直接返回以避免删除已确认数据
+    has_draft_in_any_table = (
+        await _has_any_row(conn, "tenant_relation_types", tenant_id, "draft")
+        or await _has_any_row(conn, "term_type_relation_allowlist", tenant_id, "draft")
+    )
+    if not has_draft_in_any_table:
+        return
+
     for table, _ in _TABLES_WITH_TENANT_LIFECYCLE:
         await conn.execute(
             f"DELETE FROM {table} WHERE tenant_id = ? AND status = 'confirmed'", (tenant_id,)
