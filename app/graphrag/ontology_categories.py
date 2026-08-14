@@ -104,13 +104,9 @@ async def update_term_type(
     except aiosqlite.IntegrityError:
         raise CategoryNameConflictError(f"{new_value!r} 已经是已有分类，不能重复使用")
     if new_value != value:
-        try:
-            await conn.execute(
-                "UPDATE terms SET term_type = ? WHERE term_type = ?", (new_value, value)
-            )
-        except aiosqlite.OperationalError:
-            # terms table doesn't exist yet, which is fine
-            pass
+        await conn.execute(
+            "UPDATE terms SET term_type = ? WHERE term_type = ?", (new_value, value)
+        )
     await conn.commit()
 
 
@@ -129,41 +125,29 @@ async def update_product_line(
     except aiosqlite.IntegrityError:
         raise CategoryNameConflictError(f"{new_value!r} 已经是已有产品线，不能重复使用")
     if new_value != value:
-        try:
-            await conn.execute(
-                "UPDATE terms SET product_line = ? WHERE product_line = ?", (new_value, value)
-            )
-        except aiosqlite.OperationalError:
-            # terms table doesn't exist yet, which is fine
-            pass
+        await conn.execute(
+            "UPDATE terms SET product_line = ? WHERE product_line = ?", (new_value, value)
+        )
     await conn.commit()
 
 
 async def delete_term_type(conn: aiosqlite.Connection, value: str) -> None:
-    try:
-        cursor = await conn.execute(
-            "SELECT COUNT(*) FROM terms WHERE term_type = ?", (value,)
-        )
-        row = await cursor.fetchone()
-        if row[0] > 0:
-            raise CategoryInUseError(f"分类 {value!r} 仍被 {row[0]} 条术语引用，无法删除")
-    except aiosqlite.OperationalError:
-        # terms table doesn't exist yet, which is fine
-        pass
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM terms WHERE term_type = ?", (value,)
+    )
+    row = await cursor.fetchone()
+    if row[0] > 0:
+        raise CategoryInUseError(f"分类 {value!r} 仍被 {row[0]} 条术语引用，无法删除")
     await conn.execute("DELETE FROM ontology_term_types WHERE value = ?", (value,))
     await conn.commit()
 
 
 async def delete_product_line(conn: aiosqlite.Connection, value: str) -> None:
-    try:
-        cursor = await conn.execute(
-            "SELECT COUNT(*) FROM terms WHERE product_line = ?", (value,)
-        )
-        row = await cursor.fetchone()
-        if row[0] > 0:
-            raise CategoryInUseError(f"产品线 {value!r} 仍被 {row[0]} 条术语引用，无法删除")
-    except aiosqlite.OperationalError:
-        # terms table doesn't exist yet, which is fine
-        pass
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM terms WHERE product_line = ?", (value,)
+    )
+    row = await cursor.fetchone()
+    if row[0] > 0:
+        raise CategoryInUseError(f"产品线 {value!r} 仍被 {row[0]} 条术语引用，无法删除")
     await conn.execute("DELETE FROM ontology_product_lines WHERE value = ?", (value,))
     await conn.commit()
