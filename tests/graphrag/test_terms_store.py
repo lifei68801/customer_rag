@@ -5,6 +5,8 @@ from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import (
     create_product_line,
     create_term_type,
+    list_product_lines,
+    list_term_types,
     update_term_type,
 )
 from app.graphrag.terms_store import (
@@ -79,6 +81,41 @@ async def test_ensure_terms_schema_skips_seeding_when_yaml_path_missing(tmp_path
     await ensure_terms_schema(conn, seed_yaml_path=missing_path)
 
     assert await list_terms(conn) == []
+
+
+async def test_ensure_terms_schema_bridges_historical_term_type_and_product_line_into_categories():
+    """向后兼容桥接的回归测试：老版本上线时 term_type/product_line 还是自由文本，
+    没有分类枚举表这个概念——如果 terms 表已经有历史数据、但分类枚举表是空的，
+    ensure_terms_schema 必须把历史数据里出现过的去重值自动导入枚举表，否则硬
+    约束上线的第一刻，任何现有术语的编辑请求都会因为找不到匹配的枚举值报错
+    （见 terms_store._bridge_seed_categories_from_existing_terms 的说明）。
+    """
+    conn = await aiosqlite.connect(":memory:")
+    # 模拟老版本已经建过表、写过数据，此时还没有分类枚举表——直接用原始 SQL
+    # 建表插入，绕开 create_term 的分类校验（那时压根不存在这层校验）。
+    await conn.executescript(
+        "CREATE TABLE terms ("
+        "standard_name TEXT PRIMARY KEY, aliases TEXT NOT NULL, "
+        "term_type TEXT NOT NULL, product_line TEXT NOT NULL"
+        ");"
+    )
+    await conn.execute(
+        "INSERT INTO terms (standard_name, aliases, term_type, product_line) "
+        "VALUES (?, ?, ?, ?)",
+        ("历史术语", "[]", "error_code", "核心平台"),
+    )
+    await conn.commit()
+
+    await ensure_terms_schema(conn)
+
+    term_type_values = {t.value for t in await list_term_types(conn)}
+    product_line_values = set(await list_product_lines(conn))
+    assert "error_code" in term_type_values
+    assert "核心平台" in product_line_values
+    # 历史行本身也要能正常读出来——extra_properties 是后补的列，历史行没有
+    # 写过这个值，读出来应该是默认的空字典，而不是报错或缺列。
+    term = await get_term(conn, "历史术语")
+    assert term.extra_properties == {}
 
 
 async def test_create_term_then_list_returns_it():
