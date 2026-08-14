@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
+from app.graphrag.ontology_categories import create_product_line, create_term_type
 from app.graphrag.terms_store import create_term, ensure_terms_schema, list_terms
 from app.main import app
 
@@ -29,6 +30,15 @@ def _settings(**overrides) -> Settings:
 async def _open_terms_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
+    # 既有测试直接用这些字面量当 term_type/product_line，早于分类枚举表存在——
+    # 这里补齐分类，保持既有测试的字面量不变（见 test_terms_store.py 的
+    # _connect() 同款说明）。
+    await create_term_type(conn, value="error_code")
+    await create_term_type(conn, value="t")
+    await create_term_type(conn, value="t2")
+    await create_product_line(conn, value="核心平台")
+    await create_product_line(conn, value="p")
+    await create_product_line(conn, value="p2")
     return conn
 
 
@@ -109,6 +119,7 @@ def test_list_terms_returns_all_terms(terms_conn):
         {
             "standard_name": "错误码E502", "aliases": ["网关超时"],
             "term_type": "error_code", "product_line": "核心平台",
+            "extra_properties": {},
         }
     ]
 
@@ -165,6 +176,28 @@ def test_create_term_with_conflicting_name_returns_400(terms_conn):
         response = client.post(
             "/api/admin/terms",
             json={"standard_name": "已存在", "aliases": [], "term_type": "t", "product_line": "p"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+
+
+def test_create_term_with_unknown_category_returns_400(terms_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/terms",
+            json={
+                "standard_name": "新术语", "aliases": [],
+                "term_type": "没有这个分类", "product_line": "p",
+            },
             headers=_authed_headers(session_store),
         )
     finally:

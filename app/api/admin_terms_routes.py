@@ -13,6 +13,7 @@ from app.graphrag.ontology import Term
 from app.graphrag.terms_store import (
     TermNameConflictError,
     TermNotFoundError,
+    UnknownCategoryError,
     create_term,
     delete_term,
     get_term,
@@ -30,6 +31,7 @@ class TermResponse(BaseModel):
     aliases: list[str]
     term_type: str
     product_line: str
+    extra_properties: dict[str, str] = {}
 
 
 class TermListResponse(BaseModel):
@@ -41,6 +43,7 @@ class TermWriteRequest(BaseModel):
     aliases: list[str]
     term_type: str
     product_line: str
+    extra_properties: dict[str, str] = {}
 
     @field_validator("standard_name")
     @classmethod
@@ -72,6 +75,7 @@ def _to_response(term: Term) -> TermResponse:
         aliases=term.aliases,
         term_type=term.term_type,
         product_line=term.product_line,
+        extra_properties=term.extra_properties,
     )
 
 
@@ -96,14 +100,18 @@ async def create_new_term(
             aliases=payload.aliases,
             term_type=payload.term_type,
             product_line=payload.product_line,
+            extra_properties=payload.extra_properties,
         )
     except TermNameConflictError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except UnknownCategoryError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     term = Term(
         standard_name=payload.standard_name,
         aliases=payload.aliases,
         term_type=payload.term_type,
         product_line=payload.product_line,
+        extra_properties=payload.extra_properties,
     )
     # 新增成功后立即同步进图谱（属性+别名节点），不留图谱异步落后的窗口。
     try:
@@ -132,10 +140,13 @@ async def update_existing_term(
             aliases=payload.aliases,
             term_type=payload.term_type,
             product_line=payload.product_line,
+            extra_properties=payload.extra_properties,
         )
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
     except TermNameConflictError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except UnknownCategoryError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if payload.standard_name != standard_name:
         # 改名：先对同一个图节点做属性级联更新（保留已有关系边），再用
@@ -157,6 +168,7 @@ async def update_existing_term(
         aliases=payload.aliases,
         term_type=payload.term_type,
         product_line=payload.product_line,
+        extra_properties=payload.extra_properties,
     )
     try:
         await graph_client.sync_term(term)
