@@ -328,3 +328,20 @@ async def test_migrate_relation_type_edges_rejects_invalid_new_type():
         await client.migrate_relation_type_edges(
             tenant_id="t1", old_type="PRECEDES", new_type="bad-name"
         )
+
+
+async def test_migrate_relation_type_edges_rejects_injection_attack_payloads():
+    client = Neo4jGraphClient(driver=FakeDriver(FakeSession(rows=[])))
+
+    # Test that injection-shaped payloads are rejected, not just format violations
+    injection_payloads = [
+        "PRECEDES]-[HACKED",  # Cypher bracket injection attempt
+        "PRECEDES;DROP",      # Semicolon injection attempt
+        "PRECEDES`",          # Backtick injection attempt
+    ]
+
+    for payload in injection_payloads:
+        with pytest.raises(ValueError):
+            await client.migrate_relation_type_edges(
+                tenant_id="t1", old_type=payload, new_type="SAFE_TYPE"
+            )
