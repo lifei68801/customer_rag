@@ -156,6 +156,7 @@ async def test_sync_term_writes_standard_node_properties_and_alias_edges():
         "type": "error_code",
         "product_line": "核心平台",
         "aliases": ["网关超时", "E502超时"],
+        "extra_properties": {},
     }
     assert "ALIAS_OF" in session.last_query
     assert "alias_name" in session.last_query
@@ -174,6 +175,20 @@ async def test_sync_term_with_no_aliases_sends_empty_alias_list():
     await client.sync_term(term)
 
     assert session.last_parameters["aliases"] == []
+
+
+async def test_sync_term_writes_extra_properties():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    term = Term(
+        standard_name="错误码E502", aliases=[], term_type="错误码",
+        product_line="示例产品线", extra_properties={"严重等级": "高"},
+    )
+
+    await client.sync_term(term)
+
+    assert session.last_parameters["extra_properties"] == {"严重等级": "高"}
+    assert "SET t += $extra_properties" in session.last_query
 
 
 async def test_sync_terms_syncs_every_term_in_the_list():

@@ -75,6 +75,7 @@ DELETE r
 _SYNC_TERM_QUERY = """
 MERGE (t:Term {standard_name: $standard_name})
 SET t.type = $type, t.product_line = $product_line
+SET t += $extra_properties
 WITH t
 UNWIND $aliases AS alias_name
 MERGE (a:Term {alias_name: alias_name})
@@ -235,6 +236,7 @@ class Neo4jGraphClient:
                     "type": term.term_type,
                     "product_line": term.product_line,
                     "aliases": list(term.aliases),
+                    "extra_properties": term.extra_properties,
                 },
             )
 
