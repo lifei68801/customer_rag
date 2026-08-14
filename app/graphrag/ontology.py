@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -12,6 +12,7 @@ class Term:
     aliases: list[str]
     term_type: str
     product_line: str
+    extra_properties: dict[str, str] = field(default_factory=dict)
 
 
 def load_terminology(path: Path) -> list[Term]:

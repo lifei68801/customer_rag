@@ -2,9 +2,15 @@ import aiosqlite
 import pytest
 
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import (
+    create_product_line,
+    create_term_type,
+    update_term_type,
+)
 from app.graphrag.terms_store import (
     TermNameConflictError,
     TermNotFoundError,
+    UnknownCategoryError,
     create_term,
     delete_term,
     ensure_terms_schema,
@@ -17,6 +23,18 @@ from app.graphrag.terms_store import (
 async def _connect() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
+    # round-1 计划已写的既有测试直接用这些字面量当 term_type/product_line，
+    # 早于分类枚举表存在——这里补齐分类，保持既有测试的字面量不变
+    # （新增测试自己会为各自用到的分类调用 create_term_type/create_product_line，
+    # 不依赖这份预置，两者字面量不重叠）。
+    await create_term_type(conn, value="error_code")
+    await create_term_type(conn, value="module")
+    await create_term_type(conn, value="other")
+    await create_term_type(conn, value="t")
+    await create_product_line(conn, value="核心平台")
+    await create_product_line(conn, value="other")
+    await create_product_line(conn, value="新产品线")
+    await create_product_line(conn, value="p")
     return conn
 
 
@@ -200,3 +218,70 @@ async def test_delete_term_raises_when_not_found():
 
     with pytest.raises(TermNotFoundError):
         await delete_term(conn, "不存在")
+
+
+async def test_create_term_persists_extra_properties():
+    conn = await _connect()
+    await create_term_type(conn, value="错误码", extra_fields=["严重等级"])
+    await create_product_line(conn, value="示例产品线")
+
+    await create_term(
+        conn,
+        standard_name="错误码E502",
+        aliases=[],
+        term_type="错误码",
+        product_line="示例产品线",
+        extra_properties={"严重等级": "高"},
+    )
+
+    term = await get_term(conn, "错误码E502")
+    assert term.extra_properties == {"严重等级": "高"}
+
+
+async def test_create_term_rejects_unknown_term_type():
+    conn = await _connect()
+    await create_product_line(conn, value="示例产品线")
+
+    with pytest.raises(UnknownCategoryError):
+        await create_term(
+            conn, standard_name="x", aliases=[], term_type="没有这个分类",
+            product_line="示例产品线",
+        )
+
+
+async def test_create_term_rejects_unknown_product_line():
+    conn = await _connect()
+    await create_term_type(conn, value="错误码")
+
+    with pytest.raises(UnknownCategoryError):
+        await create_term(
+            conn, standard_name="x", aliases=[], term_type="错误码",
+            product_line="没有这个产品线",
+        )
+
+
+async def test_create_term_rejects_extra_property_not_declared_on_term_type():
+    conn = await _connect()
+    await create_term_type(conn, value="错误码", extra_fields=["严重等级"])
+    await create_product_line(conn, value="示例产品线")
+
+    with pytest.raises(UnknownCategoryError):
+        await create_term(
+            conn, standard_name="x", aliases=[], term_type="错误码",
+            product_line="示例产品线", extra_properties={"没声明过的字段": "值"},
+        )
+
+
+async def test_removing_extra_field_from_term_type_preserves_existing_term_value():
+    conn = await _connect()
+    await create_term_type(conn, value="错误码", extra_fields=["严重等级", "影响范围"])
+    await create_product_line(conn, value="示例产品线")
+    await create_term(
+        conn, standard_name="错误码E502", aliases=[], term_type="错误码",
+        product_line="示例产品线", extra_properties={"严重等级": "高", "影响范围": "全站不可用"},
+    )
+
+    await update_term_type(conn, value="错误码", new_value="错误码", extra_fields=["严重等级"])
+
+    term = await get_term(conn, "错误码E502")
+    assert term.extra_properties == {"严重等级": "高", "影响范围": "全站不可用"}

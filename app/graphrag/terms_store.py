@@ -6,7 +6,13 @@ from pathlib import Path
 
 import aiosqlite
 
+from app.db_migrations import add_column_if_missing
 from app.graphrag.ontology import Term, load_terminology
+from app.graphrag.ontology_categories import (
+    ensure_categories_schema,
+    list_product_lines,
+    list_term_types,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +37,13 @@ class TermNameConflictError(Exception):
     不可预测。"""
 
 
+class UnknownCategoryError(Exception):
+    """提交的 term_type/product_line 不在全局分类枚举表里，或 extra_properties
+    里出现了该 term_type 没有声明过的字段名——本体 schema 基座计划把这两项从
+    "自由文本、无校验" 收紧成硬约束，理由见
+    docs/superpowers/specs/2026-08-14-ontology-schema-design.md 第 3 节。"""
+
+
 async def ensure_terms_schema(
     conn: aiosqlite.Connection, *, seed_yaml_path: Path | None = None
 ) -> None:
@@ -42,24 +55,37 @@ async def ensure_terms_schema(
     措施）。不传（默认 None）只是单纯建表，不做任何导入——所有测试固定
     用这个默认行为，不会被本机真实存在的 terminology_seed.yaml 意外
     带入示例数据。
+
+    向后兼容桥接：如果分类枚举表是空的、但 terms 表已经有历史数据（老版本上线
+    时term_type/product_line 还是自由文本，没有枚举表），自动把历史数据里出现过
+    的去重值导入枚举表——否则硬约束上线的第一刻，任何现有术语的编辑请求都会
+    因为找不到匹配的枚举值报错，这不是假设性风险，terminology_seed.yaml 的两条
+    占位数据（error_code/module）就是真实会撞上这个问题的例子。只在枚举表为空
+    时执行一次，不会覆盖业务后续的正常编辑。
     """
+    await ensure_categories_schema(conn)
     cursor = await conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='terms'"
     )
     table_already_existed = await cursor.fetchone() is not None
     await conn.executescript(_SCHEMA_SQL)
+    await add_column_if_missing(
+        conn, table="terms", column="extra_properties", ddl="TEXT NOT NULL DEFAULT '{}'"
+    )
     await conn.commit()
     if not table_already_existed and seed_yaml_path is not None and seed_yaml_path.exists():
         try:
             for term in load_terminology(seed_yaml_path):
                 await conn.execute(
                     "INSERT OR IGNORE INTO terms "
-                    "(standard_name, aliases, term_type, product_line) VALUES (?, ?, ?, ?)",
+                    "(standard_name, aliases, term_type, product_line, extra_properties) "
+                    "VALUES (?, ?, ?, ?, ?)",
                     (
                         term.standard_name,
                         json.dumps(term.aliases, ensure_ascii=False),
                         term.term_type,
                         term.product_line,
+                        json.dumps(term.extra_properties, ensure_ascii=False),
                     ),
                 )
             await conn.commit()
@@ -78,6 +104,30 @@ async def ensure_terms_schema(
             "将始终落到人工审核队列",
             f"（{seed_yaml_path}）" if seed_yaml_path is not None else "",
         )
+    await _bridge_seed_categories_from_existing_terms(conn)
+
+
+async def _bridge_seed_categories_from_existing_terms(conn: aiosqlite.Connection) -> None:
+    known_types = await list_term_types(conn)
+    known_lines = await list_product_lines(conn)
+    if known_types or known_lines:
+        return
+    cursor = await conn.execute("SELECT DISTINCT term_type FROM terms")
+    distinct_types = [row[0] for row in await cursor.fetchall()]
+    cursor = await conn.execute("SELECT DISTINCT product_line FROM terms")
+    distinct_lines = [row[0] for row in await cursor.fetchall()]
+    if not distinct_types and not distinct_lines:
+        return
+    for value in distinct_types:
+        await conn.execute(
+            "INSERT OR IGNORE INTO ontology_term_types (value, extra_fields) VALUES (?, '[]')",
+            (value,),
+        )
+    for value in distinct_lines:
+        await conn.execute(
+            "INSERT OR IGNORE INTO ontology_product_lines (value) VALUES (?)", (value,)
+        )
+    await conn.commit()
 
 
 def _row_to_term(row: aiosqlite.Row) -> Term:
@@ -86,13 +136,14 @@ def _row_to_term(row: aiosqlite.Row) -> Term:
         aliases=json.loads(row["aliases"]),
         term_type=row["term_type"],
         product_line=row["product_line"],
+        extra_properties=json.loads(row["extra_properties"]),
     )
 
 
 async def list_terms(conn: aiosqlite.Connection) -> list[Term]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT standard_name, aliases, term_type, product_line "
+        "SELECT standard_name, aliases, term_type, product_line, extra_properties "
         "FROM terms ORDER BY standard_name"
     )
     rows = await cursor.fetchall()
@@ -102,7 +153,7 @@ async def list_terms(conn: aiosqlite.Connection) -> list[Term]:
 async def get_term(conn: aiosqlite.Connection, standard_name: str) -> Term:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT standard_name, aliases, term_type, product_line "
+        "SELECT standard_name, aliases, term_type, product_line, extra_properties "
         "FROM terms WHERE standard_name = ?",
         (standard_name,),
     )
@@ -138,6 +189,27 @@ async def _check_name_conflict(
             )
 
 
+async def _validate_categories(
+    conn: aiosqlite.Connection,
+    *,
+    term_type: str,
+    product_line: str,
+    extra_properties: dict[str, str],
+) -> None:
+    types = await list_term_types(conn)
+    types_by_value = {t.value: t for t in types}
+    if term_type not in types_by_value:
+        raise UnknownCategoryError(f"未知分类: {term_type!r}")
+    if product_line not in await list_product_lines(conn):
+        raise UnknownCategoryError(f"未知产品线: {product_line!r}")
+    declared_fields = set(types_by_value[term_type].extra_fields)
+    unknown = set(extra_properties) - declared_fields
+    if unknown:
+        raise UnknownCategoryError(
+            f"分类 {term_type!r} 没有声明这些属性字段: {sorted(unknown)}"
+        )
+
+
 async def create_term(
     conn: aiosqlite.Connection,
     *,
@@ -145,13 +217,24 @@ async def create_term(
     aliases: list[str],
     term_type: str,
     product_line: str,
+    extra_properties: dict[str, str] | None = None,
 ) -> None:
+    extra_properties = extra_properties or {}
+    await _validate_categories(
+        conn, term_type=term_type, product_line=product_line, extra_properties=extra_properties
+    )
     await _check_name_conflict(conn, standard_name=standard_name, aliases=aliases)
     try:
         await conn.execute(
-            "INSERT INTO terms (standard_name, aliases, term_type, product_line) "
-            "VALUES (?, ?, ?, ?)",
-            (standard_name, json.dumps(aliases, ensure_ascii=False), term_type, product_line),
+            "INSERT INTO terms (standard_name, aliases, term_type, product_line, extra_properties) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                standard_name,
+                json.dumps(aliases, ensure_ascii=False),
+                term_type,
+                product_line,
+                json.dumps(extra_properties, ensure_ascii=False),
+            ),
         )
     except aiosqlite.IntegrityError:
         # _check_name_conflict 已经检查过 standard_name 冲突，这里是防御性
@@ -168,24 +251,30 @@ async def update_term(
     aliases: list[str],
     term_type: str,
     product_line: str,
+    extra_properties: dict[str, str] | None = None,
 ) -> None:
     """standard_name 是当前（改名前）的名字，用来定位这条记录；
     new_standard_name 是提交的新名字，允许和 standard_name 相同（即不改名）。
     """
+    extra_properties = extra_properties or {}
     await get_term(conn, standard_name)
+    await _validate_categories(
+        conn, term_type=term_type, product_line=product_line, extra_properties=extra_properties
+    )
     await _check_name_conflict(
         conn, standard_name=new_standard_name, aliases=aliases,
         exclude_standard_name=standard_name,
     )
     try:
         await conn.execute(
-            "UPDATE terms SET standard_name=?, aliases=?, term_type=?, product_line=? "
-            "WHERE standard_name=?",
+            "UPDATE terms SET standard_name=?, aliases=?, term_type=?, product_line=?, "
+            "extra_properties=? WHERE standard_name=?",
             (
                 new_standard_name,
                 json.dumps(aliases, ensure_ascii=False),
                 term_type,
                 product_line,
+                json.dumps(extra_properties, ensure_ascii=False),
                 standard_name,
             ),
         )
