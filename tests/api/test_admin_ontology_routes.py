@@ -69,3 +69,59 @@ def test_delete_term_type_in_use_returns_409(client):
     resp = client.delete("/api/admin/ontology/term-types/错误码", headers={"Authorization": "Bearer x"})
 
     assert resp.status_code == 409
+
+
+def test_checkout_confirm_and_list_relation_types(client):
+    resp = client.post("/api/admin/ontology/t1/checkout", headers={"Authorization": "Bearer x"})
+    assert resp.status_code == 200
+
+    resp = client.get(
+        "/api/admin/ontology/t1/relation-types?status=draft", headers={"Authorization": "Bearer x"}
+    )
+    assert len(resp.json()["relation_types"]) == 10
+
+    resp = client.post("/api/admin/ontology/t1/confirm", headers={"Authorization": "Bearer x"})
+    assert resp.status_code == 200
+
+    resp = client.get(
+        "/api/admin/ontology/t1/relation-types?status=confirmed", headers={"Authorization": "Bearer x"}
+    )
+    assert len(resp.json()["relation_types"]) == 10
+
+
+def test_create_relation_type_rejects_bad_name(client):
+    client.post("/api/admin/ontology/t1/checkout", headers={"Authorization": "Bearer x"})
+
+    resp = client.post(
+        "/api/admin/ontology/t1/relation-types",
+        json={"relation_type": "bad-name", "example_phrase": "x"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert resp.status_code == 400
+
+
+def test_add_and_list_constraints(client):
+    client.post(
+        "/api/admin/ontology/term-types", json={"value": "客房", "extra_fields": []},
+        headers={"Authorization": "Bearer x"},
+    )
+    client.post(
+        "/api/admin/ontology/term-types", json={"value": "酒店", "extra_fields": []},
+        headers={"Authorization": "Bearer x"},
+    )
+    client.post("/api/admin/ontology/t1/checkout", headers={"Authorization": "Bearer x"})
+
+    resp = client.post(
+        "/api/admin/ontology/t1/constraints",
+        json={"subject_term_type": "客房", "relation_type": "PART_OF", "object_term_type": "酒店"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 200
+
+    resp = client.get(
+        "/api/admin/ontology/t1/constraints?status=draft", headers={"Authorization": "Bearer x"}
+    )
+    assert resp.json()["constraints"] == [
+        {"subject_term_type": "客房", "relation_type": "PART_OF", "object_term_type": "酒店"}
+    ]

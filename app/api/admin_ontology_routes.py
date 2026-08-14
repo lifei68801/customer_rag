@@ -140,3 +140,165 @@ async def delete_product_line_category(
     except CategoryInUseError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"deleted": True}
+
+
+class RelationTypeWriteRequest(BaseModel):
+    relation_type: str
+    example_phrase: str
+    description: str = ""
+    allow_chain_query: bool = False
+
+
+class ConstraintWriteRequest(BaseModel):
+    subject_term_type: str
+    relation_type: str
+    object_term_type: str
+
+
+class MigrateRelationTypeRequest(BaseModel):
+    old_type: str
+    new_type: str
+
+
+def _relation_type_to_dict(item) -> dict:
+    return {
+        "relation_type": item.relation_type,
+        "example_phrase": item.example_phrase,
+        "description": item.description,
+        "allow_chain_query": item.allow_chain_query,
+        "source": item.source,
+    }
+
+
+@router.get("/{tenant_id}/relation-types")
+async def list_tenant_relation_types(
+    tenant_id: str, status: str = "draft",
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict:
+    result = await list_relation_types(review_conn, tenant_id, status=status)
+    return {"relation_types": [_relation_type_to_dict(r) for r in result]}
+
+
+@router.post("/{tenant_id}/relation-types")
+async def create_tenant_relation_type(
+    tenant_id: str, payload: RelationTypeWriteRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict:
+    try:
+        await create_relation_type(
+            review_conn, tenant_id, relation_type=payload.relation_type,
+            example_phrase=payload.example_phrase, description=payload.description,
+            allow_chain_query=payload.allow_chain_query,
+        )
+    except InvalidRelationTypeNameError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return payload.model_dump()
+
+
+@router.put("/{tenant_id}/relation-types/{relation_type}")
+async def update_tenant_relation_type(
+    tenant_id: str, relation_type: str, payload: RelationTypeWriteRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict:
+    try:
+        await update_relation_type(
+            review_conn, tenant_id, relation_type=relation_type,
+            example_phrase=payload.example_phrase, description=payload.description,
+            allow_chain_query=payload.allow_chain_query,
+        )
+    except InvalidRelationTypeNameError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RelationTypeNotFoundError:
+        raise HTTPException(status_code=404, detail="关系类型不存在")
+    return payload.model_dump()
+
+
+@router.delete("/{tenant_id}/relation-types/{relation_type}")
+async def delete_tenant_relation_type(
+    tenant_id: str, relation_type: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict:
+    await delete_relation_type(review_conn, tenant_id, relation_type)
+    return {"deleted": True}
+
+
+@router.post("/{tenant_id}/relation-types/migrate")
+async def migrate_tenant_relation_type(
+    tenant_id: str, payload: MigrateRelationTypeRequest,
+    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+) -> dict:
+    try:
+        count = await graph_client.migrate_relation_type_edges(
+            tenant_id=tenant_id, old_type=payload.old_type, new_type=payload.new_type
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"migrated_count": count}
+
+
+@router.get("/{tenant_id}/constraints")
+async def list_tenant_constraints(
+    tenant_id: str, status: str = "draft",
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict:
+    result = await list_allowed_combinations(review_conn, tenant_id, status=status)
+    return {
+        "constraints": [
+            {
+                "subject_term_type": c.subject_term_type,
+                "relation_type": c.relation_type,
+                "object_term_type": c.object_term_type,
+            }
+            for c in result
+        ]
+    }
+
+
+@router.post("/{tenant_id}/constraints")
+async def add_tenant_constraint(
+    tenant_id: str, payload: ConstraintWriteRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict:
+    try:
+        await add_allowed_combination(
+            review_conn, tenant_id, subject_term_type=payload.subject_term_type,
+            relation_type=payload.relation_type, object_term_type=payload.object_term_type,
+        )
+    except (ConstraintUnknownCategoryError, UnknownRelationTypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return payload.model_dump()
+
+
+@router.delete("/{tenant_id}/constraints")
+async def remove_tenant_constraint(
+    tenant_id: str, payload: ConstraintWriteRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict:
+    await remove_allowed_combination(
+        review_conn, tenant_id, subject_term_type=payload.subject_term_type,
+        relation_type=payload.relation_type, object_term_type=payload.object_term_type,
+    )
+    return {"deleted": True}
+
+
+@router.post("/{tenant_id}/checkout")
+async def checkout_tenant_ontology_draft(
+    tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict:
+    await checkout_draft(review_conn, tenant_id)
+    return {"checked_out": True}
+
+
+@router.post("/{tenant_id}/confirm")
+async def confirm_tenant_ontology(
+    tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict:
+    await confirm_ontology(review_conn, tenant_id)
+    return {"confirmed": True}
+
+
+@router.get("/{tenant_id}/status")
+async def get_tenant_ontology_status(
+    tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict:
+    return {"confirmed": await is_ontology_confirmed(review_conn, tenant_id)}
