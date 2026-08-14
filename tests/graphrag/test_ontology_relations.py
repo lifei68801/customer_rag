@@ -6,10 +6,13 @@ import pytest
 from app.graphrag.ontology_relations import (
     InvalidRelationTypeNameError,
     RelationTypeDef,
+    RelationTypeNotFoundError,
     create_relation_type,
+    delete_relation_type,
     ensure_relations_schema,
     list_relation_types,
     seed_default_relation_types,
+    update_relation_type,
 )
 
 pytestmark = pytest.mark.anyio
@@ -80,5 +83,62 @@ async def test_create_relation_type_rejects_empty_example_phrase():
 
     with pytest.raises(InvalidRelationTypeNameError):
         await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="")
+
+
+async def test_update_relation_type_changes_example_and_chain_flag():
+    conn = await _conn()
+    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x SUITABLE_FOR y")
+
+    await update_relation_type(
+        conn, "t1",
+        relation_type="SUITABLE_FOR",
+        example_phrase="大床房 SUITABLE_FOR 家庭出行",
+        description="适合的出行类型",
+        allow_chain_query=True,
+    )
+
+    result = await list_relation_types(conn, "t1", status="draft")
+    assert result == [
+        RelationTypeDef(
+            relation_type="SUITABLE_FOR",
+            example_phrase="大床房 SUITABLE_FOR 家庭出行",
+            description="适合的出行类型",
+            allow_chain_query=True,
+            source="custom",
+        )
+    ]
+
+
+async def test_update_nonexistent_relation_type_raises_not_found():
+    conn = await _conn()
+
+    with pytest.raises(RelationTypeNotFoundError):
+        await update_relation_type(
+            conn, "t1", relation_type="NOPE", example_phrase="x", description="",
+            allow_chain_query=False,
+        )
+
+
+async def test_delete_relation_type_removes_default_row_without_protection():
+    """关系类型删除不设引用保护——已写入 Neo4j 的旧边不受影响（见 spec 文档
+    第 7 节孤点数据保护规则表格），这里只验证 schema 表本身的删除行为。"""
+    conn = await _conn()
+    await seed_default_relation_types(conn, "t1")
+
+    await delete_relation_type(conn, "t1", "PRECEDES")
+
+    remaining = {r.relation_type for r in await list_relation_types(conn, "t1", status="draft")}
+    assert "PRECEDES" not in remaining
+    assert len(remaining) == 9
+
+
+async def test_delete_relation_type_is_scoped_per_tenant():
+    conn = await _conn()
+    await seed_default_relation_types(conn, "t1")
+    await seed_default_relation_types(conn, "t2")
+
+    await delete_relation_type(conn, "t1", "PRECEDES")
+
+    assert len(await list_relation_types(conn, "t2", status="draft")) == 10
 
 
