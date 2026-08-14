@@ -15,6 +15,7 @@ from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.table_extraction import TableExtractionFunction
 from app.ingestion.table_extraction_factory import build_table_extractor_from_settings
 from app.ingestion.tracking import ensure_tracking_schema
+from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.review_queue import ensure_review_schema
 from app.graphrag.terms_store import ensure_terms_schema, list_terms
 from app.providers.embedding import EmbeddingRegistry
@@ -307,6 +308,14 @@ async def get_review_conn(
                     await ensure_terms_schema(
                         conn, seed_yaml_path=Path(settings.terminology_path)
                     )
+                    # Task 4 的统一本体建表入口——建 tenant_relation_types/
+                    # term_type_relation_allowlist 两张表，Task 7 新增的关系
+                    # 类型/约束/生命周期路由都直接查询这两张表。漏掉这一步的话
+                    # 这些路由在真实环境下第一次被访问就会因为 "no such table"
+                    # 报 500——ensure_categories_schema 部分和 ensure_terms_schema
+                    # 里已经建过的分类表重复，但都是幂等的 CREATE TABLE IF NOT
+                    # EXISTS，不会冲突。
+                    await ensure_ontology_schema(conn)
                 except Exception:
                     await conn.close()
                     raise
