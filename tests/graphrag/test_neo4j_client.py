@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pytest
+
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 
@@ -294,3 +296,35 @@ async def test_delete_term_node_sends_detach_delete_query():
 
     assert session.last_parameters == {"standard_name": "废弃术语"}
     assert "DETACH DELETE" in session.last_query
+
+
+async def test_migrate_relation_type_edges_sends_expected_query():
+    session = FakeSession(rows=[{"migrated_count": 3}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    count = await client.migrate_relation_type_edges(
+        tenant_id="t1", old_type="PRECEDES", new_type="COMES_BEFORE"
+    )
+
+    assert count == 3
+    assert session.last_parameters == {"tenant_id": "t1"}
+    assert "MATCH (a)-[r:PRECEDES {tenant_id: $tenant_id}]->(b)" in session.last_query
+    assert "CREATE (a)-[r2:COMES_BEFORE]->(b)" in session.last_query
+
+
+async def test_migrate_relation_type_edges_rejects_invalid_old_type():
+    client = Neo4jGraphClient(driver=FakeDriver(FakeSession(rows=[])))
+
+    with pytest.raises(ValueError):
+        await client.migrate_relation_type_edges(
+            tenant_id="t1", old_type="bad-name", new_type="GOOD_NAME"
+        )
+
+
+async def test_migrate_relation_type_edges_rejects_invalid_new_type():
+    client = Neo4jGraphClient(driver=FakeDriver(FakeSession(rows=[])))
+
+    with pytest.raises(ValueError):
+        await client.migrate_relation_type_edges(
+            tenant_id="t1", old_type="PRECEDES", new_type="bad-name"
+        )

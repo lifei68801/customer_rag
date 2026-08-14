@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Protocol
 
 from app.graphrag.ontology import Term
+
+_RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 
 _SUBGRAPH_QUERY = """
 MATCH (t:Term {standard_name: $standard_name})-[r]-(related:Term)
@@ -265,3 +268,38 @@ class Neo4jGraphClient:
         _DELETE_TERM_NODE_QUERY 的说明。"""
         async with self._driver.session() as session:
             await session.run(_DELETE_TERM_NODE_QUERY, {"standard_name": standard_name})
+
+    async def migrate_relation_type_edges(
+        self, *, tenant_id: str, old_type: str, new_type: str
+    ) -> int:
+        """把某个租户所有旧类型的边批量改成新类型，返回迁移的边数。
+
+        Neo4j 的关系类型（edge type）一旦写入不可原地修改——"改名"只能新建一条
+        新类型的边、把原边的全部属性复制过去、再删掉旧边，这是一次真正的数据
+        迁移，不是字符串替换（见 app/graphrag/ontology_relations.py 改名逻辑的
+        说明）。这是租户级自定义关系类型改名后，业务显式触发的可选操作——不改名
+        的旧边永远留着旧类型字符串也完全可用（query_subgraph 的 1 跳查询不按
+        类型过滤），触发这个方法只是为了让图谱里同一语义不再同时存在新旧两种
+        类型字符串。
+
+        单条 Cypher 语句一次性处理该租户全部旧类型的边，不做分批——当前没有
+        证据支撑单租户单次改名会涉及大量边到需要分批的程度，等真实场景出现
+        性能问题再引入分批处理（YAGNI）。
+        """
+        if not _RELATION_TYPE_NAME_PATTERN.match(old_type):
+            raise ValueError(f"旧关系类型名字不合法: {old_type!r}")
+        if not _RELATION_TYPE_NAME_PATTERN.match(new_type):
+            raise ValueError(f"新关系类型名字不合法: {new_type!r}")
+        query = (
+            f"MATCH (a)-[r:{old_type} {{tenant_id: $tenant_id}}]->(b) "
+            "WITH a, b, r, properties(r) AS props "
+            f"CREATE (a)-[r2:{new_type}]->(b) "
+            "SET r2 = props "
+            "WITH r, r2 "
+            "DELETE r "
+            "RETURN count(r2) AS migrated_count"
+        )
+        async with self._driver.session() as session:
+            result = await session.run(query, {"tenant_id": tenant_id})
+            rows = await result.data()
+        return rows[0]["migrated_count"] if rows else 0
