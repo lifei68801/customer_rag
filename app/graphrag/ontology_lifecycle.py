@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import aiosqlite
+
+from app.graphrag.ontology_categories import ensure_categories_schema
+from app.graphrag.ontology_constraints import ensure_constraints_schema
+from app.graphrag.ontology_relations import ensure_relations_schema, seed_default_relation_types
+
+_TABLES_WITH_TENANT_LIFECYCLE = (
+    ("tenant_relation_types", ("relation_type",)),
+    (
+        "term_type_relation_allowlist",
+        ("subject_term_type", "relation_type", "object_term_type"),
+    ),
+)
+
+
+async def ensure_ontology_schema(conn: aiosqlite.Connection) -> None:
+    """统一入口：分类（全局）+ 关系类型/约束（按租户）三张表一起建。分类表虽然不进
+    草稿/确认生命周期，但关系类型/约束表的写入校验依赖它已经存在（见
+    ontology_constraints.py 的引用校验），放在同一个入口保证调用顺序不会出错。"""
+    await ensure_categories_schema(conn)
+    await ensure_relations_schema(conn)
+    await ensure_constraints_schema(conn)
+
+
+async def _has_any_row(
+    conn: aiosqlite.Connection, table: str, tenant_id: str, status: str
+) -> bool:
+    cursor = await conn.execute(
+        f"SELECT 1 FROM {table} WHERE tenant_id = ? AND status = ? LIMIT 1",
+        (tenant_id, status),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
+    """检出一份可编辑的草稿：如果该租户已经有草稿，什么都不做（幂等，不覆盖正在
+    编辑的内容）；如果没有草稿但有已确认版本，从已确认版本复制一份新草稿；如果
+    两者都没有（全新租户），关系类型草稿用 10 种默认值播种，约束表草稿留空
+    （没有分类数据支撑，写不出有意义的默认组合）。
+    """
+    if not await _has_any_row(conn, "tenant_relation_types", tenant_id, "draft"):
+        if await _has_any_row(conn, "tenant_relation_types", tenant_id, "confirmed"):
+            await conn.execute(
+                "INSERT INTO tenant_relation_types "
+                "(tenant_id, relation_type, example_phrase, description, allow_chain_query, "
+                "source, status) "
+                "SELECT tenant_id, relation_type, example_phrase, description, "
+                "allow_chain_query, source, 'draft' FROM tenant_relation_types "
+                "WHERE tenant_id = ? AND status = 'confirmed'",
+                (tenant_id,),
+            )
+        else:
+            await seed_default_relation_types(conn, tenant_id)
+    if not await _has_any_row(conn, "term_type_relation_allowlist", tenant_id, "draft"):
+        if await _has_any_row(conn, "term_type_relation_allowlist", tenant_id, "confirmed"):
+            await conn.execute(
+                "INSERT INTO term_type_relation_allowlist "
+                "(tenant_id, subject_term_type, relation_type, object_term_type, status) "
+                "SELECT tenant_id, subject_term_type, relation_type, object_term_type, 'draft' "
+                "FROM term_type_relation_allowlist WHERE tenant_id = ? AND status = 'confirmed'",
+                (tenant_id,),
+            )
+    await conn.commit()
+
+
+async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
+    """把草稿原子性地提升为已确认版本：先删旧的已确认行，再把草稿行的 status 原地
+    改成 confirmed——两张表（关系类型、约束）在同一次 commit 里一起提交，不会出现
+    "关系类型确认了但约束表没确认"这种半提交状态。确认之后草稿即被清空（status
+    改写成 confirmed，不再是 draft），下一次编辑需要重新调用 checkout_draft。
+    """
+    for table, _ in _TABLES_WITH_TENANT_LIFECYCLE:
+        await conn.execute(
+            f"DELETE FROM {table} WHERE tenant_id = ? AND status = 'confirmed'", (tenant_id,)
+        )
+        await conn.execute(
+            f"UPDATE {table} SET status = 'confirmed' WHERE tenant_id = ? AND status = 'draft'",
+            (tenant_id,),
+        )
+    await conn.commit()
+
+
+async def is_ontology_confirmed(conn: aiosqlite.Connection, tenant_id: str) -> bool:
+    return await _has_any_row(conn, "tenant_relation_types", tenant_id, "confirmed")
