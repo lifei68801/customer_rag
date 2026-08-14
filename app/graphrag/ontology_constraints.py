@@ -56,6 +56,10 @@ async def _validate_references(
     conn: aiosqlite.Connection, tenant_id: str, *, subject_term_type: str,
     relation_type: str, object_term_type: str,
 ) -> None:
+    # 约束条目必须与关系类型在同一草稿编辑会话中创建——这里校验 draft 关系类型，而非已发布的
+    # confirmed 类型，是因为业务在编辑关系类型时需要同步编辑其约束白名单，两者是一对一绑定的
+    # 完整流程。一旦 Task 4（草稿→确认生命周期编排）上线，需要重新审视这里的 status 参数
+    # 设定，届时可能需要适配新的生命周期管理逻辑。
     known_types = {c.value for c in await list_term_types(conn)}
     if subject_term_type not in known_types:
         raise UnknownCategoryError(f"未知分类: {subject_term_type!r}")
