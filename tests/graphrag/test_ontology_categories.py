@@ -12,19 +12,24 @@ from app.graphrag.ontology_categories import (
     create_term_type,
     delete_product_line,
     delete_term_type,
-    ensure_categories_schema,
     list_product_lines,
     list_term_types,
     update_product_line,
     update_term_type,
 )
+from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 
 pytestmark = pytest.mark.anyio
 
 
 async def _conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
-    await ensure_categories_schema(conn)
+    # 生产环境里分类表从不单独建——deps.py::get_review_conn 总是紧接着调用
+    # ensure_ontology_schema，把 term_type_relation_allowlist 一起建出来（见该
+    # 函数的说明）。update_term_type/delete_term_type 的 allowlist 级联依赖这张
+    # 表存在，测试这里也建整套本体 schema 而不是只建分类表，跟生产环境的调用
+    # 顺序保持一致。
+    await ensure_ontology_schema(conn)
     return conn
 
 
@@ -134,6 +139,51 @@ async def test_delete_term_type_in_use_raises_conflict():
 
     with pytest.raises(CategoryInUseError):
         await delete_term_type(conn, "错误码")
+
+
+async def test_update_term_type_cascades_rename_to_allowlist_references():
+    conn = await _conn()
+    await create_term_type(conn, value="客房")
+    await create_term_type(conn, value="酒店")
+    await conn.executescript(
+        "CREATE TABLE terms (standard_name TEXT PRIMARY KEY, term_type TEXT NOT NULL, "
+        "product_line TEXT NOT NULL, aliases TEXT NOT NULL DEFAULT '[]');"
+    )
+    await conn.execute(
+        "INSERT INTO term_type_relation_allowlist "
+        "(tenant_id, subject_term_type, relation_type, object_term_type, status) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("t1", "客房", "PART_OF", "酒店", "confirmed"),
+    )
+    await conn.commit()
+
+    await update_term_type(conn, value="客房", new_value="大床房", extra_fields=[])
+
+    cursor = await conn.execute(
+        "SELECT subject_term_type FROM term_type_relation_allowlist WHERE tenant_id = 't1'"
+    )
+    row = await cursor.fetchone()
+    assert row[0] == "大床房"
+
+
+async def test_delete_term_type_referenced_only_by_allowlist_raises_conflict():
+    conn = await _conn()
+    await create_term_type(conn, value="客房")
+    await create_term_type(conn, value="酒店")
+    await conn.executescript(
+        "CREATE TABLE terms (standard_name TEXT PRIMARY KEY, term_type TEXT NOT NULL, "
+        "product_line TEXT NOT NULL, aliases TEXT NOT NULL DEFAULT '[]');"
+    )
+    await conn.execute(
+        "INSERT INTO term_type_relation_allowlist "
+        "(tenant_id, subject_term_type, relation_type, object_term_type, status) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("t1", "客房", "PART_OF", "酒店", "draft"),
+    )
+    await conn.commit()
+
+    with pytest.raises(CategoryInUseError):
+        await delete_term_type(conn, "客房")
 
 
 async def test_delete_product_line_in_use_raises_conflict():

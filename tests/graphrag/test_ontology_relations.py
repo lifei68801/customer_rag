@@ -3,13 +3,13 @@ from __future__ import annotations
 import aiosqlite
 import pytest
 
+from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.ontology_relations import (
     InvalidRelationTypeNameError,
     RelationTypeDef,
     RelationTypeNotFoundError,
     create_relation_type,
     delete_relation_type,
-    ensure_relations_schema,
     list_relation_types,
     seed_default_relation_types,
     update_relation_type,
@@ -20,7 +20,11 @@ pytestmark = pytest.mark.anyio
 
 async def _conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
-    await ensure_relations_schema(conn)
+    # 生产环境里关系类型表从不单独建——deps.py::get_review_conn 总是紧接着调用
+    # ensure_ontology_schema，把 term_type_relation_allowlist 一起建出来。
+    # delete_relation_type 的 allowlist 级联依赖这张表存在，测试这里也建整套
+    # 本体 schema 而不是只建关系类型表，跟生产环境的调用顺序保持一致。
+    await ensure_ontology_schema(conn)
     return conn
 
 
@@ -140,5 +144,28 @@ async def test_delete_relation_type_is_scoped_per_tenant():
     await delete_relation_type(conn, "t1", "PRECEDES")
 
     assert len(await list_relation_types(conn, "t2", status="draft")) == 10
+
+
+async def test_delete_relation_type_removes_dangling_draft_allowlist_rows():
+    """回归测试：删除关系类型时，草稿约束表里引用它的 draft 行必须一并删除，
+    否则会在下一次 confirm_ontology 时被原样提升成 confirmed，变成永久指向
+    一个已经不存在的关系类型的孤儿配置。"""
+    conn = await _conn()
+    await seed_default_relation_types(conn, "t1")
+    await conn.execute(
+        "INSERT INTO term_type_relation_allowlist "
+        "(tenant_id, subject_term_type, relation_type, object_term_type, status) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("t1", "客房", "PRECEDES", "酒店", "draft"),
+    )
+    await conn.commit()
+
+    await delete_relation_type(conn, "t1", "PRECEDES")
+
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM term_type_relation_allowlist WHERE tenant_id = 't1'"
+    )
+    row = await cursor.fetchone()
+    assert row[0] == 0
 
 

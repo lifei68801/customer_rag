@@ -158,9 +158,19 @@ async def delete_relation_type(
 ) -> None:
     """不设引用保护——关系类型表只是写入时的白名单闸门，不是任何表的外键约束
     对象；已写入 Neo4j 的旧边不因为闸门关闭而失效（见调用方 ontology_lifecycle.py
-    以及 spec 文档第 7 节）。"""
+    以及 spec 文档第 7 节）。
+
+    但草稿约束表（term_type_relation_allowlist）里引用这个关系类型的 draft 行
+    要一并删除——否则这些行会在下一次 confirm_ontology 时被原样提升成
+    confirmed，变成永久指向一个已经不存在的关系类型的孤儿配置。只删同一租户的
+    draft 行，跟本函数原本的删除范围保持一致，不动 confirmed 行。"""
     await conn.execute(
         "DELETE FROM tenant_relation_types WHERE tenant_id = ? AND relation_type = ? "
+        "AND status = 'draft'",
+        (tenant_id, relation_type),
+    )
+    await conn.execute(
+        "DELETE FROM term_type_relation_allowlist WHERE tenant_id = ? AND relation_type = ? "
         "AND status = 'draft'",
         (tenant_id, relation_type),
     )
