@@ -6,13 +6,7 @@ from app.graphrag.ontology_categories import ensure_categories_schema
 from app.graphrag.ontology_constraints import ensure_constraints_schema
 from app.graphrag.ontology_relations import ensure_relations_schema, seed_default_relation_types
 
-_TABLES_WITH_TENANT_LIFECYCLE = (
-    ("tenant_relation_types", ("relation_type",)),
-    (
-        "term_type_relation_allowlist",
-        ("subject_term_type", "relation_type", "object_term_type"),
-    ),
-)
+_TABLES_WITH_TENANT_LIFECYCLE = ("tenant_relation_types", "term_type_relation_allowlist")
 
 
 async def ensure_ontology_schema(conn: aiosqlite.Connection) -> None:
@@ -82,7 +76,7 @@ async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
     if not has_draft_in_any_table:
         return
 
-    for table, _ in _TABLES_WITH_TENANT_LIFECYCLE:
+    for table in _TABLES_WITH_TENANT_LIFECYCLE:
         await conn.execute(
             f"DELETE FROM {table} WHERE tenant_id = ? AND status = 'confirmed'", (tenant_id,)
         )

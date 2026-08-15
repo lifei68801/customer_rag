@@ -360,3 +360,15 @@ async def test_migrate_relation_type_edges_rejects_injection_attack_payloads():
             await client.migrate_relation_type_edges(
                 tenant_id="t1", old_type=payload, new_type="SAFE_TYPE"
             )
+
+
+async def test_migrate_relation_type_edges_rejects_trailing_newline():
+    """回归测试：Python 的 $ 在没有 re.MULTILINE 的情况下，仍然会匹配字符串末尾
+    紧邻的一个换行符之前的位置，'PRECEDES\\n' 这种 payload 会被 .match() 放过——
+    改用 \\Z 后必须拒绝。"""
+    client = Neo4jGraphClient(driver=FakeDriver(FakeSession(rows=[])))
+
+    with pytest.raises(ValueError):
+        await client.migrate_relation_type_edges(
+            tenant_id="t1", old_type="PRECEDES\n", new_type="SAFE_TYPE"
+        )

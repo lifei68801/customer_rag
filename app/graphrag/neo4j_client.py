@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 from app.graphrag.ontology import Term
 
-_RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 
 _SUBGRAPH_QUERY = """
 MATCH (t:Term {standard_name: $standard_name})-[r]-(related:Term)
