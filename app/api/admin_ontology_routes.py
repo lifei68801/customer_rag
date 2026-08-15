@@ -29,6 +29,7 @@ from app.graphrag.ontology_constraints import (
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, is_ontology_confirmed
 from app.graphrag.ontology_relations import (
     InvalidRelationTypeNameError,
+    RelationTypeNameConflictError,
     RelationTypeNotFoundError,
     create_relation_type,
     delete_relation_type,
@@ -192,6 +193,8 @@ async def create_tenant_relation_type(
         )
     except InvalidRelationTypeNameError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except RelationTypeNameConflictError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return payload.model_dump()
 
 
@@ -203,6 +206,7 @@ async def update_tenant_relation_type(
     try:
         await update_relation_type(
             review_conn, tenant_id, relation_type=relation_type,
+            new_relation_type=payload.relation_type,
             example_phrase=payload.example_phrase, description=payload.description,
             allow_chain_query=payload.allow_chain_query,
         )
@@ -210,6 +214,8 @@ async def update_tenant_relation_type(
         raise HTTPException(status_code=400, detail=str(exc))
     except RelationTypeNotFoundError:
         raise HTTPException(status_code=404, detail="关系类型不存在")
+    except RelationTypeNameConflictError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return payload.model_dump()
 
 

@@ -3,10 +3,13 @@ from __future__ import annotations
 import aiosqlite
 import pytest
 
+from app.graphrag.ontology_constraints import add_allowed_combination
+from app.graphrag.ontology_categories import create_term_type
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.ontology_relations import (
     InvalidRelationTypeNameError,
     RelationTypeDef,
+    RelationTypeNameConflictError,
     RelationTypeNotFoundError,
     create_relation_type,
     delete_relation_type,
@@ -89,6 +92,16 @@ async def test_create_relation_type_rejects_empty_example_phrase():
         await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="")
 
 
+async def test_create_relation_type_rejects_trailing_newline():
+    """回归测试：Python 的 $ 在没有 re.MULTILINE 的情况下，仍然会匹配字符串末尾
+    紧邻的一个换行符之前的位置，'SUITABLE_FOR\\n' 这种 payload 会被 .match() 放过
+    ——改用 \\Z 后必须拒绝。"""
+    conn = await _conn()
+
+    with pytest.raises(InvalidRelationTypeNameError):
+        await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR\n", example_phrase="x")
+
+
 async def test_update_relation_type_changes_example_and_chain_flag():
     conn = await _conn()
     await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x SUITABLE_FOR y")
@@ -167,5 +180,61 @@ async def test_delete_relation_type_removes_dangling_draft_allowlist_rows():
     )
     row = await cursor.fetchone()
     assert row[0] == 0
+
+
+async def test_create_relation_type_rejects_duplicate_name():
+    """create_relation_type 用 INSERT OR REPLACE 会在名字冲突时静默覆盖已有
+    行（source 从 default/custom 被悄悄改写，且没有任何错误信号）——跟
+    ontology_categories.py::create_term_type 对重复名字正确报 Conflict 不对称。
+    改成纯 INSERT 后，重复创建必须报错。"""
+    conn = await _conn()
+    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x")
+
+    with pytest.raises(RelationTypeNameConflictError):
+        await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="y")
+
+    result = await list_relation_types(conn, "t1", status="draft")
+    assert result == [
+        RelationTypeDef(
+            relation_type="SUITABLE_FOR", example_phrase="x", description="",
+            allow_chain_query=False, source="custom",
+        )
+    ]
+
+
+async def test_update_relation_type_renames_primary_key_and_cascades_to_allowlist():
+    conn = await _conn()
+    await create_term_type(conn, value="客房")
+    await create_term_type(conn, value="酒店")
+    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x SUITABLE_FOR y")
+    await add_allowed_combination(
+        conn, "t1", subject_term_type="客房", relation_type="SUITABLE_FOR", object_term_type="酒店"
+    )
+
+    await update_relation_type(
+        conn, "t1", relation_type="SUITABLE_FOR", new_relation_type="GOOD_FOR",
+        example_phrase="x GOOD_FOR y", description="", allow_chain_query=False,
+    )
+
+    result = {r.relation_type for r in await list_relation_types(conn, "t1", status="draft")}
+    assert "GOOD_FOR" in result
+    assert "SUITABLE_FOR" not in result
+    cursor = await conn.execute(
+        "SELECT relation_type FROM term_type_relation_allowlist WHERE tenant_id = 't1'"
+    )
+    row = await cursor.fetchone()
+    assert row[0] == "GOOD_FOR"
+
+
+async def test_update_relation_type_rename_into_existing_name_raises_conflict():
+    conn = await _conn()
+    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x")
+    await create_relation_type(conn, "t1", relation_type="GOOD_FOR", example_phrase="y")
+
+    with pytest.raises(RelationTypeNameConflictError):
+        await update_relation_type(
+            conn, "t1", relation_type="SUITABLE_FOR", new_relation_type="GOOD_FOR",
+            example_phrase="x", description="", allow_chain_query=False,
+        )
 
 

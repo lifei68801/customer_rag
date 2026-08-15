@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS tenant_relation_types (
 # Cypher 关系类型不能参数化绑定，只能拼进查询字符串——这是注入防线，任何写入路径
 # （无论数据来自默认种子还是业务自助新增）都必须过这道机械校验，不因为是"默认值"
 # 就豁免。
-_RELATION_TYPE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_RELATION_TYPE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 
 # 10 种全局默认拓扑关系的初始种子——例句取自 app/graphrag/llm_extractor.py 现有
 # system prompt 里的例句，保持口径一致。REQUIRES/PRECEDES/PART_OF 默认放开链式
@@ -47,6 +47,11 @@ class InvalidRelationTypeNameError(Exception):
 
 class RelationTypeNotFoundError(Exception):
     """指定租户的草稿里不存在这个关系类型。"""
+
+
+class RelationTypeNameConflictError(Exception):
+    """提交的关系类型名字（新建，或改名的目标名字）在该租户的草稿里已存在——
+    表主键是 (tenant_id, relation_type, status)。"""
 
 
 @dataclass(frozen=True)
@@ -119,12 +124,17 @@ async def create_relation_type(
     allow_chain_query: bool = False,
 ) -> None:
     _validate_relation_type(relation_type, example_phrase)
-    await conn.execute(
-        "INSERT OR REPLACE INTO tenant_relation_types "
-        "(tenant_id, relation_type, example_phrase, description, allow_chain_query, "
-        "source, status) VALUES (?, ?, ?, ?, ?, 'custom', 'draft')",
-        (tenant_id, relation_type, example_phrase, description, int(allow_chain_query)),
-    )
+    try:
+        await conn.execute(
+            "INSERT INTO tenant_relation_types "
+            "(tenant_id, relation_type, example_phrase, description, allow_chain_query, "
+            "source, status) VALUES (?, ?, ?, ?, ?, 'custom', 'draft')",
+            (tenant_id, relation_type, example_phrase, description, int(allow_chain_query)),
+        )
+    except aiosqlite.IntegrityError:
+        raise RelationTypeNameConflictError(
+            f"{relation_type!r} 已经是该租户草稿里的关系类型，不能重复创建"
+        )
     await conn.commit()
 
 
@@ -136,8 +146,15 @@ async def update_relation_type(
     example_phrase: str,
     description: str,
     allow_chain_query: bool,
+    new_relation_type: str | None = None,
 ) -> None:
-    _validate_relation_type(relation_type, example_phrase)
+    """relation_type 是当前（改名前）的名字，用来定位草稿里的这一行；
+    new_relation_type 是提交的新名字，默认 None 表示不改名（沿用
+    relation_type）。改名时级联更新该租户 term_type_relation_allowlist 里
+    引用旧名字的 draft 行（confirmed 行不动，跟 delete_relation_type 的
+    级联范围保持一致——约束条目跟着草稿走，不跟着已确认版本走）。"""
+    new_relation_type = new_relation_type or relation_type
+    _validate_relation_type(new_relation_type, example_phrase)
     cursor = await conn.execute(
         "SELECT 1 FROM tenant_relation_types WHERE tenant_id = ? AND relation_type = ? "
         "AND status = 'draft'",
@@ -145,11 +162,26 @@ async def update_relation_type(
     )
     if await cursor.fetchone() is None:
         raise RelationTypeNotFoundError(f"草稿里不存在关系类型: {relation_type}")
-    await conn.execute(
-        "UPDATE tenant_relation_types SET example_phrase = ?, description = ?, "
-        "allow_chain_query = ? WHERE tenant_id = ? AND relation_type = ? AND status = 'draft'",
-        (example_phrase, description, int(allow_chain_query), tenant_id, relation_type),
-    )
+    try:
+        await conn.execute(
+            "UPDATE tenant_relation_types SET relation_type = ?, example_phrase = ?, "
+            "description = ?, allow_chain_query = ? "
+            "WHERE tenant_id = ? AND relation_type = ? AND status = 'draft'",
+            (
+                new_relation_type, example_phrase, description, int(allow_chain_query),
+                tenant_id, relation_type,
+            ),
+        )
+    except aiosqlite.IntegrityError:
+        raise RelationTypeNameConflictError(
+            f"{new_relation_type!r} 已经是该租户草稿里的关系类型，不能重复使用"
+        )
+    if new_relation_type != relation_type:
+        await conn.execute(
+            "UPDATE term_type_relation_allowlist SET relation_type = ? "
+            "WHERE tenant_id = ? AND relation_type = ? AND status = 'draft'",
+            (new_relation_type, tenant_id, relation_type),
+        )
     await conn.commit()
 
 
