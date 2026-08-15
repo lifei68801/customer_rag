@@ -23,6 +23,16 @@ async def _review_conn() -> aiosqlite.Connection:
     return conn
 
 
+class _FakeGraphClient:
+    """占位图谱客户端——本文件里唯一需要真实 Neo4j 写入的场景是
+    test_delete_term_type_in_use_returns_409 借道 /api/admin/terms 创建
+    一条术语来制造"分类在用"的场景，那条路由依赖 deps.get_graph_client
+    做 sync_term()。这里只需要 sync_term 不抛异常，不需要记录调用。"""
+
+    async def sync_term(self, term) -> None:
+        pass
+
+
 @pytest.fixture
 def client(monkeypatch):
     conn_holder: dict[str, aiosqlite.Connection] = {}
@@ -34,6 +44,7 @@ def client(monkeypatch):
 
     app.dependency_overrides[deps.get_review_conn] = _get_conn
     app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
     yield TestClient(app)
     app.dependency_overrides.clear()
 
