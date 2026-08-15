@@ -54,8 +54,8 @@ class ProductLineWriteRequest(BaseModel):
 async def list_term_type_categories(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
-    result = await list_term_types(review_conn)
-    return {"term_types": [{"value": t.value, "extra_fields": t.extra_fields} for t in result]}
+    result = await list_term_types(review_conn, tenant_id="default")
+    return {"term_types": [{"value": t.value, "extra_fields": t.extra_fields, "node_key_template": t.node_key_template} for t in result]}
 
 
 @router.post("/term-types")
@@ -64,7 +64,7 @@ async def create_term_type_category(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
     try:
-        await create_term_type(review_conn, value=payload.value, extra_fields=payload.extra_fields)
+        await create_term_type(review_conn, tenant_id="default", value=payload.value, extra_fields=payload.extra_fields)
     except CategoryNameConflictError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"value": payload.value, "extra_fields": payload.extra_fields}
@@ -78,7 +78,7 @@ async def update_term_type_category(
 ) -> dict:
     try:
         await update_term_type(
-            review_conn, value=value, new_value=payload.value, extra_fields=payload.extra_fields
+            review_conn, tenant_id="default", value=value, new_value=payload.value, extra_fields=payload.extra_fields, node_key_template=""
         )
     except CategoryNotFoundError:
         raise HTTPException(status_code=404, detail="分类不存在")
@@ -92,7 +92,7 @@ async def delete_term_type_category(
     value: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn)
 ) -> dict:
     try:
-        await delete_term_type(review_conn, value)
+        await delete_term_type(review_conn, tenant_id="default", value=value)
     except CategoryInUseError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"deleted": True}

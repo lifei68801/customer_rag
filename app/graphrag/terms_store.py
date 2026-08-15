@@ -159,31 +159,34 @@ async def ensure_terms_schema(
             "将始终落到人工审核队列",
             f"（{seed_yaml_path}）" if seed_yaml_path is not None else "",
         )
-    await _bridge_seed_categories_from_existing_terms(conn)
+    await _bridge_seed_categories_from_existing_terms(conn, tenant_id="default")
 
 
-async def _bridge_seed_categories_from_existing_terms(conn: aiosqlite.Connection) -> None:
-    """本任务不改动这个函数的行为——它操作的 ontology_term_types 表要到
-    下一个任务才会按租户隔离，此时依然是老的全局形态，函数保持原样
-    不受影响（terms 表新增的 tenant_id/node_key 列不影响这里用到的
-    SELECT DISTINCT term_type/product_line 查询）。下一个任务会在
-    ontology_term_types 迁移完成后回来给这个函数补上 tenant_id 参数，
-    见该任务的收尾步骤。
+async def _bridge_seed_categories_from_existing_terms(
+    conn: aiosqlite.Connection, *, tenant_id: str
+) -> None:
+    """桥接函数：分类枚举表为空、但 terms 表已经有历史数据时，把该租户历史数据里
+    出现过的去重分类值导入枚举表。按租户隔离，每次调用只处理一个租户。
     """
-    known_types = await list_term_types(conn)
+    known_types = await list_term_types(conn, tenant_id)
     known_lines = await list_product_lines(conn)
     if known_types or known_lines:
         return
-    cursor = await conn.execute("SELECT DISTINCT term_type FROM terms")
+    cursor = await conn.execute(
+        "SELECT DISTINCT term_type FROM terms WHERE tenant_id = ?", (tenant_id,)
+    )
     distinct_types = [row[0] for row in await cursor.fetchall()]
-    cursor = await conn.execute("SELECT DISTINCT product_line FROM terms")
+    cursor = await conn.execute(
+        "SELECT DISTINCT product_line FROM terms WHERE tenant_id = ?", (tenant_id,)
+    )
     distinct_lines = [row[0] for row in await cursor.fetchall()]
     if not distinct_types and not distinct_lines:
         return
     for value in distinct_types:
         await conn.execute(
-            "INSERT OR IGNORE INTO ontology_term_types (value, extra_fields) VALUES (?, '[]')",
-            (value,),
+            "INSERT OR IGNORE INTO ontology_term_types "
+            "(tenant_id, value, extra_fields, node_key_template) VALUES (?, ?, '[]', '')",
+            (tenant_id, value),
         )
     for value in distinct_lines:
         await conn.execute(
@@ -265,13 +268,9 @@ async def _validate_categories(
     existing_extra_property_keys: frozenset[str] = frozenset(),
 ) -> None:
     """product_line 校验保持全局（不受本次改造影响）。term_type 校验
-    本任务完成后暂时仍是全局查询（list_term_types(conn) 不带 tenant_id）
-    ——ontology_categories.py 要到下一个任务才会把这张表按租户隔离，
-    这里先接受 tenant_id 参数保持函数签名的前瞻一致性，但暂不使用它
-    过滤，下一个任务会回来把这一行改成 list_term_types(conn, tenant_id)，
-    完成收口（Global Constraints 的"任务间的临时状态"）。
+    按租户过滤——每个租户只能使用该租户下注册的分类。
     """
-    types = await list_term_types(conn)
+    types = await list_term_types(conn, tenant_id)
     types_by_value = {t.value: t for t in types}
     if term_type not in types_by_value:
         raise UnknownCategoryError(f"未知分类: {term_type!r}")

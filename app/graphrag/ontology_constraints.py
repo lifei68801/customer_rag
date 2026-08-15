@@ -62,7 +62,7 @@ async def _validate_references(
     # confirm_ontology 把 tenant_relation_types 和 term_type_relation_allowlist 两张表在
     # 同一次 commit 里一起从 draft 提升为 confirmed，这里校验 draft 而非 confirmed 是经过
     # 落地验证后确认正确的设计，不再是待定问题。
-    known_types = {c.value for c in await list_term_types(conn)}
+    known_types = {c.value for c in await list_term_types(conn, tenant_id)}
     if subject_term_type not in known_types:
         raise UnknownCategoryError(f"未知分类: {subject_term_type!r}")
     if object_term_type not in known_types:

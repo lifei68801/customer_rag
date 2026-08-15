@@ -38,10 +38,10 @@ async def _connect() -> aiosqlite.Connection:
     # 早于分类枚举表存在——这里补齐分类，保持既有测试的字面量不变
     # （新增测试自己会为各自用到的分类调用 create_term_type/create_product_line，
     # 不依赖这份预置，两者字面量不重叠）。
-    await create_term_type(conn, value="error_code")
-    await create_term_type(conn, value="module")
-    await create_term_type(conn, value="other")
-    await create_term_type(conn, value="t")
+    await create_term_type(conn, tenant_id="default", value="error_code")
+    await create_term_type(conn, tenant_id="default", value="module")
+    await create_term_type(conn, tenant_id="default", value="other")
+    await create_term_type(conn, tenant_id="default", value="t")
     await create_product_line(conn, value="核心平台")
     await create_product_line(conn, value="other")
     await create_product_line(conn, value="新产品线")
@@ -51,10 +51,10 @@ async def _connect() -> aiosqlite.Connection:
 
 async def _setup_default_categories(conn: aiosqlite.Connection) -> None:
     """Set up the standard categories for tests that use the new tenant-scoped functions."""
-    await create_term_type(conn, value="error_code")
-    await create_term_type(conn, value="module")
-    await create_term_type(conn, value="other")
-    await create_term_type(conn, value="t")
+    await create_term_type(conn, tenant_id="default", value="error_code")
+    await create_term_type(conn, tenant_id="default", value="module")
+    await create_term_type(conn, tenant_id="default", value="other")
+    await create_term_type(conn, tenant_id="default", value="t")
     await create_product_line(conn, value="核心平台")
     await create_product_line(conn, value="other")
     await create_product_line(conn, value="新产品线")
@@ -255,7 +255,7 @@ async def test_ensure_terms_schema_bridges_historical_term_type_and_product_line
 
     await ensure_terms_schema(conn)
 
-    term_type_values = {t.value for t in await list_term_types(conn)}
+    term_type_values = {t.value for t in await list_term_types(conn, tenant_id="default")}
     product_line_values = set(await list_product_lines(conn))
     assert "error_code" in term_type_values
     assert "核心平台" in product_line_values
@@ -406,7 +406,7 @@ async def test_delete_term_raises_when_not_found():
 
 async def test_create_term_persists_extra_properties():
     conn = await _connect()
-    await create_term_type(conn, value="错误码", extra_fields=["严重等级"])
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=["严重等级"])
     await create_product_line(conn, value="示例产品线")
 
     await create_term(
@@ -424,7 +424,8 @@ async def test_create_term_persists_extra_properties():
 
 
 async def test_create_term_rejects_unknown_term_type():
-    conn = await _connect()
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
     await create_product_line(conn, value="示例产品线")
 
     with pytest.raises(UnknownCategoryError):
@@ -436,7 +437,7 @@ async def test_create_term_rejects_unknown_term_type():
 
 async def test_create_term_rejects_unknown_product_line():
     conn = await _connect()
-    await create_term_type(conn, value="错误码")
+    await create_term_type(conn, tenant_id="default", value="错误码")
 
     with pytest.raises(UnknownCategoryError):
         await create_term(
@@ -447,7 +448,7 @@ async def test_create_term_rejects_unknown_product_line():
 
 async def test_create_term_rejects_extra_property_not_declared_on_term_type():
     conn = await _connect()
-    await create_term_type(conn, value="错误码", extra_fields=["严重等级"])
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=["严重等级"])
     await create_product_line(conn, value="示例产品线")
 
     with pytest.raises(UnknownCategoryError):
@@ -459,14 +460,14 @@ async def test_create_term_rejects_extra_property_not_declared_on_term_type():
 
 async def test_removing_extra_field_from_term_type_preserves_existing_term_value():
     conn = await _connect()
-    await create_term_type(conn, value="错误码", extra_fields=["严重等级", "影响范围"])
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=["严重等级", "影响范围"])
     await create_product_line(conn, value="示例产品线")
     await create_term(
         conn, tenant_id="default", standard_name="错误码E502", aliases=[], term_type="错误码",
         product_line="示例产品线", extra_properties={"严重等级": "高", "影响范围": "全站不可用"},
     )
 
-    await update_term_type(conn, value="错误码", new_value="错误码", extra_fields=["严重等级"])
+    await update_term_type(conn, tenant_id="default", value="错误码", new_value="错误码", extra_fields=["严重等级"], node_key_template="")
 
     term = await get_term(conn, tenant_id="default", standard_name="错误码E502")
     assert term.extra_properties == {"严重等级": "高", "影响范围": "全站不可用"}
@@ -477,7 +478,7 @@ async def test_update_term_resubmitting_undeclared_but_already_stored_key_succee
     不改）不能因为这个字段"未声明"而被拒绝或静默丢弃——见
     _validate_categories 的 existing_extra_property_keys 参数说明。"""
     conn = await _connect()
-    await create_term_type(conn, value="房型", extra_fields=["面积"])
+    await create_term_type(conn, tenant_id="default", value="房型", extra_fields=["面积"])
     await create_product_line(conn, value="示例产品线")
     await create_term(
         conn, tenant_id="default", standard_name="大床房", aliases=[], term_type="房型",
@@ -485,7 +486,7 @@ async def test_update_term_resubmitting_undeclared_but_already_stored_key_succee
     )
 
     # 业务把"面积"从房型的声明字段里移除
-    await update_term_type(conn, value="房型", new_value="房型", extra_fields=[])
+    await update_term_type(conn, tenant_id="default", value="房型", new_value="房型", extra_fields=[], node_key_template="")
 
     # 重新保存这条术语，提交里仍然带着这个已经被去掉声明的字段——不应该报错
     await update_term(
@@ -503,7 +504,7 @@ async def test_update_term_rejects_genuinely_new_undeclared_key():
     """字段既不在 term_type 当前声明里，也从未在这条术语上出现过——不能因为
     "existing_extra_property_keys 放行"这条豁免被滥用成完全绕过校验。"""
     conn = await _connect()
-    await create_term_type(conn, value="房型", extra_fields=[])
+    await create_term_type(conn, tenant_id="default", value="房型", extra_fields=[])
     await create_product_line(conn, value="示例产品线")
     await create_term(
         conn, tenant_id="default", standard_name="大床房", aliases=[], term_type="房型",
@@ -515,4 +516,19 @@ async def test_update_term_rejects_genuinely_new_undeclared_key():
             conn, tenant_id="default", standard_name="大床房", new_standard_name="大床房",
             aliases=[], term_type="房型", product_line="示例产品线",
             extra_properties={"从未出现过的字段": "值"},
+        )
+
+
+async def test_validate_categories_rejects_term_type_from_another_tenant():
+    """term_type 校验闭环之后必须按租户过滤——tenant_a 注册的分类，
+    tenant_b 提交同名 term_type 应该被拒绝（对 tenant_b 而言这是未知分类）。"""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    await create_term_type(conn, tenant_id="tenant_a", value="错误码")
+    await create_product_line(conn, value="示例产品线")
+
+    with pytest.raises(UnknownCategoryError):
+        await create_term(
+            conn, tenant_id="tenant_b", standard_name="X", aliases=[],
+            term_type="错误码", product_line="示例产品线",
         )
