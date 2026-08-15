@@ -22,6 +22,15 @@ from app.graphrag.terms_store import (
 )
 
 
+def test_term_dataclass_has_tenant_id_and_node_key():
+    term = Term(
+        tenant_id="t1", node_key="k1", standard_name="错误码E502",
+        aliases=[], term_type="error_code", product_line="核心平台",
+    )
+    assert term.tenant_id == "t1"
+    assert term.node_key == "k1"
+
+
 async def _connect() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
