@@ -18,11 +18,17 @@ logger = logging.getLogger(__name__)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS terms (
-    standard_name TEXT PRIMARY KEY,
-    aliases TEXT NOT NULL,
-    term_type TEXT NOT NULL,
-    product_line TEXT NOT NULL
+    tenant_id         TEXT NOT NULL,
+    node_key          TEXT NOT NULL,
+    standard_name     TEXT NOT NULL,
+    aliases           TEXT NOT NULL,
+    term_type         TEXT NOT NULL,
+    product_line      TEXT NOT NULL,
+    extra_properties  TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (tenant_id, node_key)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_terms_tenant_standard_name
+    ON terms(tenant_id, standard_name);
 """
 
 
@@ -44,43 +50,92 @@ class UnknownCategoryError(Exception):
     docs/superpowers/specs/2026-08-14-ontology-schema-design.md 第 3 节。"""
 
 
+async def _migrate_terms_table_to_tenant_scoped_if_needed(
+    conn: aiosqlite.Connection,
+) -> None:
+    """把 2026-08-15 之前的 terms 表（standard_name 主键，无 tenant_id/
+    node_key）原地迁移成按租户隔离的新结构。只在表已存在且还是老结构时
+    执行，幂等——已经是新结构（有 tenant_id 列）直接跳过。存量数据统一
+    归到 tenant_id='default'，node_key 回填成当时的 standard_name 值
+    （Global Constraints 的 node_key 生成规则）。SQLite 不支持 ALTER
+    TABLE 改主键，只能建新表 + 搬数据 + 删旧表 + 改名。
+    """
+    cursor = await conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='terms'"
+    )
+    if await cursor.fetchone() is None:
+        return
+    cursor = await conn.execute("PRAGMA table_info(terms)")
+    existing_columns = {row[1] for row in await cursor.fetchall()}
+    if "tenant_id" in existing_columns:
+        return
+    await conn.executescript(
+        """
+        CREATE TABLE terms_new (
+            tenant_id         TEXT NOT NULL,
+            node_key          TEXT NOT NULL,
+            standard_name     TEXT NOT NULL,
+            aliases           TEXT NOT NULL,
+            term_type         TEXT NOT NULL,
+            product_line      TEXT NOT NULL,
+            extra_properties  TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (tenant_id, node_key)
+        );
+        """
+    )
+    await conn.execute(
+        "INSERT INTO terms_new "
+        "(tenant_id, node_key, standard_name, aliases, term_type, product_line, extra_properties) "
+        "SELECT 'default', standard_name, standard_name, aliases, term_type, product_line, "
+        "extra_properties FROM terms"
+    )
+    await conn.executescript(
+        "DROP TABLE terms; ALTER TABLE terms_new RENAME TO terms; "
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_terms_tenant_standard_name "
+        "ON terms(tenant_id, standard_name);"
+    )
+    await conn.commit()
+
+
 async def ensure_terms_schema(
     conn: aiosqlite.Connection, *, seed_yaml_path: Path | None = None
 ) -> None:
-    """幂等建表。
+    """幂等建表/迁移。
 
     seed_yaml_path 只在传入且指向一个存在的文件、同时这张表是刚刚第一次
     被创建（不是已经存在）时才生效：从这个 YAML 文件里一次性导入内容，
-    此后这份 YAML 不再被任何代码路径读取（术语表迁移到这张表之后的过渡
-    措施）。不传（默认 None）只是单纯建表，不做任何导入——所有测试固定
-    用这个默认行为，不会被本机真实存在的 terminology_seed.yaml 意外
-    带入示例数据。
+    此后这份 YAML 不再被任何代码路径读取。导入的每条术语 tenant_id 固定
+    是 "default"（见 ontology.py::load_terminology 的说明）。
 
-    向后兼容桥接：如果分类枚举表是空的、但 terms 表已经有历史数据（老版本上线
-    时term_type/product_line 还是自由文本，没有枚举表），自动把历史数据里出现过
-    的去重值导入枚举表——否则硬约束上线的第一刻，任何现有术语的编辑请求都会
-    因为找不到匹配的枚举值报错，这不是假设性风险，terminology_seed.yaml 的两条
-    占位数据（error_code/module）就是真实会撞上这个问题的例子。只在枚举表为空
-    时执行一次，不会覆盖业务后续的正常编辑。
+    向后兼容桥接：分类枚举表为空、但 terms 表已经有历史数据（老版本
+    上线时term_type/product_line 还是自由文本，没有枚举表），自动把
+    历史数据里出现过的去重值导入枚举表——_bridge_seed_categories_from_
+    existing_terms 本任务不改动（它查询/写入的 ontology_term_types 表
+    要到下一个任务才会按租户隔离，本任务改完之后它依然按老的全局形态
+    工作，行为与本任务改造前完全一致）。
     """
     await ensure_categories_schema(conn)
     cursor = await conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='terms'"
     )
     table_already_existed = await cursor.fetchone() is not None
+    if table_already_existed:
+        await add_column_if_missing(
+            conn, table="terms", column="extra_properties", ddl="TEXT NOT NULL DEFAULT '{}'"
+        )
+        await _migrate_terms_table_to_tenant_scoped_if_needed(conn)
     await conn.executescript(_SCHEMA_SQL)
-    await add_column_if_missing(
-        conn, table="terms", column="extra_properties", ddl="TEXT NOT NULL DEFAULT '{}'"
-    )
     await conn.commit()
     if not table_already_existed and seed_yaml_path is not None and seed_yaml_path.exists():
         try:
             for term in load_terminology(seed_yaml_path):
                 await conn.execute(
                     "INSERT OR IGNORE INTO terms "
-                    "(standard_name, aliases, term_type, product_line, extra_properties) "
-                    "VALUES (?, ?, ?, ?, ?)",
+                    "(tenant_id, node_key, standard_name, aliases, term_type, product_line, "
+                    "extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
+                        term.tenant_id,
+                        term.node_key,
                         term.standard_name,
                         json.dumps(term.aliases, ensure_ascii=False),
                         term.term_type,
@@ -108,6 +163,13 @@ async def ensure_terms_schema(
 
 
 async def _bridge_seed_categories_from_existing_terms(conn: aiosqlite.Connection) -> None:
+    """本任务不改动这个函数的行为——它操作的 ontology_term_types 表要到
+    下一个任务才会按租户隔离，此时依然是老的全局形态，函数保持原样
+    不受影响（terms 表新增的 tenant_id/node_key 列不影响这里用到的
+    SELECT DISTINCT term_type/product_line 查询）。下一个任务会在
+    ontology_term_types 迁移完成后回来给这个函数补上 tenant_id 参数，
+    见该任务的收尾步骤。
+    """
     known_types = await list_term_types(conn)
     known_lines = await list_product_lines(conn)
     if known_types or known_lines:
@@ -132,6 +194,8 @@ async def _bridge_seed_categories_from_existing_terms(conn: aiosqlite.Connection
 
 def _row_to_term(row: aiosqlite.Row) -> Term:
     return Term(
+        tenant_id=row["tenant_id"],
+        node_key=row["node_key"],
         standard_name=row["standard_name"],
         aliases=json.loads(row["aliases"]),
         term_type=row["term_type"],
@@ -140,22 +204,23 @@ def _row_to_term(row: aiosqlite.Row) -> Term:
     )
 
 
-async def list_terms(conn: aiosqlite.Connection) -> list[Term]:
+async def list_terms(conn: aiosqlite.Connection, tenant_id: str) -> list[Term]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT standard_name, aliases, term_type, product_line, extra_properties "
-        "FROM terms ORDER BY standard_name"
+        "SELECT tenant_id, node_key, standard_name, aliases, term_type, product_line, "
+        "extra_properties FROM terms WHERE tenant_id = ? ORDER BY standard_name",
+        (tenant_id,),
     )
     rows = await cursor.fetchall()
     return [_row_to_term(row) for row in rows]
 
 
-async def get_term(conn: aiosqlite.Connection, standard_name: str) -> Term:
+async def get_term(conn: aiosqlite.Connection, tenant_id: str, standard_name: str) -> Term:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT standard_name, aliases, term_type, product_line, extra_properties "
-        "FROM terms WHERE standard_name = ?",
-        (standard_name,),
+        "SELECT tenant_id, node_key, standard_name, aliases, term_type, product_line, "
+        "extra_properties FROM terms WHERE tenant_id = ? AND standard_name = ?",
+        (tenant_id, standard_name),
     )
     row = await cursor.fetchone()
     if row is None:
@@ -166,18 +231,19 @@ async def get_term(conn: aiosqlite.Connection, standard_name: str) -> Term:
 async def _check_name_conflict(
     conn: aiosqlite.Connection,
     *,
+    tenant_id: str,
     standard_name: str,
     aliases: list[str],
     exclude_standard_name: str | None = None,
 ) -> None:
-    """检查 standard_name 和 aliases 有没有跟别的术语（编辑时排除自己）
-    的 standard_name/alias 重叠。术语表规模是人工维护的封闭词表，量级
-    不大，直接全表扫描比维护一张单独的"已用名字"索引表更简单，跟
-    resolve_to_standard_name() 现有的 O(n) 扫描方式保持一致的复杂度假设。
+    """检查 standard_name 和 aliases 有没有跟同一租户下别的术语（编辑时
+    排除自己）的 standard_name/alias 重叠。按租户扫描，不同租户之间允许
+    使用相同的名字/别名——见 Global Constraints"node_key/standard_name
+    只需租户内唯一"。
     """
-    all_terms = await list_terms(conn)
+    tenant_terms = await list_terms(conn, tenant_id)
     candidate_names = {standard_name, *aliases}
-    for term in all_terms:
+    for term in tenant_terms:
         if term.standard_name == exclude_standard_name:
             continue
         existing_names = {term.standard_name, *term.aliases}
@@ -192,21 +258,19 @@ async def _check_name_conflict(
 async def _validate_categories(
     conn: aiosqlite.Connection,
     *,
+    tenant_id: str,
     term_type: str,
     product_line: str,
     extra_properties: dict[str, str],
     existing_extra_property_keys: frozenset[str] = frozenset(),
 ) -> None:
-    """existing_extra_property_keys 是这条术语记录（如果是更新一个已存在的
-    术语）已经持久化的 extra_properties 键集合——已经落在这条记录上的键即使
-    term_type 后来被改成不再声明它，也要放行通过，不能拒绝。否则任何字段被
-    从 term_type 里去掉之后，哪怕只是编辑该术语的其它字段（甚至原样不改动），
-    这个键要么被 400 拒绝、要么被调用方在提交前剔除后静默从 SQLite 里删除——
-    Neo4j 那边 `SET t += $extra_properties` 从不删 key，两侧就此永久不一致
-    （见 docs/superpowers/specs/2026-08-14-ontology-schema-design.md 第 7 节
-    "字段被移除后再恢复应保留旧值"这条承诺）。create_term 没有"已存在的记录"
-    这个概念，调用时这个参数保持默认空集合，行为不变——全新术语仍然不能引入
-    未声明字段。"""
+    """product_line 校验保持全局（不受本次改造影响）。term_type 校验
+    本任务完成后暂时仍是全局查询（list_term_types(conn) 不带 tenant_id）
+    ——ontology_categories.py 要到下一个任务才会把这张表按租户隔离，
+    这里先接受 tenant_id 参数保持函数签名的前瞻一致性，但暂不使用它
+    过滤，下一个任务会回来把这一行改成 list_term_types(conn, tenant_id)，
+    完成收口（Global Constraints 的"任务间的临时状态"）。
+    """
     types = await list_term_types(conn)
     types_by_value = {t.value: t for t in types}
     if term_type not in types_by_value:
@@ -224,22 +288,28 @@ async def _validate_categories(
 async def create_term(
     conn: aiosqlite.Connection,
     *,
+    tenant_id: str,
     standard_name: str,
     aliases: list[str],
     term_type: str,
     product_line: str,
     extra_properties: dict[str, str] | None = None,
 ) -> None:
+    """node_key 创建时直接取 standard_name 的值（Global Constraints 的
+    node_key 生成规则：extraction 模式下没有外部稳定码来源）。"""
     extra_properties = extra_properties or {}
     await _validate_categories(
-        conn, term_type=term_type, product_line=product_line, extra_properties=extra_properties
+        conn, tenant_id=tenant_id, term_type=term_type, product_line=product_line,
+        extra_properties=extra_properties,
     )
-    await _check_name_conflict(conn, standard_name=standard_name, aliases=aliases)
+    await _check_name_conflict(conn, tenant_id=tenant_id, standard_name=standard_name, aliases=aliases)
     try:
         await conn.execute(
-            "INSERT INTO terms (standard_name, aliases, term_type, product_line, extra_properties) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
+            "product_line, extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
+                tenant_id,
+                standard_name,
                 standard_name,
                 json.dumps(aliases, ensure_ascii=False),
                 term_type,
@@ -248,8 +318,6 @@ async def create_term(
             ),
         )
     except aiosqlite.IntegrityError:
-        # _check_name_conflict 已经检查过 standard_name 冲突，这里是防御性
-        # 兜底（比如并发写入的极端情况），不是主要校验路径。
         raise TermNameConflictError(f"{standard_name!r} 已经是已有术语的标准名，不能重复创建")
     await conn.commit()
 
@@ -257,6 +325,7 @@ async def create_term(
 async def update_term(
     conn: aiosqlite.Connection,
     *,
+    tenant_id: str,
     standard_name: str,
     new_standard_name: str,
     aliases: list[str],
@@ -266,28 +335,32 @@ async def update_term(
 ) -> None:
     """standard_name 是当前（改名前）的名字，用来定位这条记录；
     new_standard_name 是提交的新名字，允许和 standard_name 相同（即不改名）。
+    node_key 不受影响，UPDATE 语句不写这一列——ADR-0003 的核心断言：
+    身份键创建后永不改变，即使术语被改名。
     """
     extra_properties = extra_properties or {}
-    existing_term = await get_term(conn, standard_name)
+    existing_term = await get_term(conn, tenant_id, standard_name)
     await _validate_categories(
-        conn, term_type=term_type, product_line=product_line, extra_properties=extra_properties,
+        conn, tenant_id=tenant_id, term_type=term_type, product_line=product_line,
+        extra_properties=extra_properties,
         existing_extra_property_keys=frozenset(existing_term.extra_properties),
     )
     await _check_name_conflict(
-        conn, standard_name=new_standard_name, aliases=aliases,
+        conn, tenant_id=tenant_id, standard_name=new_standard_name, aliases=aliases,
         exclude_standard_name=standard_name,
     )
     try:
         await conn.execute(
             "UPDATE terms SET standard_name=?, aliases=?, term_type=?, product_line=?, "
-            "extra_properties=? WHERE standard_name=?",
+            "extra_properties=? WHERE tenant_id=? AND node_key=?",
             (
                 new_standard_name,
                 json.dumps(aliases, ensure_ascii=False),
                 term_type,
                 product_line,
                 json.dumps(extra_properties, ensure_ascii=False),
-                standard_name,
+                tenant_id,
+                existing_term.node_key,
             ),
         )
     except aiosqlite.IntegrityError:
@@ -295,7 +368,9 @@ async def update_term(
     await conn.commit()
 
 
-async def delete_term(conn: aiosqlite.Connection, standard_name: str) -> None:
-    await get_term(conn, standard_name)
-    await conn.execute("DELETE FROM terms WHERE standard_name=?", (standard_name,))
+async def delete_term(conn: aiosqlite.Connection, tenant_id: str, standard_name: str) -> None:
+    await get_term(conn, tenant_id, standard_name)
+    await conn.execute(
+        "DELETE FROM terms WHERE tenant_id=? AND standard_name=?", (tenant_id, standard_name)
+    )
     await conn.commit()
