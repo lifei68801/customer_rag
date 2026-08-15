@@ -46,13 +46,17 @@ class _FakeGraphClient:
 
 
 @pytest.fixture
-def client(monkeypatch):
-    conn_holder: dict[str, aiosqlite.Connection] = {}
+def conn_for_testing() -> dict[str, aiosqlite.Connection]:
+    """Holder for connection shared between client fixture and tests."""
+    return {}
 
+
+@pytest.fixture
+def client(monkeypatch, conn_for_testing):
     async def _get_conn():
-        if "conn" not in conn_holder:
-            conn_holder["conn"] = await _review_conn()
-        return conn_holder["conn"]
+        if "conn" not in conn_for_testing:
+            conn_for_testing["conn"] = await _review_conn()
+        return conn_for_testing["conn"]
 
     app.dependency_overrides[deps.get_review_conn] = _get_conn
     app.dependency_overrides[deps.require_admin_session] = lambda: None
@@ -74,7 +78,7 @@ def test_create_and_list_term_types(client):
     assert resp.json() == {"term_types": [{"value": "错误码", "extra_fields": ["严重等级"], "node_key_template": ""}]}
 
 
-async def test_delete_term_type_in_use_returns_409(client):
+async def test_delete_term_type_in_use_returns_409(client, conn_for_testing):
     # Fixture setup: create term_type and product_line categories
     client.post(
         "/api/admin/ontology/term-types", json={"value": "错误码", "extra_fields": []},
@@ -87,13 +91,13 @@ async def test_delete_term_type_in_use_returns_409(client):
 
     # Directly insert a term into the database (admin_terms_routes.py is Task 4's responsibility,
     # so we bypass it by inserting directly). This establishes the "term_type in use" condition.
-    conn = await _review_conn()
-    await conn.execute(
+    # Use the same connection that the client fixture is using, not a new one.
+    await conn_for_testing["conn"].execute(
         "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, product_line, extra_properties) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         ("default", "x", "x", "[]", "错误码", "示例产品线", "{}"),
     )
-    await conn.commit()
+    await conn_for_testing["conn"].commit()
 
     resp = client.delete("/api/admin/ontology/term-types/错误码", headers={"Authorization": "Bearer x"})
 
@@ -297,7 +301,7 @@ def test_create_update_delete_product_line(client):
     assert resp.json() == {"product_lines": []}
 
 
-async def test_delete_product_line_in_use_returns_409(client):
+async def test_delete_product_line_in_use_returns_409(client, conn_for_testing):
     client.post(
         "/api/admin/ontology/term-types", json={"value": "错误码", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
@@ -309,13 +313,13 @@ async def test_delete_product_line_in_use_returns_409(client):
 
     # Directly insert a term into the database (admin_terms_routes.py is Task 4's responsibility,
     # so we bypass it by inserting directly). This establishes the "product_line in use" condition.
-    conn = await _review_conn()
-    await conn.execute(
+    # Use the same connection that the client fixture is using, not a new one.
+    await conn_for_testing["conn"].execute(
         "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, product_line, extra_properties) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         ("default", "x", "x", "[]", "错误码", "核心平台", "{}"),
     )
-    await conn.commit()
+    await conn_for_testing["conn"].commit()
 
     resp = client.delete(
         "/api/admin/ontology/product-lines/核心平台", headers={"Authorization": "Bearer x"}
