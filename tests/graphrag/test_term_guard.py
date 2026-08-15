@@ -5,6 +5,7 @@ from app.graphrag.term_guard import build_term_guard_context, describe_associati
 
 _TERMS = [
     Term(
+        tenant_id="t1", node_key="错误码E502",
         standard_name="错误码E502",
         aliases=["网关超时"],
         term_type="error_code",
@@ -90,10 +91,12 @@ def test_describe_association_labels_direct_and_indirect_hops():
 
 _TWO_TERMS = [
     Term(
+        tenant_id="t1", node_key="错误码E502",
         standard_name="错误码E502", aliases=["网关超时"],
         term_type="error_code", product_line="核心平台",
     ),
     Term(
+        tenant_id="t1", node_key="登录模块",
         standard_name="登录模块", aliases=["登录失败"],
         term_type="module", product_line="核心平台",
     ),

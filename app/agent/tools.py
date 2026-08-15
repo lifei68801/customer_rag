@@ -121,7 +121,13 @@ async def graph_query_tool(
     if standard_name is None:
         return GraphQueryToolResult(resolved=False, standard_name=None, subgraph=[])
 
-    subgraph = await graph_client.query_subgraph(standard_name, tenant_id=tenant_id)
+    # resolve_to_standard_name 返回的是展示名，查图谱要用稳定身份键——
+    # 改名后 standard_name 会变但 node_key 不变（ADR-0003），从已加载的
+    # terms 列表里按 standard_name 反查对应的 node_key，不改
+    # resolve_to_standard_name 本身（它是抽取管道 normalization.py 也在
+    # 用的共享函数，签名不在本计划改动范围内）。
+    node_key = next(t.node_key for t in terms if t.standard_name == standard_name)
+    subgraph = await graph_client.query_subgraph(node_key, tenant_id=tenant_id)
     return GraphQueryToolResult(
         resolved=True, standard_name=standard_name, subgraph=subgraph
     )

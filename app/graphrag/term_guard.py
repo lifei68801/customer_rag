@@ -71,7 +71,7 @@ async def build_term_guard_context(
     async def _query_one(term: Term) -> list[dict[str, Any]]:
         async with query_semaphore:
             return await graph_client.query_subgraph(
-                term.standard_name, tenant_id=tenant_id
+                term.node_key, tenant_id=tenant_id
             )
 
     results = await asyncio.gather(

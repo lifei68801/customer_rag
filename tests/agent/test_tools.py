@@ -66,6 +66,7 @@ async def test_vector_search_tool_returns_records_scoped_to_tenant():
 
 _TERMS = [
     Term(
+        tenant_id="t1", node_key="示例错误码E502",
         standard_name="示例错误码E502",
         aliases=["网关超时示例"],
         term_type="error_code",

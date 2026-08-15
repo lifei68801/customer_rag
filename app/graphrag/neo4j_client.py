@@ -9,13 +9,13 @@ from app.graphrag.ontology import Term
 _RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 
 _SUBGRAPH_QUERY = """
-MATCH (t:Term {standard_name: $standard_name})-[r]-(related:Term)
+MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term)
 WHERE r.tenant_id = $tenant_id
 RETURN related.standard_name AS related_name, type(r) AS relation_type, 1 AS hops
 
 UNION
 
-MATCH (t:Term {standard_name: $standard_name})-[r:REQUIRES|PRECEDES|PART_OF*2..2]-(related:Term)
+MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r:REQUIRES|PRECEDES|PART_OF*2..2]-(related:Term)
 WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id) AND related <> t
 RETURN related.standard_name AS related_name,
        [rel IN r | type(rel)][-1] AS relation_type,
@@ -70,11 +70,11 @@ DELETE r
 """
 
 # 别名节点用 alias_name 属性而不是 standard_name——避免和 _SUBGRAPH_QUERY
-# 按 standard_name 精确匹配标准节点的查询模式产生歧义（别名节点本身不该被
-# 当成标准节点查到）。
+# 按 tenant_id/node_key 精确匹配标准节点的查询模式产生歧义（别名节点本身
+# 不该被当成标准节点查到）。
 _SYNC_TERM_QUERY = """
-MERGE (t:Term {standard_name: $standard_name})
-SET t.type = $type, t.product_line = $product_line
+MERGE (t:Term {tenant_id: $tenant_id, node_key: $node_key})
+SET t.standard_name = $standard_name, t.type = $type, t.product_line = $product_line
 SET t += $extra_properties
 WITH t
 UNWIND $aliases AS alias_name
@@ -83,7 +83,7 @@ MERGE (a)-[:ALIAS_OF]->(t)
 """
 
 _COUNT_TERM_RELATION_EDGES_QUERY = """
-MATCH (t:Term {standard_name: $standard_name})-[r]-()
+MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-()
 WHERE type(r) <> 'ALIAS_OF'
 RETURN count(r) AS edge_count
 """
@@ -94,18 +94,16 @@ RETURN count(r) AS edge_count
 # 有别名就永远无法删除。
 
 _RENAME_TERM_NODE_QUERY = """
-MATCH (t:Term {standard_name: $old_name})
-SET t.standard_name = $new_name
+MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})
+SET t.standard_name = $new_standard_name
 """
-# 必须是对同一个节点对象做属性 SET，不能先 DELETE 再 CREATE——Neo4j 的
-# 关系边挂在节点对象上，不是按属性值查找的，原地改属性不会影响节点
-# 已有的任何关系边；新名字如果已经是另一个节点在用，调用方必须在此之前
-# 自己校验过（见 app/graphrag/terms_store.py 的唯一性校验），这里不做
-# 校验，重复调用会导致两个不同节点各自拥有同一个 standard_name 属性值
-# （Neo4j 不会阻止，只是后续按 standard_name MATCH 会命中两个节点）。
+# node_key 不参与这条语句——ADR-0003 的核心断言：改名只更新展示属性
+# standard_name，身份键 node_key 创建后永不改变。必须是对同一个节点
+# 对象做属性 SET，不能先 DELETE 再 CREATE——Neo4j 的关系边挂在节点对象
+# 上，不是按属性值查找的，原地改属性不会影响节点已有的任何关系边。
 
 _DELETE_TERM_NODE_QUERY = """
-MATCH (t:Term {standard_name: $standard_name})
+MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})
 OPTIONAL MATCH (a:Term)-[:ALIAS_OF]->(t)
 DETACH DELETE t, a
 """
@@ -113,6 +111,27 @@ DETACH DELETE t, a
 # 没有其它用途，标准术语被删后别名节点留着就是纯垃圾数据。OPTIONAL
 # MATCH 让"没有别名"的术语也能正常匹配到 t（DELETE 一个 null 值是
 # Cypher 里的合法操作，不会报错）。
+
+_ENSURE_INDEXES_QUERIES = [
+    "CREATE INDEX IF NOT EXISTS term_tenant_node_key_idx FOR (t:Term) ON (t.tenant_id, t.node_key)",
+    "CREATE INDEX IF NOT EXISTS term_tenant_term_type_idx FOR (t:Term) ON (t.tenant_id, t.type)",
+]
+# 所有节点共享同一个 :Term 标签（"多类型实体"是靠 term_type 取值模拟的，
+# 不是原生多标签设计，见 docs/superpowers/specs/2026-08-15-etl-driven-
+# schema-construction-design.md §3.4），按 tenant_id/node_key/term_type
+# 过滤没有索引可用，量级大的租户（如 MUJI 的 SKU 18万+ 行）没有索引会
+# 退化成全表扫描。
+
+_BACKFILL_LEGACY_TERM_NODES_QUERY = """
+MATCH (t:Term)
+WHERE t.tenant_id IS NULL
+SET t.tenant_id = 'default', t.node_key = t.standard_name
+"""
+# 一次性回填 2026-08-15 之前写入的、没有 tenant_id/node_key 属性的存量
+# :Term 节点——WHERE t.tenant_id IS NULL 保证幂等，重复调用只会处理还没
+# 打过标记的节点。别名节点（alias_name 属性）不参与这次回填：sync_term
+# 的别名节点从来不设置 tenant_id/node_key/standard_name，这次改造不改变
+# 别名节点的结构。
 
 
 class Neo4jSessionProtocol(Protocol):
@@ -141,12 +160,12 @@ class Neo4jGraphClient:
         self._driver = driver
 
     async def query_subgraph(
-        self, standard_name: str, *, tenant_id: str
+        self, node_key: str, *, tenant_id: str
     ) -> list[dict[str, Any]]:
         async with self._driver.session() as session:
             result = await session.run(
                 _SUBGRAPH_QUERY,
-                {"standard_name": standard_name, "tenant_id": tenant_id},
+                {"node_key": node_key, "tenant_id": tenant_id},
             )
             return await result.data()
 
@@ -167,6 +186,18 @@ class Neo4jGraphClient:
         重新摄取同一文档前先按 source+tenant_id 删掉它写过的旧边（见
         delete_relations_by_source），避免文档内容变更后旧关系永久
         残留在图谱里，和 vector_store.delete_by_source() 是同一个思路。
+
+        两端节点的 MERGE 匹配条件现在带 tenant_id——:Term 节点本次改造
+        前不分租户、可能被多个租户共用，这是 docs/EXECUTION_PLAN.md 第9节
+        列为"尚未做的"多租户隔离项之一，本次一并补齐：不这样做的话两个
+        租户各自抽取出同一对术语间的关系时，会共用同一对 Neo4j 节点，
+        产生跨租户数据污染。
+
+        subject_standard_name/object_standard_name 在 extraction 数据
+        接入模式下本身就是 node_key 的值（见 Global Constraints 的
+        node_key 生成规则），因此这里直接把它们当 node_key 用，不改变
+        这个函数对外的参数名/调用方传参方式——app/graphrag/
+        normalization.py 和 review_queue.py 的现有调用点不用改。
 
         tenant_id 必须写进 MERGE 的匹配模式本身（不能只在匹配到之后才
         SET）——:Term 标准节点不分租户、可能被多个租户共用，如果匹配
@@ -190,8 +221,8 @@ class Neo4jGraphClient:
                 f"仅支持: {sorted(_ALLOWED_RELATION_TYPES)}"
             )
         query = (
-            "MERGE (a:Term {standard_name: $subject_name}) "
-            "MERGE (b:Term {standard_name: $object_name}) "
+            "MERGE (a:Term {tenant_id: $tenant_id, node_key: $subject_name}) "
+            "MERGE (b:Term {tenant_id: $tenant_id, node_key: $object_name}) "
             f"MERGE (a)-[r:{relation_type} {{tenant_id: $tenant_id}}]->(b) "
             "SET r.source = $source, r.provenance = $provenance, "
             "r.recorded_at = $recorded_at"
@@ -232,6 +263,8 @@ class Neo4jGraphClient:
             await session.run(
                 _SYNC_TERM_QUERY,
                 {
+                    "tenant_id": term.tenant_id,
+                    "node_key": term.node_key,
                     "standard_name": term.standard_name,
                     "type": term.term_type,
                     "product_line": term.product_line,
@@ -244,32 +277,55 @@ class Neo4jGraphClient:
         for term in terms:
             await self.sync_term(term)
 
-    async def count_relation_edges_for_term(self, standard_name: str) -> int:
+    async def count_relation_edges_for_term(self, *, tenant_id: str, node_key: str) -> int:
         """统计该术语节点参与的、非结构性同步边（ALIAS_OF）的关系边数量，
         供管理后台删除术语前的守卫检查用——见 _COUNT_TERM_RELATION_EDGES_QUERY
         的说明。"""
         async with self._driver.session() as session:
             result = await session.run(
-                _COUNT_TERM_RELATION_EDGES_QUERY, {"standard_name": standard_name}
+                _COUNT_TERM_RELATION_EDGES_QUERY,
+                {"tenant_id": tenant_id, "node_key": node_key},
             )
             rows = await result.data()
             return rows[0]["edge_count"] if rows else 0
 
-    async def rename_term_node(self, *, old_name: str, new_name: str) -> None:
+    async def rename_term_node(
+        self, *, tenant_id: str, node_key: str, new_standard_name: str
+    ) -> None:
         """把一个术语节点的 standard_name 属性原地改成新值，不影响节点
-        已有的关系边——见 _RENAME_TERM_NODE_QUERY 的说明。调用方必须自己
-        先确认 new_name 不会跟另一个已存在的术语节点冲突。"""
+        已有的关系边、也不改变 node_key——见 _RENAME_TERM_NODE_QUERY 的
+        说明。调用方必须自己先确认 new_standard_name 不会跟同租户下另一个
+        已存在的术语节点冲突。"""
         async with self._driver.session() as session:
             await session.run(
-                _RENAME_TERM_NODE_QUERY, {"old_name": old_name, "new_name": new_name}
+                _RENAME_TERM_NODE_QUERY,
+                {
+                    "tenant_id": tenant_id,
+                    "node_key": node_key,
+                    "new_standard_name": new_standard_name,
+                },
             )
 
-    async def delete_term_node(self, standard_name: str) -> None:
+    async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
         """删除一个术语节点及其别名节点——只应该在确认过
         count_relation_edges_for_term() 返回 0 之后调用，见
         _DELETE_TERM_NODE_QUERY 的说明。"""
         async with self._driver.session() as session:
-            await session.run(_DELETE_TERM_NODE_QUERY, {"standard_name": standard_name})
+            await session.run(
+                _DELETE_TERM_NODE_QUERY, {"tenant_id": tenant_id, "node_key": node_key}
+            )
+
+    async def ensure_tenant_scoped_schema(self) -> None:
+        """建按租户/节点键、按租户/分类的属性索引，并把存量（本次改造前
+        写入、没有 tenant_id/node_key 属性的）:Term 节点回填成
+        tenant_id='default'——与 SQLite 侧 terms 表的迁移是同一次改造的
+        两半，缺一半就会出现"SQLite 里租户隔离了，Neo4j 里还是老样子"
+        的不一致状态。幂等，可在每次进程启动时调用。
+        """
+        async with self._driver.session() as session:
+            for query in _ENSURE_INDEXES_QUERIES:
+                await session.run(query)
+            await session.run(_BACKFILL_LEGACY_TERM_NODES_QUERY)
 
     async def migrate_relation_type_edges(
         self, *, tenant_id: str, old_type: str, new_type: str

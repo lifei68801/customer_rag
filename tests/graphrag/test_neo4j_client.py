@@ -55,7 +55,7 @@ async def test_query_subgraph_returns_related_terms():
     results = await client.query_subgraph("错误码E502", tenant_id="t1")
 
     assert results == [{"related_name": "登录模块", "relation_type": "RELATED_TO"}]
-    assert session.last_parameters == {"standard_name": "错误码E502", "tenant_id": "t1"}
+    assert session.last_parameters == {"node_key": "错误码E502", "tenant_id": "t1"}
     assert "WHERE r.tenant_id = $tenant_id" in session.last_query
 
 
@@ -143,7 +143,7 @@ async def test_sync_term_writes_standard_node_properties_and_alias_edges():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     term = Term(
-        standard_name="错误码E502",
+        tenant_id="t1", node_key="错误码E502", standard_name="错误码E502",
         aliases=["网关超时", "E502超时"],
         term_type="error_code",
         product_line="核心平台",
@@ -152,6 +152,8 @@ async def test_sync_term_writes_standard_node_properties_and_alias_edges():
     await client.sync_term(term)
 
     assert session.last_parameters == {
+        "tenant_id": "t1",
+        "node_key": "错误码E502",
         "standard_name": "错误码E502",
         "type": "error_code",
         "product_line": "核心平台",
@@ -166,7 +168,7 @@ async def test_sync_term_with_no_aliases_sends_empty_alias_list():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     term = Term(
-        standard_name="登录模块",
+        tenant_id="t1", node_key="登录模块", standard_name="登录模块",
         aliases=[],
         term_type="module",
         product_line="核心平台",
@@ -181,6 +183,7 @@ async def test_sync_term_writes_extra_properties():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     term = Term(
+        tenant_id="t1", node_key="错误码E502",
         standard_name="错误码E502", aliases=[], term_type="错误码",
         product_line="示例产品线", extra_properties={"严重等级": "高"},
     )
@@ -195,8 +198,14 @@ async def test_sync_terms_syncs_every_term_in_the_list():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     terms = [
-        Term(standard_name="错误码E502", aliases=["网关超时"], term_type="error_code", product_line="核心平台"),
-        Term(standard_name="登录模块", aliases=["认证模块"], term_type="module", product_line="核心平台"),
+        Term(
+            tenant_id="t1", node_key="错误码E502", standard_name="错误码E502",
+            aliases=["网关超时"], term_type="error_code", product_line="核心平台",
+        ),
+        Term(
+            tenant_id="t1", node_key="登录模块", standard_name="登录模块",
+            aliases=["认证模块"], term_type="module", product_line="核心平台",
+        ),
     ]
 
     await client.sync_terms(terms)
@@ -262,17 +271,17 @@ async def test_query_subgraph_sends_two_hop_union_query_for_chain_relations():
     assert "REQUIRES|PRECEDES|PART_OF*2..2" in session.last_query
     assert "ALL(rel IN r WHERE rel.tenant_id = $tenant_id)" in session.last_query
     assert "AND related <> t" in session.last_query
-    assert session.last_parameters == {"standard_name": "错误码E502", "tenant_id": "t1"}
+    assert session.last_parameters == {"node_key": "错误码E502", "tenant_id": "t1"}
 
 
 async def test_count_relation_edges_for_term_returns_edge_count():
     session = FakeSession(rows=[{"edge_count": 3}])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    count = await client.count_relation_edges_for_term("错误码E502")
+    count = await client.count_relation_edges_for_term(tenant_id="t1", node_key="错误码E502")
 
     assert count == 3
-    assert session.last_parameters == {"standard_name": "错误码E502"}
+    assert session.last_parameters == {"tenant_id": "t1", "node_key": "错误码E502"}
     assert "type(r) <> 'ALIAS_OF'" in session.last_query
 
 
@@ -280,7 +289,7 @@ async def test_count_relation_edges_for_term_returns_zero_when_no_rows():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    count = await client.count_relation_edges_for_term("孤立术语")
+    count = await client.count_relation_edges_for_term(tenant_id="t1", node_key="孤立术语")
 
     assert count == 0
 
@@ -289,14 +298,17 @@ async def test_rename_term_node_sends_expected_query_and_parameters():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    await client.rename_term_node(old_name="错误码E502", new_name="错误码E502v2")
+    await client.rename_term_node(
+        tenant_id="t1", node_key="错误码E502", new_standard_name="错误码E502v2"
+    )
 
     assert session.last_parameters == {
-        "old_name": "错误码E502",
-        "new_name": "错误码E502v2",
+        "tenant_id": "t1",
+        "node_key": "错误码E502",
+        "new_standard_name": "错误码E502v2",
     }
     assert "MATCH" in session.last_query
-    assert "SET t.standard_name = $new_name" in session.last_query
+    assert "SET t.standard_name = $new_standard_name" in session.last_query
     # 必须是 MATCH+SET 原地改属性，不能是先删再建——删了再建会让节点
     # 已有的关系边找不到挂载对象，变成孤儿边
     assert "DELETE" not in session.last_query
@@ -307,9 +319,9 @@ async def test_delete_term_node_sends_detach_delete_query():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    await client.delete_term_node("废弃术语")
+    await client.delete_term_node(tenant_id="t1", node_key="废弃术语")
 
-    assert session.last_parameters == {"standard_name": "废弃术语"}
+    assert session.last_parameters == {"tenant_id": "t1", "node_key": "废弃术语"}
     assert "DETACH DELETE" in session.last_query
 
 
@@ -372,3 +384,98 @@ async def test_migrate_relation_type_edges_rejects_trailing_newline():
         await client.migrate_relation_type_edges(
             tenant_id="t1", old_type="PRECEDES\n", new_type="SAFE_TYPE"
         )
+
+
+async def test_sync_term_merges_by_tenant_and_node_key():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    term = Term(
+        tenant_id="t1", node_key="k1", standard_name="错误码E502",
+        aliases=["网关超时"], term_type="error_code", product_line="核心平台",
+    )
+
+    await client.sync_term(term)
+
+    assert session.last_parameters["tenant_id"] == "t1"
+    assert session.last_parameters["node_key"] == "k1"
+    assert session.last_parameters["standard_name"] == "错误码E502"
+    assert "MERGE (t:Term {tenant_id: $tenant_id, node_key: $node_key})" in session.last_query
+    assert "SET t.standard_name = $standard_name" in session.last_query
+
+
+async def test_query_subgraph_matches_by_tenant_and_node_key():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.query_subgraph("k1", tenant_id="t1")
+
+    assert "MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})" in session.last_query
+    assert session.last_parameters["node_key"] == "k1"
+    assert session.last_parameters["tenant_id"] == "t1"
+
+
+async def test_merge_relation_scopes_node_merge_by_tenant():
+    """merge_relation 的两端节点 MERGE 现在也要带 tenant_id——不这样做的话
+    两个租户各自抽取出同名术语时会共用同一个 Neo4j 节点，是本次改造要
+    解决的核心问题（docs/EXECUTION_PLAN.md 第9节列为"尚未做的"欠账）。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.merge_relation(
+        subject_standard_name="错误码E502", object_standard_name="登录模块",
+        relation_type="RELATED_TO", source="a.md", tenant_id="t1",
+        provenance="auto_merged", recorded_at=_NOW,
+    )
+
+    assert "MERGE (a:Term {tenant_id: $tenant_id, node_key: $subject_name})" in session.last_query
+    assert "MERGE (b:Term {tenant_id: $tenant_id, node_key: $object_name})" in session.last_query
+
+
+async def test_rename_term_node_updates_standard_name_not_node_key():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.rename_term_node(
+        tenant_id="t1", node_key="k1", new_standard_name="错误码E502v2"
+    )
+
+    assert session.last_parameters == {
+        "tenant_id": "t1", "node_key": "k1", "new_standard_name": "错误码E502v2",
+    }
+    assert "MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})" in session.last_query
+    assert "SET t.standard_name = $new_standard_name" in session.last_query
+
+
+async def test_delete_term_node_scopes_by_tenant():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.delete_term_node(tenant_id="t1", node_key="k1")
+
+    assert session.last_parameters == {"tenant_id": "t1", "node_key": "k1"}
+    assert "MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})" in session.last_query
+
+
+async def test_count_relation_edges_for_term_scopes_by_tenant():
+    session = FakeSession(rows=[{"edge_count": 2}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    count = await client.count_relation_edges_for_term(tenant_id="t1", node_key="k1")
+
+    assert count == 2
+    assert session.last_parameters == {"tenant_id": "t1", "node_key": "k1"}
+
+
+async def test_ensure_tenant_scoped_schema_creates_indexes_and_backfills_legacy_nodes():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.ensure_tenant_scoped_schema()
+
+    queries = [call[0] for call in session.calls]
+    assert any("CREATE INDEX IF NOT EXISTS" in q and "tenant_id" in q and "node_key" in q for q in queries)
+    assert any("CREATE INDEX IF NOT EXISTS" in q and "term_type" in q or "t.type" in q for q in queries)
+    assert any(
+        "WHERE t.tenant_id IS NULL" in q and "SET t.tenant_id = 'default'" in q and "t.node_key = t.standard_name" in q
+        for q in queries
+    )
