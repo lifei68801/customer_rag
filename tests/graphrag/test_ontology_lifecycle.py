@@ -99,8 +99,8 @@ async def test_checkout_draft_is_idempotent_when_draft_already_exists():
 async def test_confirm_ontology_promotes_constraints_too():
     conn = await _conn()
     await checkout_draft(conn, "t1")
-    await create_term_type(conn, value="客房")
-    await create_term_type(conn, value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房")
+    await create_term_type(conn, tenant_id="t1", value="酒店")
     await add_allowed_combination(conn, "t1", subject_term_type="客房", relation_type="PART_OF", object_term_type="酒店")
 
     await confirm_ontology(conn, "t1")
@@ -147,3 +147,25 @@ async def test_confirm_ontology_with_no_draft_does_not_delete_confirmed():
     confirmed_after = await list_relation_types(conn, "t1", status="confirmed")
     assert len(confirmed_after) == 10
     assert {r.relation_type for r in confirmed_after} == {r.relation_type for r in confirmed}
+
+
+async def test_checkout_draft_skips_default_relation_types_for_etl_tenants():
+    conn = await _conn()  # 该文件已有的辅助函数，建整套本体 schema
+    from app.graphrag.tenant_ingestion_config import set_ingestion_mode
+    await set_ingestion_mode(conn, "muji", "etl")
+
+    await checkout_draft(conn, "muji")
+
+    from app.graphrag.ontology_relations import list_relation_types
+    relation_types = await list_relation_types(conn, "muji", status="draft")
+    assert relation_types == []
+
+
+async def test_checkout_draft_still_seeds_defaults_for_extraction_tenants():
+    conn = await _conn()
+
+    await checkout_draft(conn, "hotel_tenant")
+
+    from app.graphrag.ontology_relations import list_relation_types
+    relation_types = await list_relation_types(conn, "hotel_tenant", status="draft")
+    assert len(relation_types) == 10

@@ -5,17 +5,21 @@ import aiosqlite
 from app.graphrag.ontology_categories import ensure_categories_schema
 from app.graphrag.ontology_constraints import ensure_constraints_schema
 from app.graphrag.ontology_relations import ensure_relations_schema, seed_default_relation_types
+from app.graphrag.tenant_ingestion_config import ensure_ingestion_config_schema, get_ingestion_mode
 
 _TABLES_WITH_TENANT_LIFECYCLE = ("tenant_relation_types", "term_type_relation_allowlist")
 
 
 async def ensure_ontology_schema(conn: aiosqlite.Connection) -> None:
-    """统一入口：分类（全局）+ 关系类型/约束（按租户）三张表一起建。分类表虽然不进
-    草稿/确认生命周期，但关系类型/约束表的写入校验依赖它已经存在（见
-    ontology_constraints.py 的引用校验），放在同一个入口保证调用顺序不会出错。"""
+    """统一入口：分类（按租户）+ 关系类型/约束（按租户）+ 接入模式配置
+    四张表一起建。ensure_ingestion_config_schema 放进来，保证 checkout_draft
+    需要读 ingestion_mode 时这张表一定已经存在，不需要调用方自己记得
+    额外建表。
+    """
     await ensure_categories_schema(conn)
     await ensure_relations_schema(conn)
     await ensure_constraints_schema(conn)
+    await ensure_ingestion_config_schema(conn)
 
 
 async def _has_any_row(
@@ -31,8 +35,13 @@ async def _has_any_row(
 async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
     """检出一份可编辑的草稿：如果该租户已经有草稿，什么都不做（幂等，不覆盖正在
     编辑的内容）；如果没有草稿但有已确认版本，从已确认版本复制一份新草稿；如果
-    两者都没有（全新租户），关系类型草稿用 10 种默认值播种，约束表草稿留空
-    （没有分类数据支撑，写不出有意义的默认组合）。
+    两者都没有（全新租户），关系类型草稿的默认值取决于该租户的接入模式
+    （tenant_ingestion_config.ingestion_mode）——extraction 模式播种 10 种
+    通用默认关系（面向 LLM 抽取场景设计，见 ontology_relations.py），etl
+    模式不播种，从空白草稿开始（这些默认关系对结构化 ETL 租户没有意义，
+    见 docs/superpowers/specs/2026-08-15-etl-driven-schema-construction-
+    design.md §2）。约束表草稿两种模式都留空（没有分类数据支撑，写不出
+    有意义的默认组合）。
     """
     if not await _has_any_row(conn, "tenant_relation_types", tenant_id, "draft"):
         if await _has_any_row(conn, "tenant_relation_types", tenant_id, "confirmed"):
@@ -45,7 +54,7 @@ async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
                 "WHERE tenant_id = ? AND status = 'confirmed'",
                 (tenant_id,),
             )
-        else:
+        elif await get_ingestion_mode(conn, tenant_id) == "extraction":
             await seed_default_relation_types(conn, tenant_id)
     if not await _has_any_row(conn, "term_type_relation_allowlist", tenant_id, "draft"):
         if await _has_any_row(conn, "term_type_relation_allowlist", tenant_id, "confirmed"):
