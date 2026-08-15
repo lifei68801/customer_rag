@@ -74,7 +74,8 @@ def test_create_and_list_term_types(client):
     assert resp.json() == {"term_types": [{"value": "错误码", "extra_fields": ["严重等级"], "node_key_template": ""}]}
 
 
-def test_delete_term_type_in_use_returns_409(client):
+async def test_delete_term_type_in_use_returns_409(client):
+    # Fixture setup: create term_type and product_line categories
     client.post(
         "/api/admin/ontology/term-types", json={"value": "错误码", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
@@ -83,11 +84,16 @@ def test_delete_term_type_in_use_returns_409(client):
         "/api/admin/ontology/product-lines", json={"value": "示例产品线"},
         headers={"Authorization": "Bearer x"},
     )
-    client.post(
-        "/api/admin/terms",
-        json={"standard_name": "x", "aliases": [], "term_type": "错误码", "product_line": "示例产品线"},
-        headers={"Authorization": "Bearer x"},
+
+    # Directly insert a term into the database (admin_terms_routes.py is Task 4's responsibility,
+    # so we bypass it by inserting directly). This establishes the "term_type in use" condition.
+    conn = await _review_conn()
+    await conn.execute(
+        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, product_line, extra_properties) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("default", "x", "x", "[]", "错误码", "示例产品线", "{}"),
     )
+    await conn.commit()
 
     resp = client.delete("/api/admin/ontology/term-types/错误码", headers={"Authorization": "Bearer x"})
 
@@ -291,7 +297,7 @@ def test_create_update_delete_product_line(client):
     assert resp.json() == {"product_lines": []}
 
 
-def test_delete_product_line_in_use_returns_409(client):
+async def test_delete_product_line_in_use_returns_409(client):
     client.post(
         "/api/admin/ontology/term-types", json={"value": "错误码", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
@@ -300,11 +306,16 @@ def test_delete_product_line_in_use_returns_409(client):
         "/api/admin/ontology/product-lines", json={"value": "核心平台"},
         headers={"Authorization": "Bearer x"},
     )
-    client.post(
-        "/api/admin/terms",
-        json={"standard_name": "x", "aliases": [], "term_type": "错误码", "product_line": "核心平台"},
-        headers={"Authorization": "Bearer x"},
+
+    # Directly insert a term into the database (admin_terms_routes.py is Task 4's responsibility,
+    # so we bypass it by inserting directly). This establishes the "product_line in use" condition.
+    conn = await _review_conn()
+    await conn.execute(
+        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, product_line, extra_properties) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("default", "x", "x", "[]", "错误码", "核心平台", "{}"),
     )
+    await conn.commit()
 
     resp = client.delete(
         "/api/admin/ontology/product-lines/核心平台", headers={"Authorization": "Bearer x"}
