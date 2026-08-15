@@ -195,7 +195,18 @@ async def _validate_categories(
     term_type: str,
     product_line: str,
     extra_properties: dict[str, str],
+    existing_extra_property_keys: frozenset[str] = frozenset(),
 ) -> None:
+    """existing_extra_property_keys 是这条术语记录（如果是更新一个已存在的
+    术语）已经持久化的 extra_properties 键集合——已经落在这条记录上的键即使
+    term_type 后来被改成不再声明它，也要放行通过，不能拒绝。否则任何字段被
+    从 term_type 里去掉之后，哪怕只是编辑该术语的其它字段（甚至原样不改动），
+    这个键要么被 400 拒绝、要么被调用方在提交前剔除后静默从 SQLite 里删除——
+    Neo4j 那边 `SET t += $extra_properties` 从不删 key，两侧就此永久不一致
+    （见 docs/superpowers/specs/2026-08-14-ontology-schema-design.md 第 7 节
+    "字段被移除后再恢复应保留旧值"这条承诺）。create_term 没有"已存在的记录"
+    这个概念，调用时这个参数保持默认空集合，行为不变——全新术语仍然不能引入
+    未声明字段。"""
     types = await list_term_types(conn)
     types_by_value = {t.value: t for t in types}
     if term_type not in types_by_value:
@@ -203,7 +214,7 @@ async def _validate_categories(
     if product_line not in await list_product_lines(conn):
         raise UnknownCategoryError(f"未知产品线: {product_line!r}")
     declared_fields = set(types_by_value[term_type].extra_fields)
-    unknown = set(extra_properties) - declared_fields
+    unknown = set(extra_properties) - declared_fields - existing_extra_property_keys
     if unknown:
         raise UnknownCategoryError(
             f"分类 {term_type!r} 没有声明这些属性字段: {sorted(unknown)}"
@@ -257,9 +268,10 @@ async def update_term(
     new_standard_name 是提交的新名字，允许和 standard_name 相同（即不改名）。
     """
     extra_properties = extra_properties or {}
-    await get_term(conn, standard_name)
+    existing_term = await get_term(conn, standard_name)
     await _validate_categories(
-        conn, term_type=term_type, product_line=product_line, extra_properties=extra_properties
+        conn, term_type=term_type, product_line=product_line, extra_properties=extra_properties,
+        existing_extra_property_keys=frozenset(existing_term.extra_properties),
     )
     await _check_name_conflict(
         conn, standard_name=new_standard_name, aliases=aliases,

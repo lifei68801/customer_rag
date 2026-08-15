@@ -322,3 +322,49 @@ async def test_removing_extra_field_from_term_type_preserves_existing_term_value
 
     term = await get_term(conn, "错误码E502")
     assert term.extra_properties == {"严重等级": "高", "影响范围": "全站不可用"}
+
+
+async def test_update_term_resubmitting_undeclared_but_already_stored_key_succeeds():
+    """回归测试：字段从 term_type 里被去掉之后，重新保存这条术语（哪怕值原样
+    不改）不能因为这个字段"未声明"而被拒绝或静默丢弃——见
+    _validate_categories 的 existing_extra_property_keys 参数说明。"""
+    conn = await _connect()
+    await create_term_type(conn, value="房型", extra_fields=["面积"])
+    await create_product_line(conn, value="示例产品线")
+    await create_term(
+        conn, standard_name="大床房", aliases=[], term_type="房型",
+        product_line="示例产品线", extra_properties={"面积": "30"},
+    )
+
+    # 业务把"面积"从房型的声明字段里移除
+    await update_term_type(conn, value="房型", new_value="房型", extra_fields=[])
+
+    # 重新保存这条术语，提交里仍然带着这个已经被去掉声明的字段——不应该报错
+    await update_term(
+        conn, standard_name="大床房", new_standard_name="大床房",
+        aliases=["豪华大床房"], term_type="房型", product_line="示例产品线",
+        extra_properties={"面积": "30"},
+    )
+
+    term = await get_term(conn, "大床房")
+    assert term.extra_properties == {"面积": "30"}
+    assert term.aliases == ["豪华大床房"]
+
+
+async def test_update_term_rejects_genuinely_new_undeclared_key():
+    """字段既不在 term_type 当前声明里，也从未在这条术语上出现过——不能因为
+    "existing_extra_property_keys 放行"这条豁免被滥用成完全绕过校验。"""
+    conn = await _connect()
+    await create_term_type(conn, value="房型", extra_fields=[])
+    await create_product_line(conn, value="示例产品线")
+    await create_term(
+        conn, standard_name="大床房", aliases=[], term_type="房型",
+        product_line="示例产品线", extra_properties={},
+    )
+
+    with pytest.raises(UnknownCategoryError):
+        await update_term(
+            conn, standard_name="大床房", new_standard_name="大床房",
+            aliases=[], term_type="房型", product_line="示例产品线",
+            extra_properties={"从未出现过的字段": "值"},
+        )
