@@ -23,7 +23,7 @@ from app.graphrag.terms_store import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/admin/terms", dependencies=[Depends(deps.require_admin_session)])
+router = APIRouter(prefix="/api/admin/{tenant_id}/terms", dependencies=[Depends(deps.require_admin_session)])
 
 
 class TermResponse(BaseModel):
@@ -81,14 +81,16 @@ def _to_response(term: Term) -> TermResponse:
 
 @router.get("", response_model=TermListResponse)
 async def list_all_terms(
+    tenant_id: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> TermListResponse:
-    terms = await list_terms(review_conn)
+    terms = await list_terms(review_conn, tenant_id)
     return TermListResponse(terms=[_to_response(term) for term in terms])
 
 
 @router.post("", response_model=TermResponse)
 async def create_new_term(
+    tenant_id: str,
     payload: TermWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
@@ -96,6 +98,7 @@ async def create_new_term(
     try:
         await create_term(
             review_conn,
+            tenant_id=tenant_id,
             standard_name=payload.standard_name,
             aliases=payload.aliases,
             term_type=payload.term_type,
@@ -107,6 +110,8 @@ async def create_new_term(
     except UnknownCategoryError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     term = Term(
+        tenant_id=tenant_id,
+        node_key=payload.standard_name,
         standard_name=payload.standard_name,
         aliases=payload.aliases,
         term_type=payload.term_type,
@@ -118,8 +123,8 @@ async def create_new_term(
         await graph_client.sync_term(term)
     except Exception:
         logger.exception(
-            "术语 %r 已写入 SQLite 但同步进图谱失败——两侧数据已不一致，需要人工核对",
-            term.standard_name,
+            "术语 %r（租户 %r）已写入 SQLite 但同步进图谱失败——两侧数据已不一致，需要人工核对",
+            term.standard_name, tenant_id,
         )
         raise
     return _to_response(term)
@@ -127,14 +132,17 @@ async def create_new_term(
 
 @router.put("/{standard_name}", response_model=TermResponse)
 async def update_existing_term(
+    tenant_id: str,
     standard_name: str,
     payload: TermWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> TermResponse:
     try:
+        existing_before_update = await get_term(review_conn, tenant_id, standard_name)
         await update_term(
             review_conn,
+            tenant_id=tenant_id,
             standard_name=standard_name,
             new_standard_name=payload.standard_name,
             aliases=payload.aliases,
@@ -148,22 +156,24 @@ async def update_existing_term(
         raise HTTPException(status_code=400, detail=str(exc))
     except UnknownCategoryError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    node_key = existing_before_update.node_key
     if payload.standard_name != standard_name:
         # 改名：先对同一个图节点做属性级联更新（保留已有关系边），再用
         # sync_term 刷新 type/product_line/别名——顺序不能反过来，
         # sync_term 是按"当前"standard_name MERGE 匹配节点的。
         try:
             await graph_client.rename_term_node(
-                old_name=standard_name, new_name=payload.standard_name
+                tenant_id=tenant_id, node_key=node_key, new_standard_name=payload.standard_name
             )
         except Exception:
             logger.exception(
-                "术语 %r 重命名为 %r 已写入 SQLite 但图谱改名失败——两侧数据已不一致，需要人工核对",
-                standard_name,
-                payload.standard_name,
+                "术语 %r 重命名为 %r（租户 %r）已写入 SQLite 但图谱改名失败——两侧数据已不一致，需要人工核对",
+                standard_name, payload.standard_name, tenant_id,
             )
             raise
     term = Term(
+        tenant_id=tenant_id,
+        node_key=node_key,
         standard_name=payload.standard_name,
         aliases=payload.aliases,
         term_type=payload.term_type,
@@ -174,8 +184,8 @@ async def update_existing_term(
         await graph_client.sync_term(term)
     except Exception:
         logger.exception(
-            "术语 %r 已写入 SQLite 但同步进图谱失败——两侧数据已不一致，需要人工核对",
-            term.standard_name,
+            "术语 %r（租户 %r）已写入 SQLite 但同步进图谱失败——两侧数据已不一致，需要人工核对",
+            term.standard_name, tenant_id,
         )
         raise
     return _to_response(term)
@@ -183,6 +193,7 @@ async def update_existing_term(
 
 @router.delete("/{standard_name}")
 async def delete_existing_term(
+    tenant_id: str,
     standard_name: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
@@ -194,20 +205,22 @@ async def delete_existing_term(
     # 一致状态——这一步必须在 delete_term() 之前，不能删完 SQLite 记录
     # 才发现图谱不允许删。
     try:
-        await get_term(review_conn, standard_name)
+        term = await get_term(review_conn, tenant_id, standard_name)
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
-    edge_count = await graph_client.count_relation_edges_for_term(standard_name)
+    edge_count = await graph_client.count_relation_edges_for_term(
+        tenant_id=tenant_id, node_key=term.node_key
+    )
     if edge_count > 0:
         raise HTTPException(status_code=409, detail="该术语已在图谱中使用，无法删除")
-    await delete_term(review_conn, standard_name)
+    await delete_term(review_conn, tenant_id, standard_name)
     try:
-        await graph_client.delete_term_node(standard_name)
+        await graph_client.delete_term_node(tenant_id=tenant_id, node_key=term.node_key)
     except Exception:
         logger.exception(
-            "术语 %r 已从 SQLite 删除，但图谱节点删除失败——SQLite 记录已不存在，"
+            "术语 %r（租户 %r）已从 SQLite 删除，但图谱节点删除失败——SQLite 记录已不存在，"
             "图谱节点仍然存在且对管理后台不可见，需要人工核对",
-            standard_name,
+            standard_name, tenant_id,
         )
         raise
     return {"deleted": True}

@@ -51,49 +51,61 @@ class ProductLineWriteRequest(BaseModel):
     value: str
 
 
-@router.get("/term-types")
+@router.get("/{tenant_id}/term-types")
 async def list_term_type_categories(
+    tenant_id: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
-    result = await list_term_types(review_conn, tenant_id="default")
-    return {"term_types": [{"value": t.value, "extra_fields": t.extra_fields, "node_key_template": t.node_key_template} for t in result]}
+    result = await list_term_types(review_conn, tenant_id)
+    return {
+        "term_types": [
+            {"value": t.value, "extra_fields": t.extra_fields, "node_key_template": t.node_key_template}
+            for t in result
+        ]
+    }
 
 
-@router.post("/term-types")
+@router.post("/{tenant_id}/term-types")
 async def create_term_type_category(
+    tenant_id: str,
     payload: TermTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
     try:
-        await create_term_type(review_conn, tenant_id="default", value=payload.value, extra_fields=payload.extra_fields, node_key_template=payload.node_key_template)
+        await create_term_type(
+            review_conn, tenant_id, value=payload.value, extra_fields=payload.extra_fields,
+            node_key_template=payload.node_key_template,
+        )
     except CategoryNameConflictError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"value": payload.value, "extra_fields": payload.extra_fields, "node_key_template": payload.node_key_template}
+    return payload.model_dump()
 
 
-@router.put("/term-types/{value}")
+@router.put("/{tenant_id}/term-types/{value}")
 async def update_term_type_category(
+    tenant_id: str,
     value: str,
     payload: TermTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
     try:
         await update_term_type(
-            review_conn, tenant_id="default", value=value, new_value=payload.value, extra_fields=payload.extra_fields, node_key_template=payload.node_key_template
+            review_conn, tenant_id, value=value, new_value=payload.value,
+            extra_fields=payload.extra_fields, node_key_template=payload.node_key_template,
         )
     except CategoryNotFoundError:
         raise HTTPException(status_code=404, detail="分类不存在")
     except CategoryNameConflictError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"value": payload.value, "extra_fields": payload.extra_fields, "node_key_template": payload.node_key_template}
+    return payload.model_dump()
 
 
-@router.delete("/term-types/{value}")
+@router.delete("/{tenant_id}/term-types/{value}")
 async def delete_term_type_category(
-    value: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn)
+    tenant_id: str, value: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn)
 ) -> dict:
     try:
-        await delete_term_type(review_conn, tenant_id="default", value=value)
+        await delete_term_type(review_conn, tenant_id, value)
     except CategoryInUseError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"deleted": True}

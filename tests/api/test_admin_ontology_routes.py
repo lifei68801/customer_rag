@@ -67,13 +67,13 @@ def client(monkeypatch, conn_for_testing):
 
 def test_create_and_list_term_types(client):
     resp = client.post(
-        "/api/admin/ontology/term-types",
+        "/api/admin/ontology/t1/term-types",
         json={"value": "错误码", "extra_fields": ["严重等级"]},
         headers={"Authorization": "Bearer x"},
     )
     assert resp.status_code == 200
 
-    resp = client.get("/api/admin/ontology/term-types", headers={"Authorization": "Bearer x"})
+    resp = client.get("/api/admin/ontology/t1/term-types", headers={"Authorization": "Bearer x"})
     assert resp.status_code == 200
     assert resp.json() == {"term_types": [{"value": "错误码", "extra_fields": ["严重等级"], "node_key_template": ""}]}
 
@@ -81,7 +81,7 @@ def test_create_and_list_term_types(client):
 async def test_delete_term_type_in_use_returns_409(client, conn_for_testing):
     # Fixture setup: create term_type and product_line categories
     client.post(
-        "/api/admin/ontology/term-types", json={"value": "错误码", "extra_fields": []},
+        "/api/admin/ontology/default/term-types", json={"value": "错误码", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
     )
     client.post(
@@ -99,7 +99,9 @@ async def test_delete_term_type_in_use_returns_409(client, conn_for_testing):
     )
     await conn_for_testing["conn"].commit()
 
-    resp = client.delete("/api/admin/ontology/term-types/错误码", headers={"Authorization": "Bearer x"})
+    resp = client.delete(
+        "/api/admin/ontology/default/term-types/错误码", headers={"Authorization": "Bearer x"}
+    )
 
     assert resp.status_code == 409
 
@@ -135,15 +137,13 @@ def test_create_relation_type_rejects_bad_name(client):
 
 
 def test_add_and_list_constraints(client):
-    # Note: Term-types are currently hardcoded to tenant_id="default" in admin routes (Task 2).
-    # Task 4 will add {tenant_id} path parameter to make them per-tenant.
-    # For now, constraints must use the same "default" tenant where term-types land.
+    # term-types 和 constraints 都用 "default" 租户，保证约束校验能看到同一批分类。
     client.post(
-        "/api/admin/ontology/term-types", json={"value": "客房", "extra_fields": []},
+        "/api/admin/ontology/default/term-types", json={"value": "客房", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
     )
     client.post(
-        "/api/admin/ontology/term-types", json={"value": "酒店", "extra_fields": []},
+        "/api/admin/ontology/default/term-types", json={"value": "酒店", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
     )
     client.post("/api/admin/ontology/default/checkout", headers={"Authorization": "Bearer x"})
@@ -166,14 +166,14 @@ def test_add_and_list_constraints(client):
 def test_remove_constraint_via_delete_with_body(client):
     """DELETE /{tenant_id}/constraints 带 body——确认 TestClient 真的能把
     body 发送到一个 DELETE 请求上，路由端能正常解析。
-    Note: Uses tenant_id="default" to match where term-types are hardcoded (Task 2).
+    term-types 和 constraints 都用 "default" 租户，保证约束校验能看到同一批分类。
     """
     client.post(
-        "/api/admin/ontology/term-types", json={"value": "客房", "extra_fields": []},
+        "/api/admin/ontology/default/term-types", json={"value": "客房", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
     )
     client.post(
-        "/api/admin/ontology/term-types", json={"value": "酒店", "extra_fields": []},
+        "/api/admin/ontology/default/term-types", json={"value": "酒店", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
     )
     client.post("/api/admin/ontology/default/checkout", headers={"Authorization": "Bearer x"})
@@ -303,7 +303,7 @@ def test_create_update_delete_product_line(client):
 
 async def test_delete_product_line_in_use_returns_409(client, conn_for_testing):
     client.post(
-        "/api/admin/ontology/term-types", json={"value": "错误码", "extra_fields": []},
+        "/api/admin/ontology/default/term-types", json={"value": "错误码", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
     )
     client.post(
@@ -326,6 +326,20 @@ async def test_delete_product_line_in_use_returns_409(client, conn_for_testing):
     )
 
     assert resp.status_code == 409
+
+
+def test_term_type_routes_are_scoped_to_tenant_in_url(client):
+    resp = client.post(
+        "/api/admin/ontology/tenant_a/term-types",
+        json={"value": "错误码", "extra_fields": [], "node_key_template": ""},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 200
+
+    resp = client.get(
+        "/api/admin/ontology/tenant_b/term-types", headers={"Authorization": "Bearer x"}
+    )
+    assert resp.json() == {"term_types": []}
 
 
 def test_tenant_ontology_status_flips_after_confirm(client):

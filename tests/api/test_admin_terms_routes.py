@@ -32,10 +32,12 @@ async def _open_terms_conn() -> aiosqlite.Connection:
     await ensure_terms_schema(conn)
     # 既有测试直接用这些字面量当 term_type/product_line，早于分类枚举表存在——
     # 这里补齐分类，保持既有测试的字面量不变（见 test_terms_store.py 的
-    # _connect() 同款说明）。
-    await create_term_type(conn, value="error_code")
-    await create_term_type(conn, value="t")
-    await create_term_type(conn, value="t2")
+    # _connect() 同款说明）。term_type 现在按租户隔离，需要给每个测试里用到的
+    # 租户各注册一份；product_line 保持全局，不需要按租户重复。
+    for tenant_id in ("t1", "tenant_a"):
+        await create_term_type(conn, tenant_id=tenant_id, value="error_code")
+        await create_term_type(conn, tenant_id=tenant_id, value="t")
+        await create_term_type(conn, tenant_id=tenant_id, value="t2")
     await create_product_line(conn, value="核心平台")
     await create_product_line(conn, value="p")
     await create_product_line(conn, value="p2")
@@ -86,21 +88,21 @@ class SpyGraphClient:
             }
         )
 
-    async def rename_term_node(self, *, old_name: str, new_name: str) -> None:
+    async def rename_term_node(self, *, tenant_id: str, node_key: str, new_standard_name: str) -> None:
         self.call_order.append("rename_term_node")
-        self.renamed.append((old_name, new_name))
+        self.renamed.append((node_key, new_standard_name))
 
-    async def count_relation_edges_for_term(self, standard_name: str) -> int:
+    async def count_relation_edges_for_term(self, *, tenant_id: str, node_key: str) -> int:
         return self._edge_count
 
-    async def delete_term_node(self, standard_name: str) -> None:
-        self.deleted.append(standard_name)
+    async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
+        self.deleted.append(node_key)
 
 
 def test_list_terms_returns_all_terms(terms_conn):
     asyncio.run(
         create_term(
-            terms_conn, standard_name="错误码E502", aliases=["网关超时"],
+            terms_conn, tenant_id="t1", standard_name="错误码E502", aliases=["网关超时"],
             term_type="error_code", product_line="核心平台",
         )
     )
@@ -110,7 +112,7 @@ def test_list_terms_returns_all_terms(terms_conn):
     app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
     try:
         client = TestClient(app)
-        response = client.get("/api/admin/terms", headers=_authed_headers(session_store))
+        response = client.get("/api/admin/t1/terms", headers=_authed_headers(session_store))
     finally:
         app.dependency_overrides.clear()
 
@@ -130,7 +132,7 @@ def test_list_terms_without_session_token_returns_401(terms_conn):
     app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
     try:
         client = TestClient(app)
-        response = client.get("/api/admin/terms")
+        response = client.get("/api/admin/t1/terms")
     finally:
         app.dependency_overrides.clear()
 
@@ -147,7 +149,7 @@ def test_create_term_syncs_to_graph_client(terms_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/terms",
+            "/api/admin/t1/terms",
             json={
                 "standard_name": "新术语", "aliases": ["别名1"],
                 "term_type": "t", "product_line": "p",
@@ -164,7 +166,7 @@ def test_create_term_syncs_to_graph_client(terms_conn):
 
 def test_create_term_with_conflicting_name_returns_400(terms_conn):
     asyncio.run(
-        create_term(terms_conn, standard_name="已存在", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="已存在", aliases=[], term_type="t", product_line="p")
     )
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
@@ -174,7 +176,7 @@ def test_create_term_with_conflicting_name_returns_400(terms_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/terms",
+            "/api/admin/t1/terms",
             json={"standard_name": "已存在", "aliases": [], "term_type": "t", "product_line": "p"},
             headers=_authed_headers(session_store),
         )
@@ -193,7 +195,7 @@ def test_create_term_with_unknown_category_returns_400(terms_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/terms",
+            "/api/admin/t1/terms",
             json={
                 "standard_name": "新术语", "aliases": [],
                 "term_type": "没有这个分类", "product_line": "p",
@@ -208,7 +210,7 @@ def test_create_term_with_unknown_category_returns_400(terms_conn):
 
 def test_update_term_without_rename_syncs_to_graph_client(terms_conn):
     asyncio.run(
-        create_term(terms_conn, standard_name="术语A", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="术语A", aliases=[], term_type="t", product_line="p")
     )
     session_store = AdminSessionStore()
     graph_client = SpyGraphClient()
@@ -219,7 +221,7 @@ def test_update_term_without_rename_syncs_to_graph_client(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/terms/术语A",
+            "/api/admin/t1/terms/术语A",
             json={
                 "standard_name": "术语A", "aliases": ["新别名"],
                 "term_type": "t2", "product_line": "p2",
@@ -237,7 +239,7 @@ def test_update_term_without_rename_syncs_to_graph_client(terms_conn):
 
 def test_update_term_with_rename_calls_rename_then_sync(terms_conn):
     asyncio.run(
-        create_term(terms_conn, standard_name="旧名字", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="旧名字", aliases=[], term_type="t", product_line="p")
     )
     session_store = AdminSessionStore()
     graph_client = SpyGraphClient()
@@ -248,7 +250,7 @@ def test_update_term_with_rename_calls_rename_then_sync(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/terms/旧名字",
+            "/api/admin/t1/terms/旧名字",
             json={"standard_name": "新名字", "aliases": [], "term_type": "t", "product_line": "p"},
             headers=_authed_headers(session_store),
         )
@@ -262,8 +264,8 @@ def test_update_term_with_rename_calls_rename_then_sync(terms_conn):
 
 
 def test_update_term_rename_into_existing_name_returns_400(terms_conn):
-    asyncio.run(create_term(terms_conn, standard_name="A", aliases=[], term_type="t", product_line="p"))
-    asyncio.run(create_term(terms_conn, standard_name="B", aliases=[], term_type="t", product_line="p"))
+    asyncio.run(create_term(terms_conn, tenant_id="t1", standard_name="A", aliases=[], term_type="t", product_line="p"))
+    asyncio.run(create_term(terms_conn, tenant_id="t1", standard_name="B", aliases=[], term_type="t", product_line="p"))
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -272,7 +274,7 @@ def test_update_term_rename_into_existing_name_returns_400(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/terms/A",
+            "/api/admin/t1/terms/A",
             json={"standard_name": "B", "aliases": [], "term_type": "t", "product_line": "p"},
             headers=_authed_headers(session_store),
         )
@@ -291,7 +293,7 @@ def test_update_nonexistent_term_returns_404(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/terms/不存在",
+            "/api/admin/t1/terms/不存在",
             json={"standard_name": "不存在", "aliases": [], "term_type": "t", "product_line": "p"},
             headers=_authed_headers(session_store),
         )
@@ -303,7 +305,7 @@ def test_update_nonexistent_term_returns_404(terms_conn):
 
 def test_delete_term_without_graph_edges_succeeds(terms_conn):
     asyncio.run(
-        create_term(terms_conn, standard_name="待删除", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="待删除", aliases=[], term_type="t", product_line="p")
     )
     session_store = AdminSessionStore()
     graph_client = SpyGraphClient(edge_count=0)
@@ -314,7 +316,7 @@ def test_delete_term_without_graph_edges_succeeds(terms_conn):
     try:
         client = TestClient(app)
         response = client.delete(
-            "/api/admin/terms/待删除", headers=_authed_headers(session_store)
+            "/api/admin/t1/terms/待删除", headers=_authed_headers(session_store)
         )
     finally:
         app.dependency_overrides.clear()
@@ -337,7 +339,7 @@ def test_delete_nonexistent_term_returns_404_even_when_graph_has_edges(terms_con
     try:
         client = TestClient(app)
         response = client.delete(
-            "/api/admin/terms/不存在", headers=_authed_headers(session_store)
+            "/api/admin/t1/terms/不存在", headers=_authed_headers(session_store)
         )
     finally:
         app.dependency_overrides.clear()
@@ -347,7 +349,7 @@ def test_delete_nonexistent_term_returns_404_even_when_graph_has_edges(terms_con
 
 def test_delete_term_with_graph_edges_returns_409(terms_conn):
     asyncio.run(
-        create_term(terms_conn, standard_name="使用中", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="使用中", aliases=[], term_type="t", product_line="p")
     )
     session_store = AdminSessionStore()
     graph_client = SpyGraphClient(edge_count=2)
@@ -358,7 +360,7 @@ def test_delete_term_with_graph_edges_returns_409(terms_conn):
     try:
         client = TestClient(app)
         response = client.delete(
-            "/api/admin/terms/使用中", headers=_authed_headers(session_store)
+            "/api/admin/t1/terms/使用中", headers=_authed_headers(session_store)
         )
     finally:
         app.dependency_overrides.clear()
@@ -366,7 +368,7 @@ def test_delete_term_with_graph_edges_returns_409(terms_conn):
     assert response.status_code == 409
     assert graph_client.deleted == []
     # SQLite 记录也不该被删掉——409 之后术语表和图谱两边都保持原样
-    remaining = asyncio.run(list_terms(terms_conn))
+    remaining = asyncio.run(list_terms(terms_conn, "t1"))
     assert [t.standard_name for t in remaining] == ["使用中"]
 
 
@@ -379,7 +381,7 @@ def test_create_term_with_empty_standard_name_returns_422(terms_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/terms",
+            "/api/admin/t1/terms",
             json={"standard_name": "   ", "aliases": [], "term_type": "t", "product_line": "p"},
             headers=_authed_headers(session_store),
         )
@@ -398,7 +400,7 @@ def test_create_term_with_slash_in_standard_name_returns_422(terms_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/terms",
+            "/api/admin/t1/terms",
             json={"standard_name": "A/B测试", "aliases": [], "term_type": "t", "product_line": "p"},
             headers=_authed_headers(session_store),
         )
@@ -410,7 +412,7 @@ def test_create_term_with_slash_in_standard_name_returns_422(terms_conn):
 
 def test_update_term_rename_into_name_with_slash_returns_422(terms_conn):
     asyncio.run(
-        create_term(terms_conn, standard_name="旧名字", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="旧名字", aliases=[], term_type="t", product_line="p")
     )
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
@@ -420,7 +422,7 @@ def test_update_term_rename_into_name_with_slash_returns_422(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/terms/旧名字",
+            "/api/admin/t1/terms/旧名字",
             json={"standard_name": "A/B", "aliases": [], "term_type": "t", "product_line": "p"},
             headers=_authed_headers(session_store),
         )
@@ -440,7 +442,7 @@ def test_create_term_drops_blank_aliases(terms_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/terms",
+            "/api/admin/t1/terms",
             json={
                 "standard_name": "新术语",
                 "aliases": ["别名1", "  ", "", "别名2"],
@@ -458,7 +460,7 @@ def test_create_term_drops_blank_aliases(terms_conn):
 
 def test_update_term_drops_blank_aliases(terms_conn):
     asyncio.run(
-        create_term(terms_conn, standard_name="术语A", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="术语A", aliases=[], term_type="t", product_line="p")
     )
     session_store = AdminSessionStore()
     graph_client = SpyGraphClient()
@@ -469,7 +471,7 @@ def test_update_term_drops_blank_aliases(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/terms/术语A",
+            "/api/admin/t1/terms/术语A",
             json={
                 "standard_name": "术语A",
                 "aliases": ["  别名1  ", "", "   "],
@@ -483,3 +485,29 @@ def test_update_term_drops_blank_aliases(terms_conn):
 
     assert response.status_code == 200
     assert response.json()["aliases"] == ["别名1"]
+
+
+def test_create_term_is_scoped_to_tenant_in_url(terms_conn):
+    session_store = AdminSessionStore()
+    graph_client = SpyGraphClient()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/tenant_a/terms",
+            json={"standard_name": "新术语", "aliases": [], "term_type": "t", "product_line": "p"},
+            headers=_authed_headers(session_store),
+        )
+        assert response.status_code == 200
+        assert response.json()["standard_name"] == "新术语"
+
+        list_resp = client.get("/api/admin/tenant_a/terms", headers=_authed_headers(session_store))
+        assert len(list_resp.json()["terms"]) == 1
+
+        other_tenant_resp = client.get("/api/admin/tenant_b/terms", headers=_authed_headers(session_store))
+        assert other_tenant_resp.json()["terms"] == []
+    finally:
+        app.dependency_overrides.clear()
