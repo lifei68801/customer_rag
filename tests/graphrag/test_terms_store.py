@@ -116,6 +116,9 @@ async def test_create_term_is_isolated_per_tenant():
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
     await _setup_default_categories(conn)
+    # Register categories for each tenant that will be used
+    await create_term_type(conn, tenant_id="tenant_a", value="t")
+    await create_term_type(conn, tenant_id="tenant_b", value="t")
     await create_term(
         conn, tenant_id="tenant_a", standard_name="错误码E502", aliases=[],
         term_type="t", product_line="p",
@@ -139,6 +142,8 @@ async def test_update_term_rename_keeps_node_key_stable():
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
     await _setup_default_categories(conn)
+    # Register categories for t1 tenant
+    await create_term_type(conn, tenant_id="t1", value="t")
     await create_term(
         conn, tenant_id="t1", standard_name="错误码E502", aliases=[],
         term_type="t", product_line="p",
@@ -161,6 +166,9 @@ async def test_check_name_conflict_does_not_cross_tenant_boundary():
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
     await _setup_default_categories(conn)
+    # Register categories for both tenants
+    await create_term_type(conn, tenant_id="tenant_a", value="t")
+    await create_term_type(conn, tenant_id="tenant_b", value="t")
     await create_term(
         conn, tenant_id="tenant_a", standard_name="登录模块", aliases=["认证模块"],
         term_type="t", product_line="p",
@@ -177,6 +185,8 @@ async def test_delete_term_scoped_to_tenant():
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
     await _setup_default_categories(conn)
+    # Register categories for t1 tenant
+    await create_term_type(conn, tenant_id="t1", value="t")
     await create_term(
         conn, tenant_id="t1", standard_name="待删除", aliases=[], term_type="t", product_line="p",
     )

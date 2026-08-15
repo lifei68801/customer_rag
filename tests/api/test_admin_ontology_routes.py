@@ -71,7 +71,7 @@ def test_create_and_list_term_types(client):
 
     resp = client.get("/api/admin/ontology/term-types", headers={"Authorization": "Bearer x"})
     assert resp.status_code == 200
-    assert resp.json() == {"term_types": [{"value": "错误码", "extra_fields": ["严重等级"]}]}
+    assert resp.json() == {"term_types": [{"value": "错误码", "extra_fields": ["严重等级"], "node_key_template": ""}]}
 
 
 def test_delete_term_type_in_use_returns_409(client):
@@ -125,6 +125,9 @@ def test_create_relation_type_rejects_bad_name(client):
 
 
 def test_add_and_list_constraints(client):
+    # Note: Term-types are currently hardcoded to tenant_id="default" in admin routes (Task 2).
+    # Task 4 will add {tenant_id} path parameter to make them per-tenant.
+    # For now, constraints must use the same "default" tenant where term-types land.
     client.post(
         "/api/admin/ontology/term-types", json={"value": "客房", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
@@ -133,17 +136,17 @@ def test_add_and_list_constraints(client):
         "/api/admin/ontology/term-types", json={"value": "酒店", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
     )
-    client.post("/api/admin/ontology/t1/checkout", headers={"Authorization": "Bearer x"})
+    client.post("/api/admin/ontology/default/checkout", headers={"Authorization": "Bearer x"})
 
     resp = client.post(
-        "/api/admin/ontology/t1/constraints",
+        "/api/admin/ontology/default/constraints",
         json={"subject_term_type": "客房", "relation_type": "PART_OF", "object_term_type": "酒店"},
         headers={"Authorization": "Bearer x"},
     )
     assert resp.status_code == 200
 
     resp = client.get(
-        "/api/admin/ontology/t1/constraints?status=draft", headers={"Authorization": "Bearer x"}
+        "/api/admin/ontology/default/constraints?status=draft", headers={"Authorization": "Bearer x"}
     )
     assert resp.json()["constraints"] == [
         {"subject_term_type": "客房", "relation_type": "PART_OF", "object_term_type": "酒店"}
@@ -152,7 +155,9 @@ def test_add_and_list_constraints(client):
 
 def test_remove_constraint_via_delete_with_body(client):
     """DELETE /{tenant_id}/constraints 带 body——确认 TestClient 真的能把
-    body 发送到一个 DELETE 请求上，路由端能正常解析。"""
+    body 发送到一个 DELETE 请求上，路由端能正常解析。
+    Note: Uses tenant_id="default" to match where term-types are hardcoded (Task 2).
+    """
     client.post(
         "/api/admin/ontology/term-types", json={"value": "客房", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
@@ -161,15 +166,15 @@ def test_remove_constraint_via_delete_with_body(client):
         "/api/admin/ontology/term-types", json={"value": "酒店", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
     )
-    client.post("/api/admin/ontology/t1/checkout", headers={"Authorization": "Bearer x"})
+    client.post("/api/admin/ontology/default/checkout", headers={"Authorization": "Bearer x"})
     client.post(
-        "/api/admin/ontology/t1/constraints",
+        "/api/admin/ontology/default/constraints",
         json={"subject_term_type": "客房", "relation_type": "PART_OF", "object_term_type": "酒店"},
         headers={"Authorization": "Bearer x"},
     )
 
     resp = client.request(
-        "DELETE", "/api/admin/ontology/t1/constraints",
+        "DELETE", "/api/admin/ontology/default/constraints",
         json={"subject_term_type": "客房", "relation_type": "PART_OF", "object_term_type": "酒店"},
         headers={"Authorization": "Bearer x"},
     )

@@ -44,6 +44,7 @@ router = APIRouter(prefix="/api/admin/ontology", dependencies=[Depends(deps.requ
 class TermTypeWriteRequest(BaseModel):
     value: str
     extra_fields: list[str] = []
+    node_key_template: str = ""
 
 
 class ProductLineWriteRequest(BaseModel):
@@ -64,10 +65,10 @@ async def create_term_type_category(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
     try:
-        await create_term_type(review_conn, tenant_id="default", value=payload.value, extra_fields=payload.extra_fields)
+        await create_term_type(review_conn, tenant_id="default", value=payload.value, extra_fields=payload.extra_fields, node_key_template=payload.node_key_template)
     except CategoryNameConflictError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"value": payload.value, "extra_fields": payload.extra_fields}
+    return {"value": payload.value, "extra_fields": payload.extra_fields, "node_key_template": payload.node_key_template}
 
 
 @router.put("/term-types/{value}")
@@ -78,13 +79,13 @@ async def update_term_type_category(
 ) -> dict:
     try:
         await update_term_type(
-            review_conn, tenant_id="default", value=value, new_value=payload.value, extra_fields=payload.extra_fields, node_key_template=""
+            review_conn, tenant_id="default", value=value, new_value=payload.value, extra_fields=payload.extra_fields, node_key_template=payload.node_key_template
         )
     except CategoryNotFoundError:
         raise HTTPException(status_code=404, detail="分类不存在")
     except CategoryNameConflictError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"value": payload.value, "extra_fields": payload.extra_fields}
+    return {"value": payload.value, "extra_fields": payload.extra_fields, "node_key_template": payload.node_key_template}
 
 
 @router.delete("/term-types/{value}")

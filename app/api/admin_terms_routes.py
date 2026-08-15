@@ -83,7 +83,7 @@ def _to_response(term: Term) -> TermResponse:
 async def list_all_terms(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> TermListResponse:
-    terms = await list_terms(review_conn)
+    terms = await list_terms(review_conn, tenant_id="default")
     return TermListResponse(terms=[_to_response(term) for term in terms])
 
 
@@ -96,6 +96,7 @@ async def create_new_term(
     try:
         await create_term(
             review_conn,
+            tenant_id="default",
             standard_name=payload.standard_name,
             aliases=payload.aliases,
             term_type=payload.term_type,
@@ -106,13 +107,8 @@ async def create_new_term(
         raise HTTPException(status_code=400, detail=str(exc))
     except UnknownCategoryError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    term = Term(
-        standard_name=payload.standard_name,
-        aliases=payload.aliases,
-        term_type=payload.term_type,
-        product_line=payload.product_line,
-        extra_properties=payload.extra_properties,
-    )
+    # Fetch the created term to get all fields including tenant_id and node_key
+    term = await get_term(review_conn, tenant_id="default", standard_name=payload.standard_name)
     # 新增成功后立即同步进图谱（属性+别名节点），不留图谱异步落后的窗口。
     try:
         await graph_client.sync_term(term)
@@ -135,6 +131,7 @@ async def update_existing_term(
     try:
         await update_term(
             review_conn,
+            tenant_id="default",
             standard_name=standard_name,
             new_standard_name=payload.standard_name,
             aliases=payload.aliases,
@@ -163,13 +160,8 @@ async def update_existing_term(
                 payload.standard_name,
             )
             raise
-    term = Term(
-        standard_name=payload.standard_name,
-        aliases=payload.aliases,
-        term_type=payload.term_type,
-        product_line=payload.product_line,
-        extra_properties=payload.extra_properties,
-    )
+    # Fetch the updated term to get all fields including tenant_id and node_key
+    term = await get_term(review_conn, tenant_id="default", standard_name=payload.standard_name)
     try:
         await graph_client.sync_term(term)
     except Exception:
@@ -194,13 +186,13 @@ async def delete_existing_term(
     # 一致状态——这一步必须在 delete_term() 之前，不能删完 SQLite 记录
     # 才发现图谱不允许删。
     try:
-        await get_term(review_conn, standard_name)
+        await get_term(review_conn, tenant_id="default", standard_name=standard_name)
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
     edge_count = await graph_client.count_relation_edges_for_term(standard_name)
     if edge_count > 0:
         raise HTTPException(status_code=409, detail="该术语已在图谱中使用，无法删除")
-    await delete_term(review_conn, standard_name)
+    await delete_term(review_conn, tenant_id="default", standard_name=standard_name)
     try:
         await graph_client.delete_term_node(standard_name)
     except Exception:

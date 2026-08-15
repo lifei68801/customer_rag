@@ -28,8 +28,8 @@ async def _conn() -> aiosqlite.Connection:
 
 async def test_add_allowed_combination_with_valid_references():
     conn = await _conn()
-    await create_term_type(conn, value="客房")
-    await create_term_type(conn, value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房")
+    await create_term_type(conn, tenant_id="t1", value="酒店")
     await create_relation_type(conn, "t1", relation_type="PART_OF", example_phrase="客房 PART_OF 酒店")
 
     await add_allowed_combination(
@@ -44,7 +44,7 @@ async def test_add_allowed_combination_with_valid_references():
 
 async def test_add_allowed_combination_rejects_unknown_subject_type():
     conn = await _conn()
-    await create_term_type(conn, value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="酒店")
     await create_relation_type(conn, "t1", relation_type="PART_OF", example_phrase="x")
 
     with pytest.raises(UnknownCategoryError):
@@ -56,8 +56,8 @@ async def test_add_allowed_combination_rejects_unknown_subject_type():
 
 async def test_add_allowed_combination_rejects_unknown_relation_type():
     conn = await _conn()
-    await create_term_type(conn, value="客房")
-    await create_term_type(conn, value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房")
+    await create_term_type(conn, tenant_id="t1", value="酒店")
 
     with pytest.raises(UnknownRelationTypeError):
         await add_allowed_combination(
@@ -68,8 +68,8 @@ async def test_add_allowed_combination_rejects_unknown_relation_type():
 
 async def test_add_allowed_combination_is_idempotent():
     conn = await _conn()
-    await create_term_type(conn, value="客房")
-    await create_term_type(conn, value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房")
+    await create_term_type(conn, tenant_id="t1", value="酒店")
     await create_relation_type(conn, "t1", relation_type="PART_OF", example_phrase="x")
 
     await add_allowed_combination(conn, "t1", subject_term_type="客房", relation_type="PART_OF", object_term_type="酒店")
@@ -80,8 +80,8 @@ async def test_add_allowed_combination_is_idempotent():
 
 async def test_remove_allowed_combination():
     conn = await _conn()
-    await create_term_type(conn, value="客房")
-    await create_term_type(conn, value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房")
+    await create_term_type(conn, tenant_id="t1", value="酒店")
     await create_relation_type(conn, "t1", relation_type="PART_OF", example_phrase="x")
     await add_allowed_combination(conn, "t1", subject_term_type="客房", relation_type="PART_OF", object_term_type="酒店")
 

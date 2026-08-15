@@ -147,7 +147,7 @@ async def update_term_type(
     node_key_template: str,
 ) -> None:
     """value 是当前名字，new_value 是提交的新名字，允许相同（即不改名）。
-    改名时级次更新该租户下 terms 表和 term_type_relation_allowlist 表里
+    改名时级联更新该租户下 terms 表和 term_type_relation_allowlist 表里
     所有引用旧名字的行，范围收窄到同一租户——term_type 按租户隔离后，
     跨租户级联会误伤其它租户的同名分类。
     """
