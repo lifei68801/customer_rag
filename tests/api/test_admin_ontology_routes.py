@@ -68,14 +68,60 @@ def client(monkeypatch, conn_for_testing):
 def test_create_and_list_term_types(client):
     resp = client.post(
         "/api/admin/ontology/t1/term-types",
-        json={"value": "错误码", "extra_fields": ["严重等级"]},
+        json={"value": "错误码", "extra_fields": [{"name": "严重等级", "value_type": "string"}]},
         headers={"Authorization": "Bearer x"},
     )
     assert resp.status_code == 200
 
     resp = client.get("/api/admin/ontology/t1/term-types", headers={"Authorization": "Bearer x"})
     assert resp.status_code == 200
-    assert resp.json() == {"term_types": [{"value": "错误码", "extra_fields": ["严重等级"], "node_key_template": ""}]}
+    assert resp.json() == {
+        "term_types": [
+            {
+                "value": "错误码",
+                "extra_fields": [{"name": "严重等级", "value_type": "string"}],
+                "node_key_template": "",
+            }
+        ]
+    }
+
+
+def test_create_term_type_with_typed_extra_fields(client):
+    resp = client.post(
+        "/api/admin/ontology/t1/term-types",
+        json={
+            "value": "VariantValue",
+            "extra_fields": [
+                {"name": "numeric_value", "value_type": "number"},
+                {"name": "dims", "value_type": "number[]"},
+            ],
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 200
+
+    resp = client.get("/api/admin/ontology/t1/term-types", headers={"Authorization": "Bearer x"})
+    assert resp.json() == {
+        "term_types": [
+            {
+                "value": "VariantValue",
+                "extra_fields": [
+                    {"name": "numeric_value", "value_type": "number"},
+                    {"name": "dims", "value_type": "number[]"},
+                ],
+                "node_key_template": "",
+            }
+        ]
+    }
+
+
+def test_create_term_type_rejects_invalid_extra_field_value_type(client):
+    resp = client.post(
+        "/api/admin/ontology/t1/term-types",
+        json={"value": "错误码", "extra_fields": [{"name": "严重等级", "value_type": "不存在的类型"}]},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 400
 
 
 async def test_delete_term_type_in_use_returns_409(client, conn_for_testing):

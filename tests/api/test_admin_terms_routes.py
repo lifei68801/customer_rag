@@ -487,6 +487,67 @@ def test_update_term_drops_blank_aliases(terms_conn):
     assert response.json()["aliases"] == ["别名1"]
 
 
+def test_create_term_with_typed_extra_properties_returns_200(terms_conn):
+    # 注意：terms_conn fixture（_open_terms_conn）已经注册过产品线 "p"，
+    # 这里不重复调用 create_product_line("p")——否则会撞上
+    # CategoryNameConflictError，跟本测试要验证的类型校验无关。
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
+    asyncio.run(
+        create_term_type(
+            terms_conn, tenant_id="t1", value="VariantValue",
+            extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "容量750ml", "aliases": [], "term_type": "VariantValue",
+                "product_line": "p", "extra_properties": {"numeric_value": 750},
+            },
+            headers=_authed_headers(session_store),
+        )
+        assert response.status_code == 200
+        assert response.json()["extra_properties"] == {"numeric_value": 750}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_term_rejects_extra_property_wrong_type_returns_400(terms_conn):
+    # 见上一个测试的说明：terms_conn fixture 已经注册过产品线 "p"，这里不重复创建。
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
+    asyncio.run(
+        create_term_type(
+            terms_conn, tenant_id="t1", value="VariantValue",
+            extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "X", "aliases": [], "term_type": "VariantValue",
+                "product_line": "p", "extra_properties": {"numeric_value": "不是数字"},
+            },
+            headers=_authed_headers(session_store),
+        )
+        assert response.status_code == 400
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_create_term_is_scoped_to_tenant_in_url(terms_conn):
     session_store = AdminSessionStore()
     graph_client = SpyGraphClient()

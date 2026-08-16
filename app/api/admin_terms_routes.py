@@ -11,6 +11,7 @@ from app.api import deps
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.terms_store import (
+    InvalidExtraPropertyTypeError,
     TermNameConflictError,
     TermNotFoundError,
     UnknownCategoryError,
@@ -31,7 +32,7 @@ class TermResponse(BaseModel):
     aliases: list[str]
     term_type: str
     product_line: str
-    extra_properties: dict[str, str] = {}
+    extra_properties: dict[str, str | int | float | list[float]] = {}
 
 
 class TermListResponse(BaseModel):
@@ -43,7 +44,7 @@ class TermWriteRequest(BaseModel):
     aliases: list[str]
     term_type: str
     product_line: str
-    extra_properties: dict[str, str] = {}
+    extra_properties: dict[str, str | int | float | list[float]] = {}
 
     @field_validator("standard_name")
     @classmethod
@@ -109,6 +110,8 @@ async def create_new_term(
         raise HTTPException(status_code=400, detail=str(exc))
     except UnknownCategoryError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except InvalidExtraPropertyTypeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     term = Term(
         tenant_id=tenant_id,
         node_key=payload.standard_name,
@@ -155,6 +158,8 @@ async def update_existing_term(
     except TermNameConflictError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except UnknownCategoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except InvalidExtraPropertyTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     node_key = existing_before_update.node_key
     if payload.standard_name != standard_name:

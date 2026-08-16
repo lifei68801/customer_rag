@@ -10,6 +10,8 @@ from app.graphrag.ontology_categories import (
     CategoryInUseError,
     CategoryNameConflictError,
     CategoryNotFoundError,
+    ExtraFieldSpec,
+    InvalidExtraFieldTypeError,
     create_product_line,
     create_term_type,
     delete_product_line,
@@ -41,10 +43,23 @@ from app.graphrag.neo4j_client import Neo4jGraphClient
 router = APIRouter(prefix="/api/admin/ontology", dependencies=[Depends(deps.require_admin_session)])
 
 
+class ExtraFieldSpecRequest(BaseModel):
+    name: str
+    value_type: str
+
+
 class TermTypeWriteRequest(BaseModel):
     value: str
-    extra_fields: list[str] = []
+    extra_fields: list[ExtraFieldSpecRequest] = []
     node_key_template: str = ""
+
+
+def _to_extra_field_specs(items: list[ExtraFieldSpecRequest]) -> list[ExtraFieldSpec]:
+    return [ExtraFieldSpec(name=item.name, value_type=item.value_type) for item in items]
+
+
+def _extra_field_spec_to_dict(spec: ExtraFieldSpec) -> dict:
+    return {"name": spec.name, "value_type": spec.value_type}
 
 
 class ProductLineWriteRequest(BaseModel):
@@ -59,7 +74,11 @@ async def list_term_type_categories(
     result = await list_term_types(review_conn, tenant_id)
     return {
         "term_types": [
-            {"value": t.value, "extra_fields": t.extra_fields, "node_key_template": t.node_key_template}
+            {
+                "value": t.value,
+                "extra_fields": [_extra_field_spec_to_dict(f) for f in t.extra_fields],
+                "node_key_template": t.node_key_template,
+            }
             for t in result
         ]
     }
@@ -73,10 +92,13 @@ async def create_term_type_category(
 ) -> dict:
     try:
         await create_term_type(
-            review_conn, tenant_id, value=payload.value, extra_fields=payload.extra_fields,
+            review_conn, tenant_id, value=payload.value,
+            extra_fields=_to_extra_field_specs(payload.extra_fields),
             node_key_template=payload.node_key_template,
         )
     except CategoryNameConflictError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except InvalidExtraFieldTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return payload.model_dump()
 
@@ -91,11 +113,14 @@ async def update_term_type_category(
     try:
         await update_term_type(
             review_conn, tenant_id, value=value, new_value=payload.value,
-            extra_fields=payload.extra_fields, node_key_template=payload.node_key_template,
+            extra_fields=_to_extra_field_specs(payload.extra_fields),
+            node_key_template=payload.node_key_template,
         )
     except CategoryNotFoundError:
         raise HTTPException(status_code=404, detail="分类不存在")
     except CategoryNameConflictError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except InvalidExtraFieldTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return payload.model_dump()
 
