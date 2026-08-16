@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 
 import aiosqlite
 import pytest
@@ -10,6 +11,7 @@ from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import ensure_review_schema
+from app.graphrag.terms_store import ensure_terms_schema
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
 from app.ingestion.tracking import ensure_tracking_schema, record_ingested
 from app.main import app
@@ -64,14 +66,20 @@ class SpyGraphClient:
         self.deleted_sources.append((source, tenant_id))
 
 
+_TENANT_ID = "t1"
+
 _TERMS = [
     Term(
+        tenant_id=_TENANT_ID,
+        node_key="示例错误码E502",
         standard_name="示例错误码E502",
         aliases=["网关超时示例"],
         term_type="error_code",
         product_line="示例产品线",
     ),
     Term(
+        tenant_id=_TENANT_ID,
+        node_key="示例登录模块",
         standard_name="示例登录模块",
         aliases=["示例认证模块"],
         term_type="module",
@@ -131,6 +139,12 @@ def ingestion_conn():
 async def _open_review_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(conn)
+    # get_review_conn（app/api/deps.py）在生产环境里同一个连接同时建
+    # review_queue 和 terms 两套 schema——upload_document/retry_ingestion_job
+    # 现在不再经 deps.get_terms，而是直接用自己拿到的 review_conn 调
+    # list_terms()（Fix 3），测试用的连接必须跟生产环境一样两套 schema
+    # 都有，否则 list_terms 会报 "no such table: terms"。
+    await ensure_terms_schema(conn)
     return conn
 
 
@@ -142,6 +156,29 @@ def review_conn():
         yield conn
     finally:
         asyncio.run(conn.close())
+
+
+async def _seed_terms(conn: aiosqlite.Connection, terms: list[Term]) -> None:
+    """直接按 terms 表结构写行，绕开 create_term() 的分类校验——这里的
+    测试只关心"upload_document/retry_ingestion_job 路由用自己解析的
+    tenant_id 查到了正确的术语"，不关心分类枚举表是否也注册过。
+    """
+    for term in terms:
+        await conn.execute(
+            "INSERT OR REPLACE INTO terms "
+            "(tenant_id, node_key, standard_name, aliases, term_type, product_line, "
+            "extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                term.tenant_id,
+                term.node_key,
+                term.standard_name,
+                json.dumps(term.aliases, ensure_ascii=False),
+                term.term_type,
+                term.product_line,
+                json.dumps(term.extra_properties, ensure_ascii=False),
+            ),
+        )
+    await conn.commit()
 
 
 def _authed_headers(session_store: AdminSessionStore) -> dict[str, str]:
@@ -162,10 +199,19 @@ def _upload_overrides(
 ) -> None:
     """上传接口依赖的全部 provider 覆盖。
 
-    图谱那四项（llm_registry/terms/graph_client/review_conn）现在是上传
+    图谱那几项（llm_registry/graph_client/review_conn）现在是上传
     路由的无条件依赖（build_graph 是逐任务判断的，资源必须先备好），
     不覆盖的话测试会去真建 Neo4j driver、真开仓库里的 SQLite 文件。
+
+    terms 不再通过 deps.get_terms 覆盖注入（Fix 3：upload_document/
+    retry_ingestion_job 改成直接用自己的 tenant_id 从 review_conn 里
+    查 terms 表）——调用方不传 review_conn 时这里用一个全新的、已建好
+    schema 的空连接兜底；传了 terms 参数时把它们写进这个连接的 terms
+    表，路由内部真的查出这些数据，而不是靠 mock 短路。
     """
+    resolved_review_conn = review_conn if review_conn is not None else asyncio.run(_open_review_conn())
+    if terms is not None:
+        asyncio.run(_seed_terms(resolved_review_conn, terms))
     embedding_registry = EmbeddingRegistry()
     embedding_registry.register(deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider())
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
@@ -177,11 +223,10 @@ def _upload_overrides(
     app.dependency_overrides[deps.get_llm_registry] = lambda: (
         llm_registry or _llm_registry_returning('{"relations": []}')
     )
-    app.dependency_overrides[deps.get_terms] = lambda: (_TERMS if terms is None else terms)
     app.dependency_overrides[deps.get_graph_client] = lambda: (
         graph_client if graph_client is not None else SpyGraphClient()
     )
-    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_review_conn] = lambda: resolved_review_conn
 
 
 def test_upload_without_session_returns_401():
@@ -628,6 +673,7 @@ def test_upload_with_build_graph_true_runs_graph_extraction(
         llm_registry=_llm_registry_returning(_RESOLVABLE_RELATION_JSON),
         graph_client=graph_client,
         review_conn=review_conn,
+        terms=_TERMS,
     )
     try:
         client = TestClient(app)
@@ -670,6 +716,7 @@ def test_upload_with_build_graph_false_skips_graph_extraction(
         llm_registry=_llm_registry_returning(_RESOLVABLE_RELATION_JSON),
         graph_client=graph_client,
         review_conn=review_conn,
+        terms=_TERMS,
     )
     try:
         client = TestClient(app)
@@ -737,7 +784,7 @@ def test_list_documents_includes_dead_jobs(ingestion_conn):
     assert body["dead_jobs"][0]["last_error"] == "解析失败"
 
 
-def test_retry_job_resets_to_pending_and_returns_200(tmp_path, ingestion_conn):
+def test_retry_job_resets_to_pending_and_returns_200(tmp_path, ingestion_conn, review_conn):
     from app.ingestion.ingestion_queue import (
         enqueue_ingestion_job,
         list_pending_jobs,
@@ -762,9 +809,11 @@ def test_retry_job_resets_to_pending_and_returns_200(tmp_path, ingestion_conn):
     app.dependency_overrides[deps.get_embedding_registry] = lambda: EmbeddingRegistry()
     app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     app.dependency_overrides[deps.get_llm_registry] = lambda: ProviderRegistry()
-    app.dependency_overrides[deps.get_terms] = lambda: []
     app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
-    app.dependency_overrides[deps.get_review_conn] = lambda: None
+    # retry_ingestion_job 现在直接用自己解析的 tenant_id 从 review_conn 查
+    # terms 表（Fix 3），不再经 deps.get_terms——传一个真实建过 schema 的
+    # 连接，而不是 None，否则路由内部的 list_terms() 会直接崩掉。
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.post(
@@ -788,7 +837,7 @@ def test_retry_job_resets_to_pending_and_returns_200(tmp_path, ingestion_conn):
     assert pending[0]["attempts"] == 1
 
 
-def test_retry_job_returns_404_for_unknown_job(ingestion_conn):
+def test_retry_job_returns_404_for_unknown_job(ingestion_conn, review_conn):
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -796,9 +845,8 @@ def test_retry_job_returns_404_for_unknown_job(ingestion_conn):
     app.dependency_overrides[deps.get_embedding_registry] = lambda: EmbeddingRegistry()
     app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     app.dependency_overrides[deps.get_llm_registry] = lambda: ProviderRegistry()
-    app.dependency_overrides[deps.get_terms] = lambda: []
     app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
-    app.dependency_overrides[deps.get_review_conn] = lambda: None
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.post(
@@ -812,7 +860,7 @@ def test_retry_job_returns_404_for_unknown_job(ingestion_conn):
     assert response.status_code == 404
 
 
-def test_retry_job_returns_409_when_job_is_not_dead(ingestion_conn):
+def test_retry_job_returns_409_when_job_is_not_dead(ingestion_conn, review_conn):
     from app.ingestion.ingestion_queue import enqueue_ingestion_job
 
     job_id = asyncio.run(
@@ -829,9 +877,8 @@ def test_retry_job_returns_409_when_job_is_not_dead(ingestion_conn):
     app.dependency_overrides[deps.get_embedding_registry] = lambda: EmbeddingRegistry()
     app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     app.dependency_overrides[deps.get_llm_registry] = lambda: ProviderRegistry()
-    app.dependency_overrides[deps.get_terms] = lambda: []
     app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
-    app.dependency_overrides[deps.get_review_conn] = lambda: None
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.post(
@@ -1143,17 +1190,22 @@ def test_get_terms_queries_the_review_conn_terms_table():
     try:
         asyncio.run(ensure_terms_schema(review_conn))
         # term_type/product_line 现在是硬约束，先注册这两个分类值再创建术语——
-        # 见 app/graphrag/terms_store.py 的 UnknownCategoryError。
-        asyncio.run(create_term_type(review_conn, value="t"))
+        # 见 app/graphrag/terms_store.py 的 UnknownCategoryError。get_terms()
+        # 没传 gateway_tenant_id 时按未启用网关鉴权处理，回退到 "default"
+        # 租户（见 deps.get_terms 的说明），这里的术语/分类都注册在
+        # "default" 租户下才能被查到。
+        asyncio.run(create_term_type(review_conn, "default", value="t"))
         asyncio.run(create_product_line(review_conn, value="p"))
         asyncio.run(
             create_term(
-                review_conn, standard_name="集成测试术语", aliases=[],
-                term_type="t", product_line="p",
+                review_conn, tenant_id="default", standard_name="集成测试术语",
+                aliases=[], term_type="t", product_line="p",
             )
         )
 
-        resolved_terms = asyncio.run(deps.get_terms(review_conn=review_conn))
+        resolved_terms = asyncio.run(
+            deps.get_terms(review_conn=review_conn, gateway_tenant_id=None)
+        )
     finally:
         asyncio.run(review_conn.close())
 

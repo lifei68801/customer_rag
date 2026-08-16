@@ -21,6 +21,7 @@ from app.graphrag.review_queue import (
     list_resolved_reviews,
     reject_review,
 )
+from app.graphrag.terms_store import list_terms
 
 router = APIRouter(
     prefix="/api/admin/graph-reviews", dependencies=[Depends(deps.require_admin_session)]
@@ -81,8 +82,11 @@ async def approve(
     payload: ApproveRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
-    terms: list[Term] = Depends(deps.get_terms),
 ) -> dict[str, bool]:
+    # 这个路由自己的权威 tenant_id 是 payload.tenant_id，不用 deps.get_terms
+    # 那套独立的 gateway_tenant_id 解析——两者在这条请求里可能不是同一个
+    # 值，直接按 payload.tenant_id 加载术语表，避免跨租户读到错的术语表。
+    terms: list[Term] = await list_terms(review_conn, payload.tenant_id)
     try:
         await approve_review(
             review_conn,

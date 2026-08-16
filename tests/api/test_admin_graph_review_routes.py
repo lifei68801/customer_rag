@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import aiosqlite
 import pytest
@@ -47,6 +48,29 @@ def review_conn():
         yield conn
     finally:
         asyncio.run(conn.close())
+
+
+async def _seed_terms(conn: aiosqlite.Connection, terms: list[Term]) -> None:
+    """approve 路由现在不再经 deps.get_terms（Fix 3：直接用 payload.tenant_id
+    从 review_conn 查 terms 表），测试改为直接往 terms 表插行，绕开
+    create_term() 的分类校验——这里只关心路由查到了正确的术语。
+    """
+    for term in terms:
+        await conn.execute(
+            "INSERT OR REPLACE INTO terms "
+            "(tenant_id, node_key, standard_name, aliases, term_type, product_line, "
+            "extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                term.tenant_id,
+                term.node_key,
+                term.standard_name,
+                json.dumps(term.aliases, ensure_ascii=False),
+                term.term_type,
+                term.product_line,
+                json.dumps(term.extra_properties, ensure_ascii=False),
+            ),
+        )
+    await conn.commit()
 
 
 def _authed_headers(session_store: AdminSessionStore) -> dict[str, str]:
@@ -100,14 +124,25 @@ def test_approve_review_calls_graph_client_and_moves_to_history(review_conn):
     )
     session_store = AdminSessionStore()
     graph_client = FakeGraphClient()
+    asyncio.run(
+        _seed_terms(
+            review_conn,
+            [
+                Term(
+                    tenant_id="t1", node_key="A", standard_name="A", aliases=[],
+                    term_type="", product_line="",
+                ),
+                Term(
+                    tenant_id="t1", node_key="B", standard_name="B", aliases=[],
+                    term_type="", product_line="",
+                ),
+            ],
+        )
+    )
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
-    app.dependency_overrides[deps.get_terms] = lambda: [
-        Term(standard_name="A", aliases=[], term_type="", product_line=""),
-        Term(standard_name="B", aliases=[], term_type="", product_line=""),
-    ]
     try:
         client = TestClient(app)
         response = client.post(
@@ -212,10 +247,21 @@ def test_approve_already_resolved_review_returns_409(review_conn):
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraphClient()
-    app.dependency_overrides[deps.get_terms] = lambda: [
-        Term(standard_name="A", aliases=[], term_type="", product_line=""),
-        Term(standard_name="B", aliases=[], term_type="", product_line=""),
-    ]
+    asyncio.run(
+        _seed_terms(
+            review_conn,
+            [
+                Term(
+                    tenant_id="t1", node_key="A", standard_name="A", aliases=[],
+                    term_type="", product_line="",
+                ),
+                Term(
+                    tenant_id="t1", node_key="B", standard_name="B", aliases=[],
+                    term_type="", product_line="",
+                ),
+            ],
+        )
+    )
     try:
         client = TestClient(app)
         payload = {
@@ -283,10 +329,21 @@ def test_list_reviews_status_all_returns_both_approved_and_rejected(review_conn)
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraphClient()
-    app.dependency_overrides[deps.get_terms] = lambda: [
-        Term(standard_name="A", aliases=[], term_type="", product_line=""),
-        Term(standard_name="B", aliases=[], term_type="", product_line=""),
-    ]
+    asyncio.run(
+        _seed_terms(
+            review_conn,
+            [
+                Term(
+                    tenant_id="t1", node_key="A", standard_name="A", aliases=[],
+                    term_type="", product_line="",
+                ),
+                Term(
+                    tenant_id="t1", node_key="B", standard_name="B", aliases=[],
+                    term_type="", product_line="",
+                ),
+            ],
+        )
+    )
     try:
         client = TestClient(app)
         client.post(
@@ -417,10 +474,21 @@ def test_approve_review_with_invalid_relation_type_returns_400(review_conn):
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: RelationTypeRejectingGraphClient()
-    app.dependency_overrides[deps.get_terms] = lambda: [
-        Term(standard_name="A", aliases=[], term_type="", product_line=""),
-        Term(standard_name="B", aliases=[], term_type="", product_line=""),
-    ]
+    asyncio.run(
+        _seed_terms(
+            review_conn,
+            [
+                Term(
+                    tenant_id="t1", node_key="A", standard_name="A", aliases=[],
+                    term_type="", product_line="",
+                ),
+                Term(
+                    tenant_id="t1", node_key="B", standard_name="B", aliases=[],
+                    term_type="", product_line="",
+                ),
+            ],
+        )
+    )
     try:
         client = TestClient(app)
         response = client.post(
@@ -446,9 +514,17 @@ def test_approve_review_with_standard_name_not_in_terms_returns_400(review_conn)
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraphClient()
-    app.dependency_overrides[deps.get_terms] = lambda: [
-        Term(standard_name="B", aliases=[], term_type="", product_line=""),
-    ]
+    asyncio.run(
+        _seed_terms(
+            review_conn,
+            [
+                Term(
+                    tenant_id="t1", node_key="B", standard_name="B", aliases=[],
+                    term_type="", product_line="",
+                ),
+            ],
+        )
+    )
     try:
         client = TestClient(app)
         response = client.post(

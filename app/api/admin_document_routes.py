@@ -23,6 +23,7 @@ from app.api import deps
 from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
+from app.graphrag.terms_store import list_terms
 from app.ingestion.ingestion_queue import (
     SUPPORTED_SUFFIXES,
     JobNotDeadError,
@@ -181,7 +182,6 @@ async def upload_document(
     embedding_registry: EmbeddingRegistry = Depends(deps.get_embedding_registry),
     vector_store: VectorStore = Depends(deps.get_vector_store),
     llm_registry: ProviderRegistry = Depends(deps.get_llm_registry),
-    terms: list[Term] = Depends(deps.get_terms),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     ocr: OcrFunction | None = Depends(deps.get_ocr_function),
@@ -195,6 +195,10 @@ async def upload_document(
     _reject_oversized_by_content_length(request)
     _validate_tenant_id(tenant_id)
     _validate_upload_suffix(file.filename)
+    # 这个路由自己已经有权威的 tenant_id（Form 字段），不用 deps.get_terms
+    # 那套独立的 gateway_tenant_id 解析——两者在这条请求里可能不是同一个
+    # 值，直接按本路由的 tenant_id 加载术语表，避免跨租户读到错的术语表。
+    terms: list[Term] = await list_terms(review_conn, tenant_id)
 
     contents = await file.read()
     if len(contents) > _MAX_UPLOAD_BYTES:
@@ -321,7 +325,6 @@ async def retry_ingestion_job(
     embedding_registry: EmbeddingRegistry = Depends(deps.get_embedding_registry),
     vector_store: VectorStore = Depends(deps.get_vector_store),
     llm_registry: ProviderRegistry = Depends(deps.get_llm_registry),
-    terms: list[Term] = Depends(deps.get_terms),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     ocr: OcrFunction | None = Depends(deps.get_ocr_function),
@@ -329,6 +332,9 @@ async def retry_ingestion_job(
     settings: Settings = Depends(deps.get_settings),
 ) -> RetryJobResponse:
     _validate_tenant_id(tenant_id)
+    # 同上（upload_document）：用本路由自己的权威 tenant_id（路径/查询参数）
+    # 加载术语表，不经 deps.get_terms 的独立 gateway_tenant_id 解析。
+    terms: list[Term] = await list_terms(review_conn, tenant_id)
     try:
         await retry_job(ingestion_conn, job_id, tenant_id=tenant_id)
     except JobNotFoundError:
