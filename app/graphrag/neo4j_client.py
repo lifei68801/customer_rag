@@ -193,11 +193,17 @@ class Neo4jGraphClient:
         租户各自抽取出同一对术语间的关系时，会共用同一对 Neo4j 节点，
         产生跨租户数据污染。
 
-        subject_standard_name/object_standard_name 在 extraction 数据
-        接入模式下本身就是 node_key 的值（见 Global Constraints 的
-        node_key 生成规则），因此这里直接把它们当 node_key 用，不改变
-        这个函数对外的参数名/调用方传参方式——app/graphrag/
-        normalization.py 和 review_queue.py 的现有调用点不用改。
+        subject_standard_name/object_standard_name 这两个参数名是历史
+        遗留（不改动，避免连锁改动调用方签名），但它们的值必须是术语的
+        node_key（创建时固定的身份键，改名后不变——ADR-0003），不是当前
+        的展示名 standard_name：两者只在术语刚创建、尚未被改名时恰好
+        相等，改名之后就会不同。调用方（app/graphrag/normalization.py、
+        review_queue.py、app/agent/tools.py::graph_query_tool）必须先
+        用 resolve_to_standard_name() 等方式解析出 standard_name，再从
+        已加载的 terms 列表里按 standard_name 反查对应的 node_key，把
+        node_key 传进来——绝不能假定"展示名等于 node_key"，否则改名后
+        这里会用旧的 node_key 形状字符串新建一个没有 standard_name
+        属性的幽灵节点，而不是命中真实节点。
 
         tenant_id 必须写进 MERGE 的匹配模式本身（不能只在匹配到之后才
         SET）——:Term 标准节点不分租户、可能被多个租户共用，如果匹配

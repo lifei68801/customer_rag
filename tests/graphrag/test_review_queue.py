@@ -21,9 +21,17 @@ from app.graphrag.review_queue import (
 _NOW = datetime(2026, 8, 12, 12, 0, 0)
 
 
-def _terms(*standard_names: str) -> list[Term]:
+def _terms(*standard_names: str, tenant_id: str = "t1") -> list[Term]:
+    """构造术语列表，默认 node_key == standard_name（未改名场景）。"""
     return [
-        Term(standard_name=name, aliases=[], term_type="", product_line="")
+        Term(
+            tenant_id=tenant_id,
+            node_key=name,
+            standard_name=name,
+            aliases=[],
+            term_type="",
+            product_line="",
+        )
         for name in standard_names
     ]
 
@@ -129,6 +137,60 @@ async def test_approve_review_writes_relation_with_source_and_tenant_and_removes
         }
     ]
     assert await list_pending_reviews(conn, tenant_id="t1") == []
+
+
+async def test_approve_review_writes_node_key_not_standard_name_after_term_was_renamed():
+    """Fix 2 回归测试：merge_relation 现在按 {tenant_id, node_key} MERGE
+    端点节点（node_key 是创建时固定的身份键，改名后不变——ADR-0003）。
+    这里构造"已改名"的术语——node_key（创建时的原始值）与人工确认时
+    传入的当前 standard_name 不同——验证 approve_review 传给
+    merge_relation 的是术语的 node_key，而不是审核员直接输入的展示名，
+    否则改名后批准会在 Neo4j 里 MERGE 出一个没有 standard_name 属性的
+    幽灵节点，而不是命中真实节点。
+    """
+    conn = await _connect()
+    graph_client = FakeGraphClient()
+    review_id = await enqueue_for_review(
+        conn,
+        subject_candidate="网关超时示例2.0",
+        object_candidate="认证模块",
+        relation_type="RELATED_TO",
+        reason="subject_unresolved",
+        source="faq.md",
+        tenant_id="t1",
+    )
+    renamed_terms = [
+        Term(
+            tenant_id="t1",
+            node_key="示例错误码E502_原始名",
+            standard_name="示例错误码E502",
+            aliases=[],
+            term_type="",
+            product_line="",
+        ),
+        Term(
+            tenant_id="t1",
+            node_key="示例登录模块_原始名",
+            standard_name="示例登录模块",
+            aliases=[],
+            term_type="",
+            product_line="",
+        ),
+    ]
+
+    await approve_review(
+        conn,
+        review_id=review_id,
+        subject_standard_name="示例错误码E502",
+        object_standard_name="示例登录模块",
+        tenant_id="t1",
+        graph_client=graph_client,
+        terms=renamed_terms,
+        now=_NOW,
+    )
+
+    assert graph_client.written[0]["subject"] == "示例错误码E502_原始名"
+    assert graph_client.written[0]["object"] == "示例登录模块_原始名"
 
 
 async def test_approve_review_from_wrong_tenant_raises_not_found():

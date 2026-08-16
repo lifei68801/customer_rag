@@ -154,9 +154,21 @@ async def normalize_and_write_relations(
                 )
             continue
         try:
+            # merge_relation 现在按 {tenant_id, node_key} MERGE 端点节点
+            # （node_key 是创建时固定的身份键，改名后不变——ADR-0003），不能
+            # 直接传 resolve_to_standard_name 返回的展示名（改名后就不等于
+            # node_key 了）。从已加载的 terms 列表按 standard_name 反查
+            # 对应的 node_key，与 app/agent/tools.py::graph_query_tool 的
+            # 做法一致。
+            subject_node_key = next(
+                t.node_key for t in terms if t.standard_name == subject_std
+            )
+            object_node_key = next(
+                t.node_key for t in terms if t.standard_name == object_std
+            )
             await graph_client.merge_relation(
-                subject_standard_name=subject_std,
-                object_standard_name=object_std,
+                subject_standard_name=subject_node_key,
+                object_standard_name=object_node_key,
                 relation_type=relation["relation_type"],
                 source=source,
                 tenant_id=tenant_id,

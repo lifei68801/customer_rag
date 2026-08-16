@@ -291,9 +291,20 @@ async def approve_review(
         raise StandardNameNotInTermsError(
             f"object_standard_name 不在术语表中: {object_standard_name!r}"
         )
+    # merge_relation 现在按 {tenant_id, node_key} MERGE 端点节点（node_key
+    # 是创建时固定的身份键，改名后不变——ADR-0003），不能直接传人工确认的
+    # 展示名 subject_standard_name/object_standard_name（改名后就不等于
+    # node_key 了）。从上面已校验过的 terms 列表按 standard_name 反查对应
+    # 的 node_key，与 app/agent/tools.py::graph_query_tool 的做法一致。
+    subject_node_key = next(
+        t.node_key for t in terms if t.standard_name == subject_standard_name
+    )
+    object_node_key = next(
+        t.node_key for t in terms if t.standard_name == object_standard_name
+    )
     await graph_client.merge_relation(
-        subject_standard_name=subject_standard_name,
-        object_standard_name=object_standard_name,
+        subject_standard_name=subject_node_key,
+        object_standard_name=object_node_key,
         relation_type=row["relation_type"],
         source=row["source"],
         tenant_id=tenant_id,

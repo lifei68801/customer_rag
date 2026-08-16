@@ -13,12 +13,16 @@ _NOW = datetime(2026, 8, 12, 12, 0, 0)
 
 _TERMS = [
     Term(
+        tenant_id="t1",
+        node_key="错误码E502",
         standard_name="错误码E502",
         aliases=["网关超时"],
         term_type="error_code",
         product_line="核心平台",
     ),
     Term(
+        tenant_id="t1",
+        node_key="登录模块",
         standard_name="登录模块",
         aliases=["认证模块"],
         term_type="module",
@@ -306,12 +310,16 @@ def test_find_fuzzy_candidate_standard_name_picks_highest_ratio_not_first_match(
     # （TermGuard 的 match_terms() 是后者语义，这里必须不一样）。
     multi_candidate_terms = [
         Term(
+            tenant_id="t1",
+            node_key="错误码E503",
             standard_name="错误码E503",
             aliases=["网关超时中"],
             term_type="error_code",
             product_line="核心平台",
         ),
         Term(
+            tenant_id="t1",
+            node_key="错误码E502",
             standard_name="错误码E502",
             aliases=["网关超时"],
             term_type="error_code",
@@ -322,6 +330,50 @@ def test_find_fuzzy_candidate_standard_name_picks_highest_ratio_not_first_match(
     result = find_fuzzy_candidate_standard_name("网关超时了", multi_candidate_terms)
 
     assert result == "错误码E502"
+
+
+async def test_writes_node_key_not_standard_name_after_term_was_renamed():
+    """Fix 2 回归测试：merge_relation 现在按 {tenant_id, node_key} MERGE
+    端点节点（node_key 是创建时固定的身份键，改名后不变——ADR-0003）。
+    这里构造一个"已改名"的术语——node_key（创建时的原始值）与当前
+    standard_name（改名后的展示名）不同——验证写入图谱时传给
+    merge_relation 的是 node_key，而不是 resolve_to_standard_name()
+    返回的当前展示名，否则改名后会在 Neo4j 里 MERGE 出一个没有
+    standard_name 属性的幽灵节点，而不是命中真实节点。
+    """
+    graph_client = FakeGraphClient()
+    renamed_terms = [
+        Term(
+            tenant_id="t1",
+            # node_key 是术语创建时的原始名字，改名后不再更新；
+            # standard_name 是改名后的当前展示名，两者刻意不同。
+            node_key="错误码E502_原始名",
+            standard_name="错误码E502",
+            aliases=["网关超时"],
+            term_type="error_code",
+            product_line="核心平台",
+        ),
+        Term(
+            tenant_id="t1",
+            node_key="登录模块_原始名",
+            standard_name="登录模块",
+            aliases=["认证模块"],
+            term_type="module",
+            product_line="核心平台",
+        ),
+    ]
+    relations = [
+        {"subject": "网关超时", "object": "认证模块", "relation_type": "RELATED_TO"}
+    ]
+
+    written = await normalize_and_write_relations(
+        relations, terms=renamed_terms, graph_client=graph_client, source="a.md",
+        tenant_id="t1", now=_NOW,
+    )
+
+    assert written == 1
+    assert graph_client.written[0]["subject"] == "错误码E502_原始名"
+    assert graph_client.written[0]["object"] == "登录模块_原始名"
 
 
 async def test_enqueued_review_carries_evidence_from_relation_candidate():
