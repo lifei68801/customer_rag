@@ -407,3 +407,66 @@ async def delete_term(conn: aiosqlite.Connection, tenant_id: str, standard_name:
         "DELETE FROM terms WHERE tenant_id=? AND standard_name=?", (tenant_id, standard_name)
     )
     await conn.commit()
+
+
+async def upsert_term_with_node_key(
+    conn: aiosqlite.Connection,
+    *,
+    tenant_id: str,
+    node_key: str,
+    standard_name: str,
+    aliases: list[str],
+    term_type: str,
+    product_line: str,
+    extra_properties: dict[str, object] | None = None,
+) -> None:
+    """ETL 专用的幂等写入：按 (tenant_id, node_key) 判定冲突，已存在就更新，不存在
+    就插入——不是 create_term/update_term 那种"创建 xor 更新"两态分支，是真正的
+    upsert，与 Neo4j 侧 merge_relation/sync_term 的 MERGE 语义一致（见
+    docs/superpowers/specs/2026-08-16-schema-etl-engine-design.md 第 5 节）。
+
+    node_key 由调用方显式提供（按 node_key_template 算出），不像 create_term 那样
+    自动取 standard_name 的值——这是与 create_term/update_term 唯一的本质区别。
+
+    standard_name 的租户内唯一性约束（idx_terms_tenant_standard_name）仍然生效：
+    如果这个 standard_name 已经被另一个 node_key 占用，抛 TermNameConflictError。
+    """
+    extra_properties = extra_properties or {}
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute(
+        "SELECT extra_properties FROM terms WHERE tenant_id = ? AND node_key = ?",
+        (tenant_id, node_key),
+    )
+    existing_row = await cursor.fetchone()
+    existing_extra_property_keys = (
+        frozenset(json.loads(existing_row["extra_properties"]))
+        if existing_row is not None else frozenset()
+    )
+    await _validate_categories(
+        conn, tenant_id=tenant_id, term_type=term_type, product_line=product_line,
+        extra_properties=extra_properties,
+        existing_extra_property_keys=existing_extra_property_keys,
+    )
+    try:
+        await conn.execute(
+            "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
+            "product_line, extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (tenant_id, node_key) DO UPDATE SET "
+            "standard_name = excluded.standard_name, aliases = excluded.aliases, "
+            "term_type = excluded.term_type, product_line = excluded.product_line, "
+            "extra_properties = excluded.extra_properties",
+            (
+                tenant_id,
+                node_key,
+                standard_name,
+                json.dumps(aliases, ensure_ascii=False),
+                term_type,
+                product_line,
+                json.dumps(extra_properties, ensure_ascii=False),
+            ),
+        )
+    except aiosqlite.IntegrityError:
+        raise TermNameConflictError(
+            f"{standard_name!r} 已经是租户 {tenant_id!r} 下另一个术语的标准名，无法写入"
+        )
+    await conn.commit()

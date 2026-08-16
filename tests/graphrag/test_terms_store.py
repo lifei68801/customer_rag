@@ -20,6 +20,7 @@ from app.graphrag.terms_store import (
     get_term,
     list_terms,
     update_term,
+    upsert_term_with_node_key,
 )
 
 
@@ -639,4 +640,113 @@ async def test_update_term_grandfathered_field_skips_type_check():
         conn, tenant_id="t1", standard_name="X", new_standard_name="X",
         aliases=[], term_type="VariantValue", product_line="示例产品线",
         extra_properties={"numeric_value": 750},
+    )
+
+
+async def test_upsert_term_with_node_key_creates_new_row():
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    from app.graphrag.ontology_categories import create_term_type, create_product_line
+    await create_term_type(conn, tenant_id="muji", value="Product")
+    await create_product_line(conn, value="MUJI")
+
+    await upsert_term_with_node_key(
+        conn, tenant_id="muji", node_key="Product:1001", standard_name="圆角收纳盒",
+        aliases=[], term_type="Product", product_line="MUJI",
+    )
+
+    term = await get_term(conn, tenant_id="muji", standard_name="圆角收纳盒")
+    assert term.node_key == "Product:1001"
+
+
+async def test_upsert_term_with_node_key_updates_existing_row_by_node_key():
+    """再次 upsert 同一个 node_key、standard_name 变了——更新而不是报冲突，
+    这是 upsert 和 create_term 的本质区别（见 terms_store.py 里的说明）。"""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    from app.graphrag.ontology_categories import create_term_type, create_product_line
+    await create_term_type(conn, tenant_id="muji", value="Product")
+    await create_product_line(conn, value="MUJI")
+    await upsert_term_with_node_key(
+        conn, tenant_id="muji", node_key="Product:1001", standard_name="圆角收纳盒",
+        aliases=[], term_type="Product", product_line="MUJI",
+    )
+
+    await upsert_term_with_node_key(
+        conn, tenant_id="muji", node_key="Product:1001", standard_name="圆角收纳盒(新装)",
+        aliases=[], term_type="Product", product_line="MUJI",
+    )
+
+    all_terms = await list_terms(conn, tenant_id="muji")
+    assert len(all_terms) == 1
+    assert all_terms[0].standard_name == "圆角收纳盒(新装)"
+    assert all_terms[0].node_key == "Product:1001"
+
+
+async def test_upsert_term_with_node_key_rejects_duplicate_standard_name_different_node_key():
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    from app.graphrag.ontology_categories import create_term_type, create_product_line
+    await create_term_type(conn, tenant_id="muji", value="Product")
+    await create_product_line(conn, value="MUJI")
+    await upsert_term_with_node_key(
+        conn, tenant_id="muji", node_key="Product:1001", standard_name="圆角收纳盒",
+        aliases=[], term_type="Product", product_line="MUJI",
+    )
+
+    with pytest.raises(TermNameConflictError):
+        await upsert_term_with_node_key(
+            conn, tenant_id="muji", node_key="Product:1002", standard_name="圆角收纳盒",
+            aliases=[], term_type="Product", product_line="MUJI",
+        )
+
+
+async def test_upsert_term_with_node_key_typed_extra_properties():
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type, create_product_line
+    await create_term_type(
+        conn, tenant_id="muji", value="VariantValue",
+        extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+    )
+    await create_product_line(conn, value="MUJI")
+
+    await upsert_term_with_node_key(
+        conn, tenant_id="muji", node_key="Variant:dim_007:00001", standard_name="抹茶",
+        aliases=[], term_type="VariantValue", product_line="MUJI",
+        extra_properties={"numeric_value": 70},
+    )
+
+    term = await get_term(conn, tenant_id="muji", standard_name="抹茶")
+    assert term.extra_properties == {"numeric_value": 70}
+
+
+async def test_upsert_term_with_node_key_grandfathers_removed_field_on_re_upsert():
+    """字段被从 term_type 移除后，upsert 同一个 node_key 时旧值也要能豁免类型/
+    未知字段校验——延续 update_term 已有的豁免原则。"""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    from app.graphrag.ontology_categories import (
+        ExtraFieldSpec, create_term_type, create_product_line, update_term_type,
+    )
+    await create_term_type(
+        conn, tenant_id="muji", value="VariantValue",
+        extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+    )
+    await create_product_line(conn, value="MUJI")
+    await upsert_term_with_node_key(
+        conn, tenant_id="muji", node_key="Variant:dim_007:00001", standard_name="抹茶",
+        aliases=[], term_type="VariantValue", product_line="MUJI",
+        extra_properties={"numeric_value": 70},
+    )
+    await update_term_type(
+        conn, tenant_id="muji", value="VariantValue", new_value="VariantValue",
+        extra_fields=[], node_key_template="",
+    )
+
+    # 不应该抛错
+    await upsert_term_with_node_key(
+        conn, tenant_id="muji", node_key="Variant:dim_007:00001", standard_name="抹茶",
+        aliases=[], term_type="VariantValue", product_line="MUJI",
+        extra_properties={"numeric_value": 70},
     )
