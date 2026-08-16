@@ -10,6 +10,7 @@ from app.graphrag.ontology_categories import (
     update_term_type,
 )
 from app.graphrag.terms_store import (
+    InvalidExtraPropertyTypeError,
     TermNameConflictError,
     TermNotFoundError,
     UnknownCategoryError,
@@ -415,8 +416,9 @@ async def test_delete_term_raises_when_not_found():
 
 
 async def test_create_term_persists_extra_properties():
+    from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=["严重等级"])
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")])
     await create_product_line(conn, value="示例产品线")
 
     await create_term(
@@ -457,8 +459,9 @@ async def test_create_term_rejects_unknown_product_line():
 
 
 async def test_create_term_rejects_extra_property_not_declared_on_term_type():
+    from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=["严重等级"])
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")])
     await create_product_line(conn, value="示例产品线")
 
     with pytest.raises(UnknownCategoryError):
@@ -469,15 +472,16 @@ async def test_create_term_rejects_extra_property_not_declared_on_term_type():
 
 
 async def test_removing_extra_field_from_term_type_preserves_existing_term_value():
+    from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=["严重等级", "影响范围"])
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string"), ExtraFieldSpec(name="影响范围", value_type="string")])
     await create_product_line(conn, value="示例产品线")
     await create_term(
         conn, tenant_id="default", standard_name="错误码E502", aliases=[], term_type="错误码",
         product_line="示例产品线", extra_properties={"严重等级": "高", "影响范围": "全站不可用"},
     )
 
-    await update_term_type(conn, tenant_id="default", value="错误码", new_value="错误码", extra_fields=["严重等级"], node_key_template="")
+    await update_term_type(conn, tenant_id="default", value="错误码", new_value="错误码", extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")], node_key_template="")
 
     term = await get_term(conn, tenant_id="default", standard_name="错误码E502")
     assert term.extra_properties == {"严重等级": "高", "影响范围": "全站不可用"}
@@ -487,8 +491,9 @@ async def test_update_term_resubmitting_undeclared_but_already_stored_key_succee
     """回归测试：字段从 term_type 里被去掉之后，重新保存这条术语（哪怕值原样
     不改）不能因为这个字段"未声明"而被拒绝或静默丢弃——见
     _validate_categories 的 existing_extra_property_keys 参数说明。"""
+    from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="房型", extra_fields=["面积"])
+    await create_term_type(conn, tenant_id="default", value="房型", extra_fields=[ExtraFieldSpec(name="面积", value_type="string")])
     await create_product_line(conn, value="示例产品线")
     await create_term(
         conn, tenant_id="default", standard_name="大床房", aliases=[], term_type="房型",
@@ -542,3 +547,96 @@ async def test_validate_categories_rejects_term_type_from_another_tenant():
             conn, tenant_id="tenant_b", standard_name="X", aliases=[],
             term_type="错误码", product_line="示例产品线",
         )
+
+
+async def test_create_term_with_typed_extra_properties():
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type, create_product_line
+    await create_term_type(
+        conn, tenant_id="t1", value="VariantValue",
+        extra_fields=[
+            ExtraFieldSpec(name="numeric_value", value_type="number"),
+            ExtraFieldSpec(name="dims", value_type="number[]"),
+        ],
+    )
+    await create_product_line(conn, value="示例产品线")
+
+    await create_term(
+        conn, tenant_id="t1", standard_name="容量750ml", aliases=[],
+        term_type="VariantValue", product_line="示例产品线",
+        extra_properties={"numeric_value": 750, "dims": [20.5, 10.0]},
+    )
+
+    term = await get_term(conn, tenant_id="t1", standard_name="容量750ml")
+    assert term.extra_properties == {"numeric_value": 750, "dims": [20.5, 10.0]}
+
+
+async def test_create_term_rejects_extra_property_with_wrong_type():
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type, create_product_line
+    await create_term_type(
+        conn, tenant_id="t1", value="VariantValue",
+        extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+    )
+    await create_product_line(conn, value="示例产品线")
+
+    with pytest.raises(InvalidExtraPropertyTypeError):
+        await create_term(
+            conn, tenant_id="t1", standard_name="容量750ml", aliases=[],
+            term_type="VariantValue", product_line="示例产品线",
+            extra_properties={"numeric_value": "不是数字"},
+        )
+
+
+async def test_create_term_rejects_bool_as_number():
+    """bool 是 int 的子类，必须显式排除——见 Global Constraints。"""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type, create_product_line
+    await create_term_type(
+        conn, tenant_id="t1", value="VariantValue",
+        extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+    )
+    await create_product_line(conn, value="示例产品线")
+
+    with pytest.raises(InvalidExtraPropertyTypeError):
+        await create_term(
+            conn, tenant_id="t1", standard_name="X", aliases=[],
+            term_type="VariantValue", product_line="示例产品线",
+            extra_properties={"numeric_value": True},
+        )
+
+
+async def test_update_term_grandfathered_field_skips_type_check():
+    """字段被从 term_type 移除后，已写在术语记录上的值不再做类型校验——
+    延续本体基座计划"移除字段声明不触碰已有数据"的原则（见 Global
+    Constraints）。这里验证：即使移除声明后重新提交同一个值，也不会因为
+    "现在没有声明类型、无法判断类型是否匹配"而报错。"""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    from app.graphrag.ontology_categories import (
+        ExtraFieldSpec, create_term_type, create_product_line, update_term_type,
+    )
+    await create_term_type(
+        conn, tenant_id="t1", value="VariantValue",
+        extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+    )
+    await create_product_line(conn, value="示例产品线")
+    await create_term(
+        conn, tenant_id="t1", standard_name="X", aliases=[],
+        term_type="VariantValue", product_line="示例产品线",
+        extra_properties={"numeric_value": 750},
+    )
+    await update_term_type(
+        conn, tenant_id="t1", value="VariantValue", new_value="VariantValue",
+        extra_fields=[], node_key_template="",
+    )
+
+    # 不应该抛 InvalidExtraPropertyTypeError 或 UnknownCategoryError
+    await update_term(
+        conn, tenant_id="t1", standard_name="X", new_standard_name="X",
+        aliases=[], term_type="VariantValue", product_line="示例产品线",
+        extra_properties={"numeric_value": 750},
+    )

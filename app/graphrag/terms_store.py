@@ -50,6 +50,10 @@ class UnknownCategoryError(Exception):
     docs/superpowers/specs/2026-08-14-ontology-schema-design.md 第 3 节。"""
 
 
+class InvalidExtraPropertyTypeError(Exception):
+    """extra_properties 里某个值不匹配该字段在 term_type 上声明的 value_type。"""
+
+
 async def _migrate_terms_table_to_tenant_scoped_if_needed(
     conn: aiosqlite.Connection,
 ) -> None:
@@ -196,6 +200,20 @@ async def _bridge_seed_categories_from_existing_terms(
     await conn.commit()
 
 
+def _extra_property_value_matches_type(value: object, value_type: str) -> bool:
+    if value_type == "string":
+        return isinstance(value, str)
+    if value_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if value_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if value_type == "number[]":
+        return isinstance(value, list) and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
+        )
+    return False
+
+
 def _row_to_term(row: aiosqlite.Row) -> Term:
     return Term(
         tenant_id=row["tenant_id"],
@@ -265,11 +283,17 @@ async def _validate_categories(
     tenant_id: str,
     term_type: str,
     product_line: str,
-    extra_properties: dict[str, str],
+    extra_properties: dict[str, object],
     existing_extra_property_keys: frozenset[str] = frozenset(),
 ) -> None:
     """product_line 校验保持全局（不受本次改造影响）。term_type 校验
     按租户过滤——每个租户只能使用该租户下注册的分类。
+
+    字段名校验（是否在白名单里）和字段值类型校验（是否匹配声明的
+    value_type）是两道独立的检查：existing_extra_property_keys 里的
+    "已废弃字段"只豁免字段名检查，不再做类型检查（因为它已经不在
+    declared_by_name 里，无法判断"应该是什么类型"）——这是延续本体
+    基座计划"移除字段声明不触碰已有数据"的原则，见 Global Constraints。
     """
     types = await list_term_types(conn, tenant_id)
     types_by_value = {t.value: t for t in types}
@@ -277,12 +301,21 @@ async def _validate_categories(
         raise UnknownCategoryError(f"未知分类: {term_type!r}")
     if product_line not in await list_product_lines(conn):
         raise UnknownCategoryError(f"未知产品线: {product_line!r}")
-    declared_fields = set(types_by_value[term_type].extra_fields)
+    declared_by_name = {f.name: f for f in types_by_value[term_type].extra_fields}
+    declared_fields = set(declared_by_name)
     unknown = set(extra_properties) - declared_fields - existing_extra_property_keys
     if unknown:
         raise UnknownCategoryError(
             f"分类 {term_type!r} 没有声明这些属性字段: {sorted(unknown)}"
         )
+    for key, value in extra_properties.items():
+        if key not in declared_fields:
+            continue
+        spec = declared_by_name[key]
+        if not _extra_property_value_matches_type(value, spec.value_type):
+            raise InvalidExtraPropertyTypeError(
+                f"字段 {key!r} 的值 {value!r} 不符合声明的类型 {spec.value_type!r}"
+            )
 
 
 async def create_term(
@@ -293,7 +326,7 @@ async def create_term(
     aliases: list[str],
     term_type: str,
     product_line: str,
-    extra_properties: dict[str, str] | None = None,
+    extra_properties: dict[str, object] | None = None,
 ) -> None:
     """node_key 创建时直接取 standard_name 的值（Global Constraints 的
     node_key 生成规则：extraction 模式下没有外部稳定码来源）。"""
@@ -331,7 +364,7 @@ async def update_term(
     aliases: list[str],
     term_type: str,
     product_line: str,
-    extra_properties: dict[str, str] | None = None,
+    extra_properties: dict[str, object] | None = None,
 ) -> None:
     """standard_name 是当前（改名前）的名字，用来定位这条记录；
     new_standard_name 是提交的新名字，允许和 standard_name 相同（即不改名）。

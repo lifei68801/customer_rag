@@ -14,7 +14,7 @@ class Term:
     aliases: list[str]
     term_type: str
     product_line: str
-    extra_properties: dict[str, str] = field(default_factory=dict)
+    extra_properties: dict[str, str | int | float | list[float]] = field(default_factory=dict)
 
 
 def load_terminology(path: Path) -> list[Term]:
