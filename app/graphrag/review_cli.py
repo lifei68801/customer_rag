@@ -118,7 +118,8 @@ async def _main() -> None:
         await cmd_list(review_conn=review_conn, tenant_id=args.tenant_id)
     elif args.command == "approve":
         graph_client = build_graph_client_from_settings(settings)
-        terms = await list_terms(review_conn)
+        await graph_client.ensure_tenant_scoped_schema()
+        terms = await list_terms(review_conn, args.tenant_id)
         await cmd_approve(
             review_conn=review_conn,
             review_id=args.review_id,

@@ -65,9 +65,11 @@ async def main(
             graph_llm_registry
             or build_llm_registry_from_settings(resolved_settings)
         )
-        resolved_graph_client = graph_client or build_graph_client_from_settings(
-            resolved_settings
-        )
+        if graph_client is not None:
+            resolved_graph_client = graph_client
+        else:
+            resolved_graph_client = build_graph_client_from_settings(resolved_settings)
+            await resolved_graph_client.ensure_tenant_scoped_schema()
         resolved_graph_review_conn = (
             graph_review_conn
             or await build_review_conn_from_settings(resolved_settings)

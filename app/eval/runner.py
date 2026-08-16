@@ -375,12 +375,14 @@ async def main(
     if use_graph:
         resolved_review_conn = await build_review_conn_from_settings(resolved_settings)
         try:
-            resolved_terms = terms or await list_terms(resolved_review_conn)
+            resolved_terms = terms or await list_terms(resolved_review_conn, tenant_id)
         finally:
             await resolved_review_conn.close()
-        resolved_graph_client = graph_client or build_graph_client_from_settings(
-            resolved_settings
-        )
+        if graph_client is not None:
+            resolved_graph_client = graph_client
+        else:
+            resolved_graph_client = build_graph_client_from_settings(resolved_settings)
+            await resolved_graph_client.ensure_tenant_scoped_schema()
 
     if compare_planner:
         comparison = await compare_planner_modes(

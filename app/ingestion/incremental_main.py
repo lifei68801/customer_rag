@@ -98,13 +98,17 @@ async def main(
         resolved_graph_llm_registry = (
             graph_llm_registry or build_llm_registry_from_settings(resolved_settings)
         )
-        resolved_graph_client = graph_client or build_graph_client_from_settings(
-            resolved_settings
-        )
+        if graph_client is not None:
+            resolved_graph_client = graph_client
+        else:
+            resolved_graph_client = build_graph_client_from_settings(resolved_settings)
+            await resolved_graph_client.ensure_tenant_scoped_schema()
         resolved_graph_review_conn = (
             graph_review_conn or await build_review_conn_from_settings(resolved_settings)
         )
-        resolved_graph_terms = graph_terms or await list_terms(resolved_graph_review_conn)
+        resolved_graph_terms = graph_terms or await list_terms(
+            resolved_graph_review_conn, tenant_id
+        )
 
     scan_summary = await scan_and_enqueue(
         directory, tenant_id=tenant_id, conn=conn, build_graph=build_graph
