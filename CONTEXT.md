@@ -15,6 +15,9 @@ _Avoid_: 身份码、value_code（那是 MUJI 文档里的叫法，本项目统�
 **node_key_template**:
 `ontology_term_types` 上跟 `extra_fields` 平级的新字段，声明某个 term_type 的 `node_key` 由哪些字段、按什么模板拼接（如 `"Variant:{dim_code}:{value_code}"`）。所有 ETL 代码必须读这个模板来生成 `node_key`，不允许各自硬编码拼接规则——否则同一实体可能在不同 ETL 路径下算出不同的 `node_key`，重新引入 node_key 本该解决的"同一实体裂成两个节点"问题。
 
+**value_type**:
+`ontology_term_types.extra_fields` 上的每个字段声明，指定该 `Term.extra_properties` 字段值的类型（`"string"`/`"number"`/`"integer"`/`"number[]"`）。支持 ETL 场景的结构化数值/数组验证，不限于自由文本；拒绝 Python `bool` 值混入数值类型（因 bool 是 int 子类，否则会被静默接受）。
+
 **term_type**:
 Term 节点上的业务分类标签（如 "error_code"、"module"），描述这个术语*属于哪类业务概念*。原为全局枚举（`ontology_term_types`，不分租户），因 MUJI 接入需要把结构性实体类型（Product/SKU/Category/VariantValue 等）也塞进这个字段，已改为**按租户隔离**——见 [ADR-0001](docs/adr/0001-term-type-tenant-scoped-for-muji.md)。改动前的全局设计参见 `docs/superpowers/specs/2026-08-14-ontology-schema-design.md` 第 3 节。
 _Avoid_: 分类、Category（容易和 Neo4j 概念里的 "Category" 实体混淆，见下）

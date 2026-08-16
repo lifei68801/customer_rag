@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
@@ -32,7 +33,7 @@ class TermResponse(BaseModel):
     aliases: list[str]
     term_type: str
     product_line: str
-    extra_properties: dict[str, str | int | float | list[float]] = {}
+    extra_properties: dict[str, Any] = {}
 
 
 class TermListResponse(BaseModel):
@@ -44,7 +45,7 @@ class TermWriteRequest(BaseModel):
     aliases: list[str]
     term_type: str
     product_line: str
-    extra_properties: dict[str, str | int | float | list[float]] = {}
+    extra_properties: dict[str, Any] = {}
 
     @field_validator("standard_name")
     @classmethod

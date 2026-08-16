@@ -572,3 +572,61 @@ def test_create_term_is_scoped_to_tenant_in_url(terms_conn):
         assert other_tenant_resp.json()["terms"] == []
     finally:
         app.dependency_overrides.clear()
+
+
+def test_create_term_rejects_bool_extra_property_via_http(terms_conn):
+    """Pydantic 不能再把 JSON true/false 静默转成 1/0——必须让
+    terms_store.py 的类型校验器看到真正的 bool 值并拒绝它。"""
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
+    asyncio.run(
+        create_term_type(
+            terms_conn, tenant_id="t1", value="VariantValue",
+            extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "X", "aliases": [], "term_type": "VariantValue",
+                "product_line": "p", "extra_properties": {"numeric_value": True},
+            },
+            headers=_authed_headers(session_store),
+        )
+        assert response.status_code == 400
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_term_rejects_bool_inside_number_array_via_http(terms_conn):
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
+    asyncio.run(
+        create_term_type(
+            terms_conn, tenant_id="t1", value="VariantValue",
+            extra_fields=[ExtraFieldSpec(name="dims", value_type="number[]")],
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "Y", "aliases": [], "term_type": "VariantValue",
+                "product_line": "p", "extra_properties": {"dims": [1.0, True]},
+            },
+            headers=_authed_headers(session_store),
+        )
+        assert response.status_code == 400
+    finally:
+        app.dependency_overrides.clear()
