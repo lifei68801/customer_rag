@@ -204,8 +204,8 @@ async def test_create_relation_type_rejects_duplicate_name():
 
 async def test_update_relation_type_renames_primary_key_and_cascades_to_allowlist():
     conn = await _conn()
-    await create_term_type(conn, value="客房")
-    await create_term_type(conn, value="酒店")
+    await create_term_type(conn, "t1", value="客房")
+    await create_term_type(conn, "t1", value="酒店")
     await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x SUITABLE_FOR y")
     await add_allowed_combination(
         conn, "t1", subject_term_type="客房", relation_type="SUITABLE_FOR", object_term_type="酒店"

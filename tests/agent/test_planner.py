@@ -199,6 +199,8 @@ async def test_run_tool_calls_executes_vector_search_and_scopes_to_state_tenant(
 
 _TERMS = [
     Term(
+        tenant_id="t1",
+        node_key="示例错误码E502",
         standard_name="示例错误码E502",
         aliases=["网关超时示例"],
         term_type="error_code",

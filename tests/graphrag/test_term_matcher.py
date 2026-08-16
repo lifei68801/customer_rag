@@ -3,12 +3,16 @@ from app.graphrag.term_matcher import match_terms
 
 _TERMS = [
     Term(
+        tenant_id="t1",
+        node_key="错误码E502",
         standard_name="错误码E502",
         aliases=["网关超时", "E502"],
         term_type="error_code",
         product_line="核心平台",
     ),
     Term(
+        tenant_id="t1",
+        node_key="登录模块",
         standard_name="登录模块",
         aliases=["认证模块", "登录"],
         term_type="module",
@@ -37,6 +41,8 @@ def test_match_terms_dedupes_when_multiple_aliases_of_same_term_present():
 
 _FUZZY_TERMS = [
     Term(
+        tenant_id="t1",
+        node_key="服务器连接超时",
         standard_name="服务器连接超时",
         aliases=[],
         term_type="error_code",
@@ -70,6 +76,8 @@ def test_match_terms_does_not_duplicate_exact_match_via_fuzzy_layer():
 
 _FUZZY_TERMS_WITH_ALIAS = [
     Term(
+        tenant_id="t1",
+        node_key="服务器连接超时",
         standard_name="服务器连接超时",
         aliases=["连接超时"],
         term_type="error_code",

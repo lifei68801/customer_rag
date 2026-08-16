@@ -203,6 +203,8 @@ async def test_planner_graph_uses_graph_query_tool_with_term_guard_context():
     )
     terms = [
         Term(
+            tenant_id="t1",
+            node_key="示例错误码E502",
             standard_name="示例错误码E502",
             aliases=["网关超时示例"],
             term_type="error_code",

@@ -18,6 +18,8 @@ def test_load_terminology_parses_terms_with_aliases(tmp_path):
 
     assert terms == [
         Term(
+            tenant_id="default",
+            node_key="错误码E502",
             standard_name="错误码E502",
             aliases=["网关超时", "E502"],
             term_type="error_code",

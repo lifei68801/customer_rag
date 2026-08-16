@@ -712,6 +712,8 @@ async def test_term_guard_node_forwards_tenant_id_to_graph_client():
     )
     terms = [
         Term(
+            tenant_id="t2",
+            node_key="错误码E502",
             standard_name="错误码E502",
             aliases=[],
             term_type="error_code",
