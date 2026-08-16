@@ -114,3 +114,88 @@ def test_load_schema_etl_config_defaults_entities_and_relations_to_empty_list(tm
 
     assert config.entities == []
     assert config.relations == []
+
+
+def test_load_schema_etl_config_rejects_entity_missing_required_field(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+tenant_id: muji
+entities:
+  - term_type: Product
+    product_line: "MUJI"
+    standard_name_column: name
+    node_key_parts:
+      - column: id
+    field_mappings: {}
+relations: []
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(InvalidSchemaETLConfigError):
+        load_schema_etl_config(config_path)
+
+
+def test_load_schema_etl_config_rejects_relation_missing_required_field(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+tenant_id: muji
+entities: []
+relations:
+  - relation_type: HAS_SKU
+    source_file: skus.csv
+    subject_term_type: Product
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(InvalidSchemaETLConfigError):
+        load_schema_etl_config(config_path)
+
+
+def test_load_schema_etl_config_rejects_allocated_code_missing_scope_columns(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+tenant_id: muji
+entities:
+  - term_type: VariantValue
+    source_file: variant_values.csv
+    product_line: "MUJI"
+    standard_name_column: label_cn
+    node_key_parts:
+      - allocated_code:
+          raw_value_column: raw_value
+    field_mappings: {}
+relations: []
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(InvalidSchemaETLConfigError):
+        load_schema_etl_config(config_path)
+
+
+def test_load_schema_etl_config_rejects_allocated_code_missing_raw_value_column(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+tenant_id: muji
+entities:
+  - term_type: VariantValue
+    source_file: variant_values.csv
+    product_line: "MUJI"
+    standard_name_column: label_cn
+    node_key_parts:
+      - allocated_code:
+          scope_columns: [dim_code]
+    field_mappings: {}
+relations: []
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(InvalidSchemaETLConfigError):
+        load_schema_etl_config(config_path)

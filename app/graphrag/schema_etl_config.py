@@ -51,38 +51,53 @@ def _parse_node_key_part(raw: dict) -> ColumnNodeKeyPart | AllocatedCodeNodeKeyP
         return ColumnNodeKeyPart(column=raw["column"])
     if "allocated_code" in raw:
         allocated = raw["allocated_code"]
-        return AllocatedCodeNodeKeyPart(
-            scope_columns=list(allocated["scope_columns"]),
-            raw_value_column=allocated["raw_value_column"],
-        )
+        try:
+            return AllocatedCodeNodeKeyPart(
+                scope_columns=list(allocated["scope_columns"]),
+                raw_value_column=allocated["raw_value_column"],
+            )
+        except KeyError as e:
+            raise InvalidSchemaETLConfigError(
+                f"allocated_code 缺少必需字段 {e.args[0]!r}: {allocated!r}"
+            ) from e
     raise InvalidSchemaETLConfigError(
         f"node_key_parts 元素必须是 {{'column': ...}} 或 {{'allocated_code': ...}}，收到: {raw!r}"
     )
 
 
 def _parse_entity_mapping(raw: dict) -> EntityMapping:
-    node_key_parts_raw = raw.get("node_key_parts") or []
-    if not node_key_parts_raw:
-        raise InvalidSchemaETLConfigError(
-            f"实体类型 {raw.get('term_type')!r} 的 node_key_parts 不能为空"
+    try:
+        node_key_parts_raw = raw.get("node_key_parts") or []
+        if not node_key_parts_raw:
+            raise InvalidSchemaETLConfigError(
+                f"实体类型 {raw.get('term_type')!r} 的 node_key_parts 不能为空"
+            )
+        return EntityMapping(
+            term_type=raw["term_type"],
+            source_file=raw["source_file"],
+            product_line=raw["product_line"],
+            standard_name_column=raw["standard_name_column"],
+            node_key_parts=[_parse_node_key_part(part) for part in node_key_parts_raw],
+            field_mappings=dict(raw.get("field_mappings") or {}),
         )
-    return EntityMapping(
-        term_type=raw["term_type"],
-        source_file=raw["source_file"],
-        product_line=raw["product_line"],
-        standard_name_column=raw["standard_name_column"],
-        node_key_parts=[_parse_node_key_part(part) for part in node_key_parts_raw],
-        field_mappings=dict(raw.get("field_mappings") or {}),
-    )
+    except KeyError as e:
+        raise InvalidSchemaETLConfigError(
+            f"实体映射缺少必需字段 {e.args[0]!r}: {raw!r}"
+        ) from e
 
 
 def _parse_relation_mapping(raw: dict) -> RelationMapping:
-    return RelationMapping(
-        relation_type=raw["relation_type"],
-        source_file=raw["source_file"],
-        subject_term_type=raw["subject_term_type"],
-        object_term_type=raw["object_term_type"],
-    )
+    try:
+        return RelationMapping(
+            relation_type=raw["relation_type"],
+            source_file=raw["source_file"],
+            subject_term_type=raw["subject_term_type"],
+            object_term_type=raw["object_term_type"],
+        )
+    except KeyError as e:
+        raise InvalidSchemaETLConfigError(
+            f"关系映射缺少必需字段 {e.args[0]!r}: {raw!r}"
+        ) from e
 
 
 def load_schema_etl_config(path: Path) -> SchemaETLConfig:
