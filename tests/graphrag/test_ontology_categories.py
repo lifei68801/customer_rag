@@ -7,11 +7,14 @@ from app.graphrag.ontology_categories import (
     CategoryInUseError,
     CategoryNameConflictError,
     CategoryNotFoundError,
+    ExtraFieldSpec,
+    InvalidExtraFieldTypeError,
     TermTypeCategory,
     create_product_line,
     create_term_type,
     delete_product_line,
     delete_term_type,
+    ensure_categories_schema,
     list_product_lines,
     list_term_types,
     update_product_line,
@@ -35,11 +38,24 @@ async def _conn() -> aiosqlite.Connection:
 
 async def test_create_and_list_term_type_with_extra_fields():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=["严重等级", "影响范围"])
+    await create_term_type(
+        conn, tenant_id="default", value="错误码",
+        extra_fields=[
+            ExtraFieldSpec(name="严重等级", value_type="string"),
+            ExtraFieldSpec(name="影响范围", value_type="string"),
+        ],
+    )
 
     result = await list_term_types(conn, tenant_id="default")
 
-    assert result == [TermTypeCategory(value="错误码", extra_fields=["严重等级", "影响范围"], node_key_template="")]
+    assert result == [TermTypeCategory(
+        value="错误码",
+        extra_fields=[
+            ExtraFieldSpec(name="严重等级", value_type="string"),
+            ExtraFieldSpec(name="影响范围", value_type="string"),
+        ],
+        node_key_template="",
+    )]
 
 
 async def test_create_term_type_without_extra_fields_defaults_to_empty_list():
@@ -68,17 +84,34 @@ async def test_create_duplicate_term_type_raises_conflict():
 
 async def test_update_term_type_renames_without_referencing_terms():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=["严重等级"])
+    await create_term_type(
+        conn, tenant_id="default", value="错误码",
+        extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")],
+    )
     await conn.execute(
         "CREATE TABLE terms (tenant_id TEXT NOT NULL, standard_name TEXT NOT NULL, term_type TEXT NOT NULL, "
         "product_line TEXT NOT NULL, aliases TEXT NOT NULL DEFAULT '[]', node_key TEXT NOT NULL, PRIMARY KEY (tenant_id, standard_name))"
     )
     await conn.commit()
 
-    await update_term_type(conn, tenant_id="default", value="错误码", new_value="故障码", extra_fields=["严重等级", "影响范围"], node_key_template="")
+    await update_term_type(
+        conn, tenant_id="default", value="错误码", new_value="故障码",
+        extra_fields=[
+            ExtraFieldSpec(name="严重等级", value_type="string"),
+            ExtraFieldSpec(name="影响范围", value_type="string"),
+        ],
+        node_key_template="",
+    )
 
     result = await list_term_types(conn, tenant_id="default")
-    assert result == [TermTypeCategory(value="故障码", extra_fields=["严重等级", "影响范围"], node_key_template="")]
+    assert result == [TermTypeCategory(
+        value="故障码",
+        extra_fields=[
+            ExtraFieldSpec(name="严重等级", value_type="string"),
+            ExtraFieldSpec(name="影响范围", value_type="string"),
+        ],
+        node_key_template="",
+    )]
 
 
 async def test_update_term_type_cascades_rename_to_referencing_terms():
@@ -227,7 +260,10 @@ async def test_ensure_categories_schema_migrates_legacy_term_types_table():
 
 async def test_create_and_list_term_types_isolated_per_tenant():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="tenant_a", value="错误码", extra_fields=["严重等级"])
+    await create_term_type(
+        conn, tenant_id="tenant_a", value="错误码",
+        extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")],
+    )
     await create_term_type(conn, tenant_id="tenant_b", value="VariantValue", extra_fields=[])
 
     types_a = await list_term_types(conn, tenant_id="tenant_a")
@@ -239,7 +275,8 @@ async def test_create_and_list_term_types_isolated_per_tenant():
 async def test_create_term_type_with_node_key_template():
     conn = await _conn()
     await create_term_type(
-        conn, tenant_id="muji", value="VariantValue", extra_fields=["numeric_value"],
+        conn, tenant_id="muji", value="VariantValue",
+        extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="string")],
         node_key_template="Variant:{dim_code}:{value_code}",
     )
 
@@ -251,10 +288,10 @@ async def test_update_term_type_rename_cascades_within_same_tenant_only():
     """改名级联到 terms/term_type_relation_allowlist，必须只影响同一
     租户的行——term_type 按租户隔离后，不该波及其它租户。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="tenant_a", value="客房")
-    await create_term_type(conn, tenant_id="tenant_a", value="酒店")
-    await create_term_type(conn, tenant_id="tenant_b", value="客房")
-    await create_term_type(conn, tenant_id="tenant_b", value="酒店")
+    await create_term_type(conn, tenant_id="tenant_a", value="客房", extra_fields=[])
+    await create_term_type(conn, tenant_id="tenant_a", value="酒店", extra_fields=[])
+    await create_term_type(conn, tenant_id="tenant_b", value="客房", extra_fields=[])
+    await create_term_type(conn, tenant_id="tenant_b", value="酒店", extra_fields=[])
     await create_product_line(conn, value="示例产品线")
     from app.graphrag.terms_store import create_term, ensure_terms_schema, get_term
     await ensure_terms_schema(conn)
@@ -280,8 +317,8 @@ async def test_update_term_type_rename_cascades_within_same_tenant_only():
 
 async def test_delete_term_type_in_use_by_constraint_returns_error():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="t1", value="客房")
-    await create_term_type(conn, tenant_id="t1", value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房", extra_fields=[])
+    await create_term_type(conn, tenant_id="t1", value="酒店", extra_fields=[])
     from app.graphrag.ontology_relations import seed_default_relation_types
     from app.graphrag.ontology_constraints import add_allowed_combination
     from app.graphrag.terms_store import ensure_terms_schema
@@ -293,3 +330,88 @@ async def test_delete_term_type_in_use_by_constraint_returns_error():
 
     with pytest.raises(CategoryInUseError):
         await delete_term_type(conn, tenant_id="t1", value="客房")
+
+
+async def test_create_term_type_with_typed_extra_fields():
+    conn = await _conn()
+    await create_term_type(
+        conn, tenant_id="t1", value="错误码",
+        extra_fields=[
+            ExtraFieldSpec(name="严重等级", value_type="string"),
+            ExtraFieldSpec(name="影响范围人数", value_type="integer"),
+        ],
+    )
+
+    types = await list_term_types(conn, tenant_id="t1")
+    assert types[0].extra_fields == [
+        ExtraFieldSpec(name="严重等级", value_type="string"),
+        ExtraFieldSpec(name="影响范围人数", value_type="integer"),
+    ]
+
+
+async def test_create_term_type_rejects_invalid_value_type():
+    conn = await _conn()
+    with pytest.raises(InvalidExtraFieldTypeError):
+        await create_term_type(
+            conn, tenant_id="t1", value="错误码",
+            extra_fields=[ExtraFieldSpec(name="严重等级", value_type="不存在的类型")],
+        )
+
+
+async def test_update_term_type_with_typed_extra_fields():
+    conn = await _conn()
+    await create_term_type(conn, tenant_id="t1", value="VariantValue", extra_fields=[])
+
+    await update_term_type(
+        conn, tenant_id="t1", value="VariantValue", new_value="VariantValue",
+        extra_fields=[
+            ExtraFieldSpec(name="numeric_value", value_type="number"),
+            ExtraFieldSpec(name="dims", value_type="number[]"),
+        ],
+        node_key_template="",
+    )
+
+    types = await list_term_types(conn, tenant_id="t1")
+    assert types[0].extra_fields == [
+        ExtraFieldSpec(name="numeric_value", value_type="number"),
+        ExtraFieldSpec(name="dims", value_type="number[]"),
+    ]
+
+
+async def test_ensure_categories_schema_migrates_legacy_extra_fields_shape():
+    """模拟 2026-08-16 之前写入的 extra_fields（纯字符串列表，无类型信息），
+    验证迁移把它升级成 [{"name":..., "value_type":"string"}] 形态，旧字段
+    统一按 "string" 类型对待（Global Constraints 的迁移规则）。"""
+    conn = await aiosqlite.connect(":memory:")
+    await conn.executescript(
+        "CREATE TABLE ontology_term_types (tenant_id TEXT NOT NULL, value TEXT NOT NULL, "
+        "extra_fields TEXT NOT NULL DEFAULT '[]', node_key_template TEXT NOT NULL DEFAULT '', "
+        "PRIMARY KEY (tenant_id, value));"
+    )
+    await conn.execute(
+        "INSERT INTO ontology_term_types (tenant_id, value, extra_fields, node_key_template) "
+        "VALUES ('default', '错误码', '[\"严重等级\", \"影响范围\"]', '')"
+    )
+    await conn.commit()
+
+    await ensure_categories_schema(conn)
+
+    types = await list_term_types(conn, tenant_id="default")
+    assert types[0].extra_fields == [
+        ExtraFieldSpec(name="严重等级", value_type="string"),
+        ExtraFieldSpec(name="影响范围", value_type="string"),
+    ]
+
+
+async def test_ensure_categories_schema_extra_fields_migration_is_idempotent():
+    conn = await _conn()
+    await create_term_type(
+        conn, tenant_id="t1", value="错误码",
+        extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")],
+    )
+
+    await ensure_categories_schema(conn)
+    await ensure_categories_schema(conn)
+
+    types = await list_term_types(conn, tenant_id="t1")
+    assert types[0].extra_fields == [ExtraFieldSpec(name="严重等级", value_type="string")]

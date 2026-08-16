@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS ontology_product_lines (
 );
 """
 
+_VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]"})
+
 
 class CategoryNotFoundError(Exception):
     """指定的分类枚举值不存在。"""
@@ -33,11 +35,43 @@ class CategoryNameConflictError(Exception):
     """提交的分类值已存在。"""
 
 
+class InvalidExtraFieldTypeError(Exception):
+    """extra_fields 里某个字段声明的 value_type 不是 "string"/"number"/"integer"/
+    "number[]" 之一——在声明时（create_term_type/update_term_type）就拒绝，不推迟到
+    某条术语真正提交这个字段的值时才发现（见 Global Constraints）。"""
+
+
+@dataclass(frozen=True)
+class ExtraFieldSpec:
+    name: str
+    value_type: str
+
+
 @dataclass(frozen=True)
 class TermTypeCategory:
     value: str
-    extra_fields: list[str]
+    extra_fields: list[ExtraFieldSpec]
     node_key_template: str
+
+
+def _validate_extra_field_specs(extra_fields: list[ExtraFieldSpec]) -> None:
+    for spec in extra_fields:
+        if spec.value_type not in _VALID_EXTRA_FIELD_VALUE_TYPES:
+            raise InvalidExtraFieldTypeError(
+                f"字段 {spec.name!r} 声明的类型 {spec.value_type!r} 不合法，"
+                f"仅支持: {sorted(_VALID_EXTRA_FIELD_VALUE_TYPES)}"
+            )
+
+
+def _extra_fields_to_json(extra_fields: list[ExtraFieldSpec]) -> str:
+    return json.dumps(
+        [{"name": f.name, "value_type": f.value_type} for f in extra_fields],
+        ensure_ascii=False,
+    )
+
+
+def _extra_fields_from_json(raw: str) -> list[ExtraFieldSpec]:
+    return [ExtraFieldSpec(name=item["name"], value_type=item["value_type"]) for item in json.loads(raw)]
 
 
 async def _migrate_term_types_table_if_needed(conn: aiosqlite.Connection) -> None:
@@ -77,16 +111,48 @@ async def _migrate_term_types_table_if_needed(conn: aiosqlite.Connection) -> Non
     await conn.commit()
 
 
+async def _migrate_extra_fields_value_shape_if_needed(conn: aiosqlite.Connection) -> None:
+    """把 2026-08-16 之前的 extra_fields 数据（纯字符串列表，如
+    '["严重等级", "影响范围"]'）原地升级成带类型声明的形态（如
+    '[{"name": "严重等级", "value_type": "string"}, ...]'）。旧字段统一按
+    "string" 类型对待（Global Constraints 的迁移规则——旧数据从没有类型
+    信息，"string" 是唯一能兼容旧数据里任意已写文本值的选择）。逐行检测：
+    JSON 解出来的列表如果第一个元素是 str（而不是 dict），判定为旧形态，
+    转换后 UPDATE 回去；空列表或已经是新形态（元素是 dict）的行原样跳过，
+    保证幂等。
+    """
+    cursor = await conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='ontology_term_types'"
+    )
+    if await cursor.fetchone() is None:
+        return
+    cursor = await conn.execute("SELECT tenant_id, value, extra_fields FROM ontology_term_types")
+    rows = await cursor.fetchall()
+    for tenant_id, value, extra_fields_raw in rows:
+        parsed = json.loads(extra_fields_raw)
+        if not parsed or isinstance(parsed[0], dict):
+            continue
+        migrated = json.dumps(
+            [{"name": name, "value_type": "string"} for name in parsed], ensure_ascii=False
+        )
+        await conn.execute(
+            "UPDATE ontology_term_types SET extra_fields = ? WHERE tenant_id = ? AND value = ?",
+            (migrated, tenant_id, value),
+        )
+    await conn.commit()
+
+
 async def ensure_categories_schema(conn: aiosqlite.Connection) -> None:
     await _migrate_term_types_table_if_needed(conn)
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
+    await _migrate_extra_fields_value_shape_if_needed(conn)
 
 
 def _row_to_term_type(row: aiosqlite.Row) -> TermTypeCategory:
     return TermTypeCategory(
         value=row["value"],
-        extra_fields=json.loads(row["extra_fields"]),
+        extra_fields=_extra_fields_from_json(row["extra_fields"]),
         node_key_template=row["node_key_template"],
     )
 
@@ -113,14 +179,16 @@ async def create_term_type(
     tenant_id: str,
     *,
     value: str,
-    extra_fields: list[str] | None = None,
+    extra_fields: list[ExtraFieldSpec] | None = None,
     node_key_template: str = "",
 ) -> None:
+    extra_fields = extra_fields or []
+    _validate_extra_field_specs(extra_fields)
     try:
         await conn.execute(
             "INSERT INTO ontology_term_types (tenant_id, value, extra_fields, node_key_template) "
             "VALUES (?, ?, ?, ?)",
-            (tenant_id, value, json.dumps(extra_fields or [], ensure_ascii=False), node_key_template),
+            (tenant_id, value, _extra_fields_to_json(extra_fields), node_key_template),
         )
     except aiosqlite.IntegrityError:
         raise CategoryNameConflictError(f"{value!r} 已经是已有分类，不能重复创建")
@@ -143,7 +211,7 @@ async def update_term_type(
     *,
     value: str,
     new_value: str,
-    extra_fields: list[str],
+    extra_fields: list[ExtraFieldSpec],
     node_key_template: str,
 ) -> None:
     """value 是当前名字，new_value 是提交的新名字，允许相同（即不改名）。
@@ -151,6 +219,7 @@ async def update_term_type(
     所有引用旧名字的行，范围收窄到同一租户——term_type 按租户隔离后，
     跨租户级联会误伤其它租户的同名分类。
     """
+    _validate_extra_field_specs(extra_fields)
     cursor = await conn.execute(
         "SELECT 1 FROM ontology_term_types WHERE tenant_id = ? AND value = ?", (tenant_id, value)
     )
@@ -160,7 +229,7 @@ async def update_term_type(
         await conn.execute(
             "UPDATE ontology_term_types SET value = ?, extra_fields = ?, node_key_template = ? "
             "WHERE tenant_id = ? AND value = ?",
-            (new_value, json.dumps(extra_fields, ensure_ascii=False), node_key_template, tenant_id, value),
+            (new_value, _extra_fields_to_json(extra_fields), node_key_template, tenant_id, value),
         )
     except aiosqlite.IntegrityError:
         raise CategoryNameConflictError(f"{new_value!r} 已经是已有分类，不能重复使用")
