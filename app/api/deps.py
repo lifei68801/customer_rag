@@ -327,12 +327,19 @@ async def get_review_conn(
 
 async def get_terms(
     review_conn: aiosqlite.Connection = Depends(get_review_conn),
-    tenant_id: str = Depends(resolve_tenant_id),
+    gateway_tenant_id: str | None = Depends(get_gateway_tenant_id),
 ) -> list[Term]:
-    """每次请求都查 terms 表，不再进程级缓存——术语表现在可以通过管理
-    后台在线增删改（见 app/api/admin_terms_routes.py），继续用进程级
-    缓存会导致改了却要重启服务才能生效，这正是引入这份缓存之前留下的
-    真实痛点。（定义放在 get_review_conn 之后：Depends(get_review_conn)
-    要求该函数已经定义）按 tenant_id 过滤——resolve_tenant_id 是本文件
-    已有的依赖，从请求链路解析当前租户。"""
+    """每次请求都查 terms 表，不再进程级缓存（原因见函数改造前的说明，
+    未变）。tenant_id 优先取网关鉴权声明的租户身份（生产环境应始终配置
+    gateway_shared_secret，见 get_gateway_tenant_id）；网关鉴权未启用
+    （本地开发降级路径）时回退到 "default" 租户——与本计划"存量/未配置
+    数据统一归属 tenant_id='default'"的约定一致。get_terms 是横跨 6 个
+    结构不同路由（admin_document_routes.py/admin_graph_review_routes.py/
+    agent_routes.py/qa_routes.py/voice_routes.py）的共享依赖，各路由自己
+    解析 tenant_id 的方式互不相同（Form 字段/请求体字段/query 兜底/完全
+    不解析），没有统一的"当前路由级 fallback"可读，因此不复用
+    resolve_tenant_id() 的双源合并逻辑，只走网关这一个可信来源 + 固定
+    默认值，不引入 422。
+    """
+    tenant_id = gateway_tenant_id or "default"
     return await list_terms(review_conn, tenant_id)
