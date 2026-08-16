@@ -64,6 +64,55 @@ async def test_compute_node_key_reuses_allocated_code_across_calls():
     assert first == second == "VariantValue:dim_007:00001"
 
 
+async def test_compute_node_key_without_allocation_reuses_existing_code():
+    """关系写入路径（allow_allocation=False）解析端点时，命中实体路径已经
+    分配好的稳定码就正常返回，不会再分配一个新的。"""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_stable_code_registry_schema(conn)
+    parts = [
+        ColumnNodeKeyPart(column="dim_code"),
+        AllocatedCodeNodeKeyPart(scope_columns=["dim_code"], raw_value_column="raw_value"),
+    ]
+    row = {"dim_code": "dim_007", "raw_value": "抹茶"}
+    allocated = await compute_node_key(
+        conn, tenant_id="muji", term_type="VariantValue", node_key_parts=parts, row=row,
+    )
+
+    looked_up = await compute_node_key(
+        conn, tenant_id="muji", term_type="VariantValue", node_key_parts=parts, row=row,
+        allow_allocation=False,
+    )
+
+    assert looked_up == allocated == "VariantValue:dim_007:00001"
+    # 只读解析没有消耗计数位：同 scope 下的下一个原始值仍然拿到 00002
+    other = await compute_node_key(
+        conn, tenant_id="muji", term_type="VariantValue", node_key_parts=parts,
+        row={"dim_code": "dim_007", "raw_value": "草莓"},
+    )
+    assert other == "VariantValue:dim_007:00002"
+
+
+async def test_compute_node_key_without_allocation_raises_when_code_never_allocated():
+    """从没分配过稳定码的原始值，在关系写入路径上必须报错跳过这一行，
+    绝不能悄悄分配一个新码、MERGE 出没有 Term 记录的幽灵节点。"""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_stable_code_registry_schema(conn)
+
+    with pytest.raises(RowProcessingError):
+        await compute_node_key(
+            conn, tenant_id="muji", term_type="VariantValue",
+            node_key_parts=[
+                ColumnNodeKeyPart(column="dim_code"),
+                AllocatedCodeNodeKeyPart(scope_columns=["dim_code"], raw_value_column="raw_value"),
+            ],
+            row={"dim_code": "dim_007", "raw_value": "从没出现过的值"},
+            allow_allocation=False,
+        )
+
+    cursor = await conn.execute("SELECT COUNT(*) FROM etl_stable_code_registry")
+    assert (await cursor.fetchone())[0] == 0
+
+
 async def test_compute_node_key_raises_when_column_missing_from_row():
     conn = await aiosqlite.connect(":memory:")
     await ensure_stable_code_registry_schema(conn)

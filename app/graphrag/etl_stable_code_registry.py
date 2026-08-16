@@ -49,3 +49,19 @@ async def allocate_stable_code(
     )
     await conn.commit()
     return stable_code
+
+
+async def lookup_stable_code(
+    conn: aiosqlite.Connection, *, tenant_id: str, scope: str, raw_value: str
+) -> str | None:
+    """只读查找 (tenant_id, scope, raw_value) 已分配的稳定码，未命中返回 None、
+    不分配新码——供关系写入路径按只读语义解析关系端点的 node_key，避免给
+    尚未真实存在（或已被跳过）的实体值意外分配一个新码、进而 MERGE 出一个
+    没有 standard_name 属性的幽灵节点。"""
+    cursor = await conn.execute(
+        "SELECT stable_code FROM etl_stable_code_registry "
+        "WHERE tenant_id = ? AND scope = ? AND raw_value = ?",
+        (tenant_id, scope, raw_value),
+    )
+    row = await cursor.fetchone()
+    return row[0] if row is not None else None

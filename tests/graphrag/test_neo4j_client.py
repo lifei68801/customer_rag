@@ -215,16 +215,6 @@ async def test_sync_terms_syncs_every_term_in_the_list():
     assert synced_names == {"错误码E502", "登录模块"}
 
 
-def test_allowed_relation_types_include_all_ten_generic_types_and_not_the_old_one():
-    from app.graphrag.neo4j_client import _ALLOWED_RELATION_TYPES
-
-    assert _ALLOWED_RELATION_TYPES == {
-        "RELATED_TO", "PART_OF", "IS_A", "REQUIRES", "ALTERNATIVE_TO",
-        "CAUSES", "ADDRESSED_BY", "LOCATED_IN", "APPLIES_TO", "PRECEDES",
-    }
-    assert "BELONGS_TO_MODULE" not in _ALLOWED_RELATION_TYPES
-
-
 async def test_merge_relation_accepts_new_part_of_type():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
@@ -242,23 +232,21 @@ async def test_merge_relation_accepts_new_part_of_type():
     assert "PART_OF" in session.last_query
 
 
-async def test_merge_relation_rejects_the_retired_belongs_to_module_type():
+async def test_merge_relation_accepts_tenant_defined_type_not_in_old_whitelist():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    try:
-        await client.merge_relation(
-            subject_standard_name="a",
-            object_standard_name="b",
-            relation_type="BELONGS_TO_MODULE",
-            source="a.md",
-            tenant_id="t1",
-            provenance="auto_merged",
-            recorded_at=_NOW,
-        )
-        assert False, "BELONGS_TO_MODULE 已经被 PART_OF 取代，应该拒绝"
-    except ValueError:
-        pass
+    await client.merge_relation(
+        subject_standard_name="Product:1001",
+        object_standard_name="SKU:4901234567890",
+        relation_type="HAS_SKU",
+        source="skus.csv",
+        tenant_id="muji",
+        provenance="etl",
+        recorded_at=_NOW,
+    )
+
+    assert "HAS_SKU" in session.last_query
 
 
 async def test_query_subgraph_sends_two_hop_union_query_for_chain_relations():

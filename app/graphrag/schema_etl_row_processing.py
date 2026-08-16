@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.graphrag.etl_stable_code_registry import allocate_stable_code
+from app.graphrag.etl_stable_code_registry import allocate_stable_code, lookup_stable_code
 from app.graphrag.ontology_categories import ExtraFieldSpec
 from app.graphrag.schema_etl_config import AllocatedCodeNodeKeyPart, ColumnNodeKeyPart
 
@@ -20,9 +20,16 @@ async def compute_node_key(
     term_type: str,
     node_key_parts: list[ColumnNodeKeyPart | AllocatedCodeNodeKeyPart],
     row: dict[str, str],
+    allow_allocation: bool = True,
 ) -> str:
     """按 node_key_parts 依次解析出各部分的值，用英文冒号拼接，前面加
-    "{term_type}:" 前缀——见计划的 Global Constraints。"""
+    "{term_type}:" 前缀——见计划的 Global Constraints。
+
+    allow_allocation=False（关系写入路径专用）时，AllocatedCodeNodeKeyPart
+    只做只读查找、命中已有分配才能继续，未命中直接跳过这一行而不是分配新码
+    ——这一行引用的实体值如果从没真正写入过（源文件里没有、或对应的实体行
+    被跳过了），不该在关系写入这一步凭空产生一个新的稳定码、MERGE 出一个
+    没有对应 Term 记录的幽灵节点。"""
     parts: list[str] = []
     for part in node_key_parts:
         if isinstance(part, ColumnNodeKeyPart):
@@ -37,9 +44,19 @@ async def compute_node_key(
                 raise RowProcessingError(f"node_key 需要的原始值列 {part.raw_value_column!r} 在这一行不存在或为空")
             scope = ":".join([term_type, *[row[c] for c in part.scope_columns]])
             raw_value = row[part.raw_value_column]
-            allocated_code = await allocate_stable_code(
-                conn, tenant_id=tenant_id, scope=scope, raw_value=raw_value
-            )
+            if allow_allocation:
+                allocated_code = await allocate_stable_code(
+                    conn, tenant_id=tenant_id, scope=scope, raw_value=raw_value
+                )
+            else:
+                allocated_code = await lookup_stable_code(
+                    conn, tenant_id=tenant_id, scope=scope, raw_value=raw_value
+                )
+                if allocated_code is None:
+                    raise RowProcessingError(
+                        f"稳定码尚未分配：scope={scope!r}, raw_value={raw_value!r}"
+                        f"（对应的实体行可能被跳过或尚未写入）"
+                    )
             parts.append(allocated_code)
     return f"{term_type}:" + ":".join(parts)
 

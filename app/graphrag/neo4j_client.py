@@ -38,25 +38,10 @@ RETURN related.standard_name AS related_name,
 # B-PART_OF->A），若不加这个过滤，2 跳查询会把 t 自己当成"与自己间接
 # 关联"的结果返回。
 
-# 关系类型白名单：10 种跨领域通用拓扑关系，刻意不含任何行业色彩（不是
-# "错误码/模块"这类软件运维语义，也不是"房型/商品"这类某个垂直领域专属
-# 语义）——领域信息由术语表的 term_type/product_line 字段承载，关系类型
-# 词表本身保持跨租户通用。PART_OF 取代了旧的 BELONGS_TO_MODULE（语义
-# 超集），本地无生产数据需要迁移，清理式切换，不写迁移脚本。这份白名单
-# 同时是 merge_relation 里那条 Cypher f-string 插值的注入防线——Cypher
-# 关系类型不能参数化绑定，全靠这里的校验挡掉非法值。
-_ALLOWED_RELATION_TYPES = frozenset({
-    "RELATED_TO",
-    "PART_OF",
-    "IS_A",
-    "REQUIRES",
-    "ALTERNATIVE_TO",
-    "CAUSES",
-    "ADDRESSED_BY",
-    "LOCATED_IN",
-    "APPLIES_TO",
-    "PRECEDES",
-})
+# 保留关系类型：ALIAS_OF 只能由 sync_term 写入别名边（不带 tenant_id/source/
+# provenance，语义和 merge_relation 写入的关系边不同）——merge_relation 硬性
+# 拒绝它，避免同一个关系类型下混入两种不兼容语义的边。
+_RESERVED_RELATION_TYPES = frozenset({"ALIAS_OF"})
 
 # 关系边有向（MERGE (a)-[:TYPE]->(b)），按有向模式匹配删除保证每条边只
 # 命中一次；r.source 只有 merge_relation 写入的抽取关系才有，sync_term/
@@ -215,16 +200,21 @@ class Neo4jGraphClient:
 
         provenance 标记这条边是怎么进来的（app/graphrag/provenance.py 的
         AUTO_MERGED："摄取时术语表精确对齐后自动写入"，或
-        HUMAN_APPROVED："未对齐候选经人工审核批准后写入"）；recorded_at
+        HUMAN_APPROVED："未对齐候选经人工审核批准后写入"，或
+        ETL："结构化 ETL 写入路径产生"）；recorded_at
         是这次写入发生的时间。两者都只是可观测性字段，不参与
         query_subgraph 的检索过滤——检索侧目前仍然不区分来源，一视同仁
         地返回，这是刻意保留的现状（见该模块的说明），加这两个字段只是
         让"这条边有没有被人看过"这件事变得可事后追查。
         """
-        if relation_type not in _ALLOWED_RELATION_TYPES:
+        if not _RELATION_TYPE_NAME_PATTERN.match(relation_type):
             raise ValueError(
-                f"不允许的关系类型: {relation_type!r}，"
-                f"仅支持: {sorted(_ALLOWED_RELATION_TYPES)}"
+                f"关系类型名字不合法: {relation_type!r}，必须满足 ^[A-Z][A-Z0-9_]{{0,63}}$"
+            )
+        if relation_type in _RESERVED_RELATION_TYPES:
+            raise ValueError(
+                f"{relation_type!r} 是保留关系类型，只能由 sync_term 写入别名边，"
+                f"不能通过 merge_relation 写入"
             )
         query = (
             "MERGE (a:Term {tenant_id: $tenant_id, node_key: $subject_name}) "

@@ -6,6 +6,7 @@ import pytest
 from app.graphrag.etl_stable_code_registry import (
     allocate_stable_code,
     ensure_stable_code_registry_schema,
+    lookup_stable_code,
 )
 
 pytestmark = pytest.mark.anyio
@@ -53,6 +54,33 @@ async def test_allocate_stable_code_scopes_by_tenant():
     code_b = await allocate_stable_code(conn, tenant_id="tenant_b", scope="VariantValue:dim_007", raw_value="抹茶")
     assert code_a == "00001"
     assert code_b == "00001"
+
+
+async def test_lookup_stable_code_returns_none_when_never_allocated():
+    conn = await _conn()
+    code = await lookup_stable_code(
+        conn, tenant_id="muji", scope="VariantValue:dim_007", raw_value="抹茶"
+    )
+    assert code is None
+
+
+async def test_lookup_stable_code_returns_existing_code_without_allocating():
+    """只读查找命中已有分配时不能顺带消耗一个计数位——查完之后给同一个
+    scope 下的另一个原始值分配，应该拿到 "00002" 而不是 "00003"。"""
+    conn = await _conn()
+    allocated = await allocate_stable_code(
+        conn, tenant_id="muji", scope="VariantValue:dim_007", raw_value="抹茶"
+    )
+
+    looked_up = await lookup_stable_code(
+        conn, tenant_id="muji", scope="VariantValue:dim_007", raw_value="抹茶"
+    )
+
+    assert looked_up == allocated == "00001"
+    next_code = await allocate_stable_code(
+        conn, tenant_id="muji", scope="VariantValue:dim_007", raw_value="草莓"
+    )
+    assert next_code == "00002"
 
 
 async def test_ensure_stable_code_registry_schema_is_idempotent():
