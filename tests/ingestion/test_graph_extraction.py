@@ -17,12 +17,16 @@ _NOW = datetime(2026, 8, 12, 12, 0, 0)
 
 _TERMS = [
     Term(
+        tenant_id="t1",
+        node_key="示例错误码E502",
         standard_name="示例错误码E502",
         aliases=["网关超时示例"],
         term_type="error_code",
         product_line="示例产品线",
     ),
     Term(
+        tenant_id="t1",
+        node_key="示例登录模块",
         standard_name="示例登录模块",
         aliases=["示例认证模块"],
         term_type="module",

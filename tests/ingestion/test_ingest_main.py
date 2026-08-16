@@ -111,6 +111,8 @@ async def test_main_sends_unresolved_graph_candidates_to_injected_review_conn(
     )
     graph_terms = [
         Term(
+            tenant_id="t1",
+            node_key="示例错误码E502",
             standard_name="示例错误码E502",
             aliases=["网关超时示例"],
             term_type="error_code",
@@ -156,6 +158,8 @@ async def test_main_syncs_ontology_terms_into_graph_when_build_graph(tmp_path):
     )
     graph_terms = [
         Term(
+            tenant_id="t1",
+            node_key="示例错误码E502",
             standard_name="示例错误码E502",
             aliases=["网关超时示例"],
             term_type="error_code",

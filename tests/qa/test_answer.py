@@ -109,6 +109,8 @@ async def test_answer_question_injects_term_guard_context_when_term_matched():
 
     terms = [
         Term(
+            tenant_id="t1",
+            node_key="示例错误码E502",
             standard_name="示例错误码E502",
             aliases=["网关超时示例"],
             term_type="error_code",
@@ -291,6 +293,7 @@ async def test_answer_question_runs_term_guard_and_hybrid_search_concurrently(mo
         tenant_id="t1",
         terms=[
             Term(
+                tenant_id="t1", node_key="示例术语",
                 standard_name="示例术语", aliases=["示例术语"],
                 term_type="module", product_line="示例产品线",
             )

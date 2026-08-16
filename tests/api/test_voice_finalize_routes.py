@@ -46,6 +46,8 @@ def test_asr_finalize_transcribes_and_corrects_terms():
     )
     terms = [
         Term(
+            tenant_id="default",
+            node_key="示例错误码E502",
             standard_name="示例错误码E502",
             aliases=["网关超时示例"],
             term_type="error_code",
