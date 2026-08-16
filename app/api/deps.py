@@ -207,7 +207,9 @@ async def get_graph_client(
     if _graph_client_cache is None:
         async with _graph_client_lock:
             if _graph_client_cache is None:
-                _graph_client_cache = build_graph_client_from_settings(settings)
+                client = build_graph_client_from_settings(settings)
+                await client.ensure_tenant_scoped_schema()
+                _graph_client_cache = client
     return _graph_client_cache
 
 
@@ -325,10 +327,12 @@ async def get_review_conn(
 
 async def get_terms(
     review_conn: aiosqlite.Connection = Depends(get_review_conn),
+    tenant_id: str = Depends(resolve_tenant_id),
 ) -> list[Term]:
     """每次请求都查 terms 表，不再进程级缓存——术语表现在可以通过管理
     后台在线增删改（见 app/api/admin_terms_routes.py），继续用进程级
     缓存会导致改了却要重启服务才能生效，这正是引入这份缓存之前留下的
     真实痛点。（定义放在 get_review_conn 之后：Depends(get_review_conn)
-    要求该函数已经定义）"""
-    return await list_terms(review_conn)
+    要求该函数已经定义）按 tenant_id 过滤——resolve_tenant_id 是本文件
+    已有的依赖，从请求链路解析当前租户。"""
+    return await list_terms(review_conn, tenant_id)

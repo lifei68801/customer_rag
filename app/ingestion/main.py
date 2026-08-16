@@ -72,7 +72,9 @@ async def main(
             graph_review_conn
             or await build_review_conn_from_settings(resolved_settings)
         )
-        resolved_graph_terms = graph_terms or await list_terms(resolved_graph_review_conn)
+        resolved_graph_terms = graph_terms or await list_terms(
+            resolved_graph_review_conn, tenant_id
+        )
         # 术语表（基准真相）先同步进图谱：写入/更新标准节点的 type/product_line
         # 属性 + 别名节点，再进入下面的文档摄取+关系抽取——保证图谱里不只有
         # LLM 抽取出的关系边，也有完整的实体+别名+分类信息（架构文档 §4.1）。

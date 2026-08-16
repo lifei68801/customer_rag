@@ -95,6 +95,30 @@ def test_parse_banned_terms_strips_whitespace_around_each_term():
     assert deps.parse_banned_terms(" 敏感词1 , 敏感词2 ") == ["敏感词1", "敏感词2"]
 
 
+async def test_get_graph_client_calls_ensure_tenant_scoped_schema(monkeypatch):
+    """走真实的 get_graph_client 依赖链（不用 dependency_overrides 绕过），
+    验证单例第一次构建时会调用 ensure_tenant_scoped_schema——这是 Task 3
+    新建索引/回填存量节点唯一会被执行到的地方，漏接线的话索引永远不会
+    被创建，全表扫描问题在真实环境里一直存在。
+    """
+    import app.api.deps as deps_module
+
+    monkeypatch.setattr(deps_module, "_graph_client_cache", None)
+    calls: list[str] = []
+
+    class _FakeGraphClient:
+        async def ensure_tenant_scoped_schema(self) -> None:
+            calls.append("ensure_tenant_scoped_schema")
+
+    monkeypatch.setattr(
+        deps_module, "build_graph_client_from_settings", lambda settings: _FakeGraphClient()
+    )
+
+    await deps_module.get_graph_client(settings=_settings())
+
+    assert calls == ["ensure_tenant_scoped_schema"]
+
+
 async def test_get_review_conn_creates_ontology_tables(tmp_path, monkeypatch):
     """回归测试：get_review_conn（Task 7 的关系类型/约束/生命周期路由实际依赖
     的连接来源）必须真的建出 tenant_relation_types/term_type_relation_allowlist
