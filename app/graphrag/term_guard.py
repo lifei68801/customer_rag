@@ -9,7 +9,7 @@ from app.graphrag.term_matcher import match_terms
 
 class GraphClientProtocol(Protocol):
     async def query_subgraph(
-        self, standard_name: str, *, tenant_id: str
+        self, node_key: str, *, tenant_id: str
     ) -> list[dict[str, Any]]: ...
 
 

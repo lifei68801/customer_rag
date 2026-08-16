@@ -159,8 +159,12 @@ async def update_existing_term(
     node_key = existing_before_update.node_key
     if payload.standard_name != standard_name:
         # 改名：先对同一个图节点做属性级联更新（保留已有关系边），再用
-        # sync_term 刷新 type/product_line/别名——顺序不能反过来，
-        # sync_term 是按"当前"standard_name MERGE 匹配节点的。
+        # sync_term 刷新 type/product_line/别名。sync_term 现在按
+        # {tenant_id, node_key}（创建时固定的身份键，改名后不变——
+        # ADR-0003）MERGE 匹配节点，不再依赖 standard_name，两次调用的
+        # 顺序其实已经不影响"匹配到同一个节点"这件事本身；这里保留
+        # rename_term_node 在前的顺序只是让图谱里的 standard_name 尽快
+        # 反映新值，不是绕开某个必须先后执行的匹配逻辑。
         try:
             await graph_client.rename_term_node(
                 tenant_id=tenant_id, node_key=node_key, new_standard_name=payload.standard_name

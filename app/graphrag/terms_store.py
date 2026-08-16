@@ -110,9 +110,10 @@ async def ensure_terms_schema(
     向后兼容桥接：分类枚举表为空、但 terms 表已经有历史数据（老版本
     上线时term_type/product_line 还是自由文本，没有枚举表），自动把
     历史数据里出现过的去重值导入枚举表——_bridge_seed_categories_from_
-    existing_terms 本任务不改动（它查询/写入的 ontology_term_types 表
-    要到下一个任务才会按租户隔离，本任务改完之后它依然按老的全局形态
-    工作，行为与本任务改造前完全一致）。
+    existing_terms 现在按租户隔离（只处理传入的单个 tenant_id，查询/
+    写入 ontology_term_types 时带 tenant_id 过滤），这里固定传
+    tenant_id="default"，因为桥接的历史数据本来就是迁移前统一归属
+    "default" 租户的存量数据（见上面 seed_yaml_path 段落的说明）。
     """
     await ensure_categories_schema(conn)
     cursor = await conn.execute(
