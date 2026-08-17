@@ -314,3 +314,37 @@ def test_validate_rejects_non_string_anchor_term_type():
         validate_structured_filter_query(
             args, confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
         )
+
+
+def test_parse_rejects_non_dict_constraint_element():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor_term_type": "SKU",
+            "constraints": ["not-a-dict"],
+        })
+
+
+def test_parse_rejects_non_dict_hop_element():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor_term_type": "SKU",
+            "constraints": [{
+                "kind": "relation",
+                "hops": ["not-a-dict"],
+                "target_field": "raw_value", "target_operator": "eq", "target_value": "红",
+            }],
+        })
+
+
+def test_parse_rejects_non_dict_group_by():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor_term_type": "SKU",
+            "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
+            "group_by": ["constraint_index", 0],
+        })
+
+
+def test_parse_rejects_non_dict_top_level_raw():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args("not-a-dict")

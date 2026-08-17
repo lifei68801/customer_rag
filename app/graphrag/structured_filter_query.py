@@ -71,6 +71,8 @@ class StructuredFilterQueryArgs:
 
 
 def _parse_hop(raw: dict) -> Hop:
+    if not isinstance(raw, dict):
+        raise StructuredFilterQueryError(f"hop 必须是 dict，收到: {raw!r}")
     try:
         relation_type = raw["relation_type"]
         direction = raw["direction"]
@@ -83,6 +85,8 @@ def _parse_hop(raw: dict) -> Hop:
 
 
 def _parse_constraint(raw: dict) -> AttributeConstraint | RelationConstraint:
+    if not isinstance(raw, dict):
+        raise StructuredFilterQueryError(f"constraint 必须是 dict，收到: {raw!r}")
     kind = raw.get("kind")
     if not isinstance(kind, str) or kind not in _VALID_KINDS:
         raise StructuredFilterQueryError(f"constraint.kind 必须是 attribute/relation，收到: {kind!r}")
@@ -118,6 +122,8 @@ def _parse_constraint(raw: dict) -> AttributeConstraint | RelationConstraint:
 def _parse_group_by(raw: dict | None, *, constraints: list[AttributeConstraint | RelationConstraint]) -> GroupBy | None:
     if raw is None:
         return None
+    if not isinstance(raw, dict):
+        raise StructuredFilterQueryError(f"group_by 必须是 dict，收到: {raw!r}")
     try:
         constraint_index = raw["constraint_index"]
     except KeyError as exc:
@@ -136,6 +142,8 @@ def parse_structured_filter_query_args(raw: dict) -> StructuredFilterQueryArgs:
     字段是否存在、hops 跳数、operator 是否在协议允许的枚举里），不查 schema 是否
     真的已确认，那是 validate_structured_filter_query 的职责（需要 confirmed_
     relation_types/term_type_schema 这两份数据，本函数没有）。"""
+    if not isinstance(raw, dict):
+        raise StructuredFilterQueryError(f"结构化过滤查询参数必须是 dict，收到: {raw!r}")
     try:
         anchor_term_type = raw["anchor_term_type"]
         raw_constraints = raw["constraints"]
