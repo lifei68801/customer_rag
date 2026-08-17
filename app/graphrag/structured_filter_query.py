@@ -15,6 +15,16 @@ if TYPE_CHECKING:
 # 2026-08-17-structured-filter-query-tool-design.md 第4节）。
 _RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 
+# 与 ontology_categories.py::_EXTRA_FIELD_NAME_PATTERN 保持同一份格式约束（有意重复
+# 定义，不做跨模块导入——两处校验的是同一条注入防线契约，但分属"声明字段时的格式
+# 校验"和"把已确认字段名拼进 Cypher 文本前的防御性复检"两个不同职责层。后者存在
+# 的必要性：_migrate_extra_fields_value_shape_if_needed 会把 2026-08-16 之前的历史
+# 遗留 extra_fields 直接用 SQL UPDATE 升级成 ExtraFieldSpec，不经过
+# _validate_extra_field_specs，所以 spec.name == field 的成员校验本身不能保证字段名
+# 格式安全，见 docs/superpowers/specs/2026-08-17-structured-filter-query-tool-design.md
+# 第4节）。
+_EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
+
 _MAX_HOPS = 2
 _RESERVED_FIELD_NAME = "standard_name"
 
@@ -182,6 +192,12 @@ def _resolve_field_value_type(
         )
     for spec in category.extra_fields:
         if spec.name == field:
+            if not _EXTRA_FIELD_NAME_PATTERN.match(spec.name):
+                raise StructuredFilterQueryError(
+                    f"字段 {spec.name!r} 未通过命名格式校验（可能是 2026-08-16 之前声明的历史遗留字段，"
+                    f"当时还没有这层格式校验），出于安全考虑不能用于结构化查询——"
+                    f"需要在管理后台重新声明这个字段才能通过校验"
+                )
             return spec.value_type
     available_fields = sorted({_RESERVED_FIELD_NAME} | {spec.name for spec in category.extra_fields})
     raise StructuredFilterQueryError(

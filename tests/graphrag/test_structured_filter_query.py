@@ -370,6 +370,49 @@ def test_parse_rejects_non_list_hops():
         })
 
 
+_SKU_SCHEMA_WITH_LEGACY_UNSAFE_FIELD = TermTypeCategory(
+    value="SKU",
+    extra_fields=[
+        ExtraFieldSpec(name="numeric_value", value_type="number"),
+        # 模拟 _migrate_extra_fields_value_shape_if_needed 迁移出的历史遗留字段——
+        # 这里直接构造 dataclass，绕过 ontology_categories.py::create_term_type 会走的
+        # _validate_extra_field_specs 声明期格式校验，等价于该函数描述的迁移期绕过场景。
+        ExtraFieldSpec(name='bad field"}) DETACH DELETE (n', value_type="string"),
+    ],
+    node_key_template="",
+)
+
+
+def test_validate_rejects_legacy_unsafe_field_name_bypassing_declaration_time_validation():
+    """字段名匹配成功（是已知字段）不代表可以安全拼进 Cypher 文本——
+    _resolve_field_value_type 必须在返回前对 spec.name 做防御性格式复检，
+    否则历史遗留字段（未经 _validate_extra_field_specs 校验）会被当作安全字段放行。"""
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "SKU",
+        "constraints": [{
+            "kind": "attribute", "field": 'bad field"}) DETACH DELETE (n', "operator": "eq", "value": "x",
+        }],
+    })
+    with pytest.raises(StructuredFilterQueryError):
+        validate_structured_filter_query(
+            args, confirmed_relation_types=set(),
+            term_type_schema={"SKU": _SKU_SCHEMA_WITH_LEGACY_UNSAFE_FIELD},
+        )
+
+
+def test_validate_still_accepts_normal_field_when_schema_also_has_legacy_unsafe_field():
+    """确认防御性校验不误伤：schema 里混有历史遗留不安全字段时，正常声明的字段
+    依然应该照常通过——不能因为加了这层复检就把整个 term_type 判成不可用。"""
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "SKU",
+        "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
+    })
+    validate_structured_filter_query(
+        args, confirmed_relation_types=set(),
+        term_type_schema={"SKU": _SKU_SCHEMA_WITH_LEGACY_UNSAFE_FIELD},
+    )  # 不抛异常即通过
+
+
 def test_validate_error_on_unknown_field_lists_available_fields():
     """校验失败的消息必须把"什么才是对的"一并告诉 LLM——工具调用轮次通常只有 3 轮
     预算，只说"你写错了"而不说对的是什么，LLM 没有任何信息可以自我纠正。"""
