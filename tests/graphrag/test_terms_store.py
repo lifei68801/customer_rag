@@ -419,7 +419,7 @@ async def test_delete_term_raises_when_not_found():
 async def test_create_term_persists_extra_properties():
     from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")])
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")])
     await create_product_line(conn, value="示例产品线")
 
     await create_term(
@@ -429,11 +429,11 @@ async def test_create_term_persists_extra_properties():
         aliases=[],
         term_type="错误码",
         product_line="示例产品线",
-        extra_properties={"严重等级": "高"},
+        extra_properties={"severity_level": "高"},
     )
 
     term = await get_term(conn, tenant_id="default", standard_name="错误码E502")
-    assert term.extra_properties == {"严重等级": "高"}
+    assert term.extra_properties == {"severity_level": "高"}
 
 
 async def test_create_term_rejects_unknown_term_type():
@@ -462,7 +462,7 @@ async def test_create_term_rejects_unknown_product_line():
 async def test_create_term_rejects_extra_property_not_declared_on_term_type():
     from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")])
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")])
     await create_product_line(conn, value="示例产品线")
 
     with pytest.raises(UnknownCategoryError):
@@ -475,17 +475,17 @@ async def test_create_term_rejects_extra_property_not_declared_on_term_type():
 async def test_removing_extra_field_from_term_type_preserves_existing_term_value():
     from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string"), ExtraFieldSpec(name="影响范围", value_type="string")])
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string"), ExtraFieldSpec(name="impact_scope", value_type="string")])
     await create_product_line(conn, value="示例产品线")
     await create_term(
         conn, tenant_id="default", standard_name="错误码E502", aliases=[], term_type="错误码",
-        product_line="示例产品线", extra_properties={"严重等级": "高", "影响范围": "全站不可用"},
+        product_line="示例产品线", extra_properties={"severity_level": "高", "impact_scope": "全站不可用"},
     )
 
-    await update_term_type(conn, tenant_id="default", value="错误码", new_value="错误码", extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")], node_key_template="")
+    await update_term_type(conn, tenant_id="default", value="错误码", new_value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")], node_key_template="")
 
     term = await get_term(conn, tenant_id="default", standard_name="错误码E502")
-    assert term.extra_properties == {"严重等级": "高", "影响范围": "全站不可用"}
+    assert term.extra_properties == {"severity_level": "高", "impact_scope": "全站不可用"}
 
 
 async def test_update_term_resubmitting_undeclared_but_already_stored_key_succeeds():
@@ -494,25 +494,25 @@ async def test_update_term_resubmitting_undeclared_but_already_stored_key_succee
     _validate_categories 的 existing_extra_property_keys 参数说明。"""
     from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="房型", extra_fields=[ExtraFieldSpec(name="面积", value_type="string")])
+    await create_term_type(conn, tenant_id="default", value="房型", extra_fields=[ExtraFieldSpec(name="area", value_type="string")])
     await create_product_line(conn, value="示例产品线")
     await create_term(
         conn, tenant_id="default", standard_name="大床房", aliases=[], term_type="房型",
-        product_line="示例产品线", extra_properties={"面积": "30"},
+        product_line="示例产品线", extra_properties={"area": "30"},
     )
 
-    # 业务把"面积"从房型的声明字段里移除
+    # 业务把"area"从房型的声明字段里移除
     await update_term_type(conn, tenant_id="default", value="房型", new_value="房型", extra_fields=[], node_key_template="")
 
     # 重新保存这条术语，提交里仍然带着这个已经被去掉声明的字段——不应该报错
     await update_term(
         conn, tenant_id="default", standard_name="大床房", new_standard_name="大床房",
         aliases=["豪华大床房"], term_type="房型", product_line="示例产品线",
-        extra_properties={"面积": "30"},
+        extra_properties={"area": "30"},
     )
 
     term = await get_term(conn, tenant_id="default", standard_name="大床房")
-    assert term.extra_properties == {"面积": "30"}
+    assert term.extra_properties == {"area": "30"}
     assert term.aliases == ["豪华大床房"]
 
 
