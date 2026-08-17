@@ -46,7 +46,16 @@ _UNSAFE_NAME_CHARS = re.compile(r"[^\w.\-]", re.UNICODE)
 
 
 def _sanitize_data_filename(filename: str) -> str:
-    return _UNSAFE_NAME_CHARS.sub("_", filename) or "unnamed"
+    sanitized = _UNSAFE_NAME_CHARS.sub("_", filename) or "unnamed"
+    # 上面的正则只剥掉路径分隔符等危险字符，"." 和 ".." 本身不含任何被剥掉的
+    # 字符，会原样穿透——拼进 run_dir / sanitized 之后分别指向 run_dir 自己
+    # 和它的父目录（父目录必然已存在，是 run_dir.mkdir(parents=True) 顺带建
+    # 出来的），对着一个已存在的目录 write_bytes() 会抛 IsADirectoryError，
+    # 不是"逃出 run_dir"式的任意路径穿越，但仍然违反了本函数自己的契约
+    # （防止用文件名逃出 run_dir），必须单独兜底这两个纯点的特殊值。
+    if sanitized in (".", ".."):
+        sanitized = f"_{sanitized}"
+    return sanitized
 
 
 class StatusResponse(BaseModel):

@@ -119,6 +119,38 @@ def test_start_run_returns_run_id_when_no_run_in_progress(client, review_conn):
     assert detail.status == "completed"
 
 
+def test_start_run_sanitizes_dotdot_data_filename_and_stays_inside_run_dir(client, review_conn, tmp_path):
+    """回归测试：_sanitize_data_filename 的正则只剥路径分隔符，纯 ".."
+    文件名穿透正则原样存活——run_dir / ".." 指向 run_dir 的父目录（这个
+    父目录必然已存在，是 run_dir.mkdir(parents=True) 顺带建出来的），
+    对着一个已存在的目录 write_bytes() 会抛 IsADirectoryError，变成一个
+    未捕获的 500，而不是"逃出 run_dir 写坏东西"式的任意路径穿越。这里
+    验证：(1) 请求不再 500；(2) 落盘的每个文件都真的在 run_dir 内部，
+    不是靠"没报错"就断言过关。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = [
+        ("config", ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")),
+        ("data_files", ("..", b"attempted traversal payload")),
+    ]
+
+    response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+
+    assert response.status_code == 200
+    run_id = response.json()["run_id"]
+    run_dir = (tmp_path / "uploads" / "schema-etl" / "muji" / run_id).resolve()
+    assert run_dir.is_dir()
+
+    written_files = [p for p in run_dir.iterdir() if p.is_file()]
+    assert written_files, "消毒后的 data_files 文件应该落在 run_dir 里"
+    for path in written_files:
+        assert path.resolve().is_relative_to(run_dir)
+
+    # run_dir 的父目录（.../schema-etl/muji）除了 run_id 自己这一个子目录，
+    # 不应该被写入任何东西——证明没有文件溢出到 run_dir 之外。
+    parent = run_dir.parent
+    assert [child.name for child in parent.iterdir()] == [run_id]
+
+
 def test_get_run_not_found_returns_404(client):
     response = client.get("/api/admin/muji/schema-etl/runs/nonexistent")
     assert response.status_code == 404
