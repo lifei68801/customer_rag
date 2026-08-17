@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from app.graphrag.ontology_categories import TermTypeCategory
+
+if TYPE_CHECKING:
+    from app.graphrag.neo4j_client import Neo4jGraphClient
 
 # 与 neo4j_client.py::_RELATION_TYPE_NAME_PATTERN 保持同一份格式约束（有意重复定义，
 # 不做跨模块导入——两处校验的是同一条注入防线契约，但分属"解析请求参数"和"拼
@@ -220,3 +224,46 @@ def validate_structured_filter_query(
         _validate_operator_for_value_type(
             field=constraint.target_field, operator=constraint.target_operator, value_type=value_type,
         )
+
+
+_CORE_TERM_FIELDS = frozenset({"tenant_id", "node_key", "standard_name", "type", "product_line"})
+
+
+async def run_structured_filter_query(
+    raw_args: dict,
+    *,
+    graph_client: "Neo4jGraphClient",
+    tenant_id: str,
+    confirmed_relation_types: set[str],
+    term_type_schema: dict[str, TermTypeCategory],
+) -> dict[str, Any]:
+    """structured_filter_query_tool 的执行体调用的编排入口：解析→校验→执行→格式化，
+    四步都在这一个函数里完成，调用方（app/agent/tools.py）不需要知道 Task 3/4 拆出
+    的中间函数名字。"""
+    try:
+        args = parse_structured_filter_query_args(raw_args)
+        validate_structured_filter_query(
+            args, confirmed_relation_types=confirmed_relation_types, term_type_schema=term_type_schema,
+        )
+    except StructuredFilterQueryError as exc:
+        return {"error": str(exc)}
+
+    result = await graph_client.execute_structured_filter_query(args, tenant_id=tenant_id)
+    if isinstance(result, dict):
+        return result  # group_by 分支已经是 {"groups": [...]}
+
+    return {
+        "matched_count": len(result),
+        "results": [
+            {
+                "standard_name": row["standard_name"],
+                "node_key": row["node_key"],
+                "term_type": row["term_type"],
+                "product_line": row["product_line"],
+                "extra_properties": {
+                    k: v for k, v in row["all_properties"].items() if k not in _CORE_TERM_FIELDS
+                },
+            }
+            for row in result
+        ],
+    }
