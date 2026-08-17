@@ -10,12 +10,12 @@ export interface TermRecord extends GraphTerm {
   product_line: string
 }
 
-export async function fetchGraphTerms(sessionToken: string): Promise<GraphTerm[]> {
-  return fetchTerms(sessionToken)
+export async function fetchGraphTerms(sessionToken: string, tenantId: string): Promise<GraphTerm[]> {
+  return fetchTerms(sessionToken, tenantId)
 }
 
-export async function fetchTerms(sessionToken: string): Promise<TermRecord[]> {
-  const response = await adminFetch('/api/admin/terms', sessionToken)
+export async function fetchTerms(sessionToken: string, tenantId: string): Promise<TermRecord[]> {
+  const response = await adminFetch(`/api/admin/${encodeURIComponent(tenantId)}/terms`, sessionToken)
   if (!response.ok) {
     const body = await response.json().catch(() => ({}))
     throw new Error(extractErrorDetail(body, '加载术语表失败'))
@@ -24,8 +24,12 @@ export async function fetchTerms(sessionToken: string): Promise<TermRecord[]> {
   return data.terms
 }
 
-export async function createTerm(sessionToken: string, term: TermRecord): Promise<TermRecord> {
-  const response = await adminFetch('/api/admin/terms', sessionToken, {
+export async function createTerm(
+  sessionToken: string,
+  tenantId: string,
+  term: TermRecord,
+): Promise<TermRecord> {
+  const response = await adminFetch(`/api/admin/${encodeURIComponent(tenantId)}/terms`, sessionToken, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(term),
@@ -39,11 +43,12 @@ export async function createTerm(sessionToken: string, term: TermRecord): Promis
 
 export async function updateTerm(
   sessionToken: string,
+  tenantId: string,
   currentStandardName: string,
   term: TermRecord,
 ): Promise<TermRecord> {
   const response = await adminFetch(
-    `/api/admin/terms/${encodeURIComponent(currentStandardName)}`,
+    `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(currentStandardName)}`,
     sessionToken,
     {
       method: 'PUT',
@@ -58,9 +63,13 @@ export async function updateTerm(
   return (await response.json()) as TermRecord
 }
 
-export async function deleteTerm(sessionToken: string, standardName: string): Promise<void> {
+export async function deleteTerm(
+  sessionToken: string,
+  tenantId: string,
+  standardName: string,
+): Promise<void> {
   const response = await adminFetch(
-    `/api/admin/terms/${encodeURIComponent(standardName)}`,
+    `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(standardName)}`,
     sessionToken,
     { method: 'DELETE' },
   )

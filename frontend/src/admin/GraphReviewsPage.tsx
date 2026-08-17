@@ -73,13 +73,13 @@ export function GraphReviewsPage() {
 
   useEffect(() => {
     if (!sessionToken) return
-    fetchGraphTerms(sessionToken)
+    fetchGraphTerms(sessionToken, tenantId)
       .then(setGraphTerms)
       .catch((err) => {
         console.error('加载术语表失败', err)
         setError(err instanceof Error ? err.message : '加载术语表失败，标准名自动补全不可用')
       })
-  }, [sessionToken])
+  }, [sessionToken, tenantId])
 
   // 切换租户时两个 tab 的页码都要回到第一页——不然停留在深页码切租户，
   // 新租户数据少的话会连续触发好几轮"清空自动退页"，页面在几个请求

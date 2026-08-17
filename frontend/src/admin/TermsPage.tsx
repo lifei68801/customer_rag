@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAdminAuth } from './useAdminAuth'
+import { useAdminTenant } from './TenantContext'
 import { createTerm, deleteTerm, fetchTerms, updateTerm, type TermRecord } from './termsApi'
 
 const focusRing =
@@ -37,6 +38,7 @@ const emptyDraft: TermDraft = { standard_name: '', aliases: '', term_type: '', p
 
 export function TermsPage() {
   const { sessionToken } = useAdminAuth()
+  const { tenantId } = useAdminTenant()
   const [terms, setTerms] = useState<TermRecord[]>([])
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -56,14 +58,14 @@ export function TermsPage() {
   const refresh = useCallback(async () => {
     if (!sessionToken) return
     try {
-      const data = await fetchTerms(sessionToken)
+      const data = await fetchTerms(sessionToken, tenantId)
       setTerms(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载术语表失败')
     } finally {
       setLoaded(true)
     }
-  }, [sessionToken])
+  }, [sessionToken, tenantId])
 
   useEffect(() => {
     refresh().catch((err) => {
@@ -77,7 +79,7 @@ export function TermsPage() {
     setError(null)
     setCreating(true)
     try {
-      await createTerm(sessionToken, draftToRecord(newDraft))
+      await createTerm(sessionToken, tenantId, draftToRecord(newDraft))
       setNewDraft(emptyDraft)
       await refresh()
     } catch (err) {
@@ -104,7 +106,7 @@ export function TermsPage() {
     setError(null)
     setSavingKey(originalStandardName)
     try {
-      await updateTerm(sessionToken, originalStandardName, draftToRecord(editDraft))
+      await updateTerm(sessionToken, tenantId, originalStandardName, draftToRecord(editDraft))
       setEditingKey(null)
       setEditDraft(null)
       await refresh()
@@ -121,7 +123,7 @@ export function TermsPage() {
     setError(null)
     setDeletingKey(standardName)
     try {
-      await deleteTerm(sessionToken, standardName)
+      await deleteTerm(sessionToken, tenantId, standardName)
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除术语失败')
