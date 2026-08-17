@@ -5,6 +5,8 @@ from typing import Any
 
 from app.graphrag.normalization import resolve_to_standard_name
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import TermTypeCategory
+from app.graphrag.structured_filter_query import run_structured_filter_query
 from app.graphrag.term_guard import GraphClientProtocol
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
@@ -55,6 +57,90 @@ GRAPH_QUERY_TOOL_SCHEMA: dict[str, Any] = {
                 },
             },
             "required": ["entity_name"],
+        },
+    },
+}
+
+STRUCTURED_FILTER_QUERY_TOOL_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "structured_filter_query_tool",
+        "description": (
+            "按结构化条件（数值区间、精确匹配、关系约束）在知识图谱里筛选满足条件的实体，"
+            "适用于「有没有xx以上的」「比xx大的有哪些」「xx类目下有没有yy」这类不知道具体"
+            "实体名、需要按条件查找的问题。与 graph_query_tool 不同：graph_query_tool 用于"
+            "已知实体名、查它的关联信息；本工具用于按条件反查一批满足条件的实体。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "anchor_term_type": {
+                    "type": "string",
+                    "description": "要筛选的实体类型（如 SKU、Product、Category），结果就是这个类型的实体列表",
+                },
+                "constraints": {
+                    "type": "array",
+                    "description": "过滤条件列表，条件之间是 AND 关系，至少提供一个",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": ["attribute", "relation"],
+                                "description": "attribute：直接比较锚点实体自己的字段；relation：经过关系跳到目标实体再比较",
+                            },
+                            "field": {
+                                "type": "string",
+                                "description": "kind=attribute 时必填：要比较的字段名（standard_name 或该实体类型已声明的属性字段名）",
+                            },
+                            "operator": {
+                                "type": "string",
+                                "enum": ["gt", "gte", "lt", "lte", "eq", "ne", "starts_with",
+                                         "all_lte", "all_gte", "any_lte", "any_gte"],
+                                "description": "比较运算符，实际可用范围取决于字段类型",
+                            },
+                            "value": {"description": "kind=attribute 时必填：比较的目标值"},
+                            "hops": {
+                                "type": "array",
+                                "description": "kind=relation 时必填：从锚点出发的关系跳数组，最多2跳",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "relation_type": {"type": "string", "description": "关系类型，如 HAS_VARIANT"},
+                                        "direction": {"type": "string", "enum": ["outgoing", "incoming"]},
+                                        "target_term_type": {"type": "string", "description": "这一跳到达的实体类型"},
+                                    },
+                                    "required": ["relation_type", "direction", "target_term_type"],
+                                },
+                            },
+                            "target_field": {
+                                "type": "string",
+                                "description": "kind=relation 时必填：在最后一跳到达的实体上比较哪个字段",
+                            },
+                            "target_operator": {
+                                "type": "string",
+                                "enum": ["gt", "gte", "lt", "lte", "eq", "ne", "starts_with",
+                                         "all_lte", "all_gte", "any_lte", "any_gte"],
+                                "description": "kind=relation 时必填：对 target_field 用的运算符",
+                            },
+                            "target_value": {"description": "kind=relation 时必填：比较的目标值"},
+                        },
+                        "required": ["kind"],
+                    },
+                },
+                "group_by": {
+                    "type": ["object", "null"],
+                    "description": "可选：按某个字段做 distinct 值统计而不是返回实体列表本身",
+                    "properties": {
+                        "constraint_index": {
+                            "type": "integer",
+                            "description": "指向 constraints 数组里某个 kind=relation 约束的下标，按它的 target_field 分组",
+                        },
+                    },
+                },
+                "limit": {"type": "integer", "description": "返回结果的最大条数，默认20"},
+            },
+            "required": ["anchor_term_type", "constraints"],
         },
     },
 }
@@ -130,4 +216,20 @@ async def graph_query_tool(
     subgraph = await graph_client.query_subgraph(node_key, tenant_id=tenant_id)
     return GraphQueryToolResult(
         resolved=True, standard_name=standard_name, subgraph=subgraph
+    )
+
+
+async def structured_filter_query_tool(
+    arguments: dict[str, Any],
+    *,
+    tenant_id: str,
+    graph_client: GraphClientProtocol,
+    confirmed_relation_types: set[str],
+    term_type_schema: dict[str, TermTypeCategory],
+) -> dict[str, Any]:
+    """structured_filter_query_tool 的实际执行体，薄封装
+    structured_filter_query.py::run_structured_filter_query。"""
+    return await run_structured_filter_query(
+        arguments, graph_client=graph_client, tenant_id=tenant_id,
+        confirmed_relation_types=confirmed_relation_types, term_type_schema=term_type_schema,
     )

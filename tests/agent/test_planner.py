@@ -421,3 +421,41 @@ async def test_run_tool_calls_propagates_exception_from_tool_dispatch(monkeypatc
         assert False, "应该抛异常"
     except ValueError as e:
         assert "模拟工具调用失败" in str(e)
+
+
+async def test_dispatch_tool_call_routes_structured_filter_query_tool():
+    from app.agent.planner import _dispatch_tool_call
+
+    class _FakeGraphClient:
+        async def execute_structured_filter_query(self, args, *, tenant_id):
+            return []
+
+    content, records = await _dispatch_tool_call(
+        "structured_filter_query_tool",
+        {"anchor_term_type": "SKU",
+         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
+        tenant_id="muji",
+        embedding_registry=None, embedding_provider_name="", vector_store=None, bm25_index=None,
+        llm_registry=None, llm_provider_name="", rerank_provider=None, query_rewrite_enabled=False,
+        terms=None, graph_client=_FakeGraphClient(),
+        confirmed_relation_types=set(),
+        term_type_schema={},
+    )
+
+    assert records == []
+    assert "error" in content  # SKU 不在空的 term_type_schema 里，预期走结构化错误分支
+
+
+async def test_dispatch_tool_call_reports_unconfigured_when_schema_data_missing():
+    from app.agent.planner import _dispatch_tool_call
+
+    content, records = await _dispatch_tool_call(
+        "structured_filter_query_tool", {"anchor_term_type": "SKU", "constraints": []},
+        tenant_id="muji",
+        embedding_registry=None, embedding_provider_name="", vector_store=None, bm25_index=None,
+        llm_registry=None, llm_provider_name="", rerank_provider=None, query_rewrite_enabled=False,
+        terms=None, graph_client=None, confirmed_relation_types=None, term_type_schema=None,
+    )
+
+    assert records == []
+    assert "未配置" in content

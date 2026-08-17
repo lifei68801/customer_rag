@@ -13,6 +13,7 @@ from app.agent.planner import route_after_planner, run_planner_turn, run_tool_ca
 from app.agent.state import AgentState
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.term_guard import build_term_guard_context
 from app.memory.chat_sessions import touch_session
 from app.memory.clarification import (
@@ -98,6 +99,8 @@ def build_agent_graph(
     query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
     graph_client: Neo4jGraphClient | None = None,
+    confirmed_relation_types: set[str] | None = None,
+    term_type_schema: dict[str, TermTypeCategory] | None = None,
     banned_terms: list[str] | None = None,
     memory_conn: aiosqlite.Connection | None = None,
     ticket_conn: aiosqlite.Connection | None = None,
@@ -592,6 +595,8 @@ def build_agent_graph(
             query_rewrite_enabled=query_rewrite_enabled,
             terms=terms,
             graph_client=graph_client,
+            confirmed_relation_types=confirmed_relation_types,
+            term_type_schema=term_type_schema,
         )
 
     async def planner_responder_node(state: AgentState) -> dict[str, Any]:

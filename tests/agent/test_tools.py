@@ -116,3 +116,31 @@ def test_tool_schemas_do_not_expose_tenant_id():
     for schema in (VECTOR_SEARCH_TOOL_SCHEMA, GRAPH_QUERY_TOOL_SCHEMA):
         properties = schema["function"]["parameters"]["properties"]
         assert "tenant_id" not in properties
+
+
+async def test_structured_filter_query_tool_delegates_to_run_structured_filter_query():
+    from app.agent.tools import structured_filter_query_tool
+    from app.graphrag.ontology_categories import ExtraFieldSpec, TermTypeCategory
+
+    class _FakeGraphClient:
+        async def execute_structured_filter_query(self, args, *, tenant_id):
+            return []
+
+    result = await structured_filter_query_tool(
+        {"anchor_term_type": "SKU",
+         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
+        tenant_id="muji", graph_client=_FakeGraphClient(),
+        confirmed_relation_types=set(),
+        term_type_schema={"SKU": TermTypeCategory(
+            value="SKU", extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+            node_key_template="",
+        )},
+    )
+
+    assert result == {"matched_count": 0, "results": []}
+
+
+def test_structured_filter_query_tool_schema_does_not_expose_tenant_id():
+    from app.agent.tools import STRUCTURED_FILTER_QUERY_TOOL_SCHEMA
+    properties = STRUCTURED_FILTER_QUERY_TOOL_SCHEMA["function"]["parameters"]["properties"]
+    assert "tenant_id" not in properties

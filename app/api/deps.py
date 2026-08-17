@@ -15,7 +15,9 @@ from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.table_extraction import TableExtractionFunction
 from app.ingestion.table_extraction_factory import build_table_extractor_from_settings
 from app.ingestion.tracking import ensure_tracking_schema
+from app.graphrag.ontology_categories import TermTypeCategory, list_term_types
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
+from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.review_queue import ensure_review_schema
 from app.graphrag.terms_store import ensure_terms_schema, list_terms
 from app.providers.embedding import EmbeddingRegistry
@@ -50,6 +52,7 @@ __all__ = [
     "get_admin_session_store",
     "get_asr_provider",
     "get_bm25_index",
+    "get_confirmed_relation_types",
     "get_embedding_registry",
     "get_gateway_tenant_id",
     "get_graph_client",
@@ -61,6 +64,7 @@ __all__ = [
     "get_review_conn",
     "get_settings",
     "get_table_extractor",
+    "get_term_type_schema",
     "get_terms",
     "get_tts_provider",
     "get_upload_dir",
@@ -343,3 +347,26 @@ async def get_terms(
     """
     tenant_id = gateway_tenant_id or "default"
     return await list_terms(review_conn, tenant_id)
+
+
+async def get_confirmed_relation_types(
+    review_conn: aiosqlite.Connection = Depends(get_review_conn),
+    gateway_tenant_id: str | None = Depends(get_gateway_tenant_id),
+) -> set[str]:
+    """结构化过滤查询工具校验 relation_type 用——跟 get_terms 一样，每次请求查一次，
+    不做进程级缓存（租户在管理后台改关系类型是随时可能发生的事，缓存会导致查询
+    工具用旧 schema 拒绝新确认的关系类型）。tenant_id 解析方式与 get_terms 保持
+    完全一致，见该函数的说明。"""
+    tenant_id = gateway_tenant_id or "default"
+    defs = await list_relation_types(review_conn, tenant_id, status="confirmed")
+    return {d.relation_type for d in defs}
+
+
+async def get_term_type_schema(
+    review_conn: aiosqlite.Connection = Depends(get_review_conn),
+    gateway_tenant_id: str | None = Depends(get_gateway_tenant_id),
+) -> dict[str, TermTypeCategory]:
+    """结构化过滤查询工具校验 anchor_term_type/target_term_type/field 用。"""
+    tenant_id = gateway_tenant_id or "default"
+    categories = await list_term_types(review_conn, tenant_id)
+    return {c.value: c for c in categories}

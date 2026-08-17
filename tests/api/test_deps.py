@@ -1,12 +1,17 @@
+import asyncio
 import logging
 
+import aiosqlite
 import pytest
 from fastapi import HTTPException
 
 from app.api import deps
 from app.config.settings import Settings
-from app.graphrag.ontology_lifecycle import checkout_draft
+from app.graphrag.ontology_lifecycle import checkout_draft, ensure_ontology_schema
 from app.graphrag.ontology_relations import list_relation_types
+from app.graphrag.review_queue import ensure_review_schema
+from app.graphrag.terms_store import ensure_terms_schema
+from app.graphrag.tenant_ingestion_config import set_ingestion_mode
 
 
 def _settings(**overrides) -> Settings:
@@ -149,3 +154,60 @@ async def test_get_review_conn_creates_ontology_tables(tmp_path, monkeypatch):
     finally:
         await conn.close()
         monkeypatch.setattr(deps, "_review_conn_cache", None)
+
+
+async def _open_review_conn() -> aiosqlite.Connection:
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(conn)
+    await ensure_terms_schema(conn)
+    # get_confirmed_relation_types/get_term_type_schema 依赖的是 get_review_conn
+    # 实际建出的连接，那个连接同时建审核队列/terms/本体（分类+关系类型+约束）三套
+    # schema——这里照抄同样的建表顺序，不然 checkout_draft/create_relation_type/
+    # create_term_type 会因为表不存在而报错。
+    await ensure_ontology_schema(conn)
+    return conn
+
+
+@pytest.fixture
+def review_conn():
+    """本体（分类/关系类型）测试用连接。close 的理由同本文件其它 review_conn
+    风格的 fixture（见 test_admin_document_routes.py/test_admin_graph_review_routes.py
+    的同名 fixture 说明：aiosqlite 后台工作线程不是 daemon 线程，不显式 close
+    会让 pytest 进程卡在解释器退出阶段）。"""
+    conn = asyncio.run(_open_review_conn())
+    try:
+        yield conn
+    finally:
+        asyncio.run(conn.close())
+
+
+async def test_get_confirmed_relation_types_returns_only_confirmed_types(review_conn):
+    from app.graphrag.ontology_lifecycle import confirm_ontology
+    from app.graphrag.ontology_relations import create_relation_type
+
+    # 新租户的接入模式默认是 "extraction"（tenant_ingestion_config.get_ingestion_mode
+    # 的默认值），checkout_draft 在这种模式下会自动播种 10 种全局默认关系类型到草稿——
+    # 与本用例想验证的东西（get_confirmed_relation_types 只返回已确认类型、不受草稿
+    # 干扰）无关，会污染断言。显式切到 "etl" 模式关掉这个播种，让草稿只有本用例自己
+    # 创建的这一个类型，跟 get_term_type_schema 测试一样保持结果可预测。
+    await set_ingestion_mode(review_conn, "muji", "etl")
+    await checkout_draft(review_conn, "muji")
+    await create_relation_type(review_conn, "muji", relation_type="HAS_SKU", example_phrase="p")
+    await confirm_ontology(review_conn, "muji")
+
+    result = await deps.get_confirmed_relation_types(
+        review_conn=review_conn, gateway_tenant_id="muji",
+    )
+
+    assert result == {"HAS_SKU"}
+
+
+async def test_get_term_type_schema_returns_dict_keyed_by_value(review_conn):
+    from app.graphrag.ontology_categories import create_term_type
+
+    await create_term_type(review_conn, tenant_id="muji", value="SKU")
+
+    result = await deps.get_term_type_schema(review_conn=review_conn, gateway_tenant_id="muji")
+
+    assert "SKU" in result
+    assert result["SKU"].value == "SKU"

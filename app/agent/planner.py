@@ -6,11 +6,14 @@ from typing import Any
 
 from app.agent.tools import (
     GRAPH_QUERY_TOOL_SCHEMA,
+    STRUCTURED_FILTER_QUERY_TOOL_SCHEMA,
     VECTOR_SEARCH_TOOL_SCHEMA,
     graph_query_tool,
+    structured_filter_query_tool,
     vector_search_tool,
 )
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.term_guard import GraphClientProtocol, describe_association
 from app.providers.base import ProviderCapability, ProviderRequest
 from app.providers.embedding import EmbeddingRegistry
@@ -19,7 +22,7 @@ from app.providers.rerank import RerankProvider
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import VectorRecord, VectorStore
 
-_TOOL_SCHEMAS = [VECTOR_SEARCH_TOOL_SCHEMA, GRAPH_QUERY_TOOL_SCHEMA]
+_TOOL_SCHEMAS = [VECTOR_SEARCH_TOOL_SCHEMA, GRAPH_QUERY_TOOL_SCHEMA, STRUCTURED_FILTER_QUERY_TOOL_SCHEMA]
 
 
 async def run_planner_turn(
@@ -93,6 +96,8 @@ async def _dispatch_tool_call(
     query_rewrite_enabled: bool,
     terms: list[Term] | None,
     graph_client: GraphClientProtocol | None,
+    confirmed_relation_types: set[str] | None,
+    term_type_schema: dict[str, TermTypeCategory] | None,
 ) -> tuple[str, list[VectorRecord]]:
     """执行单个工具调用，返回 (供 LLM 看的观察结果 JSON 字符串, 新增的检索记录)。
 
@@ -135,6 +140,15 @@ async def _dispatch_tool_call(
         }
         return json.dumps(observation, ensure_ascii=False), []
 
+    if name == "structured_filter_query_tool":
+        if graph_client is None or confirmed_relation_types is None or term_type_schema is None:
+            return json.dumps({"error": "structured_filter_query_tool 未配置"}, ensure_ascii=False), []
+        observation = await structured_filter_query_tool(
+            arguments, tenant_id=tenant_id, graph_client=graph_client,
+            confirmed_relation_types=confirmed_relation_types, term_type_schema=term_type_schema,
+        )
+        return json.dumps(observation, ensure_ascii=False), []
+
     return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False), []
 
 
@@ -151,6 +165,8 @@ async def run_tool_calls(
     query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
     graph_client: GraphClientProtocol | None = None,
+    confirmed_relation_types: set[str] | None = None,
+    term_type_schema: dict[str, TermTypeCategory] | None = None,
 ) -> dict[str, Any]:
     """执行 state["pending_tool_calls"] 里的每一个工具调用，结果回填对话历史。
 
@@ -187,6 +203,8 @@ async def run_tool_calls(
             query_rewrite_enabled=query_rewrite_enabled,
             terms=terms,
             graph_client=graph_client,
+            confirmed_relation_types=confirmed_relation_types,
+            term_type_schema=term_type_schema,
         )
         return (
             {"tool_call_id": call["id"], "name": call["name"], "content": content},

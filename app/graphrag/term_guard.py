@@ -12,6 +12,10 @@ class GraphClientProtocol(Protocol):
         self, node_key: str, *, tenant_id: str
     ) -> list[dict[str, Any]]: ...
 
+    async def execute_structured_filter_query(
+        self, args: Any, *, tenant_id: str
+    ) -> list[dict[str, Any]] | dict[str, Any]: ...
+
 
 def describe_association(hops: int) -> str:
     """把 hops 转成人类可读的标签：1 跳是直接关联，其余（目前只有 2）
