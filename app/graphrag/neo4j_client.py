@@ -211,10 +211,14 @@ class Neo4jGraphClient:
         安全性依赖调用方已经过 validate_structured_filter_query 的双重校验：
         relation_type 过格式校验（^[A-Z][A-Z0-9_]{0,63}$）+ 已确认 tenant_relation_
         types 成员校验；field/target_field 过"是保留字 standard_name，或是该
-        term_type 已确认 extra_fields 的成员"校验，而 extra_fields 的字段名本身
-        在声明时（ontology_categories.py::_validate_extra_field_specs）已经过
-        ^[a-zA-Z_][a-zA-Z0-9_]{0,63}$ 格式校验——两条路径最终都是"格式安全的
-        字面量 + 租户已确认成员资格"的组合，插值是安全的。见
+        term_type 已确认 extra_fields 的成员"校验。extra_fields 的字段名正常
+        情况下在声明时（ontology_categories.py::_validate_extra_field_specs）
+        已经过 ^[a-zA-Z_][a-zA-Z0-9_]{0,63}$ 格式校验，但历史遗留数据（2026-
+        08-16 之前经 _migrate_extra_fields_value_shape_if_needed 迁移写入的
+        字段名）绕过了这层声明时校验——structured_filter_query.py::
+        _resolve_field_value_type 因此额外对命中的字段名做了同一份格式校验的
+        运行时兜底，两条来源最终都收敛到"格式安全的字面量 + 租户已确认成员
+        资格"，插值才是安全的。见
         docs/superpowers/specs/2026-08-17-structured-filter-query-tool-design.md
         第5节。
         """
