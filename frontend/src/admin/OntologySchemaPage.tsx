@@ -22,7 +22,6 @@ interface RelationType {
   example_phrase: string
   description: string
   allow_chain_query: boolean
-  source: string
 }
 
 interface Constraint {
@@ -47,7 +46,6 @@ const emptyRelationTypeDraft = (): RelationType => ({
   example_phrase: '',
   description: '',
   allow_chain_query: false,
-  source: '',
 })
 
 export function OntologySchemaPage() {
@@ -95,23 +93,43 @@ export function OntologySchemaPage() {
       )}
 
       <nav className="flex flex-row flex-wrap gap-2">
-        <button type="button" className={tabButtonClass(tab === 'term-types')} onClick={() => setTab('term-types')}>
+        <button
+          type="button"
+          className={tabButtonClass(tab === 'term-types')}
+          onClick={() => {
+            setTab('term-types')
+            setPageError(null)
+          }}
+        >
           实体类型
         </button>
         <button
           type="button"
           className={tabButtonClass(tab === 'relation-types')}
-          onClick={() => setTab('relation-types')}
+          onClick={() => {
+            setTab('relation-types')
+            setPageError(null)
+          }}
         >
           关系类型
         </button>
-        <button type="button" className={tabButtonClass(tab === 'constraints')} onClick={() => setTab('constraints')}>
+        <button
+          type="button"
+          className={tabButtonClass(tab === 'constraints')}
+          onClick={() => {
+            setTab('constraints')
+            setPageError(null)
+          }}
+        >
           约束
         </button>
         <button
           type="button"
           className={tabButtonClass(tab === 'product-lines')}
-          onClick={() => setTab('product-lines')}
+          onClick={() => {
+            setTab('product-lines')
+            setPageError(null)
+          }}
         >
           产品线
         </button>
@@ -119,6 +137,7 @@ export function OntologySchemaPage() {
 
       {tab === 'term-types' && (
         <TermTypesTab
+          key={tenantId}
           sessionToken={sessionToken}
           tenantId={tenantId}
           onError={setPageError}
@@ -126,6 +145,7 @@ export function OntologySchemaPage() {
       )}
       {tab === 'relation-types' && (
         <RelationTypesTab
+          key={tenantId}
           sessionToken={sessionToken}
           tenantId={tenantId}
           onError={setPageError}
@@ -133,7 +153,7 @@ export function OntologySchemaPage() {
         />
       )}
       {tab === 'constraints' && (
-        <ConstraintsTab sessionToken={sessionToken} tenantId={tenantId} onError={setPageError} />
+        <ConstraintsTab key={tenantId} sessionToken={sessionToken} tenantId={tenantId} onError={setPageError} />
       )}
       {tab === 'product-lines' && (
         <ProductLinesTab sessionToken={sessionToken} onError={setPageError} />
@@ -165,14 +185,19 @@ function TermTypesTab({
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
-    const response = await adminFetch(
-      `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`,
-      sessionToken,
-    )
-    const data = (await response.json()) as { term_types: TermType[] }
-    setItems(data.term_types)
-    setLoaded(true)
-  }, [sessionToken, tenantId])
+    try {
+      const response = await adminFetch(
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`,
+        sessionToken,
+      )
+      const data = (await response.json()) as { term_types: TermType[] }
+      setItems(data.term_types)
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '加载失败')
+    } finally {
+      setLoaded(true)
+    }
+  }, [sessionToken, tenantId, onError])
 
   useEffect(() => {
     refresh().catch((err) => console.error('实体类型列表刷新失败', err))
@@ -263,6 +288,7 @@ function TermTypesTab({
 
   return (
     <div className="flex flex-col gap-4">
+      {!loaded && <p className="text-ink-soft">加载中…</p>}
       {loaded && items.length === 0 && editingValue === null && (
         <p className="text-ink-soft">还没有定义任何实体类型。</p>
       )}
@@ -296,7 +322,7 @@ function TermTypesTab({
                       type="button"
                       className={`font-bold text-status-error underline disabled:opacity-50 ${focusRing}`}
                       onClick={() => handleDelete(item.value)}
-                      disabled={deletingValue !== null}
+                      disabled={deletingValue !== null || editingValue !== null}
                     >
                       {deletingValue === item.value ? '删除中…' : '删除'}
                     </button>
@@ -350,6 +376,7 @@ function TermTypesTab({
                 <input
                   type="text"
                   placeholder="字段名"
+                  aria-label="字段名"
                   required
                   value={field.name}
                   onChange={(e) => updateField(index, { name: e.target.value })}
@@ -357,6 +384,7 @@ function TermTypesTab({
                 />
                 <select
                   value={field.value_type}
+                  aria-label="字段类型"
                   onChange={(e) => updateField(index, { value_type: e.target.value })}
                   className="border-2 border-ink bg-paper px-2 py-1.5 text-ink focus:shadow-brutal focus:outline-none"
                 >
@@ -433,23 +461,35 @@ function RelationTypesTab({
   const [migratingFrom, setMigratingFrom] = useState<string | null>(null)
   const [migrateTarget, setMigrateTarget] = useState('')
   const [migrating, setMigrating] = useState(false)
+  const [migrateSuccessMessage, setMigrateSuccessMessage] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
-    // checkout 对用户透明——每次进这个 tab / 切换视图前，先确保草稿存在，
-    // 幂等操作，已有草稿时后端直接跳过（见 app/graphrag/ontology_lifecycle.py
-    // ::checkout_draft 的说明）。
-    await adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/checkout`, sessionToken, {
-      method: 'POST',
-    })
-    const response = await adminFetch(
-      `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types?status=${view}`,
-      sessionToken,
-    )
-    const data = (await response.json()) as { relation_types: RelationType[] }
-    setItems(data.relation_types)
-    setLoaded(true)
-  }, [sessionToken, tenantId, view])
+    try {
+      // checkout 对用户透明——每次进这个 tab / 切换视图前，先确保草稿存在，
+      // 幂等操作，已有草稿时后端直接跳过（见 app/graphrag/ontology_lifecycle.py
+      // ::checkout_draft 的说明）。
+      const checkoutResponse = await adminFetch(
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/checkout`,
+        sessionToken,
+        { method: 'POST' },
+      )
+      if (!checkoutResponse.ok) {
+        const body = await checkoutResponse.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, 'schema 草稿初始化失败'))
+      }
+      const response = await adminFetch(
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types?status=${view}`,
+        sessionToken,
+      )
+      const data = (await response.json()) as { relation_types: RelationType[] }
+      setItems(data.relation_types)
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '加载失败')
+    } finally {
+      setLoaded(true)
+    }
+  }, [sessionToken, tenantId, view, onError])
 
   useEffect(() => {
     refresh().catch((err) => console.error('关系类型列表刷新失败', err))
@@ -585,7 +625,7 @@ function RelationTypesTab({
         throw new Error(extractErrorDetail(body, '迁移图谱边失败'))
       }
       const data = (await response.json()) as { migrated_count: number }
-      window.alert(`已迁移 ${data.migrated_count} 条边`)
+      setMigrateSuccessMessage(`已迁移 ${data.migrated_count} 条边`)
       setMigratingFrom(null)
       setMigrateTarget('')
     } catch (err) {
@@ -618,6 +658,7 @@ function RelationTypesTab({
         )}
       </div>
 
+      {!loaded && <p className="text-ink-soft">加载中…</p>}
       {loaded && items.length === 0 && <p className="text-ink-soft">还没有任何{view === 'draft' ? '草稿' : '已确认的'}关系类型。</p>}
       {items.length > 0 && (
         <div className="overflow-x-auto border-2 border-ink bg-card shadow-brutal-sm">
@@ -650,11 +691,13 @@ function RelationTypesTab({
                       </button>
                       <button
                         type="button"
-                        className={`mr-2 font-bold underline ${focusRing}`}
+                        className={`mr-2 font-bold underline disabled:opacity-50 ${focusRing}`}
                         onClick={() => {
                           setMigratingFrom(item.relation_type)
                           setMigrateTarget('')
+                          setMigrateSuccessMessage(null)
                         }}
+                        disabled={migrating}
                       >
                         迁移图谱边…
                       </button>
@@ -749,6 +792,8 @@ function RelationTypesTab({
         </form>
       )}
 
+      {migrateSuccessMessage && <p className="text-sm text-ink">{migrateSuccessMessage}</p>}
+
       {migratingFrom !== null && (
         <form
           onSubmit={handleMigrate}
@@ -757,14 +802,22 @@ function RelationTypesTab({
           <p className="text-sm text-ink">
             把租户「{tenantId}」图谱里所有类型为「{migratingFrom}」的边迁移成：
           </p>
-          <input
-            type="text"
+          <select
             required
             value={migrateTarget}
             onChange={(e) => setMigrateTarget(e.target.value)}
-            placeholder="新类型名"
-            className="border-2 border-ink bg-paper px-2 py-1.5 font-mono text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
-          />
+            aria-label="迁移目标类型"
+            className="border-2 border-ink bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-brutal focus:outline-none"
+          >
+            <option value="">请选择新类型</option>
+            {items
+              .filter((item) => item.relation_type !== migratingFrom)
+              .map((item) => (
+                <option key={item.relation_type} value={item.relation_type}>
+                  {item.relation_type}
+                </option>
+              ))}
+          </select>
           <div className="flex gap-2">
             <button
               type="submit"
@@ -775,7 +828,10 @@ function RelationTypesTab({
             </button>
             <button
               type="button"
-              onClick={() => setMigratingFrom(null)}
+              onClick={() => {
+                setMigratingFrom(null)
+                setMigrateSuccessMessage(null)
+              }}
               className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
             >
               取消
@@ -814,9 +870,15 @@ function ConstraintsTab({
   const refresh = useCallback(async () => {
     if (!sessionToken) return
     try {
-      await adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/checkout`, sessionToken, {
-        method: 'POST',
-      })
+      const checkoutResponse = await adminFetch(
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/checkout`,
+        sessionToken,
+        { method: 'POST' },
+      )
+      if (!checkoutResponse.ok) {
+        const body = await checkoutResponse.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, 'schema 草稿初始化失败'))
+      }
       const [constraintsRes, termTypesRes, relationTypesRes] = await Promise.all([
         adminFetch(
           `/api/admin/ontology/${encodeURIComponent(tenantId)}/constraints?status=${view}`,
@@ -837,10 +899,9 @@ function ConstraintsTab({
       setDraftRelationTypes(relationTypesData.relation_types.map((r) => r.relation_type))
       setLoaded(true)
     } catch (err) {
-      // Promise.all 里任一并发请求失败都会在这里被捕获——不这样包一层的话，
-      // 异常会直接从 refresh() 抛出，调用方 useEffect 只用 console.error 兜底，
-      // 用户在页面上完全看不到任何提示，四个 tab 里这是唯一一个发多个并发
-      // 请求的 tab，所以只有这里需要这层 try/catch。
+      // Promise.all 里任一并发请求失败都会在这里被捕获——四个 tab 里这是唯一一个
+      // 发多个并发请求的 tab，其余三个 tab 的 refresh() 各自只有一次 fetch，
+      // 用同样的 try/catch/finally 模式即可覆盖单个请求失败的情况。
       onError(err instanceof Error ? err.message : '约束列表刷新失败')
       setLoaded(true)
     }
@@ -925,6 +986,7 @@ function ConstraintsTab({
         查看已确认版本（只读）
       </label>
 
+      {!loaded && <p className="text-ink-soft">加载中…</p>}
       {loaded && constraints.length === 0 && (
         <p className="text-ink-soft">还没有任何{view === 'draft' ? '草稿' : '已确认的'}约束。</p>
       )}
@@ -1049,11 +1111,16 @@ function ProductLinesTab({
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
-    const response = await adminFetch('/api/admin/ontology/product-lines', sessionToken)
-    const data = (await response.json()) as { product_lines: string[] }
-    setItems(data.product_lines)
-    setLoaded(true)
-  }, [sessionToken])
+    try {
+      const response = await adminFetch('/api/admin/ontology/product-lines', sessionToken)
+      const data = (await response.json()) as { product_lines: string[] }
+      setItems(data.product_lines)
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '加载失败')
+    } finally {
+      setLoaded(true)
+    }
+  }, [sessionToken, onError])
 
   useEffect(() => {
     refresh().catch((err) => console.error('产品线列表刷新失败', err))
@@ -1112,6 +1179,7 @@ function ProductLinesTab({
         产品线是全局配置，不属于当前租户，切换租户不影响这个列表。
       </p>
 
+      {!loaded && <p className="text-ink-soft">加载中…</p>}
       {loaded && items.length === 0 && <p className="text-ink-soft">还没有定义任何产品线。</p>}
       {items.length > 0 && (
         <div className="overflow-x-auto border-2 border-ink bg-card shadow-brutal-sm">
@@ -1156,7 +1224,7 @@ function ProductLinesTab({
         </label>
         <button
           type="submit"
-          disabled={creating}
+          disabled={creating || !newValue.trim()}
           className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           {creating ? '添加中…' : '+ 添加产品线'}
