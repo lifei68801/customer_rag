@@ -107,6 +107,8 @@ def _parse_constraint(raw: dict) -> AttributeConstraint | RelationConstraint:
         target_value = raw["target_value"]
     except KeyError as exc:
         raise StructuredFilterQueryError(f"relation 约束缺少必填字段: {exc}") from exc
+    if not isinstance(raw_hops, list):
+        raise StructuredFilterQueryError(f"hops 必须是 list，收到: {raw_hops!r}")
     if not raw_hops:
         raise StructuredFilterQueryError("relation 约束的 hops 不能为空")
     if len(raw_hops) > _MAX_HOPS:
@@ -149,6 +151,8 @@ def parse_structured_filter_query_args(raw: dict) -> StructuredFilterQueryArgs:
         raw_constraints = raw["constraints"]
     except KeyError as exc:
         raise StructuredFilterQueryError(f"缺少必填字段: {exc}") from exc
+    if not isinstance(raw_constraints, list):
+        raise StructuredFilterQueryError(f"constraints 必须是 list，收到: {raw_constraints!r}")
     if not raw_constraints:
         raise StructuredFilterQueryError("constraints 不能为空，至少提供一个过滤条件")
     constraints = [_parse_constraint(c) for c in raw_constraints]

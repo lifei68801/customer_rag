@@ -348,3 +348,23 @@ def test_parse_rejects_non_dict_group_by():
 def test_parse_rejects_non_dict_top_level_raw():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args("not-a-dict")
+
+
+def test_parse_rejects_non_list_constraints():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor_term_type": "SKU",
+            "constraints": 5,
+        })
+
+
+def test_parse_rejects_non_list_hops():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor_term_type": "SKU",
+            "constraints": [{
+                "kind": "relation",
+                "hops": 5,
+                "target_field": "raw_value", "target_operator": "eq", "target_value": "红",
+            }],
+        })
