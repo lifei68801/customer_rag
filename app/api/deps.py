@@ -20,6 +20,7 @@ from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.review_queue import ensure_review_schema
 from app.graphrag.terms_store import ensure_terms_schema, list_terms
+from app.graphrag.etl_runs_store import ensure_etl_runs_schema
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
     DEFAULT_EMBEDDING_PROVIDER_NAME,
@@ -322,6 +323,7 @@ async def get_review_conn(
                     # 里已经建过的分类表重复，但都是幂等的 CREATE TABLE IF NOT
                     # EXISTS，不会冲突。
                     await ensure_ontology_schema(conn)
+                    await ensure_etl_runs_schema(conn)
                 except Exception:
                     await conn.close()
                     raise
