@@ -337,24 +337,23 @@ class Neo4jGraphClient:
         （^[a-zA-Z_][a-zA-Z0-9_]{0,63}$）的声明，不是 LLM 运行时可控参数，风险性质
         与结构化查询工具里 field/target_field 完全不同，不需要走那套校验链。
 
-        tenant_id 拼进索引名（term_tenant_{tenant_id}_{term_type}_{field} 里没有直接
-        用 tenant_id，索引条件本身按 (tenant_id, type, field) 三元组建，索引名只需要
-        全局唯一、可重复执行——IF NOT EXISTS 保证幂等，同一个字段被多个租户声明时
-        （不同 term_type 名字下）不会冲突，因为 IF NOT EXISTS 只按索引名去重，这里
-        索引名同时含 term_type 和字段名，不同租户共用同一个 term_type 名字时会共享
-        同一条索引定义——这是有意的：索引本身是 (tenant_id, type, field) 三列复合
-        索引，租户隔离由查询时的 WHERE tenant_id = $tenant_id 保证，索引定义可以
-        跨租户共享同一条 DDL，不需要按租户各建一条。
+        索引不显式命名（匿名 CREATE INDEX IF NOT EXISTS）——term_type 是分类枚举值
+        （TermTypeWriteRequest.value），没有经过任何字符集校验，如果拼进索引名字符串
+        里，一个带空格/标点的分类名会拼出格式非法的 CREATE INDEX 语句、把这个本该
+        只是声明分类的路由变成未处理的 500。改成匿名索引后 term_type 就不再出现在
+        Cypher 语句文本里的任何位置（ON 子句里的 t.type 是固定的属性名字面量，不是
+        term_type 的值）——IF NOT EXISTS 的幂等性不依赖显式索引名，Neo4j 按标签+属性
+        列表匹配已有索引定义，同一个 (tenant_id, type, field) 三元组重复调用一样会
+        no-op。
         """
         _SCALAR_VALUE_TYPES = {"string", "number", "integer"}
         async with self._driver.session() as session:
             for spec in extra_fields:
                 if spec.value_type not in _SCALAR_VALUE_TYPES:
                     continue
-                index_name = f"term_extra_field_{term_type}_{spec.name}_idx"
                 await session.run(
-                    f"CREATE INDEX {index_name} IF NOT EXISTS "
-                    f"FOR (t:Term) ON (t.tenant_id, t.type, t.{spec.name})"
+                    f"CREATE INDEX IF NOT EXISTS FOR (t:Term) ON "
+                    f"(t.tenant_id, t.type, t.{spec.name})"
                 )
 
     async def migrate_relation_type_edges(

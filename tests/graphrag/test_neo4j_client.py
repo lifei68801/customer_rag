@@ -474,6 +474,31 @@ async def test_ensure_extra_field_indexes_creates_index_per_scalar_field():
     assert any("t.md_no" in q for q in queries)
     assert not any("t.dims" in q for q in queries)  # number[] 不建标量索引，见 spec 第6节
     assert len(queries) == 2
+    # 索引匿名创建（不显式命名）——term_type 未经字符集校验，不能拼进索引名字符串，
+    # 见 ensure_extra_field_indexes 的说明。断言查询文本里只有固定的
+    # "CREATE INDEX IF NOT EXISTS" 前缀，不含由 term_type 拼出的自定义索引名。
+    assert all(q.startswith("CREATE INDEX IF NOT EXISTS FOR (t:Term) ON") for q in queries)
+    assert not any("Product" in q for q in queries)
+
+
+async def test_ensure_extra_field_indexes_tolerates_unsanitized_term_type():
+    """term_type（分类枚举值）不经过任何字符集校验，可能含空格/标点——索引匿名创建，
+    term_type 不会被拼进 Cypher 语句文本，所以即使传一个"脏"值也不会产生格式非法的
+    CREATE INDEX 语句。"""
+    from app.graphrag.ontology_categories import ExtraFieldSpec
+
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.ensure_extra_field_indexes(
+        tenant_id="muji", term_type="Weird Type; DROP",
+        extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+    )
+
+    queries = [call[0] for call in session.calls]
+    assert queries == [
+        "CREATE INDEX IF NOT EXISTS FOR (t:Term) ON (t.tenant_id, t.type, t.numeric_value)"
+    ]
 
 
 async def test_ensure_tenant_scoped_schema_creates_indexes_and_backfills_legacy_nodes():
