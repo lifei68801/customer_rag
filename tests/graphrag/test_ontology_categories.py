@@ -41,8 +41,8 @@ async def test_create_and_list_term_type_with_extra_fields():
     await create_term_type(
         conn, tenant_id="default", value="错误码",
         extra_fields=[
-            ExtraFieldSpec(name="严重等级", value_type="string"),
-            ExtraFieldSpec(name="影响范围", value_type="string"),
+            ExtraFieldSpec(name="severity_level", value_type="string"),
+            ExtraFieldSpec(name="impact_scope", value_type="string"),
         ],
     )
 
@@ -51,8 +51,8 @@ async def test_create_and_list_term_type_with_extra_fields():
     assert result == [TermTypeCategory(
         value="错误码",
         extra_fields=[
-            ExtraFieldSpec(name="严重等级", value_type="string"),
-            ExtraFieldSpec(name="影响范围", value_type="string"),
+            ExtraFieldSpec(name="severity_level", value_type="string"),
+            ExtraFieldSpec(name="impact_scope", value_type="string"),
         ],
         node_key_template="",
     )]
@@ -86,7 +86,7 @@ async def test_update_term_type_renames_without_referencing_terms():
     conn = await _conn()
     await create_term_type(
         conn, tenant_id="default", value="错误码",
-        extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")],
+        extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")],
     )
     await conn.execute(
         "CREATE TABLE terms (tenant_id TEXT NOT NULL, standard_name TEXT NOT NULL, term_type TEXT NOT NULL, "
@@ -97,8 +97,8 @@ async def test_update_term_type_renames_without_referencing_terms():
     await update_term_type(
         conn, tenant_id="default", value="错误码", new_value="故障码",
         extra_fields=[
-            ExtraFieldSpec(name="严重等级", value_type="string"),
-            ExtraFieldSpec(name="影响范围", value_type="string"),
+            ExtraFieldSpec(name="severity_level", value_type="string"),
+            ExtraFieldSpec(name="impact_scope", value_type="string"),
         ],
         node_key_template="",
     )
@@ -107,8 +107,8 @@ async def test_update_term_type_renames_without_referencing_terms():
     assert result == [TermTypeCategory(
         value="故障码",
         extra_fields=[
-            ExtraFieldSpec(name="严重等级", value_type="string"),
-            ExtraFieldSpec(name="影响范围", value_type="string"),
+            ExtraFieldSpec(name="severity_level", value_type="string"),
+            ExtraFieldSpec(name="impact_scope", value_type="string"),
         ],
         node_key_template="",
     )]
@@ -262,7 +262,7 @@ async def test_create_and_list_term_types_isolated_per_tenant():
     conn = await _conn()
     await create_term_type(
         conn, tenant_id="tenant_a", value="错误码",
-        extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")],
+        extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")],
     )
     await create_term_type(conn, tenant_id="tenant_b", value="VariantValue", extra_fields=[])
 
@@ -337,15 +337,15 @@ async def test_create_term_type_with_typed_extra_fields():
     await create_term_type(
         conn, tenant_id="t1", value="错误码",
         extra_fields=[
-            ExtraFieldSpec(name="严重等级", value_type="string"),
-            ExtraFieldSpec(name="影响范围人数", value_type="integer"),
+            ExtraFieldSpec(name="severity_level", value_type="string"),
+            ExtraFieldSpec(name="impact_count", value_type="integer"),
         ],
     )
 
     types = await list_term_types(conn, tenant_id="t1")
     assert types[0].extra_fields == [
-        ExtraFieldSpec(name="严重等级", value_type="string"),
-        ExtraFieldSpec(name="影响范围人数", value_type="integer"),
+        ExtraFieldSpec(name="severity_level", value_type="string"),
+        ExtraFieldSpec(name="impact_count", value_type="integer"),
     ]
 
 
@@ -354,7 +354,7 @@ async def test_create_term_type_rejects_invalid_value_type():
     with pytest.raises(InvalidExtraFieldTypeError):
         await create_term_type(
             conn, tenant_id="t1", value="错误码",
-            extra_fields=[ExtraFieldSpec(name="严重等级", value_type="不存在的类型")],
+            extra_fields=[ExtraFieldSpec(name="severity_level", value_type="不存在的类型")],
         )
 
 
@@ -407,11 +407,30 @@ async def test_ensure_categories_schema_extra_fields_migration_is_idempotent():
     conn = await _conn()
     await create_term_type(
         conn, tenant_id="t1", value="错误码",
-        extra_fields=[ExtraFieldSpec(name="严重等级", value_type="string")],
+        extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")],
     )
 
     await ensure_categories_schema(conn)
     await ensure_categories_schema(conn)
 
     types = await list_term_types(conn, tenant_id="t1")
-    assert types[0].extra_fields == [ExtraFieldSpec(name="严重等级", value_type="string")]
+    assert types[0].extra_fields == [ExtraFieldSpec(name="severity_level", value_type="string")]
+
+
+async def test_create_term_type_rejects_extra_field_with_invalid_name_characters():
+    conn = await _conn()
+    with pytest.raises(InvalidExtraFieldTypeError):
+        await create_term_type(
+            conn, tenant_id="t1", value="Product",
+            extra_fields=[ExtraFieldSpec(name="numeric value", value_type="number")],
+        )
+
+
+async def test_create_term_type_accepts_extra_field_with_underscore_name():
+    conn = await _conn()
+    await create_term_type(
+        conn, tenant_id="t1", value="Product",
+        extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+    )
+    result = await list_term_types(conn, "t1")
+    assert result[0].extra_fields[0].name == "numeric_value"

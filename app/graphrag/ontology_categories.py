@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 import aiosqlite
@@ -19,6 +20,8 @@ CREATE TABLE IF NOT EXISTS ontology_product_lines (
 """
 
 _VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]"})
+
+_EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
 
 
 class CategoryNotFoundError(Exception):
@@ -56,6 +59,11 @@ class TermTypeCategory:
 
 def _validate_extra_field_specs(extra_fields: list[ExtraFieldSpec]) -> None:
     for spec in extra_fields:
+        if not _EXTRA_FIELD_NAME_PATTERN.match(spec.name):
+            raise InvalidExtraFieldTypeError(
+                f"字段名 {spec.name!r} 不合法，必须满足 ^[a-zA-Z_][a-zA-Z0-9_]{{0,63}}$"
+                f"（后续要作为 Neo4j 索引属性名/结构化查询字段名使用，不能含空格或特殊字符）"
+            )
         if spec.value_type not in _VALID_EXTRA_FIELD_VALUE_TYPES:
             raise InvalidExtraFieldTypeError(
                 f"字段 {spec.name!r} 声明的类型 {spec.value_type!r} 不合法，"
