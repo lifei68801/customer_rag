@@ -25,7 +25,7 @@ def test_parse_attribute_constraint():
     assert args.limit == 20
 
 
-def test_parse_relation_constraint_with_two_hops():
+def test_parse_relation_constraint_with_one_hop():
     args = parse_structured_filter_query_args({
         "anchor_term_type": "SKU",
         "constraints": [{
@@ -40,6 +40,26 @@ def test_parse_relation_constraint_with_two_hops():
     assert isinstance(constraint, RelationConstraint)
     assert constraint.hops == [Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue")]
     assert constraint.target_field == "raw_value"
+
+
+def test_parse_relation_constraint_with_genuine_two_hops():
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "SKU",
+        "constraints": [{
+            "kind": "relation",
+            "hops": [
+                {"relation_type": "HAS_VARIANT_GROUP", "direction": "outgoing", "target_term_type": "VariantGroup"},
+                {"relation_type": "HAS_VARIANT_VALUE", "direction": "outgoing", "target_term_type": "VariantValue"},
+            ],
+            "target_field": "raw_value", "target_operator": "eq", "target_value": "红",
+        }],
+    })
+    constraint = args.constraints[0]
+    assert isinstance(constraint, RelationConstraint)
+    assert constraint.hops == [
+        Hop(relation_type="HAS_VARIANT_GROUP", direction="outgoing", target_term_type="VariantGroup"),
+        Hop(relation_type="HAS_VARIANT_VALUE", direction="outgoing", target_term_type="VariantValue"),
+    ]
 
 
 def test_parse_rejects_empty_constraints():
@@ -170,3 +190,127 @@ def test_validate_accepts_confirmed_relation_type_and_target_field():
         args, confirmed_relation_types={"HAS_VARIANT"},
         term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
     )
+
+
+def test_validate_rejects_relation_type_failing_name_pattern():
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "SKU",
+        "constraints": [{
+            "kind": "relation",
+            "hops": [{"relation_type": "has-variant", "direction": "outgoing", "target_term_type": "VariantValue"}],
+            "target_field": "raw_value", "target_operator": "eq", "target_value": "红",
+        }],
+    })
+    with pytest.raises(StructuredFilterQueryError):
+        validate_structured_filter_query(
+            # 关系类型已经"被确认"，隔离出格式校验这一条失败分支，不是成员校验分支
+            args, confirmed_relation_types={"has-variant"},
+            term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
+        )
+
+
+_SKU_SCHEMA_WITH_MORE_FIELDS = TermTypeCategory(
+    value="SKU",
+    extra_fields=[
+        ExtraFieldSpec(name="numeric_value", value_type="number"),
+        ExtraFieldSpec(name="stock_count", value_type="integer"),
+        ExtraFieldSpec(name="capacities", value_type="number[]"),
+    ],
+    node_key_template="",
+)
+
+
+def test_validate_accepts_integer_field_with_matching_operator():
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "SKU",
+        "constraints": [{"kind": "attribute", "field": "stock_count", "operator": "gte", "value": 10}],
+    })
+    validate_structured_filter_query(
+        args, confirmed_relation_types=set(),
+        term_type_schema={"SKU": _SKU_SCHEMA_WITH_MORE_FIELDS},
+    )
+
+
+def test_validate_accepts_array_field_with_array_operator():
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "SKU",
+        "constraints": [{"kind": "attribute", "field": "capacities", "operator": "all_lte", "value": 500}],
+    })
+    validate_structured_filter_query(
+        args, confirmed_relation_types=set(),
+        term_type_schema={"SKU": _SKU_SCHEMA_WITH_MORE_FIELDS},
+    )
+
+
+def test_parse_rejects_group_by_constraint_index_out_of_bounds():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor_term_type": "SKU",
+            "constraints": [{
+                "kind": "relation",
+                "hops": [{"relation_type": "HAS_VARIANT", "direction": "outgoing", "target_term_type": "VariantValue"}],
+                "target_field": "raw_value", "target_operator": "eq", "target_value": "红",
+            }],
+            "group_by": {"constraint_index": 5},
+        })
+
+
+def test_parse_rejects_group_by_constraint_index_negative():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor_term_type": "SKU",
+            "constraints": [{
+                "kind": "relation",
+                "hops": [{"relation_type": "HAS_VARIANT", "direction": "outgoing", "target_term_type": "VariantValue"}],
+                "target_field": "raw_value", "target_operator": "eq", "target_value": "红",
+            }],
+            "group_by": {"constraint_index": -1},
+        })
+
+
+def test_parse_rejects_non_string_operator():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor_term_type": "SKU",
+            "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": ["gt"], "value": 500}],
+        })
+
+
+def test_parse_rejects_non_int_group_by_constraint_index():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor_term_type": "SKU",
+            "constraints": [{
+                "kind": "relation",
+                "hops": [{"relation_type": "HAS_VARIANT", "direction": "outgoing", "target_term_type": "VariantValue"}],
+                "target_field": "raw_value", "target_operator": "eq", "target_value": "红",
+            }],
+            "group_by": {"constraint_index": "0"},
+        })
+
+
+def test_validate_rejects_non_string_relation_type():
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "SKU",
+        "constraints": [{
+            "kind": "relation",
+            "hops": [{"relation_type": 123, "direction": "outgoing", "target_term_type": "VariantValue"}],
+            "target_field": "raw_value", "target_operator": "eq", "target_value": "红",
+        }],
+    })
+    with pytest.raises(StructuredFilterQueryError):
+        validate_structured_filter_query(
+            args, confirmed_relation_types={"HAS_VARIANT"},
+            term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
+        )
+
+
+def test_validate_rejects_non_string_anchor_term_type():
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": ["SKU"],
+        "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
+    })
+    with pytest.raises(StructuredFilterQueryError):
+        validate_structured_filter_query(
+            args, confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+        )

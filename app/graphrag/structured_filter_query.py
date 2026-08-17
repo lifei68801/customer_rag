@@ -84,7 +84,7 @@ def _parse_hop(raw: dict) -> Hop:
 
 def _parse_constraint(raw: dict) -> AttributeConstraint | RelationConstraint:
     kind = raw.get("kind")
-    if kind not in _VALID_KINDS:
+    if not isinstance(kind, str) or kind not in _VALID_KINDS:
         raise StructuredFilterQueryError(f"constraint.kind 必须是 attribute/relation，收到: {kind!r}")
     if kind == "attribute":
         try:
@@ -93,7 +93,7 @@ def _parse_constraint(raw: dict) -> AttributeConstraint | RelationConstraint:
             value = raw["value"]
         except KeyError as exc:
             raise StructuredFilterQueryError(f"attribute 约束缺少必填字段: {exc}") from exc
-        if operator not in _VALID_OPERATORS:
+        if not isinstance(operator, str) or operator not in _VALID_OPERATORS:
             raise StructuredFilterQueryError(f"不支持的 operator: {operator!r}")
         return AttributeConstraint(field=field, operator=operator, value=value)
     try:
@@ -107,7 +107,7 @@ def _parse_constraint(raw: dict) -> AttributeConstraint | RelationConstraint:
         raise StructuredFilterQueryError("relation 约束的 hops 不能为空")
     if len(raw_hops) > _MAX_HOPS:
         raise StructuredFilterQueryError(f"hops 最多 {_MAX_HOPS} 跳，收到 {len(raw_hops)} 跳")
-    if target_operator not in _VALID_OPERATORS:
+    if not isinstance(target_operator, str) or target_operator not in _VALID_OPERATORS:
         raise StructuredFilterQueryError(f"不支持的 target_operator: {target_operator!r}")
     hops = [_parse_hop(h) for h in raw_hops]
     return RelationConstraint(
@@ -122,6 +122,8 @@ def _parse_group_by(raw: dict | None, *, constraints: list[AttributeConstraint |
         constraint_index = raw["constraint_index"]
     except KeyError as exc:
         raise StructuredFilterQueryError(f"group_by 缺少必填字段: {exc}") from exc
+    if not isinstance(constraint_index, int) or isinstance(constraint_index, bool):
+        raise StructuredFilterQueryError(f"group_by.constraint_index 必须是整数，收到: {constraint_index!r}")
     if constraint_index < 0 or constraint_index >= len(constraints):
         raise StructuredFilterQueryError(f"group_by.constraint_index {constraint_index} 越界")
     if not isinstance(constraints[constraint_index], RelationConstraint):
@@ -183,7 +185,7 @@ def validate_structured_filter_query(
     真的在这个租户已确认的 schema 里，operator 是否匹配字段声明的 value_type。
     形状层面的校验（必填字段、跳数上限等）由 parse_structured_filter_query_args
     完成，不在这里重复。"""
-    if args.anchor_term_type not in term_type_schema:
+    if not isinstance(args.anchor_term_type, str) or args.anchor_term_type not in term_type_schema:
         raise StructuredFilterQueryError(f"anchor_term_type {args.anchor_term_type!r} 不在已确认 schema 里")
     for constraint in args.constraints:
         if isinstance(constraint, AttributeConstraint):
@@ -193,11 +195,11 @@ def validate_structured_filter_query(
             _validate_operator_for_value_type(field=constraint.field, operator=constraint.operator, value_type=value_type)
             continue
         for hop in constraint.hops:
-            if not _RELATION_TYPE_NAME_PATTERN.match(hop.relation_type):
+            if not isinstance(hop.relation_type, str) or not _RELATION_TYPE_NAME_PATTERN.match(hop.relation_type):
                 raise StructuredFilterQueryError(f"关系类型名字不合法: {hop.relation_type!r}")
             if hop.relation_type not in confirmed_relation_types:
                 raise StructuredFilterQueryError(f"relation_type {hop.relation_type!r} 不在已确认 schema 里")
-            if hop.target_term_type not in term_type_schema:
+            if not isinstance(hop.target_term_type, str) or hop.target_term_type not in term_type_schema:
                 raise StructuredFilterQueryError(f"target_term_type {hop.target_term_type!r} 不在已确认 schema 里")
         last_hop = constraint.hops[-1]
         value_type = _resolve_field_value_type(
