@@ -24,7 +24,8 @@
 可能变差），没有退路。因此采用分阶段、显式开关的路线：
 
 1. **Provider 层**：新增 tool-calling 支持，纯增量字段（默认值兼容），零现有测试受影响。
-2. **工具实现层**：把 `vector_search_tool`/`graph_query_tool` 包装成独立可测试函数，
+2. **工具实现层**：把 `vector_search_tool`/`graph_query_tool`/`structured_filter_query_tool`
+   包装成独立可测试函数，
    此时还没接入图，同样零现有测试受影响。
 3. **新 Planner 子图**：`build_agent_graph()` 新增 `enable_autonomous_planning: bool = False`
    参数。`False`（默认）时完全复用现有确定性流程，保证已有 160 个测试和生产行为不变；
@@ -108,6 +109,7 @@ Qwen（DashScope 兼容模式）、DeepSeek、智谱 GLM、Kimi 官方文档都�
 |---|---|---|---|
 | `vector_search_tool` | `query: str`, `top_k: int`（可选，默认3） | `tenant_id` | 内部调用 `hybrid_search()` |
 | `graph_query_tool` | `entity_name: str` | `tenant_id` | 内部调用 `resolve_to_standard_name()` + `graph_client.query_subgraph()` |
+| `structured_filter_query_tool` | `anchor_term_type: str`, `constraints: list`, `group_by`（可选）, `limit: int`（可选，默认20） | `tenant_id`、该租户已确认的 term_type/relation_type schema | 按属性/关系条件反查实体；内部调用 `run_structured_filter_query()`（解析→按已确认 schema 校验→`graph_client.execute_structured_filter_query()`） |
 
 `create_ticket_tool` **不**开放给 Planner 调用——继续保持架构图里 `Fallback --> CreateTicket`
 的确定性路径，工单转人工是安全兜底动作，不能让 LLM 自主决定"要不要转人工"。

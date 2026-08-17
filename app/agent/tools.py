@@ -138,7 +138,11 @@ STRUCTURED_FILTER_QUERY_TOOL_SCHEMA: dict[str, Any] = {
                         },
                     },
                 },
-                "limit": {"type": "integer", "description": "返回结果的最大条数，默认20"},
+                "limit": {
+                    "type": "integer",
+                    "description": "返回结果的最大条数，默认20——预期命中数量较多时"
+                                   "（如宽泛的数值区间过滤），请设置一个合理的值避免返回过多结果",
+                },
             },
             "required": ["anchor_term_type", "constraints"],
         },

@@ -66,6 +66,7 @@ flowchart TB
     subgraph Tools["工具集"]
         VTool[vector_search_tool]
         GTool[graph_query_tool]
+        SFTool[structured_filter_query_tool]
         TTool[create_ticket_tool]
     end
 
@@ -162,6 +163,7 @@ stateDiagram-v2
 |---|---|---|---|
 | `vector_search_tool` | query, tenant_id, top_k | 混合检索+rerank 后的文档片段列表（含来源、置信度分数） | 内部串联 Hybrid Search → Rerank → Fusion |
 | `graph_query_tool` | 实体/关系查询意图 | 子图三元组 + 归一化后的标准名称 | 内部先查术语表做实体链接，再执行 Cypher 查询 |
+| `structured_filter_query_tool` | anchor_term_type, constraints（属性/关系条件）, group_by, limit | 满足条件的实体列表（含已声明属性）或分组统计 | 按属性/关系条件反查实体；字段/关系类型先按租户已确认 schema 校验再拼 Cypher |
 | `create_ticket_tool` | 用户问题, 会话摘要, 已尝试的检索结果 | 工单 ID | 当前为抽象接口 mock 实现，后续可插拔对接具体工单系统 |
 
 ---

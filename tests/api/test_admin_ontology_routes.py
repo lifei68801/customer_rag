@@ -32,9 +32,13 @@ class _FakeGraphClient:
     migrate_relation_type_edges 支持可配置返回值/异常，供迁移路由的测试
     直接构造一个带指定行为的实例覆盖 fixture 里的默认值。"""
 
-    def __init__(self, *, migrated_count: int = 0, migrate_error: Exception | None = None) -> None:
+    def __init__(
+        self, *, migrated_count: int = 0, migrate_error: Exception | None = None,
+        ensure_index_error: Exception | None = None,
+    ) -> None:
         self._migrated_count = migrated_count
         self._migrate_error = migrate_error
+        self._ensure_index_error = ensure_index_error
         self.ensured_index_calls: list[tuple[str, str, list[tuple[str, str]]]] = []
 
     async def sync_term(self, term) -> None:
@@ -49,6 +53,8 @@ class _FakeGraphClient:
         self.ensured_index_calls.append(
             (tenant_id, term_type, [(f.name, f.value_type) for f in extra_fields])
         )
+        if self._ensure_index_error is not None:
+            raise self._ensure_index_error
 
 
 @pytest.fixture
@@ -174,6 +180,56 @@ def test_update_term_type_ensures_neo4j_indexes_for_declared_fields(client):
     assert fake_graph_client.ensured_index_calls == [
         ("muji", "Product", [("md_no", "string")])
     ]
+
+
+def test_create_term_type_still_succeeds_when_index_creation_fails(client):
+    """Neo4j 索引创建失败不能把已经写成功的 SQLite 声明变成 500——索引只是查询性能
+    优化，而客户端对 500 的自然反应（重试）会撞上已存在的记录报 400，把一次可恢复的
+    性能降级放大成看起来无解的死循环。"""
+    fake_graph_client = _FakeGraphClient(ensure_index_error=RuntimeError("neo4j unreachable"))
+    app.dependency_overrides[deps.get_graph_client] = lambda: fake_graph_client
+
+    resp = client.post(
+        "/api/admin/ontology/muji/term-types",
+        json={
+            "value": "Product",
+            "extra_fields": [{"name": "numeric_value", "value_type": "number"}],
+            "node_key_template": "",
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert resp.status_code == 200
+    assert fake_graph_client.ensured_index_calls == [("muji", "Product", [("numeric_value", "number")])]
+
+    # 声明本身确实落库了（不是靠跳过写入换来的 200）
+    resp = client.get("/api/admin/ontology/muji/term-types", headers={"Authorization": "Bearer x"})
+    assert [t["value"] for t in resp.json()["term_types"]] == ["Product"]
+
+
+def test_update_term_type_still_succeeds_when_index_creation_fails(client):
+    fake_graph_client = _FakeGraphClient()
+    app.dependency_overrides[deps.get_graph_client] = lambda: fake_graph_client
+    client.post(
+        "/api/admin/ontology/muji/term-types",
+        json={"value": "Product", "extra_fields": [], "node_key_template": ""},
+        headers={"Authorization": "Bearer x"},
+    )
+    failing_graph_client = _FakeGraphClient(ensure_index_error=RuntimeError("neo4j unreachable"))
+    app.dependency_overrides[deps.get_graph_client] = lambda: failing_graph_client
+
+    resp = client.put(
+        "/api/admin/ontology/muji/term-types/Product",
+        json={
+            "value": "Product",
+            "extra_fields": [{"name": "md_no", "value_type": "string"}],
+            "node_key_template": "",
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert resp.status_code == 200
+    assert failing_graph_client.ensured_index_calls == [("muji", "Product", [("md_no", "string")])]
 
 
 async def test_delete_term_type_in_use_returns_409(client, conn_for_testing):

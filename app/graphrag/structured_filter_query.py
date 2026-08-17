@@ -176,11 +176,17 @@ def _resolve_field_value_type(
         return "string"
     category = term_type_schema.get(term_type)
     if category is None:
-        raise StructuredFilterQueryError(f"term_type {term_type!r} 不在已确认 schema 里")
+        raise StructuredFilterQueryError(
+            f"term_type {term_type!r} 不在已确认 schema 里，"
+            f"可用的 term_type: {sorted(term_type_schema.keys())}"
+        )
     for spec in category.extra_fields:
         if spec.name == field:
             return spec.value_type
-    raise StructuredFilterQueryError(f"字段 {field!r} 不是 {term_type!r} 已确认的属性字段")
+    available_fields = sorted({_RESERVED_FIELD_NAME} | {spec.name for spec in category.extra_fields})
+    raise StructuredFilterQueryError(
+        f"字段 {field!r} 不是 {term_type!r} 已确认的属性字段，可用字段: {available_fields}"
+    )
 
 
 def _validate_operator_for_value_type(*, field: str, operator: str, value_type: str) -> None:
@@ -202,7 +208,10 @@ def validate_structured_filter_query(
     形状层面的校验（必填字段、跳数上限等）由 parse_structured_filter_query_args
     完成，不在这里重复。"""
     if not isinstance(args.anchor_term_type, str) or args.anchor_term_type not in term_type_schema:
-        raise StructuredFilterQueryError(f"anchor_term_type {args.anchor_term_type!r} 不在已确认 schema 里")
+        raise StructuredFilterQueryError(
+            f"anchor_term_type {args.anchor_term_type!r} 不在已确认 schema 里，"
+            f"可用的 term_type: {sorted(term_type_schema.keys())}"
+        )
     for constraint in args.constraints:
         if isinstance(constraint, AttributeConstraint):
             value_type = _resolve_field_value_type(
@@ -214,9 +223,15 @@ def validate_structured_filter_query(
             if not isinstance(hop.relation_type, str) or not _RELATION_TYPE_NAME_PATTERN.match(hop.relation_type):
                 raise StructuredFilterQueryError(f"关系类型名字不合法: {hop.relation_type!r}")
             if hop.relation_type not in confirmed_relation_types:
-                raise StructuredFilterQueryError(f"relation_type {hop.relation_type!r} 不在已确认 schema 里")
+                raise StructuredFilterQueryError(
+                    f"relation_type {hop.relation_type!r} 不在已确认 schema 里，"
+                    f"可用的 relation_type: {sorted(confirmed_relation_types)}"
+                )
             if not isinstance(hop.target_term_type, str) or hop.target_term_type not in term_type_schema:
-                raise StructuredFilterQueryError(f"target_term_type {hop.target_term_type!r} 不在已确认 schema 里")
+                raise StructuredFilterQueryError(
+                    f"target_term_type {hop.target_term_type!r} 不在已确认 schema 里，"
+                    f"可用的 term_type: {sorted(term_type_schema.keys())}"
+                )
         last_hop = constraint.hops[-1]
         value_type = _resolve_field_value_type(
             term_type=last_hop.target_term_type, field=constraint.target_field, term_type_schema=term_type_schema,
@@ -248,7 +263,17 @@ async def run_structured_filter_query(
     except StructuredFilterQueryError as exc:
         return {"error": str(exc)}
 
-    result = await graph_client.execute_structured_filter_query(args, tenant_id=tenant_id)
+    # 执行阶段单独兜一层 except Exception（比 StructuredFilterQueryError 宽）——这层
+    # 边界要防的是"图谱后端挂了/Cypher 运行时报错"（Neo4j 驱动异常、数组谓词碰到
+    # 某个节点上不是 list 的属性等），和"入参不合法"是两类失败，但对 Agent 的要求
+    # 一样：降级成这一次工具调用的错误观察结果，而不是让异常穿过
+    # planner.py::run_tool_calls 的 asyncio.gather(return_exceptions=True) 被重新
+    # 抛出、把整个 SSE 回合打挂。
+    try:
+        result = await graph_client.execute_structured_filter_query(args, tenant_id=tenant_id)
+    except Exception as exc:
+        return {"error": f"图谱查询执行失败：{exc}"}
+
     if isinstance(result, dict):
         return result  # group_by 分支已经是 {"groups": [...]}
 

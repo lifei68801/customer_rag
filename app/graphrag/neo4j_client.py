@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from app.graphrag.ontology import Term
 from app.graphrag.structured_filter_query import (
@@ -11,6 +11,9 @@ from app.graphrag.structured_filter_query import (
     RelationConstraint,
     StructuredFilterQueryArgs,
 )
+
+if TYPE_CHECKING:
+    from app.graphrag.ontology_categories import ExtraFieldSpec
 
 _RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 
@@ -198,10 +201,20 @@ class Neo4jGraphClient:
         validate_structured_filter_query，本方法不重复校验 field/relation_type
         是否在已确认 schema 里，只负责构造 Cypher 并执行。
 
-        属性字段名（field/target_field）一律走 t[$param] 动态属性访问，不做字符串
-        插值——relation_type 做不到参数化（Cypher 关系类型语法层面要求字面量），
-        是本方法里唯一需要字符串插值拼进查询文本的部分，安全性依赖调用方已经过
-        validate_structured_filter_query 的格式+已确认成员双重校验。见
+        属性字段名（field/target_field）和 relation_type 都走字符串插值拼进查询
+        文本，不做参数化——这是刻意的（且是本方法唯一安全的做法）：Neo4j 对动态
+        属性访问 t[$param] 只在运行时解析属性名，查询规划器没法在规划阶段用上
+        (tenant_id, type, field) 复合索引（ensure_extra_field_indexes 建的那些），
+        每次属性过滤都会退化成全表按 type 扫描——这正是 Task 2 的索引本该避免的
+        18万+行全表扫描。改成静态插值后规划器才能命中索引。
+
+        安全性依赖调用方已经过 validate_structured_filter_query 的双重校验：
+        relation_type 过格式校验（^[A-Z][A-Z0-9_]{0,63}$）+ 已确认 tenant_relation_
+        types 成员校验；field/target_field 过"是保留字 standard_name，或是该
+        term_type 已确认 extra_fields 的成员"校验，而 extra_fields 的字段名本身
+        在声明时（ontology_categories.py::_validate_extra_field_specs）已经过
+        ^[a-zA-Z_][a-zA-Z0-9_]{0,63}$ 格式校验——两条路径最终都是"格式安全的
+        字面量 + 租户已确认成员资格"的组合，插值是安全的。见
         docs/superpowers/specs/2026-08-17-structured-filter-query-tool-design.md
         第5节。
         """
@@ -210,12 +223,11 @@ class Neo4jGraphClient:
 
         for i, constraint in enumerate(args.constraints):
             if isinstance(constraint, AttributeConstraint):
-                field_param, value_param = f"field_{i}", f"value_{i}"
-                params[field_param] = constraint.field
+                value_param = f"value_{i}"
                 params[value_param] = constraint.value
                 where_clauses.append(
                     _comparison_expression(
-                        prop_expr=f"anchor[${field_param}]", operator=constraint.operator, param_name=value_param,
+                        prop_expr=f"anchor.{constraint.field}", operator=constraint.operator, param_name=value_param,
                     )
                 )
                 continue
@@ -223,12 +235,11 @@ class Neo4jGraphClient:
                 continue  # group_by 指向的约束走独立的 MATCH（下方分支），不进 EXISTS
             match_pattern, hop_params = _build_hop_match_pattern(constraint.hops, prefix=f"c{i}")
             params.update(hop_params)
-            target_field_param, target_value_param = f"c{i}_target_field", f"c{i}_target_value"
-            params[target_field_param] = constraint.target_field
+            target_value_param = f"c{i}_target_value"
             params[target_value_param] = constraint.target_value
             last_var = f"c{i}_hop{len(constraint.hops) - 1}"
             comparison = _comparison_expression(
-                prop_expr=f"{last_var}[${target_field_param}]",
+                prop_expr=f"{last_var}.{constraint.target_field}",
                 operator=constraint.target_operator, param_name=target_value_param,
             )
             where_clauses.append(f"EXISTS {{ {match_pattern} WHERE {comparison} }}")
@@ -242,13 +253,12 @@ class Neo4jGraphClient:
                 group_constraint.hops, prefix=f"g{args.group_by.constraint_index}"
             )
             params.update(hop_params)
-            params["group_field"] = group_constraint.target_field
             last_var = f"g{args.group_by.constraint_index}_hop{len(group_constraint.hops) - 1}"
             query = (
                 "MATCH (anchor:Term {tenant_id: $tenant_id, type: $anchor_term_type}) "
                 f"{match_pattern} "
                 f"WHERE {where_sql} "
-                f"RETURN {last_var}[$group_field] AS value, count(DISTINCT anchor) AS count "
+                f"RETURN {last_var}.{group_constraint.target_field} AS value, count(DISTINCT anchor) AS count "
                 "ORDER BY count DESC"
             )
             async with self._driver.session() as session:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -39,6 +41,8 @@ from app.graphrag.ontology_relations import (
     update_relation_type,
 )
 from app.graphrag.neo4j_client import Neo4jGraphClient
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/ontology", dependencies=[Depends(deps.require_admin_session)])
 
@@ -102,9 +106,20 @@ async def create_term_type_category(
         raise HTTPException(status_code=400, detail=str(exc))
     except InvalidExtraFieldTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    await graph_client.ensure_extra_field_indexes(
-        tenant_id=tenant_id, term_type=payload.value, extra_fields=extra_field_specs,
-    )
+    # SQLite 侧的分类声明此时已经成功提交——Neo4j 索引只是查询性能优化，不是
+    # 正确性前提，失败不能反向把这个已成功的声明变成 500：客户端看到 500 后
+    # 天然会重试，而重试会撞上（已经写成功的）SQLite 记录报 400"已存在"，
+    # 把一次可恢复的性能降级放大成一个看起来无解的死循环。
+    try:
+        await graph_client.ensure_extra_field_indexes(
+            tenant_id=tenant_id, term_type=payload.value, extra_fields=extra_field_specs,
+        )
+    except Exception:
+        logger.exception(
+            "term_type %r（租户 %r）的 SQLite 声明已成功，但 Neo4j 索引创建失败——"
+            "查询性能会受影响，不阻塞声明本身，需要人工核查 Neo4j 连通性",
+            payload.value, tenant_id,
+        )
     return payload.model_dump()
 
 
@@ -129,9 +144,17 @@ async def update_term_type_category(
         raise HTTPException(status_code=400, detail=str(exc))
     except InvalidExtraFieldTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    await graph_client.ensure_extra_field_indexes(
-        tenant_id=tenant_id, term_type=payload.value, extra_fields=extra_field_specs,
-    )
+    # 同 create_term_type_category：索引创建失败不阻塞已经成功的 SQLite 更新。
+    try:
+        await graph_client.ensure_extra_field_indexes(
+            tenant_id=tenant_id, term_type=payload.value, extra_fields=extra_field_specs,
+        )
+    except Exception:
+        logger.exception(
+            "term_type %r（租户 %r）的 SQLite 声明已成功，但 Neo4j 索引创建失败——"
+            "查询性能会受影响，不阻塞声明本身，需要人工核查 Neo4j 连通性",
+            payload.value, tenant_id,
+        )
     return payload.model_dump()
 
 

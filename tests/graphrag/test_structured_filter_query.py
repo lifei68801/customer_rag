@@ -370,16 +370,72 @@ def test_parse_rejects_non_list_hops():
         })
 
 
+def test_validate_error_on_unknown_field_lists_available_fields():
+    """校验失败的消息必须把"什么才是对的"一并告诉 LLM——工具调用轮次通常只有 3 轮
+    预算，只说"你写错了"而不说对的是什么，LLM 没有任何信息可以自我纠正。"""
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "SKU",
+        "constraints": [{"kind": "attribute", "field": "unknown_field", "operator": "gt", "value": 500}],
+    })
+    with pytest.raises(StructuredFilterQueryError) as exc_info:
+        validate_structured_filter_query(
+            args, confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+        )
+    message = str(exc_info.value)
+    assert "可用字段:" in message
+    assert "numeric_value" in message
+    assert "standard_name" in message
+
+
+def test_validate_error_on_unknown_anchor_term_type_lists_available_term_types():
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "NotAType",
+        "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
+    })
+    with pytest.raises(StructuredFilterQueryError) as exc_info:
+        validate_structured_filter_query(
+            args, confirmed_relation_types=set(),
+            term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
+        )
+    message = str(exc_info.value)
+    assert "可用的 term_type:" in message
+    assert "SKU" in message
+    assert "VariantValue" in message
+
+
+def test_validate_error_on_unconfirmed_relation_type_lists_available_relation_types():
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "SKU",
+        "constraints": [{
+            "kind": "relation",
+            "hops": [{"relation_type": "NOT_CONFIRMED", "direction": "outgoing", "target_term_type": "VariantValue"}],
+            "target_field": "raw_value", "target_operator": "eq", "target_value": "红",
+        }],
+    })
+    with pytest.raises(StructuredFilterQueryError) as exc_info:
+        validate_structured_filter_query(
+            args, confirmed_relation_types={"HAS_VARIANT", "BELONGS_TO"},
+            term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
+        )
+    message = str(exc_info.value)
+    assert "可用的 relation_type:" in message
+    assert "HAS_VARIANT" in message
+    assert "BELONGS_TO" in message
+
+
 class _FakeGraphClient:
-    def __init__(self, *, rows=None, group_result=None) -> None:
+    def __init__(self, *, rows=None, group_result=None, error=None) -> None:
         self._rows = rows if rows is not None else []
         self._group_result = group_result
+        self._error = error
         self.last_args = None
         self.last_tenant_id = None
 
     async def execute_structured_filter_query(self, args, *, tenant_id):
         self.last_args = args
         self.last_tenant_id = tenant_id
+        if self._error is not None:
+            raise self._error
         if self._group_result is not None:
             return self._group_result
         return self._rows
@@ -456,3 +512,21 @@ async def test_run_structured_filter_query_passes_through_group_by_result():
     )
 
     assert result == {"groups": [{"value": "红色", "count": 12}]}
+
+
+async def test_run_structured_filter_query_returns_error_when_graph_execution_raises():
+    """图谱后端异常（驱动挂了、Cypher 运行时类型错误等）必须降级成这一次工具调用的
+    错误观察结果——异常穿过 planner.py::run_tool_calls 的 asyncio.gather 会被重新抛出，
+    把整个 Agent SSE 回合打挂，而不是只损失一次工具调用。"""
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    graph_client = _FakeGraphClient(error=RuntimeError("driver error"))
+
+    result = await run_structured_filter_query(
+        {"anchor_term_type": "SKU",
+         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
+        graph_client=graph_client, tenant_id="muji",
+        confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+    )
+
+    assert result == {"error": "图谱查询执行失败：driver error"}

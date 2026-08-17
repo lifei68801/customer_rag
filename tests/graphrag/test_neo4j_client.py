@@ -538,10 +538,10 @@ async def test_execute_structured_filter_query_builds_attribute_where_clause():
     ]
     assert session.last_parameters["tenant_id"] == "muji"
     assert session.last_parameters["anchor_term_type"] == "SKU"
-    assert session.last_parameters["field_0"] == "numeric_value"
+    assert "field_0" not in session.last_parameters  # 字段名现在直接插值进查询文本，不再是运行时参数
     assert session.last_parameters["value_0"] == 500
     assert session.last_parameters["limit"] == 20
-    assert "anchor[$field_0]" in session.last_query
+    assert "anchor.numeric_value" in session.last_query
     assert "> $value_0" in session.last_query
 
 
@@ -563,7 +563,8 @@ async def test_execute_structured_filter_query_builds_relation_exists_subquery()
 
     assert "EXISTS {" in session.last_query
     assert "-[:HAS_VARIANT]->" in session.last_query
-    assert session.last_parameters["c0_target_field"] == "raw_value"
+    assert "c0_hop0.raw_value = $c0_target_value" in session.last_query
+    assert "c0_target_field" not in session.last_parameters
     assert session.last_parameters["c0_target_value"] == "红"
 
 
@@ -604,6 +605,8 @@ async def test_execute_structured_filter_query_group_by_returns_aggregated_group
 
     assert result == {"groups": [{"value": "红色", "count": 12}, {"value": "白色", "count": 8}]}
     assert "count(DISTINCT anchor)" in session.last_query
+    assert "RETURN g0_hop0.raw_value AS value" in session.last_query
+    assert "group_field" not in session.last_parameters
 
 
 async def test_execute_structured_filter_query_array_operator_uses_list_predicate():
@@ -619,4 +622,71 @@ async def test_execute_structured_filter_query_array_operator_uses_list_predicat
 
     await client.execute_structured_filter_query(args, tenant_id="muji")
 
-    assert "all(x IN anchor[$field_0] WHERE x <= $value_0)" in session.last_query
+    assert "all(x IN anchor.dims WHERE x <= $value_0)" in session.last_query
+
+
+async def test_execute_structured_filter_query_two_relation_constraints_build_independent_exists():
+    """同一个锚点上挂两个互相独立的 kind=relation 约束——两段 EXISTS 子查询必须各自
+    用不同的 hop 变量前缀（c0_/c1_），否则第二段会复用第一段的变量、把两个本该独立
+    的分支条件错误地绑成同一条路径。"""
+    from app.graphrag.structured_filter_query import Hop, RelationConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor_term_type="SKU",
+        constraints=[
+            RelationConstraint(
+                hops=[Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue")],
+                target_field="raw_value", target_operator="eq", target_value="红",
+            ),
+            RelationConstraint(
+                hops=[Hop(relation_type="BELONGS_TO", direction="outgoing", target_term_type="Category")],
+                target_field="numeric_value", target_operator="gt", target_value=500,
+            ),
+        ],
+        group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(args, tenant_id="muji")
+
+    assert session.last_query.count("EXISTS {") == 2
+    assert "MATCH (anchor)-[:HAS_VARIANT]->(c0_hop0:Term {tenant_id: $tenant_id, type: $c0_type0})" in session.last_query
+    assert "MATCH (anchor)-[:BELONGS_TO]->(c1_hop0:Term {tenant_id: $tenant_id, type: $c1_type0})" in session.last_query
+    assert "c0_hop0.raw_value = $c0_target_value" in session.last_query
+    assert "c1_hop0.numeric_value > $c1_target_value" in session.last_query
+    assert session.last_parameters["c0_type0"] == "VariantValue"
+    assert session.last_parameters["c1_type0"] == "Category"
+    assert session.last_parameters["c0_target_value"] == "红"
+    assert session.last_parameters["c1_target_value"] == 500
+
+
+async def test_execute_structured_filter_query_two_hop_chain_targets_last_hop_variable():
+    """2 跳链式约束：MATCH 模式要把两跳串起来，最终的属性比较必须落在最后一跳的
+    变量（c0_hop1）上，不能错落在中间跳（c0_hop0）上。"""
+    from app.graphrag.structured_filter_query import Hop, RelationConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor_term_type="SKU",
+        constraints=[RelationConstraint(
+            hops=[
+                Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue"),
+                Hop(relation_type="BELONGS_TO", direction="outgoing", target_term_type="Category"),
+            ],
+            target_field="numeric_value", target_operator="gte", target_value=500,
+        )],
+        group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(args, tenant_id="muji")
+
+    assert (
+        "MATCH (anchor)-[:HAS_VARIANT]->(c0_hop0:Term {tenant_id: $tenant_id, type: $c0_type0})"
+        "-[:BELONGS_TO]->(c0_hop1:Term {tenant_id: $tenant_id, type: $c0_type1})"
+    ) in session.last_query
+    assert "c0_hop1.numeric_value >= $c0_target_value" in session.last_query
+    assert "c0_hop0.numeric_value" not in session.last_query
+    assert session.last_parameters["c0_type0"] == "VariantValue"
+    assert session.last_parameters["c0_type1"] == "Category"
