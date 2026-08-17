@@ -454,6 +454,28 @@ async def test_count_relation_edges_for_term_scopes_by_tenant():
     assert session.last_parameters == {"tenant_id": "t1", "node_key": "k1"}
 
 
+async def test_ensure_extra_field_indexes_creates_index_per_scalar_field():
+    from app.graphrag.ontology_categories import ExtraFieldSpec
+
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.ensure_extra_field_indexes(
+        tenant_id="muji", term_type="Product",
+        extra_fields=[
+            ExtraFieldSpec(name="numeric_value", value_type="number"),
+            ExtraFieldSpec(name="dims", value_type="number[]"),
+            ExtraFieldSpec(name="md_no", value_type="string"),
+        ],
+    )
+
+    queries = [call[0] for call in session.calls]
+    assert any("t.numeric_value" in q for q in queries)
+    assert any("t.md_no" in q for q in queries)
+    assert not any("t.dims" in q for q in queries)  # number[] 不建标量索引，见 spec 第6节
+    assert len(queries) == 2
+
+
 async def test_ensure_tenant_scoped_schema_creates_indexes_and_backfills_legacy_nodes():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))

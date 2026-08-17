@@ -323,6 +323,40 @@ class Neo4jGraphClient:
                 await session.run(query)
             await session.run(_BACKFILL_LEGACY_TERM_NODES_QUERY)
 
+    async def ensure_extra_field_indexes(
+        self, *, tenant_id: str, term_type: str, extra_fields: list["ExtraFieldSpec"]
+    ) -> None:
+        """给某个 term_type 已确认的 string/number/integer 属性字段建 Neo4j property
+        index，供 structured_filter_query_tool 的属性过滤在大数据量下不做全表扫描
+        （见 docs/superpowers/specs/2026-08-17-structured-filter-query-tool-design.md
+        第6节）。number[] 字段不建——Neo4j 对列表属性的 range 索引支持有限，逐元素
+        谓词（all_lte/any_gte 等）也用不上标量索引。
+
+        字段名走字符串插值拼进 CREATE INDEX 语句（Cypher 的索引/属性名语法本身无法
+        参数化），但这里的字段名来源是已经过 ontology_categories.py 格式校验
+        （^[a-zA-Z_][a-zA-Z0-9_]{0,63}$）的声明，不是 LLM 运行时可控参数，风险性质
+        与结构化查询工具里 field/target_field 完全不同，不需要走那套校验链。
+
+        tenant_id 拼进索引名（term_tenant_{tenant_id}_{term_type}_{field} 里没有直接
+        用 tenant_id，索引条件本身按 (tenant_id, type, field) 三元组建，索引名只需要
+        全局唯一、可重复执行——IF NOT EXISTS 保证幂等，同一个字段被多个租户声明时
+        （不同 term_type 名字下）不会冲突，因为 IF NOT EXISTS 只按索引名去重，这里
+        索引名同时含 term_type 和字段名，不同租户共用同一个 term_type 名字时会共享
+        同一条索引定义——这是有意的：索引本身是 (tenant_id, type, field) 三列复合
+        索引，租户隔离由查询时的 WHERE tenant_id = $tenant_id 保证，索引定义可以
+        跨租户共享同一条 DDL，不需要按租户各建一条。
+        """
+        _SCALAR_VALUE_TYPES = {"string", "number", "integer"}
+        async with self._driver.session() as session:
+            for spec in extra_fields:
+                if spec.value_type not in _SCALAR_VALUE_TYPES:
+                    continue
+                index_name = f"term_extra_field_{term_type}_{spec.name}_idx"
+                await session.run(
+                    f"CREATE INDEX {index_name} IF NOT EXISTS "
+                    f"FOR (t:Term) ON (t.tenant_id, t.type, t.{spec.name})"
+                )
+
     async def migrate_relation_type_edges(
         self, *, tenant_id: str, old_type: str, new_type: str
     ) -> int:

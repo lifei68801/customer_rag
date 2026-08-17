@@ -89,17 +89,22 @@ async def create_term_type_category(
     tenant_id: str,
     payload: TermTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> dict:
+    extra_field_specs = _to_extra_field_specs(payload.extra_fields)
     try:
         await create_term_type(
             review_conn, tenant_id, value=payload.value,
-            extra_fields=_to_extra_field_specs(payload.extra_fields),
+            extra_fields=extra_field_specs,
             node_key_template=payload.node_key_template,
         )
     except CategoryNameConflictError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except InvalidExtraFieldTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    await graph_client.ensure_extra_field_indexes(
+        tenant_id=tenant_id, term_type=payload.value, extra_fields=extra_field_specs,
+    )
     return payload.model_dump()
 
 
@@ -109,11 +114,13 @@ async def update_term_type_category(
     value: str,
     payload: TermTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> dict:
+    extra_field_specs = _to_extra_field_specs(payload.extra_fields)
     try:
         await update_term_type(
             review_conn, tenant_id, value=value, new_value=payload.value,
-            extra_fields=_to_extra_field_specs(payload.extra_fields),
+            extra_fields=extra_field_specs,
             node_key_template=payload.node_key_template,
         )
     except CategoryNotFoundError:
@@ -122,6 +129,9 @@ async def update_term_type_category(
         raise HTTPException(status_code=400, detail=str(exc))
     except InvalidExtraFieldTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    await graph_client.ensure_extra_field_indexes(
+        tenant_id=tenant_id, term_type=payload.value, extra_fields=extra_field_specs,
+    )
     return payload.model_dump()
 
 

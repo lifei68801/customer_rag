@@ -35,6 +35,7 @@ class _FakeGraphClient:
     def __init__(self, *, migrated_count: int = 0, migrate_error: Exception | None = None) -> None:
         self._migrated_count = migrated_count
         self._migrate_error = migrate_error
+        self.ensured_index_calls: list[tuple[str, str, list[tuple[str, str]]]] = []
 
     async def sync_term(self, term) -> None:
         pass
@@ -43,6 +44,11 @@ class _FakeGraphClient:
         if self._migrate_error is not None:
             raise self._migrate_error
         return self._migrated_count
+
+    async def ensure_extra_field_indexes(self, *, tenant_id, term_type, extra_fields) -> None:
+        self.ensured_index_calls.append(
+            (tenant_id, term_type, [(f.name, f.value_type) for f in extra_fields])
+        )
 
 
 @pytest.fixture
@@ -68,7 +74,7 @@ def client(monkeypatch, conn_for_testing):
 def test_create_and_list_term_types(client):
     resp = client.post(
         "/api/admin/ontology/t1/term-types",
-        json={"value": "错误码", "extra_fields": [{"name": "严重等级", "value_type": "string"}]},
+        json={"value": "错误码", "extra_fields": [{"name": "severity_level", "value_type": "string"}]},
         headers={"Authorization": "Bearer x"},
     )
     assert resp.status_code == 200
@@ -79,7 +85,7 @@ def test_create_and_list_term_types(client):
         "term_types": [
             {
                 "value": "错误码",
-                "extra_fields": [{"name": "严重等级", "value_type": "string"}],
+                "extra_fields": [{"name": "severity_level", "value_type": "string"}],
                 "node_key_template": "",
             }
         ]
@@ -122,6 +128,52 @@ def test_create_term_type_rejects_invalid_extra_field_value_type(client):
         headers={"Authorization": "Bearer x"},
     )
     assert resp.status_code == 400
+
+
+def test_create_term_type_ensures_neo4j_indexes_for_declared_fields(client):
+    fake_graph_client = _FakeGraphClient()
+    app.dependency_overrides[deps.get_graph_client] = lambda: fake_graph_client
+
+    resp = client.post(
+        "/api/admin/ontology/muji/term-types",
+        json={
+            "value": "Product",
+            "extra_fields": [{"name": "numeric_value", "value_type": "number"}],
+            "node_key_template": "",
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert resp.status_code == 200
+    assert fake_graph_client.ensured_index_calls == [
+        ("muji", "Product", [("numeric_value", "number")])
+    ]
+
+
+def test_update_term_type_ensures_neo4j_indexes_for_declared_fields(client):
+    fake_graph_client = _FakeGraphClient()
+    app.dependency_overrides[deps.get_graph_client] = lambda: fake_graph_client
+    client.post(
+        "/api/admin/ontology/muji/term-types",
+        json={"value": "Product", "extra_fields": [], "node_key_template": ""},
+        headers={"Authorization": "Bearer x"},
+    )
+    fake_graph_client.ensured_index_calls.clear()
+
+    resp = client.put(
+        "/api/admin/ontology/muji/term-types/Product",
+        json={
+            "value": "Product",
+            "extra_fields": [{"name": "md_no", "value_type": "string"}],
+            "node_key_template": "",
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert resp.status_code == 200
+    assert fake_graph_client.ensured_index_calls == [
+        ("muji", "Product", [("md_no", "string")])
+    ]
 
 
 async def test_delete_term_type_in_use_returns_409(client, conn_for_testing):
