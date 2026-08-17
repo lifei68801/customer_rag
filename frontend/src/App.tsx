@@ -5,6 +5,7 @@ import { LoginPage } from './admin/LoginPage'
 import { DocumentsPage } from './admin/DocumentsPage'
 import { GraphReviewsPage } from './admin/GraphReviewsPage'
 import { TermsPage } from './admin/TermsPage'
+import { SchemaEtlPage } from './admin/SchemaEtlPage'
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
         <Route path="documents" element={<DocumentsPage />} />
         <Route path="graph-reviews" element={<GraphReviewsPage />} />
         <Route path="terms" element={<TermsPage />} />
+        <Route path="schema-etl" element={<SchemaEtlPage />} />
       </Route>
     </Routes>
   )
