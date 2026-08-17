@@ -41,6 +41,9 @@ export function AdminLayout() {
             <NavLink to="/admin/schema-etl" className={navLinkClass}>
               ETL 跑批
             </NavLink>
+            <NavLink to="/admin/ontology" className={navLinkClass}>
+              本体 Schema 管理
+            </NavLink>
           </nav>
           <div className="flex flex-row flex-wrap gap-3 md:flex-col">
             <TenantSwitcher />
