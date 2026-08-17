@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import asyncio
+
+import aiosqlite
+import pytest
+from fastapi.testclient import TestClient
+
+from app.api import deps
+from app.graphrag.etl_runs_store import create_etl_run, ensure_etl_runs_schema, get_etl_run
+from app.graphrag.ontology_categories import create_product_line, create_term_type
+from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
+from app.graphrag.terms_store import ensure_terms_schema
+from app.main import app
+
+
+class _FakeGraphClient:
+    """占位图谱客户端——本文件里的用例只用空 entities/relations 的配置跑批，
+    不会真的调用 sync_term/merge_relation，这里保留桩方法只是让
+    deps.get_graph_client 的依赖注入能满足类型，不需要记录调用。"""
+
+    async def sync_term(self, term) -> None:
+        pass
+
+    async def merge_relation(self, **kwargs) -> None:
+        pass
+
+
+async def _open_review_conn() -> aiosqlite.Connection:
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_ontology_schema(conn)
+    await ensure_terms_schema(conn)
+    await ensure_etl_runs_schema(conn)
+    return conn
+
+
+@pytest.fixture
+def review_conn():
+    """跟本文件其它 review_conn 风格的 fixture 一样，需要显式 close：aiosqlite
+    的后台工作线程不是 daemon 线程，泄漏未关闭的连接会让 pytest 进程卡在
+    解释器退出阶段。"""
+    conn = asyncio.run(_open_review_conn())
+    try:
+        yield conn
+    finally:
+        asyncio.run(conn.close())
+
+
+@pytest.fixture
+def client(review_conn, tmp_path):
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
+    app.dependency_overrides[deps.get_upload_dir] = lambda: tmp_path / "uploads"
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+async def _confirm_muji_schema(review_conn: aiosqlite.Connection) -> None:
+    await create_term_type(review_conn, tenant_id="muji", value="Product")
+    await create_product_line(review_conn, value="MUJI")
+    await checkout_draft(review_conn, "muji")
+    await confirm_ontology(review_conn, "muji")
+
+
+def test_status_returns_false_when_schema_not_confirmed(client):
+    response = client.get("/api/admin/unconfirmed_tenant/schema-etl/status")
+    assert response.status_code == 200
+    assert response.json() == {"ontology_confirmed": False}
+
+
+def test_status_returns_true_after_confirm(client, review_conn):
+    asyncio.run(_confirm_muji_schema(review_conn))
+
+    response = client.get("/api/admin/muji/schema-etl/status")
+
+    assert response.json() == {"ontology_confirmed": True}
+
+
+def test_start_run_rejects_when_schema_not_confirmed(client):
+    files = {"config": ("config.yaml", b"tenant_id: unconfirmed_tenant\nentities: []\nrelations: []\n")}
+    response = client.post("/api/admin/unconfirmed_tenant/schema-etl/runs", files=files)
+    assert response.status_code == 400
+
+
+def test_start_run_returns_run_id_and_second_concurrent_start_is_rejected(client, review_conn):
+    """TestClient 会在 .post() 返回之前就把 BackgroundTasks 跑完（见
+    tests/api/test_admin_document_routes.py 里同款说明），所以这条用例没法
+    靠真的并发请求撞见 409——这里改为直接模拟"第一条跑批仍在 running"的
+    并发窗口：先调用 create_etl_run 占住 running 状态（不经过 /runs 路由，
+    避免触发它自带的 background_tasks 把这条记录立刻跑完），再发起
+    /runs 请求，验证路由把 EtlRunAlreadyRunningError 正确映射成 409。
+    路由自己"正常情况下返回 run_id"这一半，由本文件另一个用例
+    （test_start_run_returns_run_id_when_no_run_in_progress）覆盖。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    asyncio.run(
+        create_etl_run(review_conn, run_id="already-running", tenant_id="muji", started_at="2026-08-17T10:00:00")
+    )
+
+    files = {"config": ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")}
+    response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+
+    assert response.status_code == 409
+
+
+def test_start_run_returns_run_id_when_no_run_in_progress(client, review_conn):
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = {"config": ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")}
+
+    response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+
+    assert response.status_code == 200
+    run_id = response.json()["run_id"]
+    assert run_id
+
+    # BackgroundTasks 在 .post() 返回之前就跑完了（见上面用例的说明），
+    # 所以这里能直接断言跑批已经落到终态，而不是还停在 running。
+    detail = asyncio.run(get_etl_run(review_conn, tenant_id="muji", run_id=run_id))
+    assert detail.status == "completed"
+
+
+def test_get_run_not_found_returns_404(client):
+    response = client.get("/api/admin/muji/schema-etl/runs/nonexistent")
+    assert response.status_code == 404
+
+
+def test_list_runs_empty_for_new_tenant(client):
+    response = client.get("/api/admin/muji/schema-etl/runs")
+    assert response.status_code == 200
+    assert response.json() == {"runs": []}
+
+
+def test_list_runs_returns_started_run(client, review_conn):
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = {"config": ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")}
+    start_response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+    run_id = start_response.json()["run_id"]
+
+    response = client.get("/api/admin/muji/schema-etl/runs")
+
+    assert response.status_code == 200
+    assert [r["run_id"] for r in response.json()["runs"]] == [run_id]
+
+
+def test_get_run_returns_completed_detail(client, review_conn):
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = {"config": ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")}
+    start_response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+    run_id = start_response.json()["run_id"]
+
+    response = client.get(f"/api/admin/muji/schema-etl/runs/{run_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] == run_id
+    assert body["status"] == "completed"
+    assert body["error"] is None
+    assert body["report"]["entities_written"] == 0
+
+
+def test_report_csv_returns_404_when_run_not_found(client):
+    response = client.get("/api/admin/muji/schema-etl/runs/nonexistent/report.csv")
+    assert response.status_code == 404
+
+
+def test_report_csv_returns_csv_with_header_for_completed_run(client, review_conn):
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = {"config": ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")}
+    start_response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+    run_id = start_response.json()["run_id"]
+
+    response = client.get(f"/api/admin/muji/schema-etl/runs/{run_id}/report.csv")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.text.splitlines()[0] == "label,source_file,row_number,reason"
