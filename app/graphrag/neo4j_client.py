@@ -5,6 +5,12 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from app.graphrag.ontology import Term
+from app.graphrag.structured_filter_query import (
+    AttributeConstraint,
+    Hop,
+    RelationConstraint,
+    StructuredFilterQueryArgs,
+)
 
 _RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 
@@ -42,6 +48,36 @@ RETURN related.standard_name AS related_name,
 # provenance，语义和 merge_relation 写入的关系边不同）——merge_relation 硬性
 # 拒绝它，避免同一个关系类型下混入两种不兼容语义的边。
 _RESERVED_RELATION_TYPES = frozenset({"ALIAS_OF"})
+
+_COMPARISON_OPERATOR_TO_CYPHER = {
+    "gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "=", "ne": "<>",
+}
+
+
+def _comparison_expression(*, prop_expr: str, operator: str, param_name: str) -> str:
+    if operator == "starts_with":
+        return f"{prop_expr} STARTS WITH ${param_name}"
+    if operator == "all_lte":
+        return f"all(x IN {prop_expr} WHERE x <= ${param_name})"
+    if operator == "all_gte":
+        return f"all(x IN {prop_expr} WHERE x >= ${param_name})"
+    if operator == "any_lte":
+        return f"any(x IN {prop_expr} WHERE x <= ${param_name})"
+    if operator == "any_gte":
+        return f"any(x IN {prop_expr} WHERE x >= ${param_name})"
+    return f"{prop_expr} {_COMPARISON_OPERATOR_TO_CYPHER[operator]} ${param_name}"
+
+
+def _build_hop_match_pattern(hops: list[Hop], *, prefix: str) -> tuple[str, dict[str, object]]:
+    params: dict[str, object] = {}
+    pattern = "MATCH (anchor)"
+    for i, hop in enumerate(hops):
+        var = f"{prefix}_hop{i}"
+        type_param = f"{prefix}_type{i}"
+        params[type_param] = hop.target_term_type
+        arrow = f"-[:{hop.relation_type}]->" if hop.direction == "outgoing" else f"<-[:{hop.relation_type}]-"
+        pattern += f"{arrow}({var}:Term {{tenant_id: $tenant_id, type: ${type_param}}})"
+    return pattern, params
 
 # 关系边有向（MERGE (a)-[:TYPE]->(b)），按有向模式匹配删除保证每条边只
 # 命中一次；r.source 只有 merge_relation 写入的抽取关系才有，sync_term/
@@ -153,6 +189,86 @@ class Neo4jGraphClient:
                 {"node_key": node_key, "tenant_id": tenant_id},
             )
             return await result.data()
+
+    async def execute_structured_filter_query(
+        self, args: StructuredFilterQueryArgs, *, tenant_id: str
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """按已校验的结构化条件筛选 Term 节点——调用方（app/graphrag/
+        structured_filter_query.py::run_structured_filter_query）必须已经跑过
+        validate_structured_filter_query，本方法不重复校验 field/relation_type
+        是否在已确认 schema 里，只负责构造 Cypher 并执行。
+
+        属性字段名（field/target_field）一律走 t[$param] 动态属性访问，不做字符串
+        插值——relation_type 做不到参数化（Cypher 关系类型语法层面要求字面量），
+        是本方法里唯一需要字符串插值拼进查询文本的部分，安全性依赖调用方已经过
+        validate_structured_filter_query 的格式+已确认成员双重校验。见
+        docs/superpowers/specs/2026-08-17-structured-filter-query-tool-design.md
+        第5节。
+        """
+        params: dict[str, Any] = {"tenant_id": tenant_id, "anchor_term_type": args.anchor_term_type}
+        where_clauses: list[str] = []
+
+        for i, constraint in enumerate(args.constraints):
+            if isinstance(constraint, AttributeConstraint):
+                field_param, value_param = f"field_{i}", f"value_{i}"
+                params[field_param] = constraint.field
+                params[value_param] = constraint.value
+                where_clauses.append(
+                    _comparison_expression(
+                        prop_expr=f"anchor[${field_param}]", operator=constraint.operator, param_name=value_param,
+                    )
+                )
+                continue
+            if args.group_by is not None and args.group_by.constraint_index == i:
+                continue  # group_by 指向的约束走独立的 MATCH（下方分支），不进 EXISTS
+            match_pattern, hop_params = _build_hop_match_pattern(constraint.hops, prefix=f"c{i}")
+            params.update(hop_params)
+            target_field_param, target_value_param = f"c{i}_target_field", f"c{i}_target_value"
+            params[target_field_param] = constraint.target_field
+            params[target_value_param] = constraint.target_value
+            last_var = f"c{i}_hop{len(constraint.hops) - 1}"
+            comparison = _comparison_expression(
+                prop_expr=f"{last_var}[${target_field_param}]",
+                operator=constraint.target_operator, param_name=target_value_param,
+            )
+            where_clauses.append(f"EXISTS {{ {match_pattern} WHERE {comparison} }}")
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "true"
+
+        if args.group_by is not None:
+            group_constraint = args.constraints[args.group_by.constraint_index]
+            assert isinstance(group_constraint, RelationConstraint)
+            match_pattern, hop_params = _build_hop_match_pattern(
+                group_constraint.hops, prefix=f"g{args.group_by.constraint_index}"
+            )
+            params.update(hop_params)
+            params["group_field"] = group_constraint.target_field
+            last_var = f"g{args.group_by.constraint_index}_hop{len(group_constraint.hops) - 1}"
+            query = (
+                "MATCH (anchor:Term {tenant_id: $tenant_id, type: $anchor_term_type}) "
+                f"{match_pattern} "
+                f"WHERE {where_sql} "
+                f"RETURN {last_var}[$group_field] AS value, count(DISTINCT anchor) AS count "
+                "ORDER BY count DESC"
+            )
+            async with self._driver.session() as session:
+                result = await session.run(query, params)
+                rows = await result.data()
+            return {"groups": rows}
+
+        params["limit"] = args.limit
+        query = (
+            "MATCH (anchor:Term {tenant_id: $tenant_id, type: $anchor_term_type}) "
+            f"WHERE {where_sql} "
+            "RETURN anchor.standard_name AS standard_name, anchor.node_key AS node_key, "
+            "anchor.type AS term_type, anchor.product_line AS product_line, "
+            "properties(anchor) AS all_properties "
+            "LIMIT $limit"
+        )
+        async with self._driver.session() as session:
+            result = await session.run(query, params)
+            rows = await result.data()
+        return rows
 
     async def merge_relation(
         self,

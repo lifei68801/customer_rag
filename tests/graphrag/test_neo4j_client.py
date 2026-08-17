@@ -514,3 +514,109 @@ async def test_ensure_tenant_scoped_schema_creates_indexes_and_backfills_legacy_
         "WHERE t.tenant_id IS NULL" in q and "SET t.tenant_id = 'default'" in q and "t.node_key = t.standard_name" in q
         for q in queries
     )
+
+
+async def test_execute_structured_filter_query_builds_attribute_where_clause():
+    from app.graphrag.structured_filter_query import AttributeConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(rows=[
+        {"standard_name": "SKU A", "node_key": "SKU:1", "term_type": "SKU",
+         "product_line": "MUJI", "all_properties": {"numeric_value": 600}},
+    ])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor_term_type="SKU",
+        constraints=[AttributeConstraint(field="numeric_value", operator="gt", value=500)],
+        group_by=None, limit=20,
+    )
+
+    result = await client.execute_structured_filter_query(args, tenant_id="muji")
+
+    assert result == [
+        {"standard_name": "SKU A", "node_key": "SKU:1", "term_type": "SKU",
+         "product_line": "MUJI", "all_properties": {"numeric_value": 600}},
+    ]
+    assert session.last_parameters["tenant_id"] == "muji"
+    assert session.last_parameters["anchor_term_type"] == "SKU"
+    assert session.last_parameters["field_0"] == "numeric_value"
+    assert session.last_parameters["value_0"] == 500
+    assert session.last_parameters["limit"] == 20
+    assert "anchor[$field_0]" in session.last_query
+    assert "> $value_0" in session.last_query
+
+
+async def test_execute_structured_filter_query_builds_relation_exists_subquery():
+    from app.graphrag.structured_filter_query import Hop, RelationConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor_term_type="SKU",
+        constraints=[RelationConstraint(
+            hops=[Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue")],
+            target_field="raw_value", target_operator="eq", target_value="红",
+        )],
+        group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(args, tenant_id="muji")
+
+    assert "EXISTS {" in session.last_query
+    assert "-[:HAS_VARIANT]->" in session.last_query
+    assert session.last_parameters["c0_target_field"] == "raw_value"
+    assert session.last_parameters["c0_target_value"] == "红"
+
+
+async def test_execute_structured_filter_query_incoming_direction_reverses_arrow():
+    from app.graphrag.structured_filter_query import Hop, RelationConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor_term_type="VariantValue",
+        constraints=[RelationConstraint(
+            hops=[Hop(relation_type="HAS_VARIANT", direction="incoming", target_term_type="SKU")],
+            target_field="price", target_operator="gt", target_value=0,
+        )],
+        group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(args, tenant_id="muji")
+
+    assert "<-[:HAS_VARIANT]-" in session.last_query
+
+
+async def test_execute_structured_filter_query_group_by_returns_aggregated_groups():
+    from app.graphrag.structured_filter_query import GroupBy, Hop, RelationConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(rows=[{"value": "红色", "count": 12}, {"value": "白色", "count": 8}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor_term_type="SKU",
+        constraints=[RelationConstraint(
+            hops=[Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue")],
+            target_field="raw_value", target_operator="eq", target_value="__group__",
+        )],
+        group_by=GroupBy(constraint_index=0), limit=20,
+    )
+
+    result = await client.execute_structured_filter_query(args, tenant_id="muji")
+
+    assert result == {"groups": [{"value": "红色", "count": 12}, {"value": "白色", "count": 8}]}
+    assert "count(DISTINCT anchor)" in session.last_query
+
+
+async def test_execute_structured_filter_query_array_operator_uses_list_predicate():
+    from app.graphrag.structured_filter_query import AttributeConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor_term_type="SKU",
+        constraints=[AttributeConstraint(field="dims", operator="all_lte", value=80)],
+        group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(args, tenant_id="muji")
+
+    assert "all(x IN anchor[$field_0] WHERE x <= $value_0)" in session.last_query
