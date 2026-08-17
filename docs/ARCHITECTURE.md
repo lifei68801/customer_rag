@@ -185,7 +185,8 @@ flowchart LR
 
 - **术语表（基准真相）**：人工维护的 YAML/表格，包含标准名称、别名/同义词、类型（模块名/错误码/参数名等）、所属产品线。这是权威数据源，LLM 抽取结果必须向其对齐，而不是反过来。
 - **LLM 抽取归一化**：LLM 从文档中抽取实体/关系候选后，与术语表做实体链接（entity linking）——优先规则/词典精确匹配，精确匹配失败时用 difflib 字符串相似度做模糊匹配兜底（阈值 0.75，取相似度最高的单一建议，见 `app/graphrag/normalization.py::find_fuzzy_candidate_standard_name`），模糊命中同样不自动入库，连同建议标准名一并进入人工待审核队列（`app/graphrag/review_queue.py`）。刻意不引入向量相似度、不持久化置信度分数——字符串相似度已能覆盖候选名的字面偏差场景，见 `docs/superpowers/specs/2026-08-07-graphrag-entity-linking-fuzzy-matching-design.md` §2.1 的取舍说明。
-- **图谱结构**：标准实体节点（`:Term {name, type, product_line}`）之间用 `ALIAS_OF` 以及各租户在 `tenant_relation_types` 表里自助定义、确认的关系类型（详见 `app/graphrag/ontology_relations.py`；`app/graphrag/neo4j_client.py::merge_relation` 只做关系类型名字合法性校验和 `ALIAS_OF` 保留字拦截，不再维护固定的关系类型白名单——见 2026-08-16 的 ETL 写入引擎改造）连接，别名作为独立节点通过 `ALIAS_OF` 指向标准节点，保证查询时无论用户说的是别名还是标准名都能定位到同一实体。
+- **图谱结构**：标准实体节点（`:Term {tenant_id, node_key, standard_name, type, product_line, ...extra_properties}`）之间用 `ALIAS_OF` 以及各租户在 `tenant_relation_types` 表里自助定义、确认的关系类型（详见 `app/graphrag/ontology_relations.py`；`app/graphrag/neo4j_client.py::merge_relation` 只做关系类型名字合法性校验和 `ALIAS_OF` 保留字拦截，不再维护固定的关系类型白名单——见 2026-08-16 的 ETL 写入引擎改造）连接，别名作为独立节点通过 `ALIAS_OF` 指向标准节点，保证查询时无论用户说的是别名还是标准名都能定位到同一实体。
+- **node_key（稳定身份键）**：`node_key` 才是 SQLite 主键和 Neo4j `MERGE`/关系匹配的真正依据，创建后永不改变；`standard_name` 降级为普通展示属性，可随时修改（改名）而不触发特殊处理，也不会让已有的关系边失联。LLM 抽取场景下 `node_key` 在创建时直接取当时的 `standard_name` 值，对现有用户无感；结构化 ETL 场景下 `node_key` 按 `node_key_template`（`ontology_term_types` 上声明）从源数据的稳定字段拼接而成，与展示名完全解耦——这是为了让 ETL 场景重复同步时不需要自己判断"改名 vs 新建"（详见 ADR-0003）。
 
 ### 4.2 查询时保障
 
@@ -453,7 +454,9 @@ flowchart LR
 
 ## 9. 多租户与安全设计
 
-- **多租户隔离**：Milvus 按产品线/租户使用独立 collection 或 partition；Neo4j 节点/关系统一打 `tenant_id` 属性，所有 Cypher 查询模板强制带租户过滤条件；请求链路中 `tenant_id` 从认证层注入，业务代码不可绕过。
+- **多租户隔离**：Milvus 按产品线/租户使用独立 collection 或 partition；Neo4j 节点/关系统一打 `tenant_id` 属性（节点标签本身不区分租户，同一套 `:Term` 标签被所有租户共用，靠属性+关系边上的 `tenant_id` 隔离），所有 Cypher 查询模板强制带租户过滤条件；请求链路中 `tenant_id` 从认证层注入，业务代码不可绕过。
+- **`term_type` 按租户隔离**：术语的业务分类（`term_type`，如 `error_code`/`Product`/`SKU`）不再是跨租户共享的全局枚举，而是每个租户在 `ontology_term_types` 表里各自定义、经 draft/confirm 两阶段生命周期确认后才能使用（详见 `app/graphrag/ontology_categories.py`、ADR-0001）——这是为了支持业务域完全不同的租户（如客服问答场景的"错误码/模块"和商品目录场景的"Product/SKU/VariantValue"）共用同一套代码而不互相污染 schema。存量/未显式指定租户的数据统一归属 `tenant_id='default'`。
+- **两种接入模式（`ingestion_mode`）**：每个租户标记为 `"extraction"`（LLM 从文档抽取实体/关系，经人工审核队列后写入，默认模式）或 `"etl"`（从租户自己的结构化主数据表确定性转换写入，不经 LLM 推断、不进审核队列）。两种模式共享同一套本体 schema 定义层（分类/关系类型/约束/生命周期）和 Term 双存储写入接口，仅数据来源、写入路径与默认值不同——`checkout_draft` 只对 `"extraction"` 租户播种默认关系类型集合。详见 `docs/superpowers/specs/2026-08-15-etl-driven-schema-construction-design.md`。
 - **内容安全层**：输入侧做敏感词/PII 检测与 prompt injection 基础防护（系统 prompt 与用户输入隔离、拒绝指令覆盖尝试）；输出侧做敏感信息过滤，防止图谱/文档中的内部信息（如未脱敏的客户数据）泄露。
 
 ---
