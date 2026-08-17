@@ -103,6 +103,37 @@ async def test_get_etl_run_raises_when_run_belongs_to_different_tenant():
         await get_etl_run(conn, tenant_id="acme", run_id="r1")
 
 
+async def test_ensure_etl_runs_schema_marks_stale_running_runs_as_failed():
+    """进程重启时后台任务连同它更新 running→终态的能力一起消失，没有任何
+    取消/重试机制能救回一条卡在 running 的记录——它会永久占住该租户的并发
+    名额。ensure_etl_runs_schema 是重启后必经的初始化点，在这里把残留的
+    running 一次性扫成 failed。"""
+    conn = await _connect()
+    await create_etl_run(conn, run_id="r1", tenant_id="muji", started_at="2026-08-17T10:00:00")
+
+    await ensure_etl_runs_schema(conn)  # 模拟进程重启后重新初始化同一个库
+
+    detail = await get_etl_run(conn, tenant_id="muji", run_id="r1")
+    assert detail.status == "failed"
+    assert detail.error == "服务重启导致运行中断"
+    # 名额释放了：该租户可以再次发起新的跑批。
+    await create_etl_run(conn, run_id="r2", tenant_id="muji", started_at="2026-08-17T10:10:00")
+
+
+async def test_ensure_etl_runs_schema_leaves_terminal_runs_untouched():
+    conn = await _connect()
+    await create_etl_run(conn, run_id="r1", tenant_id="muji", started_at="2026-08-17T10:00:00")
+    await mark_etl_run_completed(
+        conn, run_id="r1", finished_at="2026-08-17T10:05:00", report_json=json.dumps({"entities_written": 2})
+    )
+
+    await ensure_etl_runs_schema(conn)
+
+    detail = await get_etl_run(conn, tenant_id="muji", run_id="r1")
+    assert detail.status == "completed"
+    assert detail.error is None
+
+
 async def test_list_etl_runs_returns_only_that_tenant_ordered_newest_first():
     conn = await _connect()
     await create_etl_run(conn, run_id="r1", tenant_id="muji", started_at="2026-08-17T10:00:00")

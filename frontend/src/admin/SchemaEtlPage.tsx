@@ -51,6 +51,8 @@ export function SchemaEtlPage() {
   const [selectedRun, setSelectedRun] = useState<RunDetail | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [downloadingReport, setDownloadingReport] = useState(false)
   // 轮询期间才需要知道"上一次拿到的历史列表里是不是还有 running 记录"，
   // 不需要触发重渲染。
   const hasRunningRef = useRef(false)
@@ -168,9 +170,38 @@ export function SchemaEtlPage() {
     }
   }
 
-  const downloadReportUrl = selectedRun
-    ? `/api/admin/${encodeURIComponent(tenantId)}/schema-etl/runs/${encodeURIComponent(selectedRun.run_id)}/report.csv`
-    : null
+  const handleDownloadReport = async () => {
+    if (!sessionToken || !selectedRun || downloadingReport) return
+    setDownloadError(null)
+    setDownloadingReport(true)
+    try {
+      const response = await adminFetch(
+        `/api/admin/${encodeURIComponent(tenantId)}/schema-etl/runs/${encodeURIComponent(selectedRun.run_id)}/report.csv`,
+        sessionToken,
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '下载报告失败'))
+      }
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${selectedRun.run_id}_skipped_rows.csv`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      // 触发下载的临时 <a> 元素在 click() 后立即 remove 是安全的（浏览器
+      // 已经据此发起下载），但 blob URL 本身要留一段时间——太快 revoke
+      // 有些浏览器的下载尚未真正读完数据。跟 DocumentsPage.tsx 的查看
+      // 场景用同样的 60 秒延迟释放。
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : '下载报告失败')
+    } finally {
+      setDownloadingReport(false)
+    }
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -303,6 +334,33 @@ export function SchemaEtlPage() {
                   </tbody>
                 </table>
               </div>
+              {selectedRun.report.skipped_mappings && selectedRun.report.skipped_mappings.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  <h3 className="font-bold text-ink">
+                    映射级跳过（共 {selectedRun.report.skipped_mappings.length} 条）
+                  </h3>
+                  <div className="overflow-x-auto border-2 border-ink shadow-brutal-sm">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b-2 border-ink bg-paper text-ink">
+                          <th className="px-3 py-2">类型</th>
+                          <th className="px-3 py-2">文件</th>
+                          <th className="px-3 py-2">原因</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedRun.report.skipped_mappings.map((mapping, idx) => (
+                          <tr key={idx} className="border-b border-ink/20 text-ink last:border-b-0">
+                            <td className="px-3 py-2">{mapping.label}</td>
+                            <td className="px-3 py-2">{mapping.source_file}</td>
+                            <td className="px-3 py-2">{mapping.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
               {selectedRun.report.skipped_rows && selectedRun.report.skipped_rows.length > 0 && (
                 <div className="flex flex-col gap-2">
                   <h3 className="font-bold text-ink">
@@ -313,6 +371,7 @@ export function SchemaEtlPage() {
                     <table className="w-full text-left text-sm">
                       <thead>
                         <tr className="border-b-2 border-ink bg-paper text-ink">
+                          <th className="px-3 py-2">类型</th>
                           <th className="px-3 py-2">文件</th>
                           <th className="px-3 py-2">行号</th>
                           <th className="px-3 py-2">原因</th>
@@ -323,6 +382,7 @@ export function SchemaEtlPage() {
                           .slice(0, SKIPPED_ROWS_PREVIEW_LIMIT)
                           .map((row, idx) => (
                             <tr key={idx} className="border-b border-ink/20 text-ink last:border-b-0">
+                              <td className="px-3 py-2">{row.label}</td>
                               <td className="px-3 py-2">{row.source_file}</td>
                               <td className="px-3 py-2">{row.row_number}</td>
                               <td className="px-3 py-2">{row.reason}</td>
@@ -331,16 +391,21 @@ export function SchemaEtlPage() {
                       </tbody>
                     </table>
                   </div>
-                  {downloadReportUrl && (
-                    <a
-                      href={downloadReportUrl}
-                      className={`self-start text-sm font-bold text-ink underline decoration-2 underline-offset-2 ${focusRing}`}
-                    >
-                      下载完整报告 CSV
-                    </a>
-                  )}
                 </div>
               )}
+              {downloadError && (
+                <p role="alert" className="text-sm text-ink">
+                  {downloadError}
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={handleDownloadReport}
+                disabled={downloadingReport}
+                className={`self-start text-sm font-bold text-ink underline decoration-2 underline-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              >
+                {downloadingReport ? '下载中…' : '下载完整报告 CSV'}
+              </button>
             </>
           )}
         </div>

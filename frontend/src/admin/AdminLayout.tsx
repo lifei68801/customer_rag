@@ -38,6 +38,9 @@ export function AdminLayout() {
             <NavLink to="/admin/terms" className={navLinkClass}>
               术语库管理
             </NavLink>
+            <NavLink to="/admin/schema-etl" className={navLinkClass}>
+              ETL 跑批
+            </NavLink>
           </nav>
           <div className="flex flex-row flex-wrap gap-3 md:flex-col">
             <TenantSwitcher />

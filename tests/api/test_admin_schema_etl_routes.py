@@ -7,7 +7,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import deps
-from app.graphrag.etl_runs_store import create_etl_run, ensure_etl_runs_schema, get_etl_run
+from app.graphrag.etl_runs_store import (
+    create_etl_run,
+    ensure_etl_runs_schema,
+    get_etl_run,
+    list_etl_runs,
+)
 from app.graphrag.ontology_categories import create_product_line, create_term_type
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag.terms_store import ensure_terms_schema
@@ -117,6 +122,58 @@ def test_start_run_returns_run_id_when_no_run_in_progress(client, review_conn):
     # 所以这里能直接断言跑批已经落到终态，而不是还停在 running。
     detail = asyncio.run(get_etl_run(review_conn, tenant_id="muji", run_id=run_id))
     assert detail.status == "completed"
+
+
+def test_start_run_rejects_config_whose_tenant_id_differs_from_path(client, review_conn):
+    """run_schema_etl 真正写数据时用的是 YAML 里的 tenant_id，而并发防护、
+    schema 预检查、历史归属用的是 URL 路径上的 tenant_id——两者不一致时，
+    往多个不同路径 tenant 提交同一份 YAML 就能绕开"每租户同时只有一次跑批"
+    的部分唯一索引。这里验证路由在落库前就把不一致挡成 400。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = {"config": ("config.yaml", b"tenant_id: other_tenant\nentities: []\nrelations: []\n")}
+
+    response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "other_tenant" in detail and "muji" in detail
+    assert asyncio.run(list_etl_runs(review_conn, "muji")) == []
+
+
+def test_start_run_rejects_malformed_config_with_400(client, review_conn):
+    """格式非法的 YAML（这里缺 tenant_id）应该在入口就变成 400，而不是先
+    创建一条 running 记录、再由后台任务把它标成 failed。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = {"config": ("config.yaml", b"entities: []\nrelations: []\n")}
+
+    response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+
+    assert response.status_code == 400
+    assert "解析失败" in response.json()["detail"]
+    assert asyncio.run(list_etl_runs(review_conn, "muji")) == []
+
+
+def test_start_run_cleans_up_uploaded_files_when_rejected_with_409(client, review_conn, tmp_path):
+    """被 409 拒绝的请求已经把 config/CSV 落盘了，但没有任何 etl_runs 记录
+    引用它们——不清理的话这些文件永远留在磁盘上没人认领。run_id 是请求内部
+    生成的 uuid，测试无法预知，所以改为快照对比目录列表：拒绝前后
+    schema-etl/{tenant}/ 下不应多出任何子目录。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    asyncio.run(
+        create_etl_run(review_conn, run_id="already-running", tenant_id="muji", started_at="2026-08-17T10:00:00")
+    )
+    tenant_dir = tmp_path / "uploads" / "schema-etl" / "muji"
+    before = sorted(p.name for p in tenant_dir.iterdir()) if tenant_dir.exists() else []
+
+    files = [
+        ("config", ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")),
+        ("data_files", ("products.csv", b"code,name\n")),
+    ]
+    response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+
+    assert response.status_code == 409
+    after = sorted(p.name for p in tenant_dir.iterdir()) if tenant_dir.exists() else []
+    assert after == before
 
 
 def test_start_run_sanitizes_dotdot_data_filename_and_stays_inside_run_dir(client, review_conn, tmp_path):

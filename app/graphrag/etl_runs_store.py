@@ -55,6 +55,15 @@ class EtlRunNotFoundError(Exception):
 
 async def ensure_etl_runs_schema(conn: aiosqlite.Connection) -> None:
     await conn.executescript(_SCHEMA_SQL)
+    # 进程重启会让正在跑的后台任务连同它更新 running→completed/failed 的能力
+    # 一起消失——没有任何取消/重试机制能让一条永远卡在 running 的记录自愈
+    # （刻意的产品决定，见 docs/superpowers/specs/2026-08-17-schema-etl-admin-
+    # ui-design.md 第10节），不清理的话这条记录会永久占住该租户的并发名额、
+    # 让它往后再也无法发起新的 ETL 跑批。启动时把所有 running 记录一次性标
+    # 记为 failed，是唯一能让这个状态自愈的时机。
+    await conn.execute(
+        "UPDATE etl_runs SET status='failed', error='服务重启导致运行中断' WHERE status='running'"
+    )
     await conn.commit()
 
 

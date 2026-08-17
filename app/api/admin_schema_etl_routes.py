@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import re
+import shutil
 import uuid
 from dataclasses import asdict
 from datetime import datetime
@@ -27,7 +28,7 @@ from app.graphrag.etl_runs_store import (
 )
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology_lifecycle import is_ontology_confirmed
-from app.graphrag.schema_etl import SchemaETLNotConfirmedError, run_schema_etl
+from app.graphrag.schema_etl import run_schema_etl
 from app.graphrag.schema_etl_config import load_schema_etl_config
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,25 @@ async def start_schema_etl_run(
     config_path = run_dir / "config.yaml"
     config_path.write_bytes(await config.read())
 
+    # 配置文件里声明的 tenant_id 才是 run_schema_etl 真正写入数据时用的租户——
+    # 必须和 URL 路径上的 tenant_id（用来做并发防护、schema 确认预检查、
+    # 历史记录归属的那个）一致，否则并发防护形同虚设：往两个不同路径
+    # tenant_id 提交、但 YAML 里都声明同一个真实 tenant_id，能绕开下面的
+    # 部分唯一索引保护，破坏 etl_stable_code_registry 的串行执行假设。
+    # 解析失败（格式错误的 YAML）也在这里提前暴露成 400，而不是让跑批悄悄
+    # 创建一条 running 记录、后台任务里才发现配置读不出来。
+    try:
+        parsed_config = load_schema_etl_config(config_path)
+    except Exception as exc:
+        shutil.rmtree(run_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"配置文件解析失败：{exc}")
+    if parsed_config.tenant_id != tenant_id:
+        shutil.rmtree(run_dir, ignore_errors=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"配置文件里的 tenant_id {parsed_config.tenant_id!r} 与当前操作的租户 {tenant_id!r} 不一致",
+        )
+
     for data_file in data_files:
         if not data_file.filename:
             continue
@@ -151,6 +171,7 @@ async def start_schema_etl_run(
     try:
         await create_etl_run(review_conn, run_id=run_id, tenant_id=tenant_id, started_at=started_at)
     except EtlRunAlreadyRunningError as exc:
+        shutil.rmtree(run_dir, ignore_errors=True)
         raise HTTPException(status_code=409, detail=str(exc))
 
     background_tasks.add_task(
