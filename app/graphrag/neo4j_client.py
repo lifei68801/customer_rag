@@ -137,8 +137,8 @@ DETACH DELETE t, a
 # Cypher 里的合法操作，不会报错）。
 
 _ENSURE_INDEXES_QUERIES = [
-    "CREATE INDEX IF NOT EXISTS term_tenant_node_key_idx FOR (t:Term) ON (t.tenant_id, t.node_key)",
-    "CREATE INDEX IF NOT EXISTS term_tenant_term_type_idx FOR (t:Term) ON (t.tenant_id, t.type)",
+    "CREATE INDEX term_tenant_node_key_idx IF NOT EXISTS FOR (t:Term) ON (t.tenant_id, t.node_key)",
+    "CREATE INDEX term_tenant_term_type_idx IF NOT EXISTS FOR (t:Term) ON (t.tenant_id, t.type)",
 ]
 # 所有节点共享同一个 :Term 标签（"多类型实体"是靠 term_type 取值模拟的，
 # 不是原生多标签设计，见 docs/superpowers/specs/2026-08-15-etl-driven-

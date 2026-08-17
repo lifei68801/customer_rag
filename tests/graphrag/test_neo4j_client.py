@@ -508,8 +508,8 @@ async def test_ensure_tenant_scoped_schema_creates_indexes_and_backfills_legacy_
     await client.ensure_tenant_scoped_schema()
 
     queries = [call[0] for call in session.calls]
-    assert any("CREATE INDEX IF NOT EXISTS" in q and "tenant_id" in q and "node_key" in q for q in queries)
-    assert any("CREATE INDEX IF NOT EXISTS" in q and "term_type" in q or "t.type" in q for q in queries)
+    assert any("CREATE INDEX" in q and "IF NOT EXISTS" in q and "tenant_id" in q and "node_key" in q for q in queries)
+    assert any("CREATE INDEX" in q and "IF NOT EXISTS" in q and "term_type" in q or "t.type" in q for q in queries)
     assert any(
         "WHERE t.tenant_id IS NULL" in q and "SET t.tenant_id = 'default'" in q and "t.node_key = t.standard_name" in q
         for q in queries
