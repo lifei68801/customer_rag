@@ -87,12 +87,23 @@ def _to_response(term: Term) -> TermResponse:
 @router.get("", response_model=TermListResponse)
 async def list_all_terms(
     tenant_id: str,
-    page: int = 1,
-    page_size: int = 20,
+    page: int | None = None,
+    page_size: int | None = None,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> TermListResponse:
-    offset = (page - 1) * page_size
-    terms = await list_terms(review_conn, tenant_id, limit=page_size, offset=offset)
+    # page/page_size 都不传（比如 termsApi.ts 里不分页的 fetchTerms()，
+    # GraphReviewsPage.tsx 的标准名自动补全用它拉全量数据做前端过滤）时，
+    # 不加 limit/offset 地调用 list_terms()——它自己的默认值就是"返回全部"，
+    # 保持这个分页 query 参数引入之前的行为不变。只要任意一个参数被显式
+    # 传入（管理后台自己的分页列表 fetchTermsPage() 两个参数总是一起传），
+    # 才按分页语义处理。
+    if page is None and page_size is None:
+        terms = await list_terms(review_conn, tenant_id)
+    else:
+        effective_page = page or 1
+        effective_page_size = page_size or 20
+        offset = (effective_page - 1) * effective_page_size
+        terms = await list_terms(review_conn, tenant_id, limit=effective_page_size, offset=offset)
     total = await count_terms(review_conn, tenant_id)
     return TermListResponse(terms=[_to_response(term) for term in terms], total=total)
 

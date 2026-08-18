@@ -167,6 +167,37 @@ def test_list_terms_paginates_with_page_and_page_size(terms_conn):
     assert body["total"] == 3
 
 
+def test_list_terms_without_page_params_returns_full_list_beyond_default_page_size(terms_conn):
+    """回归测试：list_all_terms 的 page/page_size 曾经默认为 1/20，导致
+    termsApi.ts 里不传任何 query 参数的 fetchTerms()（GraphReviewsPage.tsx
+    标准名自动补全用它拉全量数据）在术语数超过 20 条时被后端悄悄截断成
+    只有第一页。这里种 21 条术语，不传 page/page_size 请求，断言拿到的是
+    全部 21 条而不是被截断的 20 条，且和 total 字段一致。"""
+    for i in range(21):
+        asyncio.run(
+            create_term(
+                terms_conn, tenant_id="t1", standard_name=f"术语{i:02d}", aliases=[],
+                term_type="t", product_line="p",
+            )
+        )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    try:
+        client = TestClient(app)
+        response = client.get("/api/admin/t1/terms", headers=_authed_headers(session_store))
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["terms"]) == 21
+    assert len(body["terms"]) > 20
+    assert body["total"] == 21
+    assert len(body["terms"]) == body["total"]
+
+
 def test_list_terms_without_session_token_returns_401(terms_conn):
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: AdminSessionStore()
