@@ -46,6 +46,7 @@ export function TermsPage() {
 
   const [termTypeOptions, setTermTypeOptions] = useState<string[]>([])
   const [productLineOptions, setProductLineOptions] = useState<string[]>([])
+  const [optionsLoaded, setOptionsLoaded] = useState(false)
 
   const [newDraft, setNewDraft] = useState<TermDraft>(emptyDraft)
   const [creating, setCreating] = useState(false)
@@ -61,16 +62,25 @@ export function TermsPage() {
 
   useEffect(() => {
     if (!sessionToken) return
-    adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`, sessionToken)
-      .then((res) => res.json())
-      .then((data: { term_types: { value: string }[] }) =>
-        setTermTypeOptions(data.term_types.map((t) => t.value)),
-      )
-      .catch((err) => console.error('加载实体类型枚举失败', err))
-    adminFetch('/api/admin/ontology/product-lines', sessionToken)
-      .then((res) => res.json())
-      .then((data: { product_lines: string[] }) => setProductLineOptions(data.product_lines))
-      .catch((err) => console.error('加载产品线枚举失败', err))
+    setOptionsLoaded(false)
+    Promise.all([
+      adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`, sessionToken)
+        .then((res) => res.json())
+        .then((data: { term_types: { value: string }[] }) =>
+          setTermTypeOptions(data.term_types.map((t) => t.value)),
+        )
+        .catch((err) => {
+          console.error('加载实体类型枚举失败', err)
+          return null
+        }),
+      adminFetch('/api/admin/ontology/product-lines', sessionToken)
+        .then((res) => res.json())
+        .then((data: { product_lines: string[] }) => setProductLineOptions(data.product_lines))
+        .catch((err) => {
+          console.error('加载产品线枚举失败', err)
+          return null
+        }),
+    ]).finally(() => setOptionsLoaded(true))
   }, [sessionToken, tenantId])
 
   const refresh = useCallback(async () => {
@@ -296,7 +306,7 @@ export function TermsPage() {
                       className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
                     >
                       <option value="">（无类型）</option>
-                      {editDraft.term_type && !termTypeOptions.includes(editDraft.term_type) && (
+                      {optionsLoaded && editDraft.term_type && !termTypeOptions.includes(editDraft.term_type) && (
                         <option value={editDraft.term_type}>{editDraft.term_type}（不在当前本体枚举中）</option>
                       )}
                       {termTypeOptions.map((value) => (
@@ -316,7 +326,7 @@ export function TermsPage() {
                       className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
                     >
                       <option value="">（无产品线）</option>
-                      {editDraft.product_line && !productLineOptions.includes(editDraft.product_line) && (
+                      {optionsLoaded && editDraft.product_line && !productLineOptions.includes(editDraft.product_line) && (
                         <option value={editDraft.product_line}>{editDraft.product_line}（不在当前本体枚举中）</option>
                       )}
                       {productLineOptions.map((value) => (
