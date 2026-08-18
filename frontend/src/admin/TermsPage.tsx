@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { createTerm, deleteTerm, fetchTerms, updateTerm, type TermRecord } from './termsApi'
+import { adminFetch } from './adminApi'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -43,6 +44,9 @@ export function TermsPage() {
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const [termTypeOptions, setTermTypeOptions] = useState<string[]>([])
+  const [productLineOptions, setProductLineOptions] = useState<string[]>([])
+
   const [newDraft, setNewDraft] = useState<TermDraft>(emptyDraft)
   const [creating, setCreating] = useState(false)
 
@@ -54,6 +58,20 @@ export function TermsPage() {
   useEffect(() => {
     document.title = '术语库管理 · 管理后台'
   }, [])
+
+  useEffect(() => {
+    if (!sessionToken) return
+    adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`, sessionToken)
+      .then((res) => res.json())
+      .then((data: { term_types: { value: string }[] }) =>
+        setTermTypeOptions(data.term_types.map((t) => t.value)),
+      )
+      .catch((err) => console.error('加载实体类型枚举失败', err))
+    adminFetch('/api/admin/ontology/product-lines', sessionToken)
+      .then((res) => res.json())
+      .then((data: { product_lines: string[] }) => setProductLineOptions(data.product_lines))
+      .catch((err) => console.error('加载产品线枚举失败', err))
+  }, [sessionToken, tenantId])
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
@@ -155,24 +173,36 @@ export function TermsPage() {
             aria-label="别名"
             className="min-w-[10rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
           />
-          <input
+          <select
             value={newDraft.term_type}
             onChange={(event) =>
               setNewDraft((prev) => ({ ...prev, term_type: event.target.value }))
             }
-            placeholder="类型"
             aria-label="类型"
-            className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
-          />
-          <input
+            className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
+          >
+            <option value="">（无类型）</option>
+            {termTypeOptions.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+          <select
             value={newDraft.product_line}
             onChange={(event) =>
               setNewDraft((prev) => ({ ...prev, product_line: event.target.value }))
             }
-            placeholder="产品线"
             aria-label="产品线"
-            className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
-          />
+            className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
+          >
+            <option value="">（无产品线）</option>
+            {productLineOptions.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
         </div>
         <button
           type="button"
@@ -257,26 +287,44 @@ export function TermsPage() {
                       aria-label={`别名（${term.standard_name}）`}
                       className="min-w-[10rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
                     />
-                    <input
+                    <select
                       value={editDraft.term_type}
                       onChange={(event) =>
                         setEditDraft((prev) => (prev ? { ...prev, term_type: event.target.value } : prev))
                       }
-                      placeholder="类型"
                       aria-label={`类型（${term.standard_name}）`}
-                      className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
-                    />
-                    <input
+                      className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
+                    >
+                      <option value="">（无类型）</option>
+                      {editDraft.term_type && !termTypeOptions.includes(editDraft.term_type) && (
+                        <option value={editDraft.term_type}>{editDraft.term_type}（不在当前本体枚举中）</option>
+                      )}
+                      {termTypeOptions.map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                    <select
                       value={editDraft.product_line}
                       onChange={(event) =>
                         setEditDraft((prev) =>
                           prev ? { ...prev, product_line: event.target.value } : prev,
                         )
                       }
-                      placeholder="产品线"
                       aria-label={`产品线（${term.standard_name}）`}
-                      className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
-                    />
+                      className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
+                    >
+                      <option value="">（无产品线）</option>
+                      {editDraft.product_line && !productLineOptions.includes(editDraft.product_line) && (
+                        <option value={editDraft.product_line}>{editDraft.product_line}（不在当前本体枚举中）</option>
+                      )}
+                      {productLineOptions.map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <div className="flex gap-2">
                     <button
