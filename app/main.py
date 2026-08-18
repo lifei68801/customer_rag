@@ -10,6 +10,7 @@ from app.api.admin_document_routes import router as admin_document_router
 from app.api.admin_graph_review_routes import router as admin_graph_review_router
 from app.api.admin_ontology_routes import router as admin_ontology_router
 from app.api.admin_schema_etl_routes import router as admin_schema_etl_router
+from app.api.admin_tenant_routes import router as admin_tenant_router
 from app.api.admin_terms_routes import router as admin_terms_router
 from app.api.agent_routes import router as agent_router
 from app.api.qa_routes import router as qa_router
@@ -71,6 +72,7 @@ app.include_router(admin_graph_review_router)
 app.include_router(admin_ontology_router)
 app.include_router(admin_terms_router)
 app.include_router(admin_schema_etl_router)
+app.include_router(admin_tenant_router)
 
 
 @app.get("/health")
