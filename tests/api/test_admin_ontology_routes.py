@@ -44,11 +44,13 @@ class _FakeGraphClient:
     def __init__(
         self, *, migrated_count: int = 0, migrate_error: Exception | None = None,
         ensure_index_error: Exception | None = None, term_type_migrated_count: int = 0,
+        term_type_migrate_error: Exception | None = None,
     ) -> None:
         self._migrated_count = migrated_count
         self._migrate_error = migrate_error
         self._ensure_index_error = ensure_index_error
         self._term_type_migrated_count = term_type_migrated_count
+        self._term_type_migrate_error = term_type_migrate_error
         self.ensured_index_calls: list[tuple[str, str, list[tuple[str, str]]]] = []
         self.migrate_term_type_nodes_calls: list[tuple[str, str, str]] = []
 
@@ -62,6 +64,8 @@ class _FakeGraphClient:
 
     async def migrate_term_type_nodes(self, *, tenant_id: str, old_type: str, new_type: str) -> int:
         self.migrate_term_type_nodes_calls.append((tenant_id, old_type, new_type))
+        if self._term_type_migrate_error is not None:
+            raise self._term_type_migrate_error
         return self._term_type_migrated_count
 
     async def ensure_extra_field_indexes(self, *, tenant_id, term_type, extra_fields) -> None:
@@ -607,6 +611,42 @@ async def test_migrate_term_type_route_migrates_terms_and_graph_nodes(client, co
     assert resp.status_code == 200
     assert resp.json() == {"terms_migrated": 2, "graph_nodes_migrated": 7}
     assert fake_graph_client.migrate_term_type_nodes_calls == [("t1", "错误码", "故障代码")]
+
+
+async def test_migrate_term_type_route_reports_terms_migrated_when_graph_sync_fails(
+    client, conn_for_testing,
+):
+    """SQLite 侧的 migrate_term_type 已经 commit 过了——如果紧接着的 Neo4j
+    调用失败，接口不能返回裸的 500，得让操作员知道 SQLite 那边已经迁移
+    成功、只需要重试（幂等的）Neo4j 那一半。"""
+    client.post(
+        "/api/admin/ontology/t1/term-types",
+        json={"value": "错误码", "extra_fields": []},
+        headers={"Authorization": "Bearer x"},
+    )
+    client.post("/api/admin/ontology/t1/confirm", headers={"Authorization": "Bearer x"})
+
+    conn = conn_for_testing["conn"]
+    await conn.execute(
+        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
+        "product_line, extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("t1", "k1", "网关超时", "[]", "错误码", "核心平台", "{}"),
+    )
+    await conn.commit()
+
+    fake_graph_client = _FakeGraphClient(
+        term_type_migrate_error=RuntimeError("Neo4j 连接超时")
+    )
+    app.dependency_overrides[deps.get_graph_client] = lambda: fake_graph_client
+
+    resp = client.post(
+        "/api/admin/ontology/t1/term-types/migrate",
+        json={"old_type": "错误码", "new_type": "故障代码"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert resp.status_code == 502
+    assert "terms_migrated=1" in resp.json()["detail"]
 
 
 def test_migrate_term_type_route_returns_404_for_unknown_tenant(client):

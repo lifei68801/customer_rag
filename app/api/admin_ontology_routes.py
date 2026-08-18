@@ -204,9 +204,23 @@ async def migrate_tenant_term_type(
     terms_migrated = await migrate_term_type(
         review_conn, tenant_id, old_type=payload.old_type, new_type=payload.new_type
     )
-    graph_nodes_migrated = await graph_client.migrate_term_type_nodes(
-        tenant_id=tenant_id, old_type=payload.old_type, new_type=payload.new_type
-    )
+    try:
+        graph_nodes_migrated = await graph_client.migrate_term_type_nodes(
+            tenant_id=tenant_id, old_type=payload.old_type, new_type=payload.new_type
+        )
+    except Exception:
+        logger.exception(
+            "term_type %r 迁移到 %r（租户 %r）已写入 SQLite（%d 条术语已迁移）但同步到图谱失败——"
+            "两侧数据已不一致，需要人工核对；Neo4j 一侧的迁移操作是幂等的，可安全重试",
+            payload.old_type, payload.new_type, tenant_id, terms_migrated,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"实体类型已在 SQLite 中迁移（terms_migrated={terms_migrated}），"
+                "但同步到 Neo4j 图谱失败，请检查 Neo4j 连通性后重试（该操作幂等，可安全重试）"
+            ),
+        )
     return MigrateTermTypeResponse(
         terms_migrated=terms_migrated, graph_nodes_migrated=graph_nodes_migrated
     )
