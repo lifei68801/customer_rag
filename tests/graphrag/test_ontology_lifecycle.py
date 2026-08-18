@@ -4,7 +4,7 @@ import aiosqlite
 import pytest
 
 from app.graphrag.ontology_constraints import add_allowed_combination, list_allowed_combinations
-from app.graphrag.ontology_categories import create_term_type
+from app.graphrag.ontology_categories import create_term_type, list_term_types
 from app.graphrag.ontology_lifecycle import (
     checkout_draft,
     confirm_ontology,
@@ -169,3 +169,52 @@ async def test_checkout_draft_still_seeds_defaults_for_extraction_tenants():
     from app.graphrag.ontology_relations import list_relation_types
     relation_types = await list_relation_types(conn, "hotel_tenant", status="draft")
     assert len(relation_types) == 10
+
+
+async def test_checkout_draft_copies_confirmed_term_types_into_new_draft():
+    conn = await _conn()
+    await checkout_draft(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="客房")
+    await confirm_ontology(conn, "t1")
+
+    await checkout_draft(conn, "t1")
+
+    draft = await list_term_types(conn, "t1", status="draft")
+    assert [t.value for t in draft] == ["客房"]
+
+
+async def test_checkout_draft_does_not_seed_default_term_types_for_brand_new_tenant():
+    conn = await _conn()
+
+    await checkout_draft(conn, "t1")
+
+    assert await list_term_types(conn, "t1", status="draft") == []
+
+
+async def test_confirm_ontology_promotes_term_types_too():
+    conn = await _conn()
+    await checkout_draft(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="客房")
+
+    await confirm_ontology(conn, "t1")
+
+    confirmed = await list_term_types(conn, "t1", status="confirmed")
+    assert [t.value for t in confirmed] == ["客房"]
+
+
+async def test_confirm_ontology_is_idempotent_no_op_without_any_draft():
+    """确认新增的 ontology_term_types 检测分支没有破坏"无草稿时 confirm 是
+    no-op"这条既有回归保证——三张表（关系类型、约束、实体类型）的草稿都为空时，
+    confirm_ontology 依然直接返回，不动已确认数据。"""
+    conn = await _conn()
+    await checkout_draft(conn, "t1")
+    await confirm_ontology(conn, "t1")
+
+    confirmed_relations_after_first = await list_relation_types(conn, "t1", status="confirmed")
+    confirmed_term_types_after_first = await list_term_types(conn, "t1", status="confirmed")
+
+    # Second confirm without checkout should be a no-op
+    await confirm_ontology(conn, "t1")
+
+    assert await list_relation_types(conn, "t1", status="confirmed") == confirmed_relations_after_first
+    assert await list_term_types(conn, "t1", status="confirmed") == confirmed_term_types_after_first

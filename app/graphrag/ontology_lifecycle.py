@@ -7,7 +7,9 @@ from app.graphrag.ontology_constraints import ensure_constraints_schema
 from app.graphrag.ontology_relations import ensure_relations_schema, seed_default_relation_types
 from app.graphrag.tenant_ingestion_config import ensure_ingestion_config_schema, get_ingestion_mode
 
-_TABLES_WITH_TENANT_LIFECYCLE = ("tenant_relation_types", "term_type_relation_allowlist")
+_TABLES_WITH_TENANT_LIFECYCLE = (
+    "tenant_relation_types", "term_type_relation_allowlist", "ontology_term_types",
+)
 
 
 async def ensure_ontology_schema(conn: aiosqlite.Connection) -> None:
@@ -65,6 +67,18 @@ async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
                 "FROM term_type_relation_allowlist WHERE tenant_id = ? AND status = 'confirmed'",
                 (tenant_id,),
             )
+    if not await _has_any_row(conn, "ontology_term_types", tenant_id, "draft"):
+        if await _has_any_row(conn, "ontology_term_types", tenant_id, "confirmed"):
+            await conn.execute(
+                "INSERT INTO ontology_term_types "
+                "(tenant_id, value, extra_fields, node_key_template, status) "
+                "SELECT tenant_id, value, extra_fields, node_key_template, 'draft' "
+                "FROM ontology_term_types WHERE tenant_id = ? AND status = 'confirmed'",
+                (tenant_id,),
+            )
+        # 新租户没有默认实体类型可播种——不同于关系类型有 10 种通用拓扑
+        # 关系兜底，实体类型完全依赖业务定义，没有"合理默认值"这回事，
+        # 两种接入模式（extraction/etl）在这一点上没有区别。
     await conn.commit()
 
 
@@ -81,6 +95,7 @@ async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
     has_draft_in_any_table = (
         await _has_any_row(conn, "tenant_relation_types", tenant_id, "draft")
         or await _has_any_row(conn, "term_type_relation_allowlist", tenant_id, "draft")
+        or await _has_any_row(conn, "ontology_term_types", tenant_id, "draft")
     )
     if not has_draft_in_any_table:
         return
