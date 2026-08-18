@@ -129,7 +129,10 @@ export function OntologySchemaPage() {
           { method: 'POST' },
         )
         const [termTypesRes, relationTypesRes, constraintsRes] = await Promise.all([
-          adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`, sessionToken),
+          adminFetch(
+            `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=draft`,
+            sessionToken,
+          ),
           adminFetch(
             `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types?status=draft`,
             sessionToken,
@@ -158,7 +161,7 @@ export function OntologySchemaPage() {
     }
   }, [sessionToken, tenantId, readinessVersion])
 
-  const isLifecycleTab = tab === 'relation-types' || tab === 'constraints'
+  const isLifecycleTab = tab === 'term-types' || tab === 'relation-types' || tab === 'constraints'
   const missingCategories = readiness
     ? ([
         !readiness.termTypes && '实体类型',
@@ -331,6 +334,8 @@ export function OntologySchemaPage() {
           sessionToken={sessionToken}
           tenantId={tenantId}
           onError={setPageError}
+          view={view}
+          confirmVersion={confirmVersion}
           onDataChanged={bumpReadiness}
         />
       )}
@@ -371,11 +376,15 @@ function TermTypesTab({
   sessionToken,
   tenantId,
   onError,
+  view,
+  confirmVersion,
   onDataChanged,
 }: {
   sessionToken: string | null
   tenantId: string
   onError: (msg: string | null) => void
+  view: ViewMode
+  confirmVersion: number
   onDataChanged: () => void
 }) {
   const [items, setItems] = useState<TermType[]>([])
@@ -385,12 +394,31 @@ function TermTypesTab({
   const [creating, setCreating] = useState(false)
   const [savingValue, setSavingValue] = useState<string | null>(null)
   const [deletingValue, setDeletingValue] = useState<string | null>(null)
+  const [migratingFrom, setMigratingFrom] = useState<string | null>(null)
+  const [migrateTarget, setMigrateTarget] = useState('')
+  const [migrating, setMigrating] = useState(false)
+  const [migrateSuccessMessage, setMigrateSuccessMessage] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
     try {
+      // checkout 对用户透明——每次进这个 tab / 切换视图前，先确保草稿存在，
+      // 幂等操作，已有草稿时后端直接跳过（见 app/graphrag/ontology_lifecycle.py
+      // ::checkout_draft 的说明）。实体类型的编辑/删除严格只作用于 status='draft'
+      // 行（见 ontology_categories.py::update_term_type/delete_term_type），没有
+      // 草稿就编辑会报"草稿里不存在分类"，所以这里跟关系类型/约束 tab 一样
+      // 主动 checkout，不能只依赖页面级那次（有竞态）。
+      const checkoutResponse = await adminFetch(
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/checkout`,
+        sessionToken,
+        { method: 'POST' },
+      )
+      if (!checkoutResponse.ok) {
+        const body = await checkoutResponse.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, 'schema 草稿初始化失败'))
+      }
       const response = await adminFetch(
-        `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`,
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=${view}`,
         sessionToken,
       )
       const data = (await response.json()) as { term_types: TermType[] }
@@ -400,11 +428,11 @@ function TermTypesTab({
     } finally {
       setLoaded(true)
     }
-  }, [sessionToken, tenantId, onError])
+  }, [sessionToken, tenantId, view, onError])
 
   useEffect(() => {
     refresh().catch((err) => console.error('实体类型列表刷新失败', err))
-  }, [refresh])
+  }, [refresh, confirmVersion])
 
   const startEdit = (item: TermType) => {
     setEditingValue(item.value)
@@ -491,11 +519,48 @@ function TermTypesTab({
     }
   }
 
+  const handleMigrate = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!sessionToken || migratingFrom === null || migrating) return
+    if (
+      !window.confirm(
+        `这会把租户「${tenantId}」所有 term_type 为「${migratingFrom}」的真实术语和图谱节点批量改成「${migrateTarget}」，不可逆。确定要继续吗？`,
+      )
+    ) {
+      return
+    }
+    onError(null)
+    setMigrating(true)
+    try {
+      const response = await adminFetch(
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types/migrate`,
+        sessionToken,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ old_type: migratingFrom, new_type: migrateTarget }),
+        },
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '迁移实体类型失败'))
+      }
+      const data = (await response.json()) as { terms_migrated: number; graph_nodes_migrated: number }
+      setMigrateSuccessMessage(`已迁移 ${data.terms_migrated} 条术语、${data.graph_nodes_migrated} 个图谱节点`)
+      setMigratingFrom(null)
+      setMigrateTarget('')
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '迁移实体类型失败')
+    } finally {
+      setMigrating(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       {!loaded && <p className="text-ink-soft">加载中…</p>}
       {loaded && items.length === 0 && editingValue === null && (
-        <p className="text-ink-soft">还没有定义任何实体类型。</p>
+        <p className="text-ink-soft">还没有任何{view === 'draft' ? '草稿' : '已确认的'}实体类型。</p>
       )}
       {items.length > 0 && (
         <div className="overflow-x-auto border-2 border-ink bg-card shadow-brutal-sm">
@@ -504,7 +569,7 @@ function TermTypesTab({
               <tr className="border-b-2 border-ink bg-paper text-ink">
                 <th className="px-3 py-2">类型名</th>
                 <th className="px-3 py-2">属性字段数</th>
-                <th className="px-3 py-2">操作</th>
+                {view === 'draft' && <th className="px-3 py-2">操作</th>}
               </tr>
             </thead>
             <tbody>
@@ -512,24 +577,38 @@ function TermTypesTab({
                 <tr key={item.value} className="border-b border-ink/20 text-ink last:border-b-0">
                   <td className="px-3 py-2">{item.value}</td>
                   <td className="px-3 py-2">{item.extra_fields.length}</td>
-                  <td className="px-3 py-2">
-                    <button
-                      type="button"
-                      className={`mr-2 font-bold underline disabled:opacity-50 ${focusRing}`}
-                      onClick={() => startEdit(item)}
-                      disabled={editingValue !== null}
-                    >
-                      编辑
-                    </button>
-                    <button
-                      type="button"
-                      className={`font-bold text-status-error underline disabled:opacity-50 ${focusRing}`}
-                      onClick={() => handleDelete(item.value)}
-                      disabled={deletingValue !== null || editingValue !== null}
-                    >
-                      {deletingValue === item.value ? '删除中…' : '删除'}
-                    </button>
-                  </td>
+                  {view === 'draft' && (
+                    <td className="px-3 py-2">
+                      <button
+                        type="button"
+                        className={`mr-2 font-bold underline disabled:opacity-50 ${focusRing}`}
+                        onClick={() => startEdit(item)}
+                        disabled={editingValue !== null}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        className={`mr-2 font-bold underline disabled:opacity-50 ${focusRing}`}
+                        onClick={() => {
+                          setMigratingFrom(item.value)
+                          setMigrateTarget('')
+                          setMigrateSuccessMessage(null)
+                        }}
+                        disabled={migrating}
+                      >
+                        迁移实体类型…
+                      </button>
+                      <button
+                        type="button"
+                        className={`font-bold text-status-error underline disabled:opacity-50 ${focusRing}`}
+                        onClick={() => handleDelete(item.value)}
+                        disabled={deletingValue !== null || editingValue !== null}
+                      >
+                        {deletingValue === item.value ? '删除中…' : '删除'}
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -537,7 +616,13 @@ function TermTypesTab({
         </div>
       )}
 
-      {editingValue === null && (
+      {view === 'draft' && (
+        <p className="text-xs text-ink-soft">
+          改名只影响草稿定义，已确认版本正在使用的真实术语和图谱节点不会自动变，需要用「迁移实体类型」处理。
+        </p>
+      )}
+
+      {view === 'draft' && editingValue === null && (
         <button
           type="button"
           onClick={startCreate}
@@ -547,7 +632,7 @@ function TermTypesTab({
         </button>
       )}
 
-      {editingValue !== null && (
+      {view === 'draft' && editingValue !== null && (
         <form onSubmit={submit} className="flex flex-col gap-3 border-2 border-ink bg-card p-4 shadow-brutal">
           <label className="flex flex-col gap-1 text-sm font-bold text-ink">
             类型名
@@ -559,9 +644,6 @@ function TermTypesTab({
               className="border-2 border-ink bg-paper px-2 py-1.5 text-ink focus:shadow-brutal focus:outline-none"
             />
           </label>
-          {editingValue !== '' && (
-            <p className="text-xs text-ink-soft">改名会立即级联更新所有引用该类型的术语记录，没有草稿缓冲。</p>
-          )}
 
           <div className="flex flex-col gap-2">
             <span className="text-sm font-bold text-ink">属性字段</span>
@@ -617,6 +699,54 @@ function TermTypesTab({
             <button
               type="button"
               onClick={cancelEdit}
+              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+            >
+              取消
+            </button>
+          </div>
+        </form>
+      )}
+
+      {migrateSuccessMessage && <p className="text-sm text-ink">{migrateSuccessMessage}</p>}
+
+      {migratingFrom !== null && (
+        <form
+          onSubmit={handleMigrate}
+          className="flex flex-col gap-3 border-2 border-status-error bg-card p-4 shadow-brutal"
+        >
+          <p className="text-sm text-ink">
+            把租户「{tenantId}」所有 term_type 为「{migratingFrom}」的真实术语和图谱节点迁移成：
+          </p>
+          <select
+            required
+            value={migrateTarget}
+            onChange={(e) => setMigrateTarget(e.target.value)}
+            aria-label="迁移目标类型"
+            className="border-2 border-ink bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-brutal focus:outline-none"
+          >
+            <option value="">请选择新类型</option>
+            {items
+              .filter((item) => item.value !== migratingFrom)
+              .map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.value}
+                </option>
+              ))}
+          </select>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={migrating}
+              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-status-error px-4 py-2 text-sm font-bold text-white shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+            >
+              {migrating ? '迁移中…' : '确认迁移'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMigratingFrom(null)
+                setMigrateSuccessMessage(null)
+              }}
               className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
             >
               取消
