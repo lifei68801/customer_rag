@@ -251,14 +251,26 @@ async def upload_document(
 @router.get("", response_model=DocumentsListResponse)
 async def list_documents(
     tenant_id: str,
-    page: int = 1,
-    page_size: int = 20,
+    page: int | None = None,
+    page_size: int | None = None,
     ingestion_conn: aiosqlite.Connection = Depends(deps.get_ingestion_conn),
 ) -> DocumentsListResponse:
-    offset = (page - 1) * page_size
-    documents = await list_tracked_files(
-        ingestion_conn, tenant_id=tenant_id, limit=page_size, offset=offset
-    )
+    # 同 admin_terms_routes.py::list_all_terms 的 Fix：page/page_size 都不传
+    # 时不加 limit/offset 地调用 list_tracked_files()——它自己的默认值
+    # （limit=None）就是"返回全部"，保持分页 query 参数引入之前的行为不变。
+    # 只要任意一个参数被显式传入，才按分页语义处理。目前 DocumentsPage.tsx
+    # 是这个接口唯一的调用方且总是同时传两个参数，所以这里没有实际在生产
+    # 中触发过的调用方受影响——这是为了不再复现 Task 8 那类"裸 GET 被
+    # 悄悄截断成第一页"的 bug，保持跟术语接口一致的契约。
+    if page is None and page_size is None:
+        documents = await list_tracked_files(ingestion_conn, tenant_id=tenant_id)
+    else:
+        effective_page = page or 1
+        effective_page_size = page_size or 20
+        offset = (effective_page - 1) * effective_page_size
+        documents = await list_tracked_files(
+            ingestion_conn, tenant_id=tenant_id, limit=effective_page_size, offset=offset
+        )
     total = await count_tracked_files(ingestion_conn, tenant_id=tenant_id)
     pending_jobs = await list_pending_jobs(ingestion_conn, limit=50, tenant_id=tenant_id)
     dead_jobs = await list_dead_jobs(ingestion_conn, limit=50, tenant_id=tenant_id)

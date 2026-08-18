@@ -33,12 +33,22 @@ export function TenantSwitcher() {
       }
       const data = (await response.json()) as { tenants: TenantOption[] }
       setTenants(data.tenants)
+      // TenantContext 的默认值（sessionStorage 缺失时回退到 'demo'）在真实
+      // 有历史数据的库上并不可靠——ensure_tenants_schema 只在完全没有历史
+      // 租户时才会回填 'demo'，所以当前 tenantId 很可能压根不在这次拉到的
+      // 列表里，<select value={tenantId}> 会渲染成没有任何选中项、tenantId
+      // 却悄悄停在一个不存在的值上，后续所有管理端写操作都会 404。这里一旦
+      // 发现当前 tenantId 不在真实列表中（且列表非空），自动纠正到列表里的
+      // 第一个租户——同样覆盖"当前所在租户被禁用掉了"的情况。
+      if (data.tenants.length > 0 && !data.tenants.some((t) => t.tenant_id === tenantId)) {
+        setTenantId(data.tenants[0].tenant_id)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载租户列表失败')
     } finally {
       setLoaded(true)
     }
-  }, [sessionToken])
+  }, [sessionToken, tenantId, setTenantId])
 
   useEffect(() => {
     refresh().catch((err) => console.error('租户列表刷新失败', err))

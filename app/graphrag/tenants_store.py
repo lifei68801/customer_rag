@@ -42,13 +42,28 @@ async def _discover_historical_tenant_ids(
     的两个连接不能直接跨库 UNION，只能各查各的再在 Python 里合并。
     """
     found: set[str] = set()
-    for table in ("terms", "ontology_term_types", "etl_runs", "graph_review_queue"):
+    for table in (
+        "terms",
+        "ontology_term_types",
+        "etl_runs",
+        "graph_review_queue",
+        # tenant_relation_types/term_type_relation_allowlist/
+        # tenant_ingestion_config 都是 app/graphrag/ontology_lifecycle.py::
+        # ensure_ontology_schema() 建在 review_conn 里的表（跟本函数收到的
+        # review_conn 是同一个库），一个只碰过关系类型草稿/约束白名单/
+        # 接入模式配置、没在上面几张表留下任何记录的租户，如果不扫这三张
+        # 表就会被回填漏掉，升级后直接锁死写权限。
+        "tenant_relation_types",
+        "term_type_relation_allowlist",
+        "tenant_ingestion_config",
+    ):
         cursor = await review_conn.execute(f"SELECT DISTINCT tenant_id FROM {table}")
         rows = await cursor.fetchall()
         found.update(row[0] for row in rows if row[0])
-    cursor = await ingestion_conn.execute("SELECT DISTINCT tenant_id FROM ingested_documents")
-    rows = await cursor.fetchall()
-    found.update(row[0] for row in rows if row[0])
+    for table in ("ingested_documents", "ingestion_jobs"):
+        cursor = await ingestion_conn.execute(f"SELECT DISTINCT tenant_id FROM {table}")
+        rows = await cursor.fetchall()
+        found.update(row[0] for row in rows if row[0])
     return found
 
 

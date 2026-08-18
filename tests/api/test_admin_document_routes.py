@@ -432,6 +432,48 @@ def test_list_documents_paginates_with_page_and_page_size(ingestion_conn):
     assert body["total"] == 3
 
 
+def test_list_documents_without_page_params_returns_full_list_beyond_default_page_size(
+    ingestion_conn,
+):
+    """回归测试：list_documents 的 page/page_size 曾经默认为 1/20（跟
+    Task 8 修复前的 list_all_terms 是同一类 bug），会把不传分页参数的裸
+    GET 悄悄截断成只有第一页。这里种 21 条追踪记录，不传 page/page_size
+    请求，断言拿到的是全部 21 条而不是被截断的 20 条，且和 total 字段
+    一致。"""
+
+    async def _seed() -> None:
+        for i in range(21):
+            await ingestion_conn.execute(
+                "INSERT INTO ingested_documents "
+                "(tenant_id, file_path, content_hash, chunk_count, last_ingested_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("t1", f"file{i:02d}.md", f"h{i}", 1, f"2024-01-{i + 1:02d}T00:00:00"),
+            )
+        await ingestion_conn.commit()
+
+    asyncio.run(_seed())
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/documents",
+            params={"tenant_id": "t1"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["documents"]) == 21
+    assert len(body["documents"]) > 20
+    assert body["total"] == 21
+    assert len(body["documents"]) == body["total"]
+
+
 def test_list_documents_excludes_other_tenants_pending_jobs(ingestion_conn):
     from app.ingestion.ingestion_queue import enqueue_ingestion_job
 

@@ -17,6 +17,7 @@ from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.terms_store import ensure_terms_schema
 from app.graphrag.etl_runs_store import ensure_etl_runs_schema
 from app.graphrag.review_queue import ensure_review_schema
+from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema, enqueue_ingestion_job
 from app.ingestion.tracking import ensure_tracking_schema, record_ingested
 
 pytestmark = pytest.mark.anyio
@@ -40,6 +41,7 @@ async def _review_conn() -> aiosqlite.Connection:
 async def _ingestion_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_tracking_schema(conn)
+    await ensure_ingestion_queue_schema(conn)
     return conn
 
 
@@ -64,6 +66,25 @@ async def test_ensure_tenants_schema_backfills_from_ingested_documents():
 
     tenant_ids = {t["tenant_id"] for t in await list_tenants(review_conn)}
     assert "acme" in tenant_ids
+
+
+async def test_ensure_tenants_schema_backfills_from_ingestion_jobs_only():
+    """回归测试：一个租户只在 ingestion_jobs 里留过记录（比如所有上传都
+    失败、只剩 dead job 行，从没有一条真正摄取成功过、terms/etl_runs/
+    graph_review_queue 等表也从没写过它），_discover_historical_tenant_ids
+    在修复前不扫 ingestion_jobs，会把这个租户漏掉，升级后它就没法再做
+    任何管理端写操作。"""
+    review_conn = await _review_conn()
+    ingestion_conn = await _ingestion_conn()
+    await enqueue_ingestion_job(
+        ingestion_conn, tenant_id="job-only-tenant", file_path="a.md",
+        content_hash="h", action="ingest",
+    )
+
+    await ensure_tenants_schema(review_conn, ingestion_conn)
+
+    tenant_ids = {t["tenant_id"] for t in await list_tenants(review_conn)}
+    assert "job-only-tenant" in tenant_ids
 
 
 async def test_ensure_tenants_schema_is_idempotent():
