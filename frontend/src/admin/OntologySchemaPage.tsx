@@ -39,6 +39,17 @@ const tabButtonClass = (active: boolean) =>
     active ? 'bg-accent-pink text-ink shadow-brutal-sm' : 'bg-paper text-ink hover:bg-card'
   }`
 
+// 草稿/已确认是"二选一浏览视图"，不是"开关某个功能"，语义上属于分段控件
+// （segmented control），不该用 checkbox 表达——用深色反色（bg-ink）而不是
+// 顶部一级 tab 同款的 bg-accent-pink，是为了和"实体类型/关系类型/约束/
+// 产品线"那一级导航拉开视觉层级：一级 tab 决定看哪块数据，这个二级分段
+// 控件决定同一块数据看草稿还是已确认快照，二者不能长得一样，不然分不清
+// 哪个在切页面、哪个在切版本。
+const viewSegmentClass = (active: boolean) =>
+  `min-h-[36px] cursor-pointer px-3 text-xs font-bold uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50 ${focusRing} ${
+    active ? 'bg-ink text-paper' : 'bg-paper text-ink hover:bg-card'
+  }`
+
 const emptyTermTypeDraft = (): TermType => ({ value: '', extra_fields: [] })
 const emptyRelationTypeDraft = (): RelationType => ({
   relation_type: '',
@@ -53,6 +64,30 @@ export function OntologySchemaPage() {
   const [tab, setTab] = useState<Tab>('term-types')
   const [confirmed, setConfirmed] = useState<boolean | null>(null)
   const [pageError, setPageError] = useState<string | null>(null)
+  // view/confirming 是页面级状态而不是各 tab 自己的本地状态——后端
+  // confirm_ontology() 原子性地同时确认 tenant_relation_types（关系类型）和
+  // term_type_relation_allowlist（约束）两张表（见 app/graphrag/
+  // ontology_lifecycle.py），是同一个 schema 草稿生命周期的两个视图，不是
+  // 关系类型 tab 独有的概念，所以"查看已确认版本"和"确认 schema"提到页面
+  // 外层，两个 tab 共用同一份状态。
+  const [view, setView] = useState<ViewMode>('draft')
+  const [confirming, setConfirming] = useState(false)
+  // 确认成功后用来"踢"一下当前挂载的 tab 重新拉取数据——两个 tab 互斥挂载
+  // （tab === 'relation-types' 时约束 tab 是卸载状态，反之亦然），只需要让
+  // 当前挂载的那个重新 refresh；另一个 tab 下次挂载时自己的 useEffect 会
+  // 用新数据初始化，不需要额外处理。
+  const [confirmVersion, setConfirmVersion] = useState(0)
+  // 确认 schema 的前置条件：实体类型、关系类型（草稿）、约束（草稿）三者
+  // 都至少有一条，否则确认了也只是把空/不完整的 schema 定版，ETL 和知识
+  // 图谱抽取都用不了。三个 tab 互斥挂载，任何一个 tab 单独维护自己的
+  // "是否有数据"都不足以判断"三者是否都满足"，所以在页面级单独查一份。
+  const [readiness, setReadiness] = useState<{
+    termTypes: boolean
+    relationTypes: boolean
+    constraints: boolean
+  } | null>(null)
+  const [readinessVersion, setReadinessVersion] = useState(0)
+  const bumpReadiness = useCallback(() => setReadinessVersion((v) => v + 1), [])
 
   useEffect(() => {
     document.title = '本体 Schema 管理 · 管理后台'
@@ -72,17 +107,173 @@ export function OntologySchemaPage() {
     refreshStatus().catch((err) => console.error('查询 schema 确认状态失败', err))
   }, [refreshStatus])
 
+  // 切换租户时"查看已确认版本"回到草稿视图——不然带着上一个租户的视图状态
+  // 切过去，容易看着已确认数据却以为在编辑草稿。
+  useEffect(() => {
+    setView('draft')
+  }, [tenantId])
+
+  useEffect(() => {
+    if (!sessionToken) return
+    let cancelled = false
+    const loadReadiness = async () => {
+      setReadiness(null)
+      try {
+        // checkout 幂等：哪怕用户从没点开过关系类型/约束 tab，这里也要保证
+        // 草稿存在——extraction 模式租户依赖 checkout 自动播种默认关系类型，
+        // 不 checkout 直接查 status=draft，会把"还没打开过那个 tab"误判成
+        // "没有关系类型"。
+        await adminFetch(
+          `/api/admin/ontology/${encodeURIComponent(tenantId)}/checkout`,
+          sessionToken,
+          { method: 'POST' },
+        )
+        const [termTypesRes, relationTypesRes, constraintsRes] = await Promise.all([
+          adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`, sessionToken),
+          adminFetch(
+            `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types?status=draft`,
+            sessionToken,
+          ),
+          adminFetch(
+            `/api/admin/ontology/${encodeURIComponent(tenantId)}/constraints?status=draft`,
+            sessionToken,
+          ),
+        ])
+        const termTypesData = (await termTypesRes.json()) as { term_types: TermType[] }
+        const relationTypesData = (await relationTypesRes.json()) as { relation_types: RelationType[] }
+        const constraintsData = (await constraintsRes.json()) as { constraints: Constraint[] }
+        if (cancelled) return
+        setReadiness({
+          termTypes: termTypesData.term_types.length > 0,
+          relationTypes: relationTypesData.relation_types.length > 0,
+          constraints: constraintsData.constraints.length > 0,
+        })
+      } catch (err) {
+        if (!cancelled) console.error('检查 schema 确认前置条件失败', err)
+      }
+    }
+    loadReadiness()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionToken, tenantId, readinessVersion])
+
+  const isLifecycleTab = tab === 'relation-types' || tab === 'constraints'
+  const missingCategories = readiness
+    ? ([
+        !readiness.termTypes && '实体类型',
+        !readiness.relationTypes && '关系类型',
+        !readiness.constraints && '约束',
+      ].filter(Boolean) as string[])
+    : []
+  const confirmDisabledReason = !isLifecycleTab
+    ? '该分类直接生效，无需确认'
+    : view === 'confirmed'
+      ? '正在查看已确认版本（只读），切到「草稿」才能确认'
+      : readiness === null
+        ? '检查前置条件中…'
+        : missingCategories.length > 0
+          ? `还缺少：${missingCategories.join('、')}（各至少一条）`
+          : null
+  const confirmDisabled = confirming || confirmDisabledReason !== null
+
+  const handleConfirm = async () => {
+    if (!sessionToken || confirmDisabled) return
+    if (
+      !window.confirm(
+        `确认后，当前草稿将成为新的已确认版本，旧的已确认版本会被换掉、无法恢复。确认要确认租户「${tenantId}」吗？`,
+      )
+    ) {
+      return
+    }
+    setPageError(null)
+    setConfirming(true)
+    try {
+      const response = await adminFetch(
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/confirm`,
+        sessionToken,
+        { method: 'POST' },
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '确认失败'))
+      }
+      await refreshStatus()
+      setConfirmVersion((v) => v + 1)
+      // 确认会把草稿行的 status 原地改成 confirmed（不再是 draft），
+      // checkout_draft 下次调用时才会把已确认版本重新复制回草稿——这里
+      // 主动"踢"一次前置条件检查，让它带着新的 checkout 重新算一遍，不然
+      // 确认成功的瞬间 status=draft 的关系类型/约束会短暂查到 0 条，误报
+      // "还缺少关系类型/约束"。
+      bumpReadiness()
+    } catch (err) {
+      setPageError(err instanceof Error ? err.message : '确认失败')
+    } finally {
+      setConfirming(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-bold text-ink">本体 Schema 管理（租户：{tenantId}）</h1>
-        <span
-          className={`border-2 border-ink px-3 py-1.5 text-sm font-bold shadow-brutal-sm ${
-            confirmed ? 'bg-accent-green text-ink' : 'bg-accent-yellow text-ink'
-          }`}
-        >
-          {confirmed === null ? '加载中…' : confirmed ? '已确认' : '草稿中（未确认）'}
-        </span>
+        {/* 状态徽章、草稿/已确认分段切换、确认按钮同处一个视觉层级——徽章是
+            "这个租户有没有确认过 schema"的持久状态（跟当前在哪个 tab、看
+            草稿还是已确认无关，来自 GET .../status），分段控件+确认按钮是
+            "当前在浏览/操作哪份数据"的即时控制，两者语义不同但都是同一件
+            事（schema 生命周期）在页面头部的呈现，放在一起才读得出关联：
+            徽章告诉你结果，右边的控件告诉你怎么改变这个结果。
+            四个 tab 下这一整块的位置和形状都不变，不随 tab 切换而出现/
+            消失——在实体类型/产品线 tab（没有草稿/确认概念）或前置条件
+            不满足时，用 disabled + 下方一行小字说明原因，而不是让控件
+            凭空消失，用户分不清是没做完还是压根没做出来。 */}
+        <div className="flex flex-wrap items-center gap-3">
+          <span
+            className={`border-2 border-ink px-3 py-1.5 text-sm font-bold shadow-brutal-sm ${
+              confirmed ? 'bg-accent-green text-ink' : 'bg-accent-yellow text-ink'
+            }`}
+          >
+            {confirmed === null ? '加载中…' : confirmed ? '已确认' : '草稿中（未确认）'}
+          </span>
+          <div
+            role="group"
+            aria-label="查看版本"
+            className="flex divide-x-2 divide-ink border-2 border-ink shadow-brutal-sm"
+          >
+            <button
+              type="button"
+              aria-pressed={view === 'draft'}
+              onClick={() => setView('draft')}
+              disabled={!isLifecycleTab}
+              className={viewSegmentClass(view === 'draft')}
+            >
+              草稿
+            </button>
+            <button
+              type="button"
+              aria-pressed={view === 'confirmed'}
+              onClick={() => setView('confirmed')}
+              disabled={!isLifecycleTab}
+              className={viewSegmentClass(view === 'confirmed')}
+            >
+              已确认版本
+            </button>
+          </div>
+          <div className="flex flex-col gap-1">
+            <button
+              type="button"
+              onClick={handleConfirm}
+              disabled={confirmDisabled}
+              title={confirmDisabledReason ?? undefined}
+              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-green px-4 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+            >
+              {confirming ? '确认中…' : '确认 schema'}
+            </button>
+            {confirmDisabledReason && !confirming && (
+              <span className="text-xs text-ink-soft">{confirmDisabledReason}</span>
+            )}
+          </div>
+        </div>
       </div>
 
       {pageError && (
@@ -140,6 +331,7 @@ export function OntologySchemaPage() {
           sessionToken={sessionToken}
           tenantId={tenantId}
           onError={setPageError}
+          onDataChanged={bumpReadiness}
         />
       )}
       {tab === 'relation-types' && (
@@ -148,11 +340,21 @@ export function OntologySchemaPage() {
           sessionToken={sessionToken}
           tenantId={tenantId}
           onError={setPageError}
-          onConfirmed={refreshStatus}
+          view={view}
+          confirmVersion={confirmVersion}
+          onDataChanged={bumpReadiness}
         />
       )}
       {tab === 'constraints' && (
-        <ConstraintsTab key={tenantId} sessionToken={sessionToken} tenantId={tenantId} onError={setPageError} />
+        <ConstraintsTab
+          key={tenantId}
+          sessionToken={sessionToken}
+          tenantId={tenantId}
+          onError={setPageError}
+          view={view}
+          confirmVersion={confirmVersion}
+          onDataChanged={bumpReadiness}
+        />
       )}
       {tab === 'product-lines' && (
         <ProductLinesTab sessionToken={sessionToken} onError={setPageError} />
@@ -169,10 +371,12 @@ function TermTypesTab({
   sessionToken,
   tenantId,
   onError,
+  onDataChanged,
 }: {
   sessionToken: string | null
   tenantId: string
   onError: (msg: string | null) => void
+  onDataChanged: () => void
 }) {
   const [items, setItems] = useState<TermType[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -254,6 +458,7 @@ function TermTypesTab({
       }
       cancelEdit()
       await refresh()
+      onDataChanged()
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存失败')
     } finally {
@@ -278,6 +483,7 @@ function TermTypesTab({
         throw new Error(extractErrorDetail(body, '删除实体类型失败'))
       }
       await refresh()
+      onDataChanged()
     } catch (err) {
       onError(err instanceof Error ? err.message : '删除失败')
     } finally {
@@ -430,14 +636,17 @@ function RelationTypesTab({
   sessionToken,
   tenantId,
   onError,
-  onConfirmed,
+  view,
+  confirmVersion,
+  onDataChanged,
 }: {
   sessionToken: string | null
   tenantId: string
   onError: (msg: string | null) => void
-  onConfirmed: () => Promise<void>
+  view: ViewMode
+  confirmVersion: number
+  onDataChanged: () => void
 }) {
-  const [view, setView] = useState<ViewMode>('draft')
   const [items, setItems] = useState<RelationType[]>([])
   const [loaded, setLoaded] = useState(false)
   const [editingType, setEditingType] = useState<string | null>(null)
@@ -445,7 +654,6 @@ function RelationTypesTab({
   const [creating, setCreating] = useState(false)
   const [savingType, setSavingType] = useState<string | null>(null)
   const [deletingType, setDeletingType] = useState<string | null>(null)
-  const [confirming, setConfirming] = useState(false)
   const [migratingFrom, setMigratingFrom] = useState<string | null>(null)
   const [migrateTarget, setMigrateTarget] = useState('')
   const [migrating, setMigrating] = useState(false)
@@ -481,7 +689,7 @@ function RelationTypesTab({
 
   useEffect(() => {
     refresh().catch((err) => console.error('关系类型列表刷新失败', err))
-  }, [refresh])
+  }, [refresh, confirmVersion])
 
   const startEdit = (item: RelationType) => {
     setEditingType(item.relation_type)
@@ -525,6 +733,7 @@ function RelationTypesTab({
       }
       cancelEdit()
       await refresh()
+      onDataChanged()
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存失败')
     } finally {
@@ -549,40 +758,11 @@ function RelationTypesTab({
         throw new Error(extractErrorDetail(body, '删除关系类型失败'))
       }
       await refresh()
+      onDataChanged()
     } catch (err) {
       onError(err instanceof Error ? err.message : '删除失败')
     } finally {
       setDeletingType(null)
-    }
-  }
-
-  const handleConfirm = async () => {
-    if (!sessionToken || confirming) return
-    if (
-      !window.confirm(
-        `确认后，当前草稿将成为新的已确认版本，旧的已确认版本会被换掉、无法恢复。确认要确认租户「${tenantId}」吗？`,
-      )
-    ) {
-      return
-    }
-    onError(null)
-    setConfirming(true)
-    try {
-      const response = await adminFetch(
-        `/api/admin/ontology/${encodeURIComponent(tenantId)}/confirm`,
-        sessionToken,
-        { method: 'POST' },
-      )
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
-        throw new Error(extractErrorDetail(body, '确认失败'))
-      }
-      await onConfirmed()
-      await refresh()
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '确认失败')
-    } finally {
-      setConfirming(false)
     }
   }
 
@@ -625,27 +805,6 @@ function RelationTypesTab({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <label className="flex items-center gap-2 text-sm font-bold text-ink">
-          <input
-            type="checkbox"
-            checked={view === 'confirmed'}
-            onChange={(e) => setView(e.target.checked ? 'confirmed' : 'draft')}
-          />
-          查看已确认版本（只读）
-        </label>
-        {view === 'draft' && (
-          <button
-            type="button"
-            onClick={handleConfirm}
-            disabled={confirming}
-            className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-green px-4 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
-          >
-            {confirming ? '确认中…' : '确认 schema'}
-          </button>
-        )}
-      </div>
-
       {!loaded && <p className="text-ink-soft">加载中…</p>}
       {loaded && items.length === 0 && <p className="text-ink-soft">还没有任何{view === 'draft' ? '草稿' : '已确认的'}关系类型。</p>}
       {items.length > 0 && (
@@ -839,12 +998,17 @@ function ConstraintsTab({
   sessionToken,
   tenantId,
   onError,
+  view,
+  confirmVersion,
+  onDataChanged,
 }: {
   sessionToken: string | null
   tenantId: string
   onError: (msg: string | null) => void
+  view: ViewMode
+  confirmVersion: number
+  onDataChanged: () => void
 }) {
-  const [view, setView] = useState<ViewMode>('draft')
   const [constraints, setConstraints] = useState<Constraint[]>([])
   const [termTypes, setTermTypes] = useState<string[]>([])
   const [draftRelationTypes, setDraftRelationTypes] = useState<string[]>([])
@@ -897,7 +1061,7 @@ function ConstraintsTab({
 
   useEffect(() => {
     refresh().catch((err) => console.error('约束列表刷新失败', err))
-  }, [refresh])
+  }, [refresh, confirmVersion])
 
   const constraintKey = (c: Constraint) => `${c.subject_term_type}|${c.relation_type}|${c.object_term_type}`
 
@@ -928,6 +1092,7 @@ function ConstraintsTab({
       setRelationType('')
       setObject('')
       await refresh()
+      onDataChanged()
     } catch (err) {
       onError(err instanceof Error ? err.message : '新增约束失败')
     } finally {
@@ -956,6 +1121,7 @@ function ConstraintsTab({
         throw new Error(extractErrorDetail(body, '删除约束失败'))
       }
       await refresh()
+      onDataChanged()
     } catch (err) {
       onError(err instanceof Error ? err.message : '删除约束失败')
     } finally {
@@ -965,15 +1131,6 @@ function ConstraintsTab({
 
   return (
     <div className="flex flex-col gap-4">
-      <label className="flex items-center gap-2 text-sm font-bold text-ink">
-        <input
-          type="checkbox"
-          checked={view === 'confirmed'}
-          onChange={(e) => setView(e.target.checked ? 'confirmed' : 'draft')}
-        />
-        查看已确认版本（只读）
-      </label>
-
       {!loaded && <p className="text-ink-soft">加载中…</p>}
       {loaded && constraints.length === 0 && (
         <p className="text-ink-soft">还没有任何{view === 'draft' ? '草稿' : '已确认的'}约束。</p>
