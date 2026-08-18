@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS ontology_term_types (
     value             TEXT NOT NULL,
     extra_fields      TEXT NOT NULL DEFAULT '[]',
     node_key_template TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (tenant_id, value)
+    status            TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, value, status)
 );
 CREATE TABLE IF NOT EXISTS ontology_product_lines (
     value TEXT PRIMARY KEY
@@ -125,6 +126,49 @@ async def _migrate_term_types_table_if_needed(conn: aiosqlite.Connection) -> Non
     await conn.commit()
 
 
+async def _migrate_term_types_add_status_if_needed(conn: aiosqlite.Connection) -> None:
+    """把 2026-08-19 之前没有 status 列的 ontology_term_types 表（PK 是
+    (tenant_id, value)，所有行隐含"直接生效"）迁移成带草稿/已确认两态的
+    新结构（PK 变成 (tenant_id, value, status)）。存量行全部落
+    status='confirmed'——迁移前它们本来就是"当前生效"的状态，语义上对应
+    新模型里的已确认，不是草稿。跟 _migrate_term_types_table_if_needed
+    同构，必须排在它之后调用（那个函数先保证 tenant_id 列存在，这个函数
+    的 SELECT 依赖 tenant_id 列已经在）。
+    """
+    cursor = await conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='ontology_term_types'"
+    )
+    if await cursor.fetchone() is None:
+        return
+    cursor = await conn.execute("PRAGMA table_info(ontology_term_types)")
+    existing_columns = {row[1] for row in await cursor.fetchall()}
+    if "status" in existing_columns:
+        return
+    await conn.executescript(
+        """
+        CREATE TABLE ontology_term_types_new (
+            tenant_id         TEXT NOT NULL,
+            value             TEXT NOT NULL,
+            extra_fields      TEXT NOT NULL DEFAULT '[]',
+            node_key_template TEXT NOT NULL DEFAULT '',
+            status            TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, value, status)
+        );
+        """
+    )
+    await conn.execute(
+        "INSERT INTO ontology_term_types_new "
+        "(tenant_id, value, extra_fields, node_key_template, status) "
+        "SELECT tenant_id, value, extra_fields, node_key_template, 'confirmed' "
+        "FROM ontology_term_types"
+    )
+    await conn.executescript(
+        "DROP TABLE ontology_term_types; "
+        "ALTER TABLE ontology_term_types_new RENAME TO ontology_term_types;"
+    )
+    await conn.commit()
+
+
 async def _migrate_extra_fields_value_shape_if_needed(conn: aiosqlite.Connection) -> None:
     """把 2026-08-16 之前的 extra_fields 数据（纯字符串列表，如
     '["严重等级", "影响范围"]'）原地升级成带类型声明的形态（如
@@ -158,6 +202,7 @@ async def _migrate_extra_fields_value_shape_if_needed(conn: aiosqlite.Connection
 
 async def ensure_categories_schema(conn: aiosqlite.Connection) -> None:
     await _migrate_term_types_table_if_needed(conn)
+    await _migrate_term_types_add_status_if_needed(conn)
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
     await _migrate_extra_fields_value_shape_if_needed(conn)
@@ -170,12 +215,14 @@ def _row_to_term_type(row: aiosqlite.Row) -> TermTypeCategory:
     )
 
 
-async def list_term_types(conn: aiosqlite.Connection, tenant_id: str) -> list[TermTypeCategory]:
+async def list_term_types(
+    conn: aiosqlite.Connection, tenant_id: str, *, status: str
+) -> list[TermTypeCategory]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT value, extra_fields FROM ontology_term_types "
-        "WHERE tenant_id = ? ORDER BY value",
-        (tenant_id,),
+        "WHERE tenant_id = ? AND status = ? ORDER BY value",
+        (tenant_id, status),
     )
     rows = await cursor.fetchall()
     return [_row_to_term_type(row) for row in rows]
@@ -198,11 +245,12 @@ async def create_term_type(
     _validate_extra_field_specs(extra_fields)
     try:
         await conn.execute(
-            "INSERT INTO ontology_term_types (tenant_id, value, extra_fields) VALUES (?, ?, ?)",
+            "INSERT INTO ontology_term_types (tenant_id, value, extra_fields, status) "
+            "VALUES (?, ?, ?, 'draft')",
             (tenant_id, value, _extra_fields_to_json(extra_fields)),
         )
     except aiosqlite.IntegrityError:
-        raise CategoryNameConflictError(f"{value!r} 已经是已有分类，不能重复创建")
+        raise CategoryNameConflictError(f"{value!r} 已经是该租户草稿里的分类，不能重复创建")
     await conn.commit()
 
 
@@ -224,37 +272,36 @@ async def update_term_type(
     new_value: str,
     extra_fields: list[ExtraFieldSpec],
 ) -> None:
-    """value 是当前名字，new_value 是提交的新名字，允许相同（即不改名）。
-    改名时级联更新该租户下 terms 表和 term_type_relation_allowlist 表里
-    所有引用旧名字的行，范围收窄到同一租户——term_type 按租户隔离后，
-    跨租户级联会误伤其它租户的同名分类。
+    """value 是草稿里的当前名字，new_value 是提交的新名字，允许相同（即不
+    改名）。改名只级联更新该租户草稿约束表（term_type_relation_allowlist）
+    里引用旧名字的 draft 行——不再级联更新 terms 表（真实术语只引用已确认
+    类型，改草稿定义不影响它们；已确认类型改名后要同步真实术语，用新的
+    "迁移实体类型"工具手动触发，见 terms_store.py::migrate_term_type）。
     """
     _validate_extra_field_specs(extra_fields)
     cursor = await conn.execute(
-        "SELECT 1 FROM ontology_term_types WHERE tenant_id = ? AND value = ?", (tenant_id, value)
+        "SELECT 1 FROM ontology_term_types WHERE tenant_id = ? AND value = ? AND status = 'draft'",
+        (tenant_id, value),
     )
     if await cursor.fetchone() is None:
-        raise CategoryNotFoundError(f"分类不存在: {value}")
+        raise CategoryNotFoundError(f"草稿里不存在分类: {value}")
     try:
         await conn.execute(
-            "UPDATE ontology_term_types SET value = ?, extra_fields = ? WHERE tenant_id = ? AND value = ?",
+            "UPDATE ontology_term_types SET value = ?, extra_fields = ? "
+            "WHERE tenant_id = ? AND value = ? AND status = 'draft'",
             (new_value, _extra_fields_to_json(extra_fields), tenant_id, value),
         )
     except aiosqlite.IntegrityError:
-        raise CategoryNameConflictError(f"{new_value!r} 已经是已有分类，不能重复使用")
+        raise CategoryNameConflictError(f"{new_value!r} 已经是该租户草稿里的分类，不能重复使用")
     if new_value != value:
         await conn.execute(
-            "UPDATE terms SET term_type = ? WHERE tenant_id = ? AND term_type = ?",
-            (new_value, tenant_id, value),
-        )
-        await conn.execute(
             "UPDATE OR IGNORE term_type_relation_allowlist SET subject_term_type = ? "
-            "WHERE tenant_id = ? AND subject_term_type = ?",
+            "WHERE tenant_id = ? AND subject_term_type = ? AND status = 'draft'",
             (new_value, tenant_id, value),
         )
         await conn.execute(
             "UPDATE OR IGNORE term_type_relation_allowlist SET object_term_type = ? "
-            "WHERE tenant_id = ? AND object_term_type = ?",
+            "WHERE tenant_id = ? AND object_term_type = ? AND status = 'draft'",
             (new_value, tenant_id, value),
         )
     await conn.commit()
@@ -282,14 +329,17 @@ async def update_product_line(
 
 
 async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: str) -> None:
-    """删除保护同样收窄到同一租户范围——见 update_term_type 的说明。"""
+    """terms 表引用检查范围不变（真实术语只引用已确认类型，这个检查天然
+    对应"已确认版本是否在用"）；term_type_relation_allowlist 引用检查加
+    status='draft'——只拦"删除会破坏当前草稿自洽性"的情况，跟这次删除无关
+    的已确认约束不受影响。"""
     cursor = await conn.execute(
         "SELECT COUNT(*) FROM terms WHERE tenant_id = ? AND term_type = ?", (tenant_id, value)
     )
     terms_count = (await cursor.fetchone())[0]
     cursor = await conn.execute(
         "SELECT COUNT(*) FROM term_type_relation_allowlist "
-        "WHERE tenant_id = ? AND (subject_term_type = ? OR object_term_type = ?)",
+        "WHERE tenant_id = ? AND status = 'draft' AND (subject_term_type = ? OR object_term_type = ?)",
         (tenant_id, value, value),
     )
     allowlist_count = (await cursor.fetchone())[0]
@@ -298,7 +348,8 @@ async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: st
             f"分类 {value!r} 仍被 {terms_count} 条术语、{allowlist_count} 条关系约束引用，无法删除"
         )
     await conn.execute(
-        "DELETE FROM ontology_term_types WHERE tenant_id = ? AND value = ?", (tenant_id, value)
+        "DELETE FROM ontology_term_types WHERE tenant_id = ? AND value = ? AND status = 'draft'",
+        (tenant_id, value),
     )
     await conn.commit()
 
