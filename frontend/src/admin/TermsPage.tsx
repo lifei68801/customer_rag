@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { createTerm, deleteTerm, fetchTermsPage, updateTerm, type TermRecord } from './termsApi'
@@ -88,16 +88,26 @@ export function TermsPage() {
     ]).finally(() => setOptionsLoaded(true))
   }, [sessionToken, tenantId])
 
+  // 快速连续翻页会同时有多个请求在途；每次发起请求前递增请求序号，响应回来
+  // 时只有序号仍是"最新"的那一个才允许写入 state——旧请求的响应即使后到，
+  // 也不会覆盖新请求已经写入的数据。（照抄 GraphReviewsPage.tsx 的模式。）
+  const refreshRequestIdRef = useRef(0)
+
   const refresh = useCallback(async () => {
     if (!sessionToken) return
+    const requestId = ++refreshRequestIdRef.current
     try {
       const data = await fetchTermsPage(sessionToken, tenantId, page, PAGE_SIZE)
+      if (requestId !== refreshRequestIdRef.current) return
       setTerms(data.terms)
       setTotal(data.total)
     } catch (err) {
+      if (requestId !== refreshRequestIdRef.current) return
       setError(err instanceof Error ? err.message : '加载术语表失败')
     } finally {
-      setLoaded(true)
+      if (requestId === refreshRequestIdRef.current) {
+        setLoaded(true)
+      }
     }
   }, [sessionToken, tenantId, page])
 

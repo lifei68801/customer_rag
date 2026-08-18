@@ -63,6 +63,10 @@ export function DocumentsPage() {
   // 让 handleUpload/handleDelete 能在动作完成后立即"踢"一次轮询循环，
   // 不用等已经排好队的 setTimeout 走完最坏 15 秒才发现任务状态变了。
   const pollNowRef = useRef<() => Promise<void>>(async () => {})
+  // 快速连续翻页会同时有多个请求在途；每次发起请求前递增请求序号，响应回来
+  // 时只有序号仍是"最新"的那一个才允许写入 state——旧请求的响应即使后到，
+  // 也不会覆盖新请求已经写入的数据。（照抄 GraphReviewsPage.tsx 的模式。）
+  const refreshRequestIdRef = useRef(0)
 
   useEffect(() => {
     document.title = '文档管理 · 管理后台'
@@ -70,6 +74,7 @@ export function DocumentsPage() {
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
+    const requestId = ++refreshRequestIdRef.current
     const response = await adminFetch(
       `/api/admin/documents?tenant_id=${encodeURIComponent(tenantId)}&page=${page}&page_size=${PAGE_SIZE}`,
       sessionToken,
@@ -80,6 +85,7 @@ export function DocumentsPage() {
       pending_jobs: PendingJob[]
       dead_jobs: DeadJob[]
     }
+    if (requestId !== refreshRequestIdRef.current) return
     setDocuments(data.documents)
     setDocumentsTotal(data.total)
     setPendingJobs(data.pending_jobs)
