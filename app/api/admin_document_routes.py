@@ -38,7 +38,12 @@ from app.ingestion.ingestion_queue import (
 )
 from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.table_extraction import TableExtractionFunction
-from app.ingestion.tracking import compute_file_hash, list_tracked_files, remove_tracked_file
+from app.ingestion.tracking import (
+    compute_file_hash,
+    count_tracked_files,
+    list_tracked_files,
+    remove_tracked_file,
+)
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.retrieval.vector_store import VectorStore
@@ -96,6 +101,7 @@ def _validate_upload_suffix(filename: str | None) -> None:
 
 class DocumentsListResponse(BaseModel):
     documents: list[dict]
+    total: int
     pending_jobs: list[dict]
     dead_jobs: list[dict]
 
@@ -245,13 +251,19 @@ async def upload_document(
 @router.get("", response_model=DocumentsListResponse)
 async def list_documents(
     tenant_id: str,
+    page: int = 1,
+    page_size: int = 20,
     ingestion_conn: aiosqlite.Connection = Depends(deps.get_ingestion_conn),
 ) -> DocumentsListResponse:
-    documents = await list_tracked_files(ingestion_conn, tenant_id=tenant_id)
+    offset = (page - 1) * page_size
+    documents = await list_tracked_files(
+        ingestion_conn, tenant_id=tenant_id, limit=page_size, offset=offset
+    )
+    total = await count_tracked_files(ingestion_conn, tenant_id=tenant_id)
     pending_jobs = await list_pending_jobs(ingestion_conn, limit=50, tenant_id=tenant_id)
     dead_jobs = await list_dead_jobs(ingestion_conn, limit=50, tenant_id=tenant_id)
     return DocumentsListResponse(
-        documents=documents, pending_jobs=pending_jobs, dead_jobs=dead_jobs
+        documents=documents, total=total, pending_jobs=pending_jobs, dead_jobs=dead_jobs
     )
 
 

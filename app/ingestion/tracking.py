@@ -63,16 +63,35 @@ async def record_ingested(
 
 
 async def list_tracked_files(
-    conn: aiosqlite.Connection, *, tenant_id: str
+    conn: aiosqlite.Connection, *, tenant_id: str, limit: int | None = None, offset: int = 0
 ) -> list[dict[str, Any]]:
+    """limit=None（默认）返回该租户全部追踪记录，保持既有调用方（摄取
+    管线、scan_changes、eval runner 等）不传这两个参数时的行为不变；管理
+    后台分页时显式传入具体的 limit/offset。哨兵模式与
+    app/graphrag/review_queue.py::list_pending_reviews 一致：SQLite 的
+    LIMIT 取负数即表示不限制行数，用 -1 承载 limit=None 这个语义。
+
+    原查询没有 ORDER BY，这里补上 ORDER BY last_ingested_at DESC 让分页
+    结果顺序稳定可预期——没有确定排序的分页会在翻页之间出现同一条记录
+    在两页都出现或者漏掉的问题。
+    """
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT file_path, content_hash, chunk_count, last_ingested_at "
-        "FROM ingested_documents WHERE tenant_id = ?",
-        (tenant_id,),
+        "FROM ingested_documents WHERE tenant_id = ? ORDER BY last_ingested_at DESC "
+        "LIMIT ? OFFSET ?",
+        (tenant_id, limit if limit is not None else -1, offset),
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
+
+
+async def count_tracked_files(conn: aiosqlite.Connection, *, tenant_id: str) -> int:
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM ingested_documents WHERE tenant_id = ?", (tenant_id,)
+    )
+    row = await cursor.fetchone()
+    return row[0]
 
 
 async def remove_tracked_file(

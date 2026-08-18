@@ -225,15 +225,30 @@ def _row_to_term(row: aiosqlite.Row) -> Term:
     )
 
 
-async def list_terms(conn: aiosqlite.Connection, tenant_id: str) -> list[Term]:
+async def list_terms(
+    conn: aiosqlite.Connection, tenant_id: str, *, limit: int | None = None, offset: int = 0
+) -> list[Term]:
+    """limit=None（默认）返回该租户全部术语，保持既有调用方（agent 检索、
+    摄取管线、eval runner、review_cli 等，见
+    app/api/deps.py::get_terms 等处）不传这两个参数时的行为不变；管理后台
+    分页时显式传入具体的 limit/offset。哨兵模式与
+    app/graphrag/review_queue.py::list_pending_reviews 一致：SQLite 的
+    LIMIT 取负数即表示不限制行数，用 -1 承载 limit=None 这个语义。
+    """
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT tenant_id, node_key, standard_name, aliases, term_type, product_line, "
-        "extra_properties FROM terms WHERE tenant_id = ? ORDER BY standard_name",
-        (tenant_id,),
+        "extra_properties FROM terms WHERE tenant_id = ? ORDER BY standard_name LIMIT ? OFFSET ?",
+        (tenant_id, limit if limit is not None else -1, offset),
     )
     rows = await cursor.fetchall()
     return [_row_to_term(row) for row in rows]
+
+
+async def count_terms(conn: aiosqlite.Connection, tenant_id: str) -> int:
+    cursor = await conn.execute("SELECT COUNT(*) FROM terms WHERE tenant_id = ?", (tenant_id,))
+    row = await cursor.fetchone()
+    return row[0]
 
 
 async def get_term(conn: aiosqlite.Connection, tenant_id: str, standard_name: str) -> Term:

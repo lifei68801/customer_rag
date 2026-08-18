@@ -136,6 +136,37 @@ def test_list_terms_returns_all_terms(terms_conn):
     ]
 
 
+def test_list_terms_paginates_with_page_and_page_size(terms_conn):
+    """种 3 条术语（按 standard_name 排序为 A、B、C），GET ?page=2&page_size=1
+    应该只返回第 2 条（B），并且 total 字段反映该租户的全部术语数（3），
+    不受当前这一页大小的影响。"""
+    for name in ("A", "B", "C"):
+        asyncio.run(
+            create_term(
+                terms_conn, tenant_id="t1", standard_name=name, aliases=[],
+                term_type="t", product_line="p",
+            )
+        )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/t1/terms",
+            params={"page": 2, "page_size": 1},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [t["standard_name"] for t in body["terms"]] == ["B"]
+    assert body["total"] == 3
+
+
 def test_list_terms_without_session_token_returns_401(terms_conn):
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: AdminSessionStore()

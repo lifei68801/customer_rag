@@ -17,6 +17,7 @@ from app.graphrag.terms_store import (
     TermNameConflictError,
     TermNotFoundError,
     UnknownCategoryError,
+    count_terms,
     create_term,
     delete_term,
     get_term,
@@ -39,6 +40,7 @@ class TermResponse(BaseModel):
 
 class TermListResponse(BaseModel):
     terms: list[TermResponse]
+    total: int
 
 
 class TermWriteRequest(BaseModel):
@@ -85,10 +87,14 @@ def _to_response(term: Term) -> TermResponse:
 @router.get("", response_model=TermListResponse)
 async def list_all_terms(
     tenant_id: str,
+    page: int = 1,
+    page_size: int = 20,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> TermListResponse:
-    terms = await list_terms(review_conn, tenant_id)
-    return TermListResponse(terms=[_to_response(term) for term in terms])
+    offset = (page - 1) * page_size
+    terms = await list_terms(review_conn, tenant_id, limit=page_size, offset=offset)
+    total = await count_terms(review_conn, tenant_id)
+    return TermListResponse(terms=[_to_response(term) for term in terms], total=total)
 
 
 @router.post("", response_model=TermResponse)

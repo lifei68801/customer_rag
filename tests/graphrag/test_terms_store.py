@@ -14,6 +14,7 @@ from app.graphrag.terms_store import (
     TermNameConflictError,
     TermNotFoundError,
     UnknownCategoryError,
+    count_terms,
     create_term,
     delete_term,
     ensure_terms_schema,
@@ -719,6 +720,50 @@ async def test_upsert_term_with_node_key_typed_extra_properties():
 
     term = await get_term(conn, tenant_id="muji", standard_name="抹茶")
     assert term.extra_properties == {"numeric_value": 70}
+
+
+async def test_list_terms_paginates_with_limit_and_offset():
+    """种 3 条术语（按 standard_name 排序为 A、B、C），limit=1 offset=1
+    应该只拿到第 2 条（B）——验证分页哨兵参数按预期切片。"""
+    conn = await _connect()
+    for name in ("A", "B", "C"):
+        await create_term(
+            conn, tenant_id="default", standard_name=name, aliases=[],
+            term_type="t", product_line="p",
+        )
+
+    page = await list_terms(conn, "default", limit=1, offset=1)
+
+    assert [t.standard_name for t in page] == ["B"]
+
+
+async def test_count_terms_returns_total_regardless_of_pagination():
+    conn = await _connect()
+    for name in ("A", "B", "C"):
+        await create_term(
+            conn, tenant_id="default", standard_name=name, aliases=[],
+            term_type="t", product_line="p",
+        )
+
+    total = await count_terms(conn, "default")
+
+    assert total == 3
+
+
+async def test_list_terms_without_limit_offset_returns_full_unpaginated_list():
+    """不传 limit/offset 时必须保持改造前的行为：返回该租户全部术语，
+    这是既有调用方（agent 检索、摄取管线、eval runner、review_cli 等）
+    赖以不变的默认行为——见 app/api/deps.py::get_terms 等处的调用方式。"""
+    conn = await _connect()
+    for name in ("A", "B", "C"):
+        await create_term(
+            conn, tenant_id="default", standard_name=name, aliases=[],
+            term_type="t", product_line="p",
+        )
+
+    terms = await list_terms(conn, "default")
+
+    assert [t.standard_name for t in terms] == ["A", "B", "C"]
 
 
 async def test_upsert_term_with_node_key_grandfathers_removed_field_on_re_upsert():

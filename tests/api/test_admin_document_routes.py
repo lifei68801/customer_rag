@@ -392,6 +392,46 @@ def test_list_documents_returns_tracked_files_for_tenant(ingestion_conn):
     assert body["documents"][0]["chunk_count"] == 3
 
 
+def test_list_documents_paginates_with_page_and_page_size(ingestion_conn):
+    """种 3 条追踪记录（显式设置互不相同的 last_ingested_at，避免同一秒
+    落点导致 ORDER BY 打平——理由同 tests/ingestion/test_tracking.py 的
+    _seed_with_explicit_timestamps），GET ?page=2&page_size=1 应该只返回
+    按 last_ingested_at DESC 排序后的第 2 条（file1.md），total 字段反映
+    该租户全部追踪记录数（3），不受当前这一页大小的影响。"""
+
+    async def _seed() -> None:
+        for index, timestamp in enumerate(
+            ["2024-01-01T00:00:00", "2024-01-02T00:00:00", "2024-01-03T00:00:00"]
+        ):
+            await ingestion_conn.execute(
+                "INSERT INTO ingested_documents "
+                "(tenant_id, file_path, content_hash, chunk_count, last_ingested_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("t1", f"file{index}.md", f"h{index}", 1, timestamp),
+            )
+        await ingestion_conn.commit()
+
+    asyncio.run(_seed())
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/documents",
+            params={"tenant_id": "t1", "page": 2, "page_size": 1},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [d["file_path"] for d in body["documents"]] == ["file1.md"]
+    assert body["total"] == 3
+
+
 def test_list_documents_excludes_other_tenants_pending_jobs(ingestion_conn):
     from app.ingestion.ingestion_queue import enqueue_ingestion_job
 
