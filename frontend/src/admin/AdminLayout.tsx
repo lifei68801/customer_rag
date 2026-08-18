@@ -29,20 +29,20 @@ export function AdminLayout() {
       <div className="flex min-h-dvh flex-col bg-paper md:flex-row">
         <aside className="flex flex-col gap-3 border-b-2 border-ink bg-card p-4 md:w-56 md:flex-shrink-0 md:flex-col md:justify-between md:border-b-0 md:border-r-2">
           <nav className="flex flex-row flex-wrap gap-2 md:flex-col">
+            <NavLink to="/admin/ontology" className={navLinkClass}>
+              本体 Schema 管理
+            </NavLink>
             <NavLink to="/admin/documents" className={navLinkClass}>
               文档管理
             </NavLink>
             <NavLink to="/admin/graph-reviews" className={navLinkClass}>
               知识图谱审核
             </NavLink>
-            <NavLink to="/admin/terms" className={navLinkClass}>
-              术语库管理
-            </NavLink>
             <NavLink to="/admin/schema-etl" className={navLinkClass}>
               ETL 跑批
             </NavLink>
-            <NavLink to="/admin/ontology" className={navLinkClass}>
-              本体 Schema 管理
+            <NavLink to="/admin/terms" className={navLinkClass}>
+              术语库管理
             </NavLink>
           </nav>
           <div className="flex flex-row flex-wrap gap-3 md:flex-col">

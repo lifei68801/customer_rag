@@ -215,7 +215,6 @@ export function SchemaEtlPage() {
 
       <form
         onSubmit={handleUpload}
-        aria-disabled={confirmed !== true}
         className="flex flex-col gap-3 border-2 border-ink bg-card p-4 shadow-brutal"
       >
         <label className="flex flex-col gap-1 text-sm font-bold text-ink">

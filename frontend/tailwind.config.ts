@@ -20,7 +20,7 @@ export default {
         },
         status: {
           success: '#A9D877',
-          error: '#F97264',
+          error: '#DC2626',
         },
       },
       fontFamily: {

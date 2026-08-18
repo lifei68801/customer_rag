@@ -69,9 +69,9 @@ export function ChatSidebar({
       </div>
       <div className="flex-1 overflow-y-auto p-2">
         {sessionsError && (
-          <p className="p-2 text-sm text-red-700">会话列表加载失败：{sessionsError}</p>
+          <p className="p-2 text-sm text-status-error">会话列表加载失败：{sessionsError}</p>
         )}
-        {deleteError && <p className="p-2 text-sm text-red-700">{deleteError}</p>}
+        {deleteError && <p className="p-2 text-sm text-status-error">{deleteError}</p>}
         {sessions.length === 0 && !sessionsError && (
           <p className="p-2 text-sm text-ink-soft">还没有历史会话</p>
         )}
