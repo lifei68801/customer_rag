@@ -110,11 +110,9 @@ def test_parse_uses_default_limit_when_omitted():
 
 _SKU_SCHEMA = TermTypeCategory(
     value="SKU", extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
-    node_key_template="",
 )
 _VARIANT_SCHEMA = TermTypeCategory(
     value="VariantValue", extra_fields=[ExtraFieldSpec(name="raw_value", value_type="string")],
-    node_key_template="",
 )
 
 
@@ -216,7 +214,6 @@ _SKU_SCHEMA_WITH_MORE_FIELDS = TermTypeCategory(
         ExtraFieldSpec(name="stock_count", value_type="integer"),
         ExtraFieldSpec(name="capacities", value_type="number[]"),
     ],
-    node_key_template="",
 )
 
 
@@ -379,7 +376,6 @@ _SKU_SCHEMA_WITH_LEGACY_UNSAFE_FIELD = TermTypeCategory(
         # _validate_extra_field_specs 声明期格式校验，等价于该函数描述的迁移期绕过场景。
         ExtraFieldSpec(name='bad field"}) DETACH DELETE (n', value_type="string"),
     ],
-    node_key_template="",
 )
 
 

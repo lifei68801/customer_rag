@@ -92,7 +92,6 @@ def test_create_and_list_term_types(client):
             {
                 "value": "错误码",
                 "extra_fields": [{"name": "severity_level", "value_type": "string"}],
-                "node_key_template": "",
             }
         ]
     }
@@ -121,7 +120,6 @@ def test_create_term_type_with_typed_extra_fields(client):
                     {"name": "numeric_value", "value_type": "number"},
                     {"name": "dims", "value_type": "number[]"},
                 ],
-                "node_key_template": "",
             }
         ]
     }
@@ -145,7 +143,6 @@ def test_create_term_type_ensures_neo4j_indexes_for_declared_fields(client):
         json={
             "value": "Product",
             "extra_fields": [{"name": "numeric_value", "value_type": "number"}],
-            "node_key_template": "",
         },
         headers={"Authorization": "Bearer x"},
     )
@@ -161,7 +158,7 @@ def test_update_term_type_ensures_neo4j_indexes_for_declared_fields(client):
     app.dependency_overrides[deps.get_graph_client] = lambda: fake_graph_client
     client.post(
         "/api/admin/ontology/muji/term-types",
-        json={"value": "Product", "extra_fields": [], "node_key_template": ""},
+        json={"value": "Product", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
     )
     fake_graph_client.ensured_index_calls.clear()
@@ -171,7 +168,6 @@ def test_update_term_type_ensures_neo4j_indexes_for_declared_fields(client):
         json={
             "value": "Product",
             "extra_fields": [{"name": "md_no", "value_type": "string"}],
-            "node_key_template": "",
         },
         headers={"Authorization": "Bearer x"},
     )
@@ -194,7 +190,6 @@ def test_create_term_type_still_succeeds_when_index_creation_fails(client):
         json={
             "value": "Product",
             "extra_fields": [{"name": "numeric_value", "value_type": "number"}],
-            "node_key_template": "",
         },
         headers={"Authorization": "Bearer x"},
     )
@@ -212,7 +207,7 @@ def test_update_term_type_still_succeeds_when_index_creation_fails(client):
     app.dependency_overrides[deps.get_graph_client] = lambda: fake_graph_client
     client.post(
         "/api/admin/ontology/muji/term-types",
-        json={"value": "Product", "extra_fields": [], "node_key_template": ""},
+        json={"value": "Product", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
     )
     failing_graph_client = _FakeGraphClient(ensure_index_error=RuntimeError("neo4j unreachable"))
@@ -223,7 +218,6 @@ def test_update_term_type_still_succeeds_when_index_creation_fails(client):
         json={
             "value": "Product",
             "extra_fields": [{"name": "md_no", "value_type": "string"}],
-            "node_key_template": "",
         },
         headers={"Authorization": "Bearer x"},
     )
@@ -485,7 +479,7 @@ async def test_delete_product_line_in_use_returns_409(client, conn_for_testing):
 def test_term_type_routes_are_scoped_to_tenant_in_url(client):
     resp = client.post(
         "/api/admin/ontology/tenant_a/term-types",
-        json={"value": "错误码", "extra_fields": [], "node_key_template": ""},
+        json={"value": "错误码", "extra_fields": []},
         headers={"Authorization": "Bearer x"},
     )
     assert resp.status_code == 200

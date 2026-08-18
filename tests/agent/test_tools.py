@@ -133,7 +133,6 @@ async def test_structured_filter_query_tool_delegates_to_run_structured_filter_q
         confirmed_relation_types=set(),
         term_type_schema={"SKU": TermTypeCategory(
             value="SKU", extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
-            node_key_template="",
         )},
     )
 

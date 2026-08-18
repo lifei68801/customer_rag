@@ -54,7 +54,6 @@ async def test_create_and_list_term_type_with_extra_fields():
             ExtraFieldSpec(name="severity_level", value_type="string"),
             ExtraFieldSpec(name="impact_scope", value_type="string"),
         ],
-        node_key_template="",
     )]
 
 
@@ -64,7 +63,7 @@ async def test_create_term_type_without_extra_fields_defaults_to_empty_list():
 
     result = await list_term_types(conn, tenant_id="default")
 
-    assert result == [TermTypeCategory(value="地点", extra_fields=[], node_key_template="")]
+    assert result == [TermTypeCategory(value="地点", extra_fields=[])]
 
 
 async def test_create_and_list_product_line():
@@ -100,7 +99,6 @@ async def test_update_term_type_renames_without_referencing_terms():
             ExtraFieldSpec(name="severity_level", value_type="string"),
             ExtraFieldSpec(name="impact_scope", value_type="string"),
         ],
-        node_key_template="",
     )
 
     result = await list_term_types(conn, tenant_id="default")
@@ -110,7 +108,6 @@ async def test_update_term_type_renames_without_referencing_terms():
             ExtraFieldSpec(name="severity_level", value_type="string"),
             ExtraFieldSpec(name="impact_scope", value_type="string"),
         ],
-        node_key_template="",
     )]
 
 
@@ -127,7 +124,7 @@ async def test_update_term_type_cascades_rename_to_referencing_terms():
     )
     await conn.commit()
 
-    await update_term_type(conn, tenant_id="default", value="错误码", new_value="故障码", extra_fields=[], node_key_template="")
+    await update_term_type(conn, tenant_id="default", value="错误码", new_value="故障码", extra_fields=[])
 
     cursor = await conn.execute("SELECT term_type FROM terms WHERE tenant_id = ? AND standard_name = ?", ("default", "错误码E502",))
     row = await cursor.fetchone()
@@ -140,7 +137,7 @@ async def test_update_term_type_into_existing_name_raises_conflict():
     await create_term_type(conn, tenant_id="default", value="模块")
 
     with pytest.raises(CategoryNameConflictError):
-        await update_term_type(conn, tenant_id="default", value="错误码", new_value="模块", extra_fields=[], node_key_template="")
+        await update_term_type(conn, tenant_id="default", value="错误码", new_value="模块", extra_fields=[])
 
 
 async def test_delete_term_type_not_in_use_succeeds():
@@ -190,7 +187,7 @@ async def test_update_term_type_cascades_rename_to_allowlist_references():
     )
     await conn.commit()
 
-    await update_term_type(conn, tenant_id="t1", value="客房", new_value="大床房", extra_fields=[], node_key_template="")
+    await update_term_type(conn, tenant_id="t1", value="客房", new_value="大床房", extra_fields=[])
 
     cursor = await conn.execute(
         "SELECT subject_term_type FROM term_type_relation_allowlist WHERE tenant_id = 't1'"
@@ -238,7 +235,7 @@ async def test_delete_product_line_in_use_raises_conflict():
 
 async def test_ensure_categories_schema_migrates_legacy_term_types_table():
     """模拟 2026-08-15 之前的 ontology_term_types 表（value 主键，没有
-    tenant_id/node_key_template），验证迁移把存量数据归到 tenant_id='default'。"""
+    tenant_id 列），验证迁移把存量数据归到 tenant_id='default'。"""
     conn = await aiosqlite.connect(":memory:")
     await conn.executescript(
         "CREATE TABLE ontology_term_types (value TEXT PRIMARY KEY, "
@@ -255,7 +252,6 @@ async def test_ensure_categories_schema_migrates_legacy_term_types_table():
     types = await list_term_types(conn, tenant_id="default")
     assert len(types) == 1
     assert types[0].value == "error_code"
-    assert types[0].node_key_template == ""
 
 
 async def test_create_and_list_term_types_isolated_per_tenant():
@@ -270,18 +266,6 @@ async def test_create_and_list_term_types_isolated_per_tenant():
     types_b = await list_term_types(conn, tenant_id="tenant_b")
     assert [t.value for t in types_a] == ["错误码"]
     assert [t.value for t in types_b] == ["VariantValue"]
-
-
-async def test_create_term_type_with_node_key_template():
-    conn = await _conn()
-    await create_term_type(
-        conn, tenant_id="muji", value="VariantValue",
-        extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="string")],
-        node_key_template="Variant:{dim_code}:{value_code}",
-    )
-
-    types = await list_term_types(conn, tenant_id="muji")
-    assert types[0].node_key_template == "Variant:{dim_code}:{value_code}"
 
 
 async def test_update_term_type_rename_cascades_within_same_tenant_only():
@@ -306,7 +290,7 @@ async def test_update_term_type_rename_cascades_within_same_tenant_only():
 
     await update_term_type(
         conn, tenant_id="tenant_a", value="客房", new_value="客房间",
-        extra_fields=[], node_key_template="",
+        extra_fields=[],
     )
 
     term_a = await get_term(conn, tenant_id="tenant_a", standard_name="A栋客房")
@@ -368,7 +352,6 @@ async def test_update_term_type_with_typed_extra_fields():
             ExtraFieldSpec(name="numeric_value", value_type="number"),
             ExtraFieldSpec(name="dims", value_type="number[]"),
         ],
-        node_key_template="",
     )
 
     types = await list_term_types(conn, tenant_id="t1")

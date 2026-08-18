@@ -14,7 +14,6 @@ interface ExtraFieldSpec {
 interface TermType {
   value: string
   extra_fields: ExtraFieldSpec[]
-  node_key_template: string
 }
 
 interface RelationType {
@@ -40,7 +39,7 @@ const tabButtonClass = (active: boolean) =>
     active ? 'bg-accent-pink text-ink shadow-brutal-sm' : 'bg-paper text-ink hover:bg-card'
   }`
 
-const emptyTermTypeDraft = (): TermType => ({ value: '', extra_fields: [], node_key_template: '' })
+const emptyTermTypeDraft = (): TermType => ({ value: '', extra_fields: [] })
 const emptyRelationTypeDraft = (): RelationType => ({
   relation_type: '',
   example_phrase: '',
@@ -298,7 +297,6 @@ function TermTypesTab({
             <thead>
               <tr className="border-b-2 border-ink bg-paper text-ink">
                 <th className="px-3 py-2">类型名</th>
-                <th className="px-3 py-2">node_key_template</th>
                 <th className="px-3 py-2">属性字段数</th>
                 <th className="px-3 py-2">操作</th>
               </tr>
@@ -307,7 +305,6 @@ function TermTypesTab({
               {items.map((item) => (
                 <tr key={item.value} className="border-b border-ink/20 text-ink last:border-b-0">
                   <td className="px-3 py-2">{item.value}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{item.node_key_template || '-'}</td>
                   <td className="px-3 py-2">{item.extra_fields.length}</td>
                   <td className="px-3 py-2">
                     <button
@@ -359,15 +356,6 @@ function TermTypesTab({
           {editingValue !== '' && (
             <p className="text-xs text-ink-soft">改名会立即级联更新所有引用该类型的术语记录，没有草稿缓冲。</p>
           )}
-          <label className="flex flex-col gap-1 text-sm font-bold text-ink">
-            node_key_template
-            <input
-              type="text"
-              value={draft.node_key_template}
-              onChange={(e) => setDraft((prev) => ({ ...prev, node_key_template: e.target.value }))}
-              className="border-2 border-ink bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-brutal focus:outline-none"
-            />
-          </label>
 
           <div className="flex flex-col gap-2">
             <span className="text-sm font-bold text-ink">属性字段</span>

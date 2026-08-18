@@ -54,7 +54,6 @@ class ExtraFieldSpec:
 class TermTypeCategory:
     value: str
     extra_fields: list[ExtraFieldSpec]
-    node_key_template: str
 
 
 def _validate_extra_field_specs(extra_fields: list[ExtraFieldSpec]) -> None:
@@ -83,10 +82,17 @@ def _extra_fields_from_json(raw: str) -> list[ExtraFieldSpec]:
 
 
 async def _migrate_term_types_table_if_needed(conn: aiosqlite.Connection) -> None:
-    """把 2026-08-15 之前的 ontology_term_types 表（value 主键，无
-    tenant_id/node_key_template）原地迁移成按租户隔离的新结构，存量数据
-    统一归到 tenant_id='default'，node_key_template 留空。幂等，逻辑与
-    terms_store.py::_migrate_terms_table_to_tenant_scoped_if_needed 同构。
+    """把 2026-08-15 之前的 ontology_term_types 表（value 主键，无 tenant_id）
+    原地迁移成按租户隔离的新结构，存量数据统一归到 tenant_id='default'。
+    幂等，逻辑与 terms_store.py::_migrate_terms_table_to_tenant_scoped_if_needed
+    同构。
+
+    表里仍保留 node_key_template 这一列（NOT NULL DEFAULT ''），但从
+    2026-08-18 起应用层代码不再读写它——这个字段最初设计是给 ETL 场景声明
+    node_key 拼接模板用的，但实际的 ETL 写入引擎（app/graphrag/schema_etl.py）
+    走的是每个租户 ETL 配置里独立声明的 node_key_parts，从不读取这一列，
+    它从未真正被消费过。保留列本身只是为了不做一次没有实际收益的
+    ALTER TABLE ... DROP COLUMN 迁移，新行都会落一个从未被读取的空字符串。
     """
     cursor = await conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='ontology_term_types'"
@@ -109,8 +115,8 @@ async def _migrate_term_types_table_if_needed(conn: aiosqlite.Connection) -> Non
         """
     )
     await conn.execute(
-        "INSERT INTO ontology_term_types_new (tenant_id, value, extra_fields, node_key_template) "
-        "SELECT 'default', value, extra_fields, '' FROM ontology_term_types"
+        "INSERT INTO ontology_term_types_new (tenant_id, value, extra_fields) "
+        "SELECT 'default', value, extra_fields FROM ontology_term_types"
     )
     await conn.executescript(
         "DROP TABLE ontology_term_types; "
@@ -161,14 +167,13 @@ def _row_to_term_type(row: aiosqlite.Row) -> TermTypeCategory:
     return TermTypeCategory(
         value=row["value"],
         extra_fields=_extra_fields_from_json(row["extra_fields"]),
-        node_key_template=row["node_key_template"],
     )
 
 
 async def list_term_types(conn: aiosqlite.Connection, tenant_id: str) -> list[TermTypeCategory]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT value, extra_fields, node_key_template FROM ontology_term_types "
+        "SELECT value, extra_fields FROM ontology_term_types "
         "WHERE tenant_id = ? ORDER BY value",
         (tenant_id,),
     )
@@ -188,15 +193,13 @@ async def create_term_type(
     *,
     value: str,
     extra_fields: list[ExtraFieldSpec] | None = None,
-    node_key_template: str = "",
 ) -> None:
     extra_fields = extra_fields or []
     _validate_extra_field_specs(extra_fields)
     try:
         await conn.execute(
-            "INSERT INTO ontology_term_types (tenant_id, value, extra_fields, node_key_template) "
-            "VALUES (?, ?, ?, ?)",
-            (tenant_id, value, _extra_fields_to_json(extra_fields), node_key_template),
+            "INSERT INTO ontology_term_types (tenant_id, value, extra_fields) VALUES (?, ?, ?)",
+            (tenant_id, value, _extra_fields_to_json(extra_fields)),
         )
     except aiosqlite.IntegrityError:
         raise CategoryNameConflictError(f"{value!r} 已经是已有分类，不能重复创建")
@@ -220,7 +223,6 @@ async def update_term_type(
     value: str,
     new_value: str,
     extra_fields: list[ExtraFieldSpec],
-    node_key_template: str,
 ) -> None:
     """value 是当前名字，new_value 是提交的新名字，允许相同（即不改名）。
     改名时级联更新该租户下 terms 表和 term_type_relation_allowlist 表里
@@ -235,9 +237,8 @@ async def update_term_type(
         raise CategoryNotFoundError(f"分类不存在: {value}")
     try:
         await conn.execute(
-            "UPDATE ontology_term_types SET value = ?, extra_fields = ?, node_key_template = ? "
-            "WHERE tenant_id = ? AND value = ?",
-            (new_value, _extra_fields_to_json(extra_fields), node_key_template, tenant_id, value),
+            "UPDATE ontology_term_types SET value = ?, extra_fields = ? WHERE tenant_id = ? AND value = ?",
+            (new_value, _extra_fields_to_json(extra_fields), tenant_id, value),
         )
     except aiosqlite.IntegrityError:
         raise CategoryNameConflictError(f"{new_value!r} 已经是已有分类，不能重复使用")

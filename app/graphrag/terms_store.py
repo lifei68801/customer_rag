@@ -189,8 +189,7 @@ async def _bridge_seed_categories_from_existing_terms(
         return
     for value in distinct_types:
         await conn.execute(
-            "INSERT OR IGNORE INTO ontology_term_types "
-            "(tenant_id, value, extra_fields, node_key_template) VALUES (?, ?, '[]', '')",
+            "INSERT OR IGNORE INTO ontology_term_types (tenant_id, value, extra_fields) VALUES (?, ?, '[]')",
             (tenant_id, value),
         )
     for value in distinct_lines:
@@ -425,8 +424,10 @@ async def upsert_term_with_node_key(
     upsert，与 Neo4j 侧 merge_relation/sync_term 的 MERGE 语义一致（见
     docs/superpowers/specs/2026-08-16-schema-etl-engine-design.md 第 5 节）。
 
-    node_key 由调用方显式提供（按 node_key_template 算出），不像 create_term 那样
-    自动取 standard_name 的值——这是与 create_term/update_term 唯一的本质区别。
+    node_key 由调用方显式提供（ETL 场景下按每个租户 ETL 配置里声明的
+    node_key_parts 算出，见 app/graphrag/schema_etl_row_processing.py::
+    compute_node_key），不像 create_term 那样自动取 standard_name 的值——
+    这是与 create_term/update_term 唯一的本质区别。
 
     standard_name 的租户内唯一性约束（idx_terms_tenant_standard_name）仍然生效：
     如果这个 standard_name 已经被另一个 node_key 占用，抛 TermNameConflictError。
