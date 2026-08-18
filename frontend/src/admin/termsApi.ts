@@ -24,6 +24,29 @@ export async function fetchTerms(sessionToken: string, tenantId: string): Promis
   return data.terms
 }
 
+export interface TermPage {
+  terms: TermRecord[]
+  total: number
+}
+
+export async function fetchTermsPage(
+  sessionToken: string,
+  tenantId: string,
+  page: number,
+  pageSize: number,
+): Promise<TermPage> {
+  const response = await adminFetch(
+    `/api/admin/${encodeURIComponent(tenantId)}/terms?page=${page}&page_size=${pageSize}`,
+    sessionToken,
+  )
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(extractErrorDetail(body, '加载术语表失败'))
+  }
+  const data = (await response.json()) as { terms: TermRecord[]; total: number }
+  return { terms: data.terms, total: data.total }
+}
+
 export async function createTerm(
   sessionToken: string,
   tenantId: string,

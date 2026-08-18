@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
+import { Pager } from './Pager'
+
+const PAGE_SIZE = 20
 
 interface TrackedDocument {
   file_path: string
@@ -40,6 +43,8 @@ export function DocumentsPage() {
   const [documents, setDocuments] = useState<TrackedDocument[]>([])
   const [pendingJobs, setPendingJobs] = useState<PendingJob[]>([])
   const [deadJobs, setDeadJobs] = useState<DeadJob[]>([])
+  const [page, setPage] = useState(1)
+  const [documentsTotal, setDocumentsTotal] = useState(0)
   const [jobActionId, setJobActionId] = useState<string | null>(null)
   const [jobError, setJobError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -66,20 +71,32 @@ export function DocumentsPage() {
   const refresh = useCallback(async () => {
     if (!sessionToken) return
     const response = await adminFetch(
-      `/api/admin/documents?tenant_id=${encodeURIComponent(tenantId)}`,
+      `/api/admin/documents?tenant_id=${encodeURIComponent(tenantId)}&page=${page}&page_size=${PAGE_SIZE}`,
       sessionToken,
     )
     const data = (await response.json()) as {
       documents: TrackedDocument[]
+      total: number
       pending_jobs: PendingJob[]
       dead_jobs: DeadJob[]
     }
     setDocuments(data.documents)
+    setDocumentsTotal(data.total)
     setPendingJobs(data.pending_jobs)
     setDeadJobs(data.dead_jobs)
     hasPendingJobsRef.current = data.pending_jobs.length > 0
     setLoaded(true)
-  }, [sessionToken, tenantId])
+  }, [sessionToken, tenantId, page])
+
+  useEffect(() => {
+    setPage(1)
+  }, [tenantId])
+
+  useEffect(() => {
+    if (loaded && documents.length === 0 && page > 1) {
+      setPage((p) => p - 1)
+    }
+  }, [loaded, documents.length, page])
 
   useEffect(() => {
     let cancelled = false
@@ -462,6 +479,13 @@ export function DocumentsPage() {
           })}
         {loaded && documents.length === 0 && (
           <p className="text-ink-soft">当前租户还没有已摄取的文档。</p>
+        )}
+        {loaded && documents.length > 0 && (
+          <Pager
+            page={page}
+            totalPages={Math.max(1, Math.ceil(documentsTotal / PAGE_SIZE))}
+            onPageChange={setPage}
+          />
         )}
       </div>
     </div>

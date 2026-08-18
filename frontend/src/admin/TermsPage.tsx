@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
-import { createTerm, deleteTerm, fetchTerms, updateTerm, type TermRecord } from './termsApi'
+import { createTerm, deleteTerm, fetchTermsPage, updateTerm, type TermRecord } from './termsApi'
 import { adminFetch } from './adminApi'
+import { Pager } from './Pager'
+
+const PAGE_SIZE = 20
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -43,6 +46,8 @@ export function TermsPage() {
   const [terms, setTerms] = useState<TermRecord[]>([])
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
 
   const [termTypeOptions, setTermTypeOptions] = useState<string[]>([])
   const [productLineOptions, setProductLineOptions] = useState<string[]>([])
@@ -86,20 +91,31 @@ export function TermsPage() {
   const refresh = useCallback(async () => {
     if (!sessionToken) return
     try {
-      const data = await fetchTerms(sessionToken, tenantId)
-      setTerms(data)
+      const data = await fetchTermsPage(sessionToken, tenantId, page, PAGE_SIZE)
+      setTerms(data.terms)
+      setTotal(data.total)
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载术语表失败')
     } finally {
       setLoaded(true)
     }
-  }, [sessionToken, tenantId])
+  }, [sessionToken, tenantId, page])
 
   useEffect(() => {
     refresh().catch((err) => {
       console.error('术语表刷新失败', err)
     })
   }, [refresh])
+
+  useEffect(() => {
+    setPage(1)
+  }, [tenantId])
+
+  useEffect(() => {
+    if (loaded && terms.length === 0 && page > 1) {
+      setPage((p) => p - 1)
+    }
+  }, [loaded, terms.length, page])
 
   const handleCreate = async () => {
     if (!sessionToken || creating) return
@@ -361,6 +377,9 @@ export function TermsPage() {
         })}
       {loaded && !error && terms.length === 0 && (
         <p className="text-ink-soft">还没有任何术语，用上面的表单新增一个。</p>
+      )}
+      {loaded && terms.length > 0 && (
+        <Pager page={page} totalPages={Math.max(1, Math.ceil(total / PAGE_SIZE))} onPageChange={setPage} />
       )}
     </div>
   )
