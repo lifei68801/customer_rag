@@ -21,6 +21,7 @@ from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.review_queue import ensure_review_schema
 from app.graphrag.terms_store import ensure_terms_schema, list_terms
 from app.graphrag.etl_runs_store import ensure_etl_runs_schema
+from app.graphrag.tenants_store import ensure_tenants_schema
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
     DEFAULT_EMBEDDING_PROVIDER_NAME,
@@ -324,6 +325,14 @@ async def get_review_conn(
                     # EXISTS，不会冲突。
                     await ensure_ontology_schema(conn)
                     await ensure_etl_runs_schema(conn)
+                    # tenants 注册表的迁移回填需要同时读 review_conn 和
+                    # ingestion_conn 两个库里的历史 tenant_id（见
+                    # tenants_store.py::_discover_historical_tenant_ids 的
+                    # 说明），这里显式拿一次 ingestion_conn——get_ingestion_conn
+                    # 自己是懒加载单例，这次调用要么复用已经开着的连接，要么
+                    # 顺带把它开起来，不会重复建库/重复迁移。
+                    ingestion_conn = await get_ingestion_conn(settings)
+                    await ensure_tenants_schema(conn, ingestion_conn)
                 except Exception:
                     await conn.close()
                     raise
