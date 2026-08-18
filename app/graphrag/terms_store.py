@@ -173,7 +173,7 @@ async def _bridge_seed_categories_from_existing_terms(
     """桥接函数：分类枚举表为空、但 terms 表已经有历史数据时，把该租户历史数据里
     出现过的去重分类值导入枚举表。按租户隔离，每次调用只处理一个租户。
     """
-    known_types = await list_term_types(conn, tenant_id)
+    known_types = await list_term_types(conn, tenant_id, status="confirmed")
     known_lines = await list_product_lines(conn)
     if known_types or known_lines:
         return
@@ -189,7 +189,8 @@ async def _bridge_seed_categories_from_existing_terms(
         return
     for value in distinct_types:
         await conn.execute(
-            "INSERT OR IGNORE INTO ontology_term_types (tenant_id, value, extra_fields) VALUES (?, ?, '[]')",
+            "INSERT OR IGNORE INTO ontology_term_types (tenant_id, value, extra_fields, status) "
+            "VALUES (?, ?, '[]', 'confirmed')",
             (tenant_id, value),
         )
     for value in distinct_lines:
@@ -309,7 +310,7 @@ async def _validate_categories(
     declared_by_name 里，无法判断"应该是什么类型"）——这是延续本体
     基座计划"移除字段声明不触碰已有数据"的原则，见 Global Constraints。
     """
-    types = await list_term_types(conn, tenant_id)
+    types = await list_term_types(conn, tenant_id, status="confirmed")
     types_by_value = {t.value: t for t in types}
     if term_type not in types_by_value:
         raise UnknownCategoryError(f"未知分类: {term_type!r}")
@@ -421,6 +422,22 @@ async def delete_term(conn: aiosqlite.Connection, tenant_id: str, standard_name:
         "DELETE FROM terms WHERE tenant_id=? AND standard_name=?", (tenant_id, standard_name)
     )
     await conn.commit()
+
+
+async def migrate_term_type(
+    conn: aiosqlite.Connection, tenant_id: str, *, old_type: str, new_type: str
+) -> int:
+    """把该租户 terms 表里 term_type 从旧值批量改成新值，返回受影响的行数。
+    供"迁移实体类型"工具用——改名一个已确认的实体类型不会自动级联到这张
+    表（见 ontology_categories.py::update_term_type 的说明），需要业务显式
+    触发这个函数才会同步。
+    """
+    cursor = await conn.execute(
+        "UPDATE terms SET term_type = ? WHERE tenant_id = ? AND term_type = ?",
+        (new_type, tenant_id, old_type),
+    )
+    await conn.commit()
+    return cursor.rowcount
 
 
 async def upsert_term_with_node_key(

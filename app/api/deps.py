@@ -379,5 +379,5 @@ async def get_term_type_schema(
 ) -> dict[str, TermTypeCategory]:
     """结构化过滤查询工具校验 anchor_term_type/target_term_type/field 用。"""
     tenant_id = gateway_tenant_id or "default"
-    categories = await list_term_types(review_conn, tenant_id)
+    categories = await list_term_types(review_conn, tenant_id, status="confirmed")
     return {c.value: c for c in categories}

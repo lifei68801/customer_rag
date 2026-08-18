@@ -73,9 +73,10 @@ class ProductLineWriteRequest(BaseModel):
 @router.get("/{tenant_id}/term-types")
 async def list_term_type_categories(
     tenant_id: str,
+    status: str = "draft",
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
-    result = await list_term_types(review_conn, tenant_id)
+    result = await list_term_types(review_conn, tenant_id, status=status)
     return {
         "term_types": [
             {

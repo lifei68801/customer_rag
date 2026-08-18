@@ -204,8 +204,12 @@ async def test_get_confirmed_relation_types_returns_only_confirmed_types(review_
 
 async def test_get_term_type_schema_returns_dict_keyed_by_value(review_conn):
     from app.graphrag.ontology_categories import create_term_type
+    from app.graphrag.ontology_lifecycle import confirm_ontology
 
+    # get_term_type_schema 只认已确认的实体类型（见 deps.py 的说明），
+    # 这里创建完就立刻确认。
     await create_term_type(review_conn, tenant_id="muji", value="SKU")
+    await confirm_ontology(review_conn, "muji")
 
     result = await deps.get_term_type_schema(review_conn=review_conn, gateway_tenant_id="muji")
 

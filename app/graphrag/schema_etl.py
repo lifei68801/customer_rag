@@ -86,7 +86,7 @@ async def _write_entity_mapping(
     data_dir: Path,
     report: ETLRunReport,
 ) -> None:
-    term_types = await list_term_types(conn, tenant_id)
+    term_types = await list_term_types(conn, tenant_id, status="confirmed")
     types_by_value = {t.value: t for t in term_types}
     if mapping.term_type not in types_by_value:
         raise RowProcessingError(f"term_type {mapping.term_type!r} 不在已确认 schema 里")

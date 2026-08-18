@@ -1306,6 +1306,7 @@ def test_get_terms_queries_the_review_conn_terms_table():
     get_terms 还在读旧缓存/YAML，这条术语不会出现）。
     """
     from app.graphrag.ontology_categories import create_product_line, create_term_type
+    from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
     from app.graphrag.terms_store import create_term, ensure_terms_schema
 
     async def _open_conn() -> aiosqlite.Connection:
@@ -1318,12 +1319,15 @@ def test_get_terms_queries_the_review_conn_terms_table():
     review_conn = asyncio.run(_open_conn())
     try:
         asyncio.run(ensure_terms_schema(review_conn))
+        asyncio.run(ensure_ontology_schema(review_conn))
         # term_type/product_line 现在是硬约束，先注册这两个分类值再创建术语——
         # 见 app/graphrag/terms_store.py 的 UnknownCategoryError。get_terms()
         # 没传 gateway_tenant_id 时按未启用网关鉴权处理，回退到 "default"
         # 租户（见 deps.get_terms 的说明），这里的术语/分类都注册在
-        # "default" 租户下才能被查到。
+        # "default" 租户下才能被查到。真实术语只认已确认的实体类型，
+        # 创建完就立刻确认。
         asyncio.run(create_term_type(review_conn, "default", value="t"))
+        asyncio.run(confirm_ontology(review_conn, "default"))
         asyncio.run(create_product_line(review_conn, value="p"))
         asyncio.run(
             create_term(

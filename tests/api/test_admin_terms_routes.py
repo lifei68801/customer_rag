@@ -8,6 +8,7 @@ from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 from app.graphrag.ontology_categories import create_product_line, create_term_type
+from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import create_term, ensure_terms_schema, list_terms
 from app.main import app
@@ -31,14 +32,21 @@ def _settings(**overrides) -> Settings:
 async def _open_terms_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
+    # confirm_ontology/checkout_draft 需要 tenant_relation_types/
+    # term_type_relation_allowlist 等表存在——ensure_terms_schema 只建
+    # ontology_term_types/ontology_product_lines 两张分类表，这里补齐完整的
+    # 本体生命周期表结构（幂等，与 ensure_categories_schema 不冲突）。
+    await ensure_ontology_schema(conn)
     # 既有测试直接用这些字面量当 term_type/product_line，早于分类枚举表存在——
     # 这里补齐分类，保持既有测试的字面量不变（见 test_terms_store.py 的
     # _connect() 同款说明）。term_type 现在按租户隔离，需要给每个测试里用到的
-    # 租户各注册一份；product_line 保持全局，不需要按租户重复。
+    # 租户各注册一份；product_line 保持全局，不需要按租户重复。真实术语只认
+    # 已确认的实体类型（见 _validate_categories），这里创建完就立刻确认。
     for tenant_id in ("t1", "tenant_a"):
         await create_term_type(conn, tenant_id=tenant_id, value="error_code")
         await create_term_type(conn, tenant_id=tenant_id, value="t")
         await create_term_type(conn, tenant_id=tenant_id, value="t2")
+        await confirm_ontology(conn, tenant_id)
     await create_product_line(conn, value="核心平台")
     await create_product_line(conn, value="p")
     await create_product_line(conn, value="p2")
@@ -592,6 +600,7 @@ def test_create_term_with_typed_extra_properties_returns_200(terms_conn):
             extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
         )
     )
+    asyncio.run(confirm_ontology(terms_conn, "t1"))
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -622,6 +631,7 @@ def test_create_term_rejects_extra_property_wrong_type_returns_400(terms_conn):
             extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
         )
     )
+    asyncio.run(confirm_ontology(terms_conn, "t1"))
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -678,6 +688,7 @@ def test_create_term_rejects_bool_extra_property_via_http(terms_conn):
             extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
         )
     )
+    asyncio.run(confirm_ontology(terms_conn, "t1"))
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -706,6 +717,7 @@ def test_create_term_rejects_bool_inside_number_array_via_http(terms_conn):
             extra_fields=[ExtraFieldSpec(name="dims", value_type="number[]")],
         )
     )
+    asyncio.run(confirm_ontology(terms_conn, "t1"))
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
