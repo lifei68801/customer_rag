@@ -1166,7 +1166,7 @@ function ConstraintsTab({
           `/api/admin/ontology/${encodeURIComponent(tenantId)}/constraints?status=${view}`,
           sessionToken,
         ),
-        adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`, sessionToken),
+        adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=draft`, sessionToken),
         // 下拉框的 relation_type 数据源固定拉草稿——不管当前 view 是不是切到已确认，
         // 新增约束这个动作本身只能作用于草稿（后端 add_allowed_combination 也是
         // 校验草稿关系类型），与后端 ontology_constraints.py::_validate_references

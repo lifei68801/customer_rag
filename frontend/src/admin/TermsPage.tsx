@@ -69,7 +69,7 @@ export function TermsPage() {
     if (!sessionToken) return
     setOptionsLoaded(false)
     Promise.all([
-      adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`, sessionToken)
+      adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=confirmed`, sessionToken)
         .then((res) => res.json())
         .then((data: { term_types: { value: string }[] }) =>
           setTermTypeOptions(data.term_types.map((t) => t.value)),
