@@ -520,3 +520,24 @@ class Neo4jGraphClient:
             result = await session.run(query, {"tenant_id": tenant_id})
             rows = await result.data()
         return rows[0]["migrated_count"] if rows else 0
+
+    async def migrate_term_type_nodes(
+        self, *, tenant_id: str, old_type: str, new_type: str
+    ) -> int:
+        """把某个租户所有旧 term_type 的 :Term 节点属性批量改成新值，返回
+        迁移的节点数。term_type 是参数化传入的节点属性值（t.type），不是
+        像关系类型那样拼进 Cypher 结构本身——不需要 migrate_relation_type_edges
+        那套正则白名单校验防注入，也不需要"建新边、复制属性、删旧边"的
+        重建套路，原地 SET 一下就行。
+        """
+        query = (
+            "MATCH (t:Term {tenant_id: $tenant_id, type: $old_type}) "
+            "SET t.type = $new_type "
+            "RETURN count(t) AS migrated_count"
+        )
+        async with self._driver.session() as session:
+            result = await session.run(
+                query, {"tenant_id": tenant_id, "old_type": old_type, "new_type": new_type}
+            )
+            rows = await result.data()
+        return rows[0]["migrated_count"] if rows else 0

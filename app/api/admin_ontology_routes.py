@@ -42,6 +42,7 @@ from app.graphrag.ontology_relations import (
 )
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
+from app.graphrag.terms_store import migrate_term_type
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,38 @@ async def delete_term_type_category(
     except CategoryInUseError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"deleted": True}
+
+
+class MigrateTermTypeRequest(BaseModel):
+    old_type: str
+    new_type: str
+
+
+class MigrateTermTypeResponse(BaseModel):
+    terms_migrated: int
+    graph_nodes_migrated: int
+
+
+@router.post("/{tenant_id}/term-types/migrate")
+async def migrate_tenant_term_type(
+    tenant_id: str,
+    payload: MigrateTermTypeRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+) -> MigrateTermTypeResponse:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    terms_migrated = await migrate_term_type(
+        review_conn, tenant_id, old_type=payload.old_type, new_type=payload.new_type
+    )
+    graph_nodes_migrated = await graph_client.migrate_term_type_nodes(
+        tenant_id=tenant_id, old_type=payload.old_type, new_type=payload.new_type
+    )
+    return MigrateTermTypeResponse(
+        terms_migrated=terms_migrated, graph_nodes_migrated=graph_nodes_migrated
+    )
 
 
 @router.get("/product-lines")

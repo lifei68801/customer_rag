@@ -374,6 +374,33 @@ async def test_migrate_relation_type_edges_rejects_trailing_newline():
         )
 
 
+async def test_migrate_term_type_nodes_sends_expected_query():
+    session = FakeSession(rows=[{"migrated_count": 3}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    count = await client.migrate_term_type_nodes(
+        tenant_id="t1", old_type="旧类型", new_type="新类型"
+    )
+
+    assert count == 3
+    assert session.last_parameters == {
+        "tenant_id": "t1", "old_type": "旧类型", "new_type": "新类型",
+    }
+    assert "MATCH (t:Term {tenant_id: $tenant_id, type: $old_type})" in session.last_query
+    assert "SET t.type = $new_type" in session.last_query
+
+
+async def test_migrate_term_type_nodes_returns_zero_when_no_matching_nodes():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    count = await client.migrate_term_type_nodes(
+        tenant_id="t1", old_type="旧类型", new_type="新类型"
+    )
+
+    assert count == 0
+
+
 async def test_sync_term_merges_by_tenant_and_node_key():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))

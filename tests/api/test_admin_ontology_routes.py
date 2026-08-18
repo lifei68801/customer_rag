@@ -43,12 +43,14 @@ class _FakeGraphClient:
 
     def __init__(
         self, *, migrated_count: int = 0, migrate_error: Exception | None = None,
-        ensure_index_error: Exception | None = None,
+        ensure_index_error: Exception | None = None, term_type_migrated_count: int = 0,
     ) -> None:
         self._migrated_count = migrated_count
         self._migrate_error = migrate_error
         self._ensure_index_error = ensure_index_error
+        self._term_type_migrated_count = term_type_migrated_count
         self.ensured_index_calls: list[tuple[str, str, list[tuple[str, str]]]] = []
+        self.migrate_term_type_nodes_calls: list[tuple[str, str, str]] = []
 
     async def sync_term(self, term) -> None:
         pass
@@ -57,6 +59,10 @@ class _FakeGraphClient:
         if self._migrate_error is not None:
             raise self._migrate_error
         return self._migrated_count
+
+    async def migrate_term_type_nodes(self, *, tenant_id: str, old_type: str, new_type: str) -> int:
+        self.migrate_term_type_nodes_calls.append((tenant_id, old_type, new_type))
+        return self._term_type_migrated_count
 
     async def ensure_extra_field_indexes(self, *, tenant_id, term_type, extra_fields) -> None:
         self.ensured_index_calls.append(
@@ -533,6 +539,83 @@ def test_migrate_relation_type_route_returns_404_for_unknown_tenant_and_succeeds
     )
     assert resp.status_code == 200
     assert resp.json() == {"migrated_count": 3}
+
+
+def test_list_term_types_filters_by_status_and_defaults_to_draft(client):
+    """Task 4：草稿创建的 term_type 只在 status=draft 的查询里出现；确认之后
+    (草稿行原地改成 confirmed) 只在 status=confirmed 的查询里出现，draft 那边
+    应该清空。不传 status 应该等价于 status=draft（新增参数的默认值）。"""
+    client.post(
+        "/api/admin/ontology/t1/term-types",
+        json={"value": "错误码", "extra_fields": []},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    resp = client.get("/api/admin/ontology/t1/term-types", headers={"Authorization": "Bearer x"})
+    assert [t["value"] for t in resp.json()["term_types"]] == ["错误码"]
+
+    resp = client.get(
+        "/api/admin/ontology/t1/term-types?status=confirmed", headers={"Authorization": "Bearer x"}
+    )
+    assert resp.json() == {"term_types": []}
+
+    resp = client.post("/api/admin/ontology/t1/confirm", headers={"Authorization": "Bearer x"})
+    assert resp.status_code == 200
+
+    resp = client.get(
+        "/api/admin/ontology/t1/term-types?status=confirmed", headers={"Authorization": "Bearer x"}
+    )
+    assert [t["value"] for t in resp.json()["term_types"]] == ["错误码"]
+
+    resp = client.get("/api/admin/ontology/t1/term-types", headers={"Authorization": "Bearer x"})
+    assert resp.json() == {"term_types": []}
+
+
+async def test_migrate_term_type_route_migrates_terms_and_graph_nodes(client, conn_for_testing):
+    """创建草稿类型 -> 确认 -> 写几条引用该类型的 terms 行 -> 调用迁移接口 ->
+    terms_migrated 反映 SQLite 侧真实受影响的行数，graph_nodes_migrated 反映
+    fake 图谱客户端配置的返回值，两者互相独立。"""
+    client.post(
+        "/api/admin/ontology/t1/term-types",
+        json={"value": "错误码", "extra_fields": []},
+        headers={"Authorization": "Bearer x"},
+    )
+    client.post("/api/admin/ontology/t1/confirm", headers={"Authorization": "Bearer x"})
+
+    conn = conn_for_testing["conn"]
+    await conn.execute(
+        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
+        "product_line, extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("t1", "k1", "网关超时", "[]", "错误码", "核心平台", "{}"),
+    )
+    await conn.execute(
+        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
+        "product_line, extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("t1", "k2", "登录失败", "[]", "错误码", "核心平台", "{}"),
+    )
+    await conn.commit()
+
+    fake_graph_client = _FakeGraphClient(term_type_migrated_count=7)
+    app.dependency_overrides[deps.get_graph_client] = lambda: fake_graph_client
+
+    resp = client.post(
+        "/api/admin/ontology/t1/term-types/migrate",
+        json={"old_type": "错误码", "new_type": "故障代码"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"terms_migrated": 2, "graph_nodes_migrated": 7}
+    assert fake_graph_client.migrate_term_type_nodes_calls == [("t1", "错误码", "故障代码")]
+
+
+def test_migrate_term_type_route_returns_404_for_unknown_tenant(client):
+    resp = client.post(
+        "/api/admin/ontology/no-such-tenant/term-types/migrate",
+        json={"old_type": "错误码", "new_type": "故障代码"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 404
 
 
 def test_tenant_ontology_status_flips_after_confirm(client):
