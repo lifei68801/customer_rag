@@ -10,6 +10,7 @@ from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema
+from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 
@@ -33,6 +34,12 @@ async def _open_review_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(conn)
     await ensure_terms_schema(conn)
+    # Task 4：approve/reject 现在会先用 review_conn 调 require_active_tenant()
+    # 校验 payload.tenant_id——真实的 deps.get_review_conn() 会自动建好
+    # tenants 表并回填历史租户，这里是手工建表的测试连接，绕开了那条路径，
+    # 必须显式建表 + 注册本文件所有用例用到的 tenant_id（"t1"）。
+    await create_tenants_table(conn)
+    await create_tenant(conn, tenant_id="t1", name="t1")
     return conn
 
 
@@ -201,6 +208,38 @@ def test_reject_review_marks_rejected(review_conn):
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
+
+
+def test_approve_with_unknown_tenant_returns_404(review_conn):
+    """Task 4：租户存在性校验要在审核队列的具体业务逻辑之前生效——一个
+    从未在 tenants 注册表里登记过的 tenant_id，即使对应的 review_id 真实
+    存在，也应该被挡在 404，而不是被当作合法租户继续往下走。"""
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/admin/graph-reviews/{review_id}/approve",
+            json={
+                "tenant_id": "no-such-tenant",
+                "subject_standard_name": "A",
+                "object_standard_name": "B",
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
 
 
 def test_approve_nonexistent_review_returns_404(review_conn):

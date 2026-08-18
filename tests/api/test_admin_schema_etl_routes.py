@@ -15,6 +15,7 @@ from app.graphrag.etl_runs_store import (
 )
 from app.graphrag.ontology_categories import create_product_line, create_term_type
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
+from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 
@@ -36,6 +37,16 @@ async def _open_review_conn() -> aiosqlite.Connection:
     await ensure_ontology_schema(conn)
     await ensure_terms_schema(conn)
     await ensure_etl_runs_schema(conn)
+    # Task 4：start_schema_etl_run 现在会先用 review_conn 调
+    # require_active_tenant() 校验 tenant_id——真实的 deps.get_review_conn()
+    # 会自动建好 tenants 表并回填历史租户，这里是手工建表的测试连接，绕开了
+    # 那条路径，必须显式建表 + 注册本文件用例里出现过的 tenant_id。
+    # "unconfirmed_tenant" 也要注册成 active：它是用来验证"schema 未确认
+    # 时返回 400"这条业务规则的，必须先通过租户存在性校验才能走到那条
+    # 业务检查，否则会被新加的校验提前拦成 404，测试的原意就测不到了。
+    await create_tenants_table(conn)
+    for _tid in ("muji", "unconfirmed_tenant"):
+        await create_tenant(conn, tenant_id=_tid, name=_tid)
     return conn
 
 
@@ -80,6 +91,15 @@ def test_status_returns_true_after_confirm(client, review_conn):
     response = client.get("/api/admin/muji/schema-etl/status")
 
     assert response.json() == {"ontology_confirmed": True}
+
+
+def test_start_run_returns_404_for_unknown_tenant(client):
+    """Task 4：租户存在性校验要先于"schema 是否确认"这条业务规则生效——
+    一个从未在 tenants 注册表里登记过的 tenant_id 应该直接 404，而不是被
+    当作合法租户走到"未确认"的 400。"""
+    files = {"config": ("config.yaml", b"tenant_id: no-such-tenant\nentities: []\nrelations: []\n")}
+    response = client.post("/api/admin/no-such-tenant/schema-etl/runs", files=files)
+    assert response.status_code == 404
 
 
 def test_start_run_rejects_when_schema_not_confirmed(client):

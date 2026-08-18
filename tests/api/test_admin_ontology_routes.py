@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
+from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 
@@ -20,6 +21,14 @@ async def _review_conn() -> aiosqlite.Connection:
     # /api/admin/terms 创建一条术语来制造"分类在用"的场景（terms 表由 Task 6 的
     # terms_store.py 管理，不在 ontology_lifecycle 的统一建表入口里）。
     await ensure_terms_schema(conn)
+    # Task 4：这个文件里的写接口现在会先用 review_conn 调
+    # require_active_tenant() 校验 tenant_id——真实的 deps.get_review_conn()
+    # 会自动建好 tenants 表并回填历史租户，这里是手工建表的测试连接，绕开了
+    # 那条路径，必须显式建表 + 注册本文件全部用例里出现过的 tenant_id（路径
+    # 参数 /{tenant_id}/... 里能找到的全部字面量）。
+    await create_tenants_table(conn)
+    for _tid in ("t1", "muji", "default", "tenant_a", "tenant_b"):
+        await create_tenant(conn, tenant_id=_tid, name=_tid)
     return conn
 
 
@@ -488,6 +497,42 @@ def test_term_type_routes_are_scoped_to_tenant_in_url(client):
         "/api/admin/ontology/tenant_b/term-types", headers={"Authorization": "Bearer x"}
     )
     assert resp.json() == {"term_types": []}
+
+
+def test_create_term_type_category_returns_404_for_unknown_tenant(client):
+    """Task 4：写接口在具体业务逻辑之前要先校验 tenant_id 在 tenants 注册表
+    里存在且是 active——一个从未注册过的 tenant_id 应该直接 404。"""
+    resp = client.post(
+        "/api/admin/ontology/no-such-tenant/term-types",
+        json={"value": "错误码", "extra_fields": []},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 404
+
+
+def test_migrate_relation_type_route_returns_404_for_unknown_tenant_and_succeeds_for_known_tenant(
+    client,
+):
+    """migrate_tenant_relation_type 是本文件唯一一个新增了 review_conn 依赖的
+    路由（它原本只连 Neo4j，不碰 SQLite）——这里既验证新加的租户校验对未知
+    租户生效（404），也验证新加的依赖没有破坏这个路由本身对已知/active
+    租户的正常工作（沿用 test_migrate_relation_type_route_returns_migrated_count
+    的正面用例，确认没有回归）。"""
+    resp = client.post(
+        "/api/admin/ontology/no-such-tenant/relation-types/migrate",
+        json={"old_type": "PRECEDES", "new_type": "COMES_BEFORE"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 404
+
+    app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient(migrated_count=3)
+    resp = client.post(
+        "/api/admin/ontology/t1/relation-types/migrate",
+        json={"old_type": "PRECEDES", "new_type": "COMES_BEFORE"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"migrated_count": 3}
 
 
 def test_tenant_ontology_status_flips_after_confirm(client):

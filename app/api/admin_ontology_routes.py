@@ -41,6 +41,7 @@ from app.graphrag.ontology_relations import (
     update_relation_type,
 )
 from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,10 @@ async def create_term_type_category(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> dict:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     extra_field_specs = _to_extra_field_specs(payload.extra_fields)
     try:
         await create_term_type(
@@ -128,6 +133,10 @@ async def update_term_type_category(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> dict:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     extra_field_specs = _to_extra_field_specs(payload.extra_fields)
     try:
         await update_term_type(
@@ -158,6 +167,10 @@ async def update_term_type_category(
 async def delete_term_type_category(
     tenant_id: str, value: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn)
 ) -> dict:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     try:
         await delete_term_type(review_conn, tenant_id, value)
     except CategoryInUseError as exc:
@@ -253,6 +266,10 @@ async def create_tenant_relation_type(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
     try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    try:
         await create_relation_type(
             review_conn, tenant_id, relation_type=payload.relation_type,
             example_phrase=payload.example_phrase, description=payload.description,
@@ -270,6 +287,10 @@ async def update_tenant_relation_type(
     tenant_id: str, relation_type: str, payload: RelationTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     try:
         await update_relation_type(
             review_conn, tenant_id, relation_type=relation_type,
@@ -291,6 +312,10 @@ async def delete_tenant_relation_type(
     tenant_id: str, relation_type: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     await delete_relation_type(review_conn, tenant_id, relation_type)
     return {"deleted": True}
 
@@ -299,7 +324,12 @@ async def delete_tenant_relation_type(
 async def migrate_tenant_relation_type(
     tenant_id: str, payload: MigrateRelationTypeRequest,
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     try:
         count = await graph_client.migrate_relation_type_edges(
             tenant_id=tenant_id, old_type=payload.old_type, new_type=payload.new_type
@@ -333,6 +363,10 @@ async def add_tenant_constraint(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
     try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    try:
         await add_allowed_combination(
             review_conn, tenant_id, subject_term_type=payload.subject_term_type,
             relation_type=payload.relation_type, object_term_type=payload.object_term_type,
@@ -347,6 +381,10 @@ async def remove_tenant_constraint(
     tenant_id: str, payload: ConstraintWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     await remove_allowed_combination(
         review_conn, tenant_id, subject_term_type=payload.subject_term_type,
         relation_type=payload.relation_type, object_term_type=payload.object_term_type,
@@ -358,6 +396,10 @@ async def remove_tenant_constraint(
 async def checkout_tenant_ontology_draft(
     tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     await checkout_draft(review_conn, tenant_id)
     return {"checked_out": True}
 
@@ -366,6 +408,10 @@ async def checkout_tenant_ontology_draft(
 async def confirm_tenant_ontology(
     tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     await confirm_ontology(review_conn, tenant_id)
     return {"confirmed": True}
 

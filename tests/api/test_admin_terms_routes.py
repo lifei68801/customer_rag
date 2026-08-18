@@ -8,6 +8,7 @@ from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 from app.graphrag.ontology_categories import create_product_line, create_term_type
+from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import create_term, ensure_terms_schema, list_terms
 from app.main import app
 
@@ -41,6 +42,15 @@ async def _open_terms_conn() -> aiosqlite.Connection:
     await create_product_line(conn, value="核心平台")
     await create_product_line(conn, value="p")
     await create_product_line(conn, value="p2")
+    # Task 4：这个文件里的写接口（create_new_term/update_existing_term/
+    # delete_existing_term）现在会先用 review_conn 调 require_active_tenant()
+    # 校验 tenant_id——真实的 deps.get_review_conn() 会自动建好 tenants 表
+    # 并回填历史租户，这里是手工建表的测试连接，绕开了那条路径，必须显式
+    # 建表 + 注册本文件用例里出现过的 tenant_id（"t1"/"tenant_a"/"tenant_b"，
+    # 和上面 term_type 分类注册用的租户集合保持一致）。
+    await create_tenants_table(conn)
+    for tenant_id in ("t1", "tenant_a", "tenant_b"):
+        await create_tenant(conn, tenant_id=tenant_id, name=tenant_id)
     return conn
 
 
@@ -162,6 +172,28 @@ def test_create_term_syncs_to_graph_client(terms_conn):
     assert response.status_code == 200
     assert len(graph_client.synced) == 1
     assert graph_client.synced[0]["standard_name"] == "新术语"
+
+
+def test_create_term_returns_404_for_unknown_tenant(terms_conn):
+    """Task 4：写接口在具体业务逻辑之前要先校验 tenant_id 在 tenants
+    注册表里存在且是 active——一个从未注册过的 tenant_id 应该直接 404，
+    而不是被当作合法租户走完创建流程。"""
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/no-such-tenant/terms",
+            json={"standard_name": "新术语", "aliases": [], "term_type": "t", "product_line": "p"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
 
 
 def test_create_term_with_conflicting_name_returns_400(terms_conn):

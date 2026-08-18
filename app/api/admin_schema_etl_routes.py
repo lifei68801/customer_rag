@@ -30,6 +30,7 @@ from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology_lifecycle import is_ontology_confirmed
 from app.graphrag.schema_etl import run_schema_etl
 from app.graphrag.schema_etl_config import load_schema_etl_config
+from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,10 @@ async def start_schema_etl_run(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> StartRunResponse:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     if not await is_ontology_confirmed(review_conn, tenant_id):
         raise HTTPException(status_code=400, detail=f"租户 {tenant_id!r} 的本体 schema 还没有确认")
 

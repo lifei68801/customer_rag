@@ -11,6 +11,7 @@ from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import ensure_review_schema
+from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import ensure_terms_schema
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
 from app.ingestion.tracking import ensure_tracking_schema, record_ingested
@@ -145,6 +146,15 @@ async def _open_review_conn() -> aiosqlite.Connection:
     # list_terms()（Fix 3），测试用的连接必须跟生产环境一样两套 schema
     # 都有，否则 list_terms 会报 "no such table: terms"。
     await ensure_terms_schema(conn)
+    # Task 4：这个文件里的写接口（upload_document/delete_document/
+    # retry_ingestion_job/delete_ingestion_job）现在都会先用 review_conn 调
+    # require_active_tenant() 校验 tenant_id——真实的 deps.get_review_conn()
+    # 会自动建好 tenants 表并回填历史租户，但这里是手工建表的测试连接，
+    # 绕开了那条路径，必须显式建表 + 注册本文件测试里用到的 tenant_id
+    # （"t1"，本文件所有写接口调用都用这个值），否则校验会因为表不存在
+    # 报底层 SQL 错误，或者查不到租户返回假的 404。
+    await create_tenants_table(conn)
+    await create_tenant(conn, tenant_id="t1", name="t1")
     return conn
 
 
@@ -415,7 +425,7 @@ def test_list_documents_excludes_other_tenants_pending_jobs(ingestion_conn):
     assert [job["file_path"] for job in pending] == ["mine.md"]
 
 
-def test_delete_document_removes_tracking_and_vectors(tmp_path, ingestion_conn):
+def test_delete_document_removes_tracking_and_vectors(tmp_path, ingestion_conn, review_conn):
     asyncio.run(
         record_ingested(
             ingestion_conn, tenant_id="t1", file_path="a.md", content_hash="h1", chunk_count=1
@@ -441,6 +451,7 @@ def test_delete_document_removes_tracking_and_vectors(tmp_path, ingestion_conn):
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
     app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.request(
@@ -460,7 +471,7 @@ def test_delete_document_removes_tracking_and_vectors(tmp_path, ingestion_conn):
     assert asyncio.run(_tracked_paths(ingestion_conn, "t1")) == []
 
 
-def test_delete_document_also_unlinks_uploaded_file(tmp_path, ingestion_conn):
+def test_delete_document_also_unlinks_uploaded_file(tmp_path, ingestion_conn, review_conn):
     """删除文档要把 data/uploads 下的原始文件也删掉，不能只清索引。"""
     upload_dir = tmp_path / "uploads"
     tenant_dir = upload_dir / "t1"
@@ -480,6 +491,7 @@ def test_delete_document_also_unlinks_uploaded_file(tmp_path, ingestion_conn):
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.request(
@@ -496,7 +508,7 @@ def test_delete_document_also_unlinks_uploaded_file(tmp_path, ingestion_conn):
 
 
 def test_delete_document_returns_502_with_clear_message_when_vector_store_fails(
-    tmp_path, ingestion_conn
+    tmp_path, ingestion_conn, review_conn
 ):
     """向量库删除失败时要返回带明确信息的 502，而不是裸 500。"""
     asyncio.run(
@@ -517,6 +529,7 @@ def test_delete_document_returns_502_with_clear_message_when_vector_store_fails(
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_vector_store] = lambda: FailingVectorStore()
     app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.request(
@@ -535,7 +548,7 @@ def test_delete_document_returns_502_with_clear_message_when_vector_store_fails(
 
 
 def test_delete_document_returns_502_when_tracking_cleanup_fails_after_vector_delete(
-    tmp_path, ingestion_conn, monkeypatch
+    tmp_path, ingestion_conn, review_conn, monkeypatch
 ):
     """追踪记录清理失败时也要给出明确的 502，并提示已产生的不一致状态。"""
     asyncio.run(
@@ -559,6 +572,7 @@ def test_delete_document_returns_502_when_tracking_cleanup_fails_after_vector_de
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.request(
@@ -574,7 +588,7 @@ def test_delete_document_returns_502_when_tracking_cleanup_fails_after_vector_de
     assert "可能需要手动核实" in response.json()["detail"]
 
 
-def test_delete_document_keeps_files_outside_upload_dir(tmp_path, ingestion_conn):
+def test_delete_document_keeps_files_outside_upload_dir(tmp_path, ingestion_conn, review_conn):
     """CLI 摄取的原始语料不在 upload_dir 里，后台删除只清索引，不能删用户的文件。"""
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir()
@@ -594,6 +608,7 @@ def test_delete_document_keeps_files_outside_upload_dir(tmp_path, ingestion_conn
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.request(
@@ -892,7 +907,7 @@ def test_retry_job_returns_409_when_job_is_not_dead(ingestion_conn, review_conn)
     assert response.status_code == 409
 
 
-def test_delete_job_removes_it_and_unlinks_orphaned_file(tmp_path, ingestion_conn):
+def test_delete_job_removes_it_and_unlinks_orphaned_file(tmp_path, ingestion_conn, review_conn):
     from app.ingestion.ingestion_queue import enqueue_ingestion_job, mark_job_failed
 
     upload_dir = tmp_path / "uploads"
@@ -914,6 +929,7 @@ def test_delete_job_removes_it_and_unlinks_orphaned_file(tmp_path, ingestion_con
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
     app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.request(
@@ -929,7 +945,7 @@ def test_delete_job_removes_it_and_unlinks_orphaned_file(tmp_path, ingestion_con
     assert not orphaned.exists()
 
 
-def test_delete_job_removes_orphaned_vector_chunks(tmp_path, ingestion_conn):
+def test_delete_job_removes_orphaned_vector_chunks(tmp_path, ingestion_conn, review_conn):
     from app.ingestion.ingestion_queue import enqueue_ingestion_job, mark_job_failed
 
     upload_dir = tmp_path / "uploads"
@@ -966,6 +982,7 @@ def test_delete_job_removes_orphaned_vector_chunks(tmp_path, ingestion_conn):
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.request(
@@ -984,7 +1001,7 @@ def test_delete_job_removes_orphaned_vector_chunks(tmp_path, ingestion_conn):
     assert remaining == []
 
 
-def test_delete_job_returns_409_when_job_is_not_dead(ingestion_conn):
+def test_delete_job_returns_409_when_job_is_not_dead(ingestion_conn, review_conn):
     from app.ingestion.ingestion_queue import enqueue_ingestion_job
 
     job_id = asyncio.run(
@@ -1000,6 +1017,7 @@ def test_delete_job_returns_409_when_job_is_not_dead(ingestion_conn):
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_upload_dir] = lambda: None
     app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.request(
@@ -1015,7 +1033,7 @@ def test_delete_job_returns_409_when_job_is_not_dead(ingestion_conn):
 
 
 def test_delete_document_does_not_unlink_file_under_a_different_tenant_directory(
-    tmp_path, ingestion_conn
+    tmp_path, ingestion_conn, review_conn
 ):
     """跨租户越权删除的回归测试：file_path 指向 t2 的子目录，但请求用
     tenant_id=t1——向量库/追踪表两处因为 tenant_id 不匹配会是空操作，
@@ -1034,6 +1052,7 @@ def test_delete_document_does_not_unlink_file_under_a_different_tenant_directory
     app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
     app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
         response = client.request(
@@ -1047,6 +1066,34 @@ def test_delete_document_does_not_unlink_file_under_a_different_tenant_directory
 
     assert response.status_code == 200
     assert other_tenants_file.exists()
+
+
+def test_delete_document_returns_404_for_unknown_tenant(tmp_path, ingestion_conn, review_conn):
+    """Task 4：写接口在做具体业务逻辑之前，要先校验 tenant_id 在 tenants
+    注册表里存在且是 active——一个从未注册过的 tenant_id 应该直接 404，
+    而不是被当作合法租户走完整个删除流程（哪怕这个租户底下什么记录
+    都没有，"删除成功"这个 200 响应本身就是一个误导）。"""
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        response = client.request(
+            "DELETE",
+            "/api/admin/documents",
+            params={"tenant_id": "no-such-tenant", "file_path": "a.md"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
 
 
 def test_list_document_chunks_returns_texts_and_total(ingestion_conn):

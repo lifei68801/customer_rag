@@ -11,6 +11,7 @@ import aiosqlite
 from app.api import deps
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
+from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
 from app.graphrag.terms_store import (
     InvalidExtraPropertyTypeError,
     TermNameConflictError,
@@ -98,6 +99,10 @@ async def create_new_term(
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> TermResponse:
     try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    try:
         await create_term(
             review_conn,
             tenant_id=tenant_id,
@@ -142,6 +147,10 @@ async def update_existing_term(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> TermResponse:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     try:
         existing_before_update = await get_term(review_conn, tenant_id, standard_name)
         await update_term(
@@ -208,6 +217,10 @@ async def delete_existing_term(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> dict[str, bool]:
+    try:
+        await require_active_tenant(review_conn, tenant_id)
+    except TenantNotFoundError:
+        raise HTTPException(status_code=404, detail="租户不存在或未启用")
     # 先确认术语本身存在——404 的优先级要在 409 之前：一个根本不存在的
     # 名字不该因为图谱里凑巧有同名孤儿边就返回"已在图谱中使用"这种
     # 误导性的错误。确认存在之后再查图谱：这个术语已经被真实关系边
