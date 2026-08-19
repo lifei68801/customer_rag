@@ -129,9 +129,23 @@ async def test_drops_relation_when_one_side_unresolved():
 
 
 async def test_drops_relation_with_invalid_relation_type_without_crashing_batch():
+    """走 merge_relation 的 except ValueError 兜底分支（正则/保留名校验，
+    与"是否在已确认本体范围内"是两层独立校验，见 spec 决策 E.3）。第一条
+    关系用 "ALIAS_OF" 而非任意字符串——它格式合法、也是本测试局部确认
+    范围内允许的类型（真实场景里租户完全可以把 tenant_relation_types
+    确认成这个名字，ontology_relations.py 的创建/确认路径不会拦它），
+    但 FakeGraphClient.merge_relation 模拟的是保留名校验，固定拒绝它——
+    这样它能先通过新加的确认范围校验，再在 merge_relation 里被拒绝，
+    真正测到 except ValueError 这层，而不是被更早的确认范围校验拦下来
+    （那样 reason 会是 "not_in_confirmed_ontology"，测不到这条分支）。
+    """
     graph_client = FakeGraphClient()
     relations = [
-        {"subject": "网关超时", "object": "认证模块", "relation_type": "非法类型"},
+        {
+            "subject": "网关超时", "subject_type": "error_code",
+            "object": "认证模块", "object_type": "module",
+            "relation_type": "ALIAS_OF",
+        },
         {
             "subject": "网关超时", "subject_type": "error_code",
             "object": "认证模块", "object_type": "module",
@@ -141,8 +155,8 @@ async def test_drops_relation_with_invalid_relation_type_without_crashing_batch(
 
     written = await normalize_and_write_relations(
         relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1",
-        now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
-        allowed_combinations=_ALLOWED_COMBINATIONS,
+        now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES | {"ALIAS_OF"},
+        allowed_combinations=_ALLOWED_COMBINATIONS | {("error_code", "ALIAS_OF", "module")},
     )
 
     assert written == 1
