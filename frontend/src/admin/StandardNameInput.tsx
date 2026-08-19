@@ -7,6 +7,7 @@ interface StandardNameInputProps {
   terms: GraphTerm[]
   placeholder: string
   ariaLabel: string
+  onCreateNew?: (query: string) => void
 }
 
 const MAX_SUGGESTIONS = 8
@@ -17,6 +18,7 @@ export function StandardNameInput({
   terms,
   placeholder,
   ariaLabel,
+  onCreateNew,
 }: StandardNameInputProps) {
   const [isOpen, setIsOpen] = useState(false)
 
@@ -30,6 +32,7 @@ export function StandardNameInput({
         )
         .slice(0, MAX_SUGGESTIONS)
     : []
+  const showCreateNew = Boolean(onCreateNew) && query.length > 0 && suggestions.length === 0
 
   return (
     <div className="relative flex-1">
@@ -45,7 +48,7 @@ export function StandardNameInput({
         aria-label={ariaLabel}
         className="w-full border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
       />
-      {isOpen && suggestions.length > 0 && (
+      {isOpen && (suggestions.length > 0 || showCreateNew) && (
         <ul className="absolute z-10 mt-1 w-full border-2 border-ink bg-paper shadow-brutal-sm">
           {suggestions.map((term) => {
             const matchedAlias = term.standard_name.includes(query)
@@ -55,9 +58,6 @@ export function StandardNameInput({
               <li key={term.standard_name}>
                 <button
                   type="button"
-                  // 鼠标在这里按下时先阻止默认行为，输入框就不会因此失焦——
-                  // 不然 input 的 onBlur 会抢在这个按钮的 onClick 之前触发，
-                  // 下拉列表在点击生效前就被卸载掉，选不中任何建议
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => {
                     onChange(term.standard_name)
@@ -73,6 +73,21 @@ export function StandardNameInput({
               </li>
             )
           })}
+          {showCreateNew && (
+            <li>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onCreateNew?.(query)
+                  setIsOpen(false)
+                }}
+                className="block w-full cursor-pointer border-t-2 border-ink px-3 py-2 text-left text-sm font-bold text-ink hover:bg-card"
+              >
+                + 创建为新实体"{query}"
+              </button>
+            </li>
+          )}
         </ul>
       )}
     </div>
