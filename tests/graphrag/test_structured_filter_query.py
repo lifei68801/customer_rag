@@ -510,9 +510,9 @@ async def test_run_structured_filter_query_formats_matched_results():
 
     graph_client = _FakeGraphClient(rows=[
         {"standard_name": "圆角收纳盒 500ml", "node_key": "SKU:1", "term_type": "SKU",
-         "product_line": "MUJI", "all_properties": {
+         "all_properties": {
              "tenant_id": "muji", "node_key": "SKU:1", "standard_name": "圆角收纳盒 500ml",
-             "type": "SKU", "product_line": "MUJI", "numeric_value": 600,
+             "type": "SKU", "numeric_value": 600,
          }},
     ])
 
@@ -526,7 +526,7 @@ async def test_run_structured_filter_query_formats_matched_results():
     assert result["matched_count"] == 1
     assert result["results"] == [{
         "standard_name": "圆角收纳盒 500ml", "node_key": "SKU:1",
-        "term_type": "SKU", "product_line": "MUJI",
+        "term_type": "SKU",
         "extra_properties": {"numeric_value": 600},
     }]
     assert graph_client.last_tenant_id == "muji"

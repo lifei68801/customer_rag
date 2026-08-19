@@ -9,7 +9,6 @@ _TERMS = [
         standard_name="错误码E502",
         aliases=["网关超时"],
         term_type="error_code",
-        product_line="核心平台",
     ),
 ]
 
@@ -93,12 +92,12 @@ _TWO_TERMS = [
     Term(
         tenant_id="t1", node_key="错误码E502",
         standard_name="错误码E502", aliases=["网关超时"],
-        term_type="error_code", product_line="核心平台",
+        term_type="error_code",
     ),
     Term(
         tenant_id="t1", node_key="登录模块",
         standard_name="登录模块", aliases=["登录失败"],
-        term_type="module", product_line="核心平台",
+        term_type="module",
     ),
 ]
 

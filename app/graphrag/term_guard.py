@@ -89,7 +89,7 @@ async def build_term_guard_context(
     lines = ["检测到以下专有名词，已强制注入知识图谱上下文（回答时请使用标准名称）："]
     for term, subgraph in zip(matched, subgraphs):
         lines.append(
-            f"- {term.standard_name}（类型: {term.term_type}, 产品线: {term.product_line}）"
+            f"- {term.standard_name}（类型: {term.term_type}）"
         )
         for row in subgraph:
             # hops 字段区分直接事实（1 跳）和推导出的间接事实（2 跳，只有

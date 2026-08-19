@@ -257,7 +257,7 @@ def validate_structured_filter_query(
         )
 
 
-_CORE_TERM_FIELDS = frozenset({"tenant_id", "node_key", "standard_name", "type", "product_line"})
+_CORE_TERM_FIELDS = frozenset({"tenant_id", "node_key", "standard_name", "type"})
 
 
 async def run_structured_filter_query(
@@ -300,7 +300,6 @@ async def run_structured_filter_query(
                 "standard_name": row["standard_name"],
                 "node_key": row["node_key"],
                 "term_type": row["term_type"],
-                "product_line": row["product_line"],
                 "extra_properties": {
                     k: v for k, v in row["all_properties"].items() if k not in _CORE_TERM_FIELDS
                 },
