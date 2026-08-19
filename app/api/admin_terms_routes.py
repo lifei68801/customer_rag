@@ -34,7 +34,6 @@ class TermResponse(BaseModel):
     standard_name: str
     aliases: list[str]
     term_type: str
-    product_line: str
     extra_properties: dict[str, Any] = {}
     source: str
 
@@ -48,7 +47,6 @@ class TermWriteRequest(BaseModel):
     standard_name: str
     aliases: list[str]
     term_type: str
-    product_line: str
     extra_properties: dict[str, Any] = {}
     source: Literal["manual", "etl", "review", "unknown"] = "manual"
 
@@ -62,7 +60,7 @@ class TermWriteRequest(BaseModel):
             raise ValueError("standard_name 不能包含 /")
         return stripped
 
-    @field_validator("term_type", "product_line")
+    @field_validator("term_type")
     @classmethod
     def _validate_required_field(cls, value: str) -> str:
         stripped = value.strip()
@@ -81,7 +79,6 @@ def _to_response(term: Term) -> TermResponse:
         standard_name=term.standard_name,
         aliases=term.aliases,
         term_type=term.term_type,
-        product_line=term.product_line,
         extra_properties=term.extra_properties,
         source=term.source,
     )
@@ -132,7 +129,6 @@ async def create_new_term(
             standard_name=payload.standard_name,
             aliases=payload.aliases,
             term_type=payload.term_type,
-            product_line=payload.product_line,
             extra_properties=payload.extra_properties,
             source=payload.source,
         )
@@ -148,7 +144,6 @@ async def create_new_term(
         standard_name=payload.standard_name,
         aliases=payload.aliases,
         term_type=payload.term_type,
-        product_line=payload.product_line,
         extra_properties=payload.extra_properties,
         source=payload.source,
     )
@@ -185,7 +180,6 @@ async def update_existing_term(
             new_standard_name=payload.standard_name,
             aliases=payload.aliases,
             term_type=payload.term_type,
-            product_line=payload.product_line,
             extra_properties=payload.extra_properties,
         )
     except TermNotFoundError:
@@ -199,7 +193,7 @@ async def update_existing_term(
     node_key = existing_before_update.node_key
     if payload.standard_name != standard_name:
         # 改名：先对同一个图节点做属性级联更新（保留已有关系边），再用
-        # sync_term 刷新 type/product_line/别名。sync_term 现在按
+        # sync_term 刷新 type/别名。sync_term 现在按
         # {tenant_id, node_key}（创建时固定的身份键，改名后不变——
         # ADR-0003）MERGE 匹配节点，不再依赖 standard_name，两次调用的
         # 顺序其实已经不影响"匹配到同一个节点"这件事本身；这里保留
@@ -221,7 +215,6 @@ async def update_existing_term(
         standard_name=payload.standard_name,
         aliases=payload.aliases,
         term_type=payload.term_type,
-        product_line=payload.product_line,
         extra_properties=payload.extra_properties,
         source=existing_before_update.source,
     )

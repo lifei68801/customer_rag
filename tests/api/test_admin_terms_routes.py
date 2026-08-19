@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
-from app.graphrag.ontology_categories import create_product_line, create_term_type
+from app.graphrag.ontology_categories import create_term_type
 from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import create_term, ensure_terms_schema, list_terms
@@ -37,19 +37,16 @@ async def _open_terms_conn() -> aiosqlite.Connection:
     # ontology_term_types/ontology_product_lines 两张分类表，这里补齐完整的
     # 本体生命周期表结构（幂等，与 ensure_categories_schema 不冲突）。
     await ensure_ontology_schema(conn)
-    # 既有测试直接用这些字面量当 term_type/product_line，早于分类枚举表存在——
+    # 既有测试直接用这些字面量当 term_type，早于分类枚举表存在——
     # 这里补齐分类，保持既有测试的字面量不变（见 test_terms_store.py 的
     # _connect() 同款说明）。term_type 现在按租户隔离，需要给每个测试里用到的
-    # 租户各注册一份；product_line 保持全局，不需要按租户重复。真实术语只认
+    # 租户各注册一份。真实术语只认
     # 已确认的实体类型（见 _validate_categories），这里创建完就立刻确认。
     for tenant_id in ("t1", "tenant_a"):
         await create_term_type(conn, tenant_id=tenant_id, value="error_code")
         await create_term_type(conn, tenant_id=tenant_id, value="t")
         await create_term_type(conn, tenant_id=tenant_id, value="t2")
         await confirm_ontology(conn, tenant_id)
-    await create_product_line(conn, value="核心平台")
-    await create_product_line(conn, value="p")
-    await create_product_line(conn, value="p2")
     # Task 4：这个文件里的写接口（create_new_term/update_existing_term/
     # delete_existing_term）现在会先用 review_conn 调 require_active_tenant()
     # 校验 tenant_id——真实的 deps.get_review_conn() 会自动建好 tenants 表
@@ -102,7 +99,6 @@ class SpyGraphClient:
                 "standard_name": term.standard_name,
                 "aliases": term.aliases,
                 "term_type": term.term_type,
-                "product_line": term.product_line,
             }
         )
 
@@ -121,7 +117,7 @@ def test_list_terms_returns_all_terms(terms_conn):
     asyncio.run(
         create_term(
             terms_conn, tenant_id="t1", standard_name="错误码E502", aliases=["网关超时"],
-            term_type="error_code", product_line="核心平台",
+            term_type="error_code",
         )
     )
     session_store = AdminSessionStore()
@@ -138,7 +134,7 @@ def test_list_terms_returns_all_terms(terms_conn):
     assert response.json()["terms"] == [
         {
             "standard_name": "错误码E502", "aliases": ["网关超时"],
-            "term_type": "error_code", "product_line": "核心平台",
+            "term_type": "error_code",
             "extra_properties": {}, "source": "manual",
         }
     ]
@@ -152,7 +148,7 @@ def test_list_terms_paginates_with_page_and_page_size(terms_conn):
         asyncio.run(
             create_term(
                 terms_conn, tenant_id="t1", standard_name=name, aliases=[],
-                term_type="t", product_line="p",
+                term_type="t",
             )
         )
     session_store = AdminSessionStore()
@@ -185,7 +181,7 @@ def test_list_terms_without_page_params_returns_full_list_beyond_default_page_si
         asyncio.run(
             create_term(
                 terms_conn, tenant_id="t1", standard_name=f"术语{i:02d}", aliases=[],
-                term_type="t", product_line="p",
+                term_type="t",
             )
         )
     session_store = AdminSessionStore()
@@ -232,7 +228,7 @@ def test_create_term_syncs_to_graph_client(terms_conn):
             "/api/admin/t1/terms",
             json={
                 "standard_name": "新术语", "aliases": ["别名1"],
-                "term_type": "t", "product_line": "p",
+                "term_type": "t",
             },
             headers=_authed_headers(session_store),
         )
@@ -257,7 +253,7 @@ def test_create_term_returns_404_for_unknown_tenant(terms_conn):
         client = TestClient(app)
         response = client.post(
             "/api/admin/no-such-tenant/terms",
-            json={"standard_name": "新术语", "aliases": [], "term_type": "t", "product_line": "p"},
+            json={"standard_name": "新术语", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -268,7 +264,7 @@ def test_create_term_returns_404_for_unknown_tenant(terms_conn):
 
 def test_create_term_with_conflicting_name_returns_400(terms_conn):
     asyncio.run(
-        create_term(terms_conn, tenant_id="t1", standard_name="已存在", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="已存在", aliases=[], term_type="t")
     )
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
@@ -279,7 +275,7 @@ def test_create_term_with_conflicting_name_returns_400(terms_conn):
         client = TestClient(app)
         response = client.post(
             "/api/admin/t1/terms",
-            json={"standard_name": "已存在", "aliases": [], "term_type": "t", "product_line": "p"},
+            json={"standard_name": "已存在", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -300,7 +296,7 @@ def test_create_term_with_unknown_category_returns_400(terms_conn):
             "/api/admin/t1/terms",
             json={
                 "standard_name": "新术语", "aliases": [],
-                "term_type": "没有这个分类", "product_line": "p",
+                "term_type": "没有这个分类",
             },
             headers=_authed_headers(session_store),
         )
@@ -312,7 +308,7 @@ def test_create_term_with_unknown_category_returns_400(terms_conn):
 
 def test_update_term_without_rename_syncs_to_graph_client(terms_conn):
     asyncio.run(
-        create_term(terms_conn, tenant_id="t1", standard_name="术语A", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="术语A", aliases=[], term_type="t")
     )
     session_store = AdminSessionStore()
     graph_client = SpyGraphClient()
@@ -326,7 +322,7 @@ def test_update_term_without_rename_syncs_to_graph_client(terms_conn):
             "/api/admin/t1/terms/术语A",
             json={
                 "standard_name": "术语A", "aliases": ["新别名"],
-                "term_type": "t2", "product_line": "p2",
+                "term_type": "t2",
             },
             headers=_authed_headers(session_store),
         )
@@ -341,7 +337,7 @@ def test_update_term_without_rename_syncs_to_graph_client(terms_conn):
 
 def test_update_term_with_rename_calls_rename_then_sync(terms_conn):
     asyncio.run(
-        create_term(terms_conn, tenant_id="t1", standard_name="旧名字", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="旧名字", aliases=[], term_type="t")
     )
     session_store = AdminSessionStore()
     graph_client = SpyGraphClient()
@@ -353,7 +349,7 @@ def test_update_term_with_rename_calls_rename_then_sync(terms_conn):
         client = TestClient(app)
         response = client.put(
             "/api/admin/t1/terms/旧名字",
-            json={"standard_name": "新名字", "aliases": [], "term_type": "t", "product_line": "p"},
+            json={"standard_name": "新名字", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -366,8 +362,8 @@ def test_update_term_with_rename_calls_rename_then_sync(terms_conn):
 
 
 def test_update_term_rename_into_existing_name_returns_400(terms_conn):
-    asyncio.run(create_term(terms_conn, tenant_id="t1", standard_name="A", aliases=[], term_type="t", product_line="p"))
-    asyncio.run(create_term(terms_conn, tenant_id="t1", standard_name="B", aliases=[], term_type="t", product_line="p"))
+    asyncio.run(create_term(terms_conn, tenant_id="t1", standard_name="A", aliases=[], term_type="t"))
+    asyncio.run(create_term(terms_conn, tenant_id="t1", standard_name="B", aliases=[], term_type="t"))
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -377,7 +373,7 @@ def test_update_term_rename_into_existing_name_returns_400(terms_conn):
         client = TestClient(app)
         response = client.put(
             "/api/admin/t1/terms/A",
-            json={"standard_name": "B", "aliases": [], "term_type": "t", "product_line": "p"},
+            json={"standard_name": "B", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -396,7 +392,7 @@ def test_update_nonexistent_term_returns_404(terms_conn):
         client = TestClient(app)
         response = client.put(
             "/api/admin/t1/terms/不存在",
-            json={"standard_name": "不存在", "aliases": [], "term_type": "t", "product_line": "p"},
+            json={"standard_name": "不存在", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -407,7 +403,7 @@ def test_update_nonexistent_term_returns_404(terms_conn):
 
 def test_delete_term_without_graph_edges_succeeds(terms_conn):
     asyncio.run(
-        create_term(terms_conn, tenant_id="t1", standard_name="待删除", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="待删除", aliases=[], term_type="t")
     )
     session_store = AdminSessionStore()
     graph_client = SpyGraphClient(edge_count=0)
@@ -451,7 +447,7 @@ def test_delete_nonexistent_term_returns_404_even_when_graph_has_edges(terms_con
 
 def test_delete_term_with_graph_edges_returns_409(terms_conn):
     asyncio.run(
-        create_term(terms_conn, tenant_id="t1", standard_name="使用中", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="使用中", aliases=[], term_type="t")
     )
     session_store = AdminSessionStore()
     graph_client = SpyGraphClient(edge_count=2)
@@ -484,7 +480,7 @@ def test_create_term_with_empty_standard_name_returns_422(terms_conn):
         client = TestClient(app)
         response = client.post(
             "/api/admin/t1/terms",
-            json={"standard_name": "   ", "aliases": [], "term_type": "t", "product_line": "p"},
+            json={"standard_name": "   ", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -503,7 +499,7 @@ def test_create_term_with_slash_in_standard_name_returns_422(terms_conn):
         client = TestClient(app)
         response = client.post(
             "/api/admin/t1/terms",
-            json={"standard_name": "A/B测试", "aliases": [], "term_type": "t", "product_line": "p"},
+            json={"standard_name": "A/B测试", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -514,7 +510,7 @@ def test_create_term_with_slash_in_standard_name_returns_422(terms_conn):
 
 def test_update_term_rename_into_name_with_slash_returns_422(terms_conn):
     asyncio.run(
-        create_term(terms_conn, tenant_id="t1", standard_name="旧名字", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="旧名字", aliases=[], term_type="t")
     )
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
@@ -525,7 +521,7 @@ def test_update_term_rename_into_name_with_slash_returns_422(terms_conn):
         client = TestClient(app)
         response = client.put(
             "/api/admin/t1/terms/旧名字",
-            json={"standard_name": "A/B", "aliases": [], "term_type": "t", "product_line": "p"},
+            json={"standard_name": "A/B", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -549,7 +545,6 @@ def test_create_term_drops_blank_aliases(terms_conn):
                 "standard_name": "新术语",
                 "aliases": ["别名1", "  ", "", "别名2"],
                 "term_type": "t",
-                "product_line": "p",
             },
             headers=_authed_headers(session_store),
         )
@@ -562,7 +557,7 @@ def test_create_term_drops_blank_aliases(terms_conn):
 
 def test_update_term_drops_blank_aliases(terms_conn):
     asyncio.run(
-        create_term(terms_conn, tenant_id="t1", standard_name="术语A", aliases=[], term_type="t", product_line="p")
+        create_term(terms_conn, tenant_id="t1", standard_name="术语A", aliases=[], term_type="t")
     )
     session_store = AdminSessionStore()
     graph_client = SpyGraphClient()
@@ -578,7 +573,6 @@ def test_update_term_drops_blank_aliases(terms_conn):
                 "standard_name": "术语A",
                 "aliases": ["  别名1  ", "", "   "],
                 "term_type": "t",
-                "product_line": "p",
             },
             headers=_authed_headers(session_store),
         )
@@ -612,7 +606,7 @@ def test_create_term_with_typed_extra_properties_returns_200(terms_conn):
             "/api/admin/t1/terms",
             json={
                 "standard_name": "容量750ml", "aliases": [], "term_type": "VariantValue",
-                "product_line": "p", "extra_properties": {"numeric_value": 750},
+                "extra_properties": {"numeric_value": 750},
             },
             headers=_authed_headers(session_store),
         )
@@ -643,7 +637,7 @@ def test_create_term_rejects_extra_property_wrong_type_returns_400(terms_conn):
             "/api/admin/t1/terms",
             json={
                 "standard_name": "X", "aliases": [], "term_type": "VariantValue",
-                "product_line": "p", "extra_properties": {"numeric_value": "不是数字"},
+                "extra_properties": {"numeric_value": "不是数字"},
             },
             headers=_authed_headers(session_store),
         )
@@ -663,7 +657,7 @@ def test_create_term_is_scoped_to_tenant_in_url(terms_conn):
         client = TestClient(app)
         response = client.post(
             "/api/admin/tenant_a/terms",
-            json={"standard_name": "新术语", "aliases": [], "term_type": "t", "product_line": "p"},
+            json={"standard_name": "新术语", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
         assert response.status_code == 200
@@ -700,7 +694,7 @@ def test_create_term_rejects_bool_extra_property_via_http(terms_conn):
             "/api/admin/t1/terms",
             json={
                 "standard_name": "X", "aliases": [], "term_type": "VariantValue",
-                "product_line": "p", "extra_properties": {"numeric_value": True},
+                "extra_properties": {"numeric_value": True},
             },
             headers=_authed_headers(session_store),
         )
@@ -721,7 +715,7 @@ def test_create_term_returns_source(terms_conn):
             "/api/admin/t1/terms",
             json={
                 "standard_name": "term-x", "aliases": [], "term_type": "t",
-                "product_line": "p", "source": "review",
+                "source": "review",
             },
             headers=_authed_headers(session_store),
         )
@@ -742,7 +736,7 @@ def test_create_term_without_source_defaults_to_manual(terms_conn):
         client = TestClient(app)
         response = client.post(
             "/api/admin/t1/terms",
-            json={"standard_name": "term-y", "aliases": [], "term_type": "t", "product_line": "p"},
+            json={"standard_name": "term-y", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -768,7 +762,7 @@ def test_create_term_with_invalid_source_returns_422(terms_conn):
             "/api/admin/t1/terms",
             json={
                 "standard_name": "term-z", "aliases": [], "term_type": "t",
-                "product_line": "p", "source": "not-a-real-source",
+                "source": "not-a-real-source",
             },
             headers=_authed_headers(session_store),
         )
@@ -782,13 +776,13 @@ def test_list_terms_filters_by_source_query_param(terms_conn):
     asyncio.run(
         create_term(
             terms_conn, tenant_id="t1", standard_name="手工术语", aliases=[],
-            term_type="t", product_line="p", source="manual",
+            term_type="t", source="manual",
         )
     )
     asyncio.run(
         create_term(
             terms_conn, tenant_id="t1", standard_name="ETL术语", aliases=[],
-            term_type="t", product_line="p", source="etl",
+            term_type="t", source="etl",
         )
     )
     session_store = AdminSessionStore()
@@ -819,7 +813,7 @@ def test_update_term_preserves_source_regardless_of_payload(terms_conn):
     asyncio.run(
         create_term(
             terms_conn, tenant_id="t1", standard_name="术语B", aliases=[],
-            term_type="t", product_line="p", source="etl",
+            term_type="t", source="etl",
         )
     )
     session_store = AdminSessionStore()
@@ -834,7 +828,7 @@ def test_update_term_preserves_source_regardless_of_payload(terms_conn):
             "/api/admin/t1/terms/术语B",
             json={
                 "standard_name": "术语B", "aliases": [], "term_type": "t",
-                "product_line": "p", "source": "manual",
+                "source": "manual",
             },
             headers=_authed_headers(session_store),
         )
@@ -865,7 +859,7 @@ def test_create_term_rejects_bool_inside_number_array_via_http(terms_conn):
             "/api/admin/t1/terms",
             json={
                 "standard_name": "Y", "aliases": [], "term_type": "VariantValue",
-                "product_line": "p", "extra_properties": {"dims": [1.0, True]},
+                "extra_properties": {"dims": [1.0, True]},
             },
             headers=_authed_headers(session_store),
         )
