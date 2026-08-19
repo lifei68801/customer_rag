@@ -98,7 +98,7 @@ DELETE r
 # 不该被当成标准节点查到）。
 _SYNC_TERM_QUERY = """
 MERGE (t:Term {tenant_id: $tenant_id, node_key: $node_key})
-SET t.standard_name = $standard_name, t.type = $type, t.product_line = $product_line
+SET t.standard_name = $standard_name, t.type = $type
 SET t += $extra_properties
 WITH t
 UNWIND $aliases AS alias_name
@@ -275,7 +275,7 @@ class Neo4jGraphClient:
             "MATCH (anchor:Term {tenant_id: $tenant_id, type: $anchor_term_type}) "
             f"WHERE {where_sql} "
             "RETURN anchor.standard_name AS standard_name, anchor.node_key AS node_key, "
-            "anchor.type AS term_type, anchor.product_line AS product_line, "
+            "anchor.type AS term_type, "
             "properties(anchor) AS all_properties "
             "LIMIT $limit"
         )
@@ -380,7 +380,7 @@ class Neo4jGraphClient:
 
     async def sync_term(self, term: Term) -> None:
         """把术语表里的一个标准术语同步进图谱：写入/更新标准节点的
-        type/product_line 属性，并为每个别名建一个独立节点通过 ALIAS_OF
+        type 属性，并为每个别名建一个独立节点通过 ALIAS_OF
         指向标准节点——对应架构文档 §4.1"别名作为独立节点"的设计，是
         术语表（基准真相）到图谱的同步步骤，与 merge_relation（写入 LLM
         抽取出的关系边）是两条独立的写入路径。
@@ -393,7 +393,6 @@ class Neo4jGraphClient:
                     "node_key": term.node_key,
                     "standard_name": term.standard_name,
                     "type": term.term_type,
-                    "product_line": term.product_line,
                     "aliases": list(term.aliases),
                     "extra_properties": term.extra_properties,
                 },
