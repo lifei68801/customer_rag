@@ -351,6 +351,26 @@ async def test_ensure_categories_schema_migrates_legacy_term_types_table():
     assert await list_term_types(conn, tenant_id="default", status="draft") == []
 
 
+async def test_ensure_categories_schema_drops_legacy_ontology_product_lines_table():
+    """product_line 概念被整体移除时，ontology_product_lines 表也被判定为废弃——
+    ensure_categories_schema 里对它做 DROP TABLE IF EXISTS（跟 terms 表的
+    product_line 列迁移是同一次改造下的姊妹清理动作，见 terms_store.py 里对应
+    的 DROP COLUMN 测试）。这里手工建一张同名遗留表，验证调用后它确实被删掉。"""
+    conn = await aiosqlite.connect(":memory:")
+    await conn.executescript(
+        "CREATE TABLE ontology_product_lines (value TEXT PRIMARY KEY);"
+    )
+    await conn.commit()
+
+    from app.graphrag.ontology_categories import ensure_categories_schema
+    await ensure_categories_schema(conn)
+
+    cursor = await conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='ontology_product_lines'"
+    )
+    assert await cursor.fetchone() is None
+
+
 async def test_ensure_categories_schema_migrates_legacy_table_without_status_column():
     """专门覆盖 _migrate_term_types_add_status_if_needed：手工建一张已经有
     tenant_id 列、但没有 status 列的旧表（2026-08-15~2026-08-19 之间的形态），
