@@ -889,3 +889,61 @@ async def test_migrate_term_type_returns_zero_when_no_rows_match():
     assert affected == 0
     terms = await list_terms(conn, "default")
     assert terms[0].term_type == "t"
+
+
+async def test_create_term_defaults_source_to_manual():
+    conn = await _connect()
+    await create_term(
+        conn, tenant_id="default", standard_name="term-a", aliases=[],
+        term_type="t", product_line="p",
+    )
+    term = await get_term(conn, "default", "term-a")
+    assert term.source == "manual"
+
+
+async def test_create_term_explicit_source():
+    conn = await _connect()
+    await create_term(
+        conn, tenant_id="default", standard_name="term-b", aliases=[],
+        term_type="t", product_line="p", source="review",
+    )
+    term = await get_term(conn, "default", "term-b")
+    assert term.source == "review"
+
+
+async def test_upsert_term_with_node_key_defaults_source_to_etl():
+    conn = await _connect()
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="k1", standard_name="term-c", aliases=[],
+        term_type="t", product_line="p",
+    )
+    term = await get_term(conn, "default", "term-c")
+    assert term.source == "etl"
+
+
+async def test_update_term_does_not_change_source():
+    conn = await _connect()
+    await create_term(
+        conn, tenant_id="default", standard_name="term-d", aliases=[],
+        term_type="t", product_line="p", source="etl",
+    )
+    await update_term(
+        conn, tenant_id="default", standard_name="term-d", new_standard_name="term-d-renamed",
+        aliases=["alias"], term_type="t", product_line="p",
+    )
+    term = await get_term(conn, "default", "term-d-renamed")
+    assert term.source == "etl"
+
+
+async def test_list_terms_filters_by_source():
+    conn = await _connect()
+    await create_term(
+        conn, tenant_id="default", standard_name="m1", aliases=[],
+        term_type="t", product_line="p", source="manual",
+    )
+    await create_term(
+        conn, tenant_id="default", standard_name="e1", aliases=[],
+        term_type="t", product_line="p", source="etl",
+    )
+    manual_only = await list_terms(conn, "default", source="manual")
+    assert [t.standard_name for t in manual_only] == ["m1"]

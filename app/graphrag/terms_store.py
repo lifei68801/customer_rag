@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS terms (
     term_type         TEXT NOT NULL,
     product_line      TEXT NOT NULL,
     extra_properties  TEXT NOT NULL DEFAULT '{}',
+    source            TEXT NOT NULL DEFAULT 'unknown',
     PRIMARY KEY (tenant_id, node_key)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_terms_tenant_standard_name
@@ -83,15 +84,17 @@ async def _migrate_terms_table_to_tenant_scoped_if_needed(
             term_type         TEXT NOT NULL,
             product_line      TEXT NOT NULL,
             extra_properties  TEXT NOT NULL DEFAULT '{}',
+            source            TEXT NOT NULL DEFAULT 'unknown',
             PRIMARY KEY (tenant_id, node_key)
         );
         """
     )
     await conn.execute(
         "INSERT INTO terms_new "
-        "(tenant_id, node_key, standard_name, aliases, term_type, product_line, extra_properties) "
+        "(tenant_id, node_key, standard_name, aliases, term_type, product_line, extra_properties, "
+        "source) "
         "SELECT 'default', standard_name, standard_name, aliases, term_type, product_line, "
-        "extra_properties FROM terms"
+        "extra_properties, source FROM terms"
     )
     await conn.executescript(
         "DROP TABLE terms; ALTER TABLE terms_new RENAME TO terms; "
@@ -127,6 +130,9 @@ async def ensure_terms_schema(
     if table_already_existed:
         await add_column_if_missing(
             conn, table="terms", column="extra_properties", ddl="TEXT NOT NULL DEFAULT '{}'"
+        )
+        await add_column_if_missing(
+            conn, table="terms", column="source", ddl="TEXT NOT NULL DEFAULT 'unknown'"
         )
         await _migrate_terms_table_to_tenant_scoped_if_needed(conn)
     await conn.executescript(_SCHEMA_SQL)
@@ -223,11 +229,17 @@ def _row_to_term(row: aiosqlite.Row) -> Term:
         term_type=row["term_type"],
         product_line=row["product_line"],
         extra_properties=json.loads(row["extra_properties"]),
+        source=row["source"],
     )
 
 
 async def list_terms(
-    conn: aiosqlite.Connection, tenant_id: str, *, limit: int | None = None, offset: int = 0
+    conn: aiosqlite.Connection,
+    tenant_id: str,
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+    source: str | None = None,
 ) -> list[Term]:
     """limit=None（默认）返回该租户全部术语，保持既有调用方（agent 检索、
     摄取管线、eval runner、review_cli 等，见
@@ -235,19 +247,39 @@ async def list_terms(
     分页时显式传入具体的 limit/offset。哨兵模式与
     app/graphrag/review_queue.py::list_pending_reviews 一致：SQLite 的
     LIMIT 取负数即表示不限制行数，用 -1 承载 limit=None 这个语义。
+
+    source=None（默认）不按来源过滤；传具体值（manual/etl/review/unknown）
+    只返回该来源的行，供"实体列表"页的来源筛选用。
     """
     conn.row_factory = aiosqlite.Row
-    cursor = await conn.execute(
-        "SELECT tenant_id, node_key, standard_name, aliases, term_type, product_line, "
-        "extra_properties FROM terms WHERE tenant_id = ? ORDER BY standard_name LIMIT ? OFFSET ?",
-        (tenant_id, limit if limit is not None else -1, offset),
-    )
+    if source is None:
+        cursor = await conn.execute(
+            "SELECT tenant_id, node_key, standard_name, aliases, term_type, product_line, "
+            "extra_properties, source FROM terms WHERE tenant_id = ? "
+            "ORDER BY standard_name LIMIT ? OFFSET ?",
+            (tenant_id, limit if limit is not None else -1, offset),
+        )
+    else:
+        cursor = await conn.execute(
+            "SELECT tenant_id, node_key, standard_name, aliases, term_type, product_line, "
+            "extra_properties, source FROM terms WHERE tenant_id = ? AND source = ? "
+            "ORDER BY standard_name LIMIT ? OFFSET ?",
+            (tenant_id, source, limit if limit is not None else -1, offset),
+        )
     rows = await cursor.fetchall()
     return [_row_to_term(row) for row in rows]
 
 
-async def count_terms(conn: aiosqlite.Connection, tenant_id: str) -> int:
-    cursor = await conn.execute("SELECT COUNT(*) FROM terms WHERE tenant_id = ?", (tenant_id,))
+async def count_terms(
+    conn: aiosqlite.Connection, tenant_id: str, *, source: str | None = None
+) -> int:
+    if source is None:
+        cursor = await conn.execute("SELECT COUNT(*) FROM terms WHERE tenant_id = ?", (tenant_id,))
+        row = await cursor.fetchone()
+        return row[0]
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM terms WHERE tenant_id = ? AND source = ?", (tenant_id, source)
+    )
     row = await cursor.fetchone()
     return row[0]
 
@@ -256,7 +288,7 @@ async def get_term(conn: aiosqlite.Connection, tenant_id: str, standard_name: st
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT tenant_id, node_key, standard_name, aliases, term_type, product_line, "
-        "extra_properties FROM terms WHERE tenant_id = ? AND standard_name = ?",
+        "extra_properties, source FROM terms WHERE tenant_id = ? AND standard_name = ?",
         (tenant_id, standard_name),
     )
     row = await cursor.fetchone()
@@ -342,9 +374,18 @@ async def create_term(
     term_type: str,
     product_line: str,
     extra_properties: dict[str, object] | None = None,
+    source: str = "manual",
 ) -> None:
     """node_key 创建时直接取 standard_name 的值（Global Constraints 的
-    node_key 生成规则：extraction 模式下没有外部稳定码来源）。"""
+    node_key 生成规则：extraction 模式下没有外部稳定码来源）。
+
+    source 记录这条术语最初是通过哪个渠道创建的（manual/etl/review），
+    默认值 "manual" 只是为了不用逐个改动测试里大量既有的 create_term()
+    调用——本计划里唯一真正的生产调用点是 admin_terms_routes.py 的
+    create_new_term，它现在只会被"知识图谱审核"页的内联创建调用，会显式
+    传 source="review"。见
+    docs/superpowers/specs/2026-08-19-data-entry-unification-design.md 决策 C。
+    """
     extra_properties = extra_properties or {}
     await _validate_categories(
         conn, tenant_id=tenant_id, term_type=term_type, product_line=product_line,
@@ -354,7 +395,7 @@ async def create_term(
     try:
         await conn.execute(
             "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
-            "product_line, extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "product_line, extra_properties, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 tenant_id,
                 standard_name,
@@ -363,6 +404,7 @@ async def create_term(
                 term_type,
                 product_line,
                 json.dumps(extra_properties, ensure_ascii=False),
+                source,
             ),
         )
     except aiosqlite.IntegrityError:
@@ -385,6 +427,10 @@ async def update_term(
     new_standard_name 是提交的新名字，允许和 standard_name 相同（即不改名）。
     node_key 不受影响，UPDATE 语句不写这一列——ADR-0003 的核心断言：
     身份键创建后永不改变，即使术语被改名。
+
+    UPDATE 语句不写 source 列——这是刻意的：source 只记录创建时的渠道，
+    人工编辑（无论改名、改别名还是改属性）都不改变它，见
+    docs/superpowers/specs/2026-08-19-data-entry-unification-design.md 决策 C.4。
     """
     extra_properties = extra_properties or {}
     existing_term = await get_term(conn, tenant_id, standard_name)
@@ -450,6 +496,7 @@ async def upsert_term_with_node_key(
     term_type: str,
     product_line: str,
     extra_properties: dict[str, object] | None = None,
+    source: str = "etl",
 ) -> None:
     """ETL 专用的幂等写入：按 (tenant_id, node_key) 判定冲突，已存在就更新，不存在
     就插入——不是 create_term/update_term 那种"创建 xor 更新"两态分支，是真正的
@@ -463,6 +510,14 @@ async def upsert_term_with_node_key(
 
     standard_name 的租户内唯一性约束（idx_terms_tenant_standard_name）仍然生效：
     如果这个 standard_name 已经被另一个 node_key 占用，抛 TermNameConflictError。
+
+    source 默认值 "etl"——这个函数目前唯一的生产调用点就是
+    schema_etl.py::_write_entity_mapping，不需要显式传参也总是正确的。
+
+    注意：ON CONFLICT ... DO UPDATE SET 故意不包含 source = excluded.source——
+    已存在的行（哪怕是被 ETL 再次 upsert）保留它最初的 source，这与
+    update_term 不碰 source 列是同一个道理的两种写法（这里是 upsert 语句
+    层面的对应处理）。
     """
     extra_properties = extra_properties or {}
     conn.row_factory = aiosqlite.Row
@@ -483,7 +538,7 @@ async def upsert_term_with_node_key(
     try:
         await conn.execute(
             "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
-            "product_line, extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "product_line, extra_properties, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (tenant_id, node_key) DO UPDATE SET "
             "standard_name = excluded.standard_name, aliases = excluded.aliases, "
             "term_type = excluded.term_type, product_line = excluded.product_line, "
@@ -496,6 +551,7 @@ async def upsert_term_with_node_key(
                 term_type,
                 product_line,
                 json.dumps(extra_properties, ensure_ascii=False),
+                source,
             ),
         )
     except aiosqlite.IntegrityError:

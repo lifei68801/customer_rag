@@ -15,6 +15,7 @@ class Term:
     term_type: str
     product_line: str
     extra_properties: dict[str, str | int | float | list[float]] = field(default_factory=dict)
+    source: str = "unknown"
 
 
 def load_terminology(path: Path) -> list[Term]:
