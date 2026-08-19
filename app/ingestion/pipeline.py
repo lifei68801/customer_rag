@@ -84,7 +84,18 @@ async def _maybe_extract_graph_relations(
     该租户本体 schema 未确认（is_ontology_confirmed 为 False）时同样跳过
     图谱抽取这一步——但仅在 graph_review_conn 可用时才能做这个判断（它
     同时是 ontology 相关表所在的连接）；graph_review_conn 为 None 时无法
-    判断确认状态，保持跳过判断前的既有行为（不额外拦截）。见
+    判断确认状态，这一步确认门槛检查本身会被跳过。但这不等于"行为不变"：
+    graph_review_conn 为 None 时，下面的 relation_types/term_types/
+    allowed_combinations 三者都会退化成空列表/空集合（没有连接可查），
+    传给 extract_and_write_graph_relations 之后，normalize_and_write_
+    relations 里"relation_type 必须在 confirmed_relation_types 里、类型
+    组合必须在 allowed_combinations 里"这层校验会对着空集合比较，导致
+    每一条候选关系都被判定为不在已确认本体范围内而静默丢弃——LLM 抽取
+    的成本已经花掉，结果却一条也不会写入图谱（也不会有候选进审核队列，
+    因为 review_conn 同样是 None）。目前没有任何生产调用方会在其余 4 项
+    必需依赖齐全的情况下传 graph_review_conn=None，所以这不是一个已知
+    会触发的功能缺陷，只是文档需要如实反映这个退化行为，避免以后有人
+    照着旧文档的措辞误以为传 None 是安全的"照旧运行"。见
     docs/superpowers/specs/2026-08-19-data-entry-unification-design.md 决策 E.4。
     """
     if not (

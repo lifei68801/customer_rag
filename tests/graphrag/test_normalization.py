@@ -235,6 +235,12 @@ async def test_enqueues_invalid_relation_type_for_review_when_review_conn_provid
     # 再重新输入一遍系统已经算出来的正确答案
     assert pending[0]["suggested_subject_standard_name"] == "错误码E502"
     assert pending[0]["suggested_object_standard_name"] == "登录模块"
+    # Fix 7 回归测试：这是本函数里唯一一处 enqueue_for_review 调用曾经
+    # 没有透传 subject_type_candidate/object_type_candidate 的地方，跟
+    # 同一函数里其它三处调用不一致；现在补齐后行为应该一致——候选实体
+    # 类型能预填进审核页内联创建实体表单的下拉框。
+    assert pending[0]["subject_type_candidate"] == "error_code"
+    assert pending[0]["object_type_candidate"] == "module"
 
 
 async def test_does_not_enqueue_when_review_conn_not_provided():

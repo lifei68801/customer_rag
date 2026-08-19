@@ -240,6 +240,8 @@ async def normalize_and_write_relations(
                     suggested_subject_standard_name=subject_std,
                     suggested_object_standard_name=object_std,
                     evidence=relation.get("evidence", ""),
+                    subject_type_candidate=relation.get("subject_type") or None,
+                    object_type_candidate=relation.get("object_type") or None,
                 )
             continue
         written += 1

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
@@ -50,7 +50,7 @@ class TermWriteRequest(BaseModel):
     term_type: str
     product_line: str
     extra_properties: dict[str, Any] = {}
-    source: str = "manual"
+    source: Literal["manual", "etl", "review", "unknown"] = "manual"
 
     @field_validator("standard_name")
     @classmethod

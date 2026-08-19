@@ -752,6 +752,32 @@ def test_create_term_without_source_defaults_to_manual(terms_conn):
     assert response.json()["source"] == "manual"
 
 
+def test_create_term_with_invalid_source_returns_422(terms_conn):
+    """Fix 6 回归测试：TermWriteRequest.source 现在是 Literal["manual",
+    "etl", "review", "unknown"]，不再接受任意字符串——一个不在枚举里的
+    值应该被 FastAPI/Pydantic 挡在 422，而不是静默持久化进 terms 表，
+    落到"来源"筛选下拉框的枚举选项之外。"""
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "term-z", "aliases": [], "term_type": "t",
+                "product_line": "p", "source": "not-a-real-source",
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
 def test_list_terms_filters_by_source_query_param(terms_conn):
     asyncio.run(
         create_term(
