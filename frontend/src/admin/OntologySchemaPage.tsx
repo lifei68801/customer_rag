@@ -3,7 +3,7 @@ import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 
-type Tab = 'term-types' | 'relation-types' | 'constraints' | 'product-lines'
+type Tab = 'term-types' | 'relation-types' | 'constraints'
 type ViewMode = 'draft' | 'confirmed'
 
 interface ExtraFieldSpec {
@@ -316,16 +316,6 @@ export function OntologySchemaPage() {
         >
           约束
         </button>
-        <button
-          type="button"
-          className={tabButtonClass(tab === 'product-lines')}
-          onClick={() => {
-            setTab('product-lines')
-            setPageError(null)
-          }}
-        >
-          产品线
-        </button>
       </nav>
 
       {tab === 'term-types' && (
@@ -360,9 +350,6 @@ export function OntologySchemaPage() {
           confirmVersion={confirmVersion}
           onDataChanged={bumpReadiness}
         />
-      )}
-      {tab === 'product-lines' && (
-        <ProductLinesTab sessionToken={sessionToken} onError={setPageError} />
       )}
     </div>
   )
@@ -1364,148 +1351,6 @@ function ConstraintsTab({
           </button>
         </form>
       )}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// 产品线 tab
-// ---------------------------------------------------------------------------
-
-function ProductLinesTab({
-  sessionToken,
-  onError,
-}: {
-  sessionToken: string | null
-  onError: (msg: string | null) => void
-}) {
-  const [items, setItems] = useState<string[]>([])
-  const [loaded, setLoaded] = useState(false)
-  const [newValue, setNewValue] = useState('')
-  const [creating, setCreating] = useState(false)
-  const [deletingValue, setDeletingValue] = useState<string | null>(null)
-
-  const refresh = useCallback(async () => {
-    if (!sessionToken) return
-    try {
-      const response = await adminFetch('/api/admin/ontology/product-lines', sessionToken)
-      const data = (await response.json()) as { product_lines: string[] }
-      setItems(data.product_lines)
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '加载失败')
-    } finally {
-      setLoaded(true)
-    }
-  }, [sessionToken, onError])
-
-  useEffect(() => {
-    refresh().catch((err) => console.error('产品线列表刷新失败', err))
-  }, [refresh])
-
-  const handleAdd = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!sessionToken || !newValue.trim() || creating) return
-    onError(null)
-    setCreating(true)
-    try {
-      const response = await adminFetch('/api/admin/ontology/product-lines', sessionToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: newValue.trim() }),
-      })
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
-        throw new Error(extractErrorDetail(body, '新增产品线失败'))
-      }
-      setNewValue('')
-      await refresh()
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '新增产品线失败')
-    } finally {
-      setCreating(false)
-    }
-  }
-
-  const handleDelete = async (value: string) => {
-    if (!sessionToken || deletingValue !== null) return
-    if (!window.confirm(`确定要删除产品线「${value}」吗？此操作不可撤销。`)) return
-    onError(null)
-    setDeletingValue(value)
-    try {
-      const response = await adminFetch(
-        `/api/admin/ontology/product-lines/${encodeURIComponent(value)}`,
-        sessionToken,
-        { method: 'DELETE' },
-      )
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
-        throw new Error(extractErrorDetail(body, '删除产品线失败'))
-      }
-      await refresh()
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '删除产品线失败')
-    } finally {
-      setDeletingValue(null)
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      <p className="border-2 border-ink bg-accent-yellow px-3 py-2 text-sm text-ink shadow-brutal-sm">
-        产品线是全局配置，不属于当前租户，切换租户不影响这个列表。
-      </p>
-
-      {!loaded && <p className="text-ink-soft">加载中…</p>}
-      {loaded && items.length === 0 && <p className="text-ink-soft">还没有定义任何产品线。</p>}
-      {items.length > 0 && (
-        <div className="overflow-x-auto border-2 border-ink bg-card shadow-brutal-sm">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b-2 border-ink bg-paper text-ink">
-                <th className="px-3 py-2">名称</th>
-                <th className="px-3 py-2">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((value) => (
-                <tr key={value} className="border-b border-ink/20 text-ink last:border-b-0">
-                  <td className="px-3 py-2">{value}</td>
-                  <td className="px-3 py-2">
-                    <button
-                      type="button"
-                      className={`font-bold text-status-error underline disabled:opacity-50 ${focusRing}`}
-                      onClick={() => handleDelete(value)}
-                      disabled={deletingValue !== null}
-                    >
-                      {deletingValue === value ? '删除中…' : '删除'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <form onSubmit={handleAdd} className="flex items-end gap-3 border-2 border-ink bg-card p-4 shadow-brutal">
-        <label className="flex flex-col gap-1 text-sm font-bold text-ink">
-          产品线名称
-          <input
-            type="text"
-            required
-            value={newValue}
-            onChange={(e) => setNewValue(e.target.value)}
-            className="border-2 border-ink bg-paper px-2 py-1.5 text-ink focus:shadow-brutal focus:outline-none"
-          />
-        </label>
-        <button
-          type="submit"
-          disabled={creating || !newValue.trim()}
-          className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
-        >
-          {creating ? '添加中…' : '+ 添加产品线'}
-        </button>
-      </form>
     </div>
   )
 }
