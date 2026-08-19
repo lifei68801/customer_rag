@@ -11,6 +11,16 @@ from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
 
 _NOW = datetime(2026, 8, 12, 12, 0, 0)
 
+_CONFIRMED_RELATION_TYPES = {
+    "RELATED_TO", "PART_OF", "IS_A", "REQUIRES", "ALTERNATIVE_TO",
+    "CAUSES", "ADDRESSED_BY", "LOCATED_IN", "APPLIES_TO", "PRECEDES",
+}
+_ALLOWED_COMBINATIONS = {
+    ("error_code", rt, "module") for rt in _CONFIRMED_RELATION_TYPES
+} | {
+    ("module", rt, "error_code") for rt in _CONFIRMED_RELATION_TYPES
+}
+
 _TERMS = [
     Term(
         tenant_id="t1",
@@ -71,12 +81,17 @@ class FakeGraphClient:
 async def test_writes_relation_when_both_sides_resolve_via_alias():
     graph_client = FakeGraphClient()
     relations = [
-        {"subject": "网关超时", "object": "认证模块", "relation_type": "RELATED_TO"}
+        {
+            "subject": "网关超时", "subject_type": "error_code",
+            "object": "认证模块", "object_type": "module",
+            "relation_type": "RELATED_TO",
+        }
     ]
 
     written = await normalize_and_write_relations(
         relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1",
-        now=_NOW,
+        now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
 
     assert written == 1
@@ -105,7 +120,8 @@ async def test_drops_relation_when_one_side_unresolved():
 
     written = await normalize_and_write_relations(
         relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1",
-        now=_NOW,
+        now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
 
     assert written == 0
@@ -116,12 +132,17 @@ async def test_drops_relation_with_invalid_relation_type_without_crashing_batch(
     graph_client = FakeGraphClient()
     relations = [
         {"subject": "网关超时", "object": "认证模块", "relation_type": "非法类型"},
-        {"subject": "网关超时", "object": "认证模块", "relation_type": "RELATED_TO"},
+        {
+            "subject": "网关超时", "subject_type": "error_code",
+            "object": "认证模块", "object_type": "module",
+            "relation_type": "RELATED_TO",
+        },
     ]
 
     written = await normalize_and_write_relations(
         relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1",
-        now=_NOW,
+        now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
 
     assert written == 1
@@ -146,6 +167,8 @@ async def test_enqueues_unresolved_candidate_for_review_when_review_conn_provide
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
         review_conn=review_conn,
     )
 
@@ -158,11 +181,23 @@ async def test_enqueues_unresolved_candidate_for_review_when_review_conn_provide
 
 
 async def test_enqueues_invalid_relation_type_for_review_when_review_conn_provided():
+    """走 merge_relation 的 except ValueError 兜底分支（正则/保留名校验，
+    与"是否在已确认本体范围内"是两层独立校验，见 spec 决策 E.3）。这里
+    刻意在本用例范围内把 "非法类型" 临时加进已确认范围（confirmed_relation_types/
+    allowed_combinations 局部覆盖，只在本测试生效），让它先通过新加的
+    确认范围校验，再在 merge_relation 里被 FakeGraphClient 的固定白名单
+    拒绝——否则它会在更早的确认范围校验处就被拦下，reason 变成
+    "not_in_confirmed_ontology"，测不到 except ValueError 这层了。
+    """
     graph_client = FakeGraphClient()
     review_conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(review_conn)
     relations = [
-        {"subject": "网关超时", "object": "认证模块", "relation_type": "非法类型"}
+        {
+            "subject": "网关超时", "subject_type": "error_code",
+            "object": "认证模块", "object_type": "module",
+            "relation_type": "非法类型",
+        }
     ]
 
     written = await normalize_and_write_relations(
@@ -172,6 +207,8 @@ async def test_enqueues_invalid_relation_type_for_review_when_review_conn_provid
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        confirmed_relation_types=_CONFIRMED_RELATION_TYPES | {"非法类型"},
+        allowed_combinations=_ALLOWED_COMBINATIONS | {("error_code", "非法类型", "module")},
         review_conn=review_conn,
     )
 
@@ -199,7 +236,8 @@ async def test_does_not_enqueue_when_review_conn_not_provided():
 
     written = await normalize_and_write_relations(
         relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1",
-        now=_NOW,
+        now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
 
     assert written == 0
@@ -257,6 +295,8 @@ async def test_fuzzy_candidate_goes_to_review_queue_instead_of_auto_writing():
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
         review_conn=review_conn,
     )
 
@@ -292,6 +332,8 @@ async def test_totally_unresolved_candidate_still_uses_unresolved_reason_not_fuz
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
         review_conn=review_conn,
     )
 
@@ -363,12 +405,17 @@ async def test_writes_node_key_not_standard_name_after_term_was_renamed():
         ),
     ]
     relations = [
-        {"subject": "网关超时", "object": "认证模块", "relation_type": "RELATED_TO"}
+        {
+            "subject": "网关超时", "subject_type": "error_code",
+            "object": "认证模块", "object_type": "module",
+            "relation_type": "RELATED_TO",
+        }
     ]
 
     written = await normalize_and_write_relations(
         relations, terms=renamed_terms, graph_client=graph_client, source="a.md",
-        tenant_id="t1", now=_NOW,
+        tenant_id="t1", now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
 
     assert written == 1
@@ -396,8 +443,56 @@ async def test_enqueued_review_carries_evidence_from_relation_candidate():
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
         review_conn=review_conn,
     )
 
     pending = await list_pending_reviews(review_conn, tenant_id="t1")
     assert pending[0]["evidence"] == "文档中提到网关超时时会影响不存在的实体"
+
+
+async def test_downgrades_to_review_when_relation_type_not_confirmed():
+    graph_client = FakeGraphClient()
+    relations = [
+        {"subject": "网关超时", "subject_type": "error_code",
+         "object": "认证模块", "object_type": "module",
+         "relation_type": "UNCONFIRMED_TYPE"},
+    ]
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(conn)
+
+    written = await normalize_and_write_relations(
+        relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1",
+        now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS, review_conn=conn,
+    )
+
+    assert written == 0
+    assert graph_client.written == []
+    pending = await list_pending_reviews(conn, tenant_id="t1")
+    assert len(pending) == 1
+    assert pending[0]["reason"] == "not_in_confirmed_ontology"
+
+
+async def test_downgrades_to_review_when_type_combination_not_allowed():
+    graph_client = FakeGraphClient()
+    relations = [
+        {"subject": "网关超时", "subject_type": "module",  # 故意传反类型
+         "object": "认证模块", "object_type": "error_code",
+         "relation_type": "RELATED_TO"},
+    ]
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(conn)
+
+    written = await normalize_and_write_relations(
+        relations, terms=_TERMS, graph_client=graph_client, source="a.md", tenant_id="t1",
+        now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations={("error_code", "RELATED_TO", "module")},  # 只允许一个方向
+        review_conn=conn,
+    )
+
+    assert written == 0
+    pending = await list_pending_reviews(conn, tenant_id="t1")
+    assert len(pending) == 1
+    assert pending[0]["reason"] == "not_in_confirmed_ontology"

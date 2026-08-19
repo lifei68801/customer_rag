@@ -80,11 +80,25 @@ async def normalize_and_write_relations(
     source: str,
     tenant_id: str,
     now: datetime,
+    confirmed_relation_types: set[str],
+    allowed_combinations: set[tuple[str, str, str]],
     review_conn: aiosqlite.Connection | None = None,
 ) -> int:
     """候选关系归一化对齐术语表后写入图谱，返回成功写入数。
 
-    任一侧未能对齐标准术语、或关系类型不合法的候选不会自动入库。
+    任一侧未能对齐标准术语、关系类型不合法、或关系类型/实体类型组合不在
+    该租户已确认范围内的候选都不会自动入库。
+
+    confirmed_relation_types/allowed_combinations 是调用方（见
+    graph_extraction.py）预先查好的该租户 status="confirmed" 范围——
+    AUTO_MERGED 直写路径（两侧实体都精确对齐时）过去会跳过这层校验直接
+    写图谱，现在两侧对齐之后还要再过一遍这层检查：relation_type 必须在
+    confirmed_relation_types 里，且 (subject_type, relation_type,
+    object_type) 必须在 allowed_combinations 里，任一条件不满足就降级
+    转人工审核（reason="not_in_confirmed_ontology"），不再直接写图谱。
+    见 docs/superpowers/specs/2026-08-19-data-entry-unification-design.md
+    决策 E.3。
+
     review_conn 为可选项：
     - 不传（默认）：候选只记日志后丢弃，保持阶段3落地时的行为不变；
     - 传入：候选改为写入持久化的人工待审核队列（见 review_queue.py），
@@ -133,6 +147,8 @@ async def normalize_and_write_relations(
                         suggested_subject_standard_name=suggested_subject,
                         suggested_object_standard_name=suggested_object,
                         evidence=relation.get("evidence", ""),
+                        subject_type_candidate=relation.get("subject_type") or None,
+                        object_type_candidate=relation.get("object_type") or None,
                     )
                 continue
             logger.info(
@@ -151,6 +167,34 @@ async def normalize_and_write_relations(
                     source=source,
                     tenant_id=tenant_id,
                     evidence=relation.get("evidence", ""),
+                    subject_type_candidate=relation.get("subject_type") or None,
+                    object_type_candidate=relation.get("object_type") or None,
+                )
+            continue
+        subject_type = relation.get("subject_type", "")
+        object_type = relation.get("object_type", "")
+        combo = (subject_type, relation["relation_type"], object_type)
+        if relation["relation_type"] not in confirmed_relation_types or combo not in allowed_combinations:
+            logger.info(
+                "关系候选两侧已对齐术语表，但类型组合不在已确认本体范围内，转人工审核 "
+                "subject=%s(%s) object=%s(%s) relation_type=%s",
+                relation["subject"], subject_type, relation["object"], object_type,
+                relation["relation_type"],
+            )
+            if review_conn is not None:
+                await enqueue_for_review(
+                    review_conn,
+                    subject_candidate=relation["subject"],
+                    object_candidate=relation["object"],
+                    relation_type=relation["relation_type"],
+                    reason="not_in_confirmed_ontology",
+                    source=source,
+                    tenant_id=tenant_id,
+                    suggested_subject_standard_name=subject_std,
+                    suggested_object_standard_name=object_std,
+                    evidence=relation.get("evidence", ""),
+                    subject_type_candidate=subject_type or None,
+                    object_type_candidate=object_type or None,
                 )
             continue
         try:
