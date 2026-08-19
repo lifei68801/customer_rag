@@ -10,14 +10,10 @@ from app.graphrag.ontology_categories import (
     ExtraFieldSpec,
     InvalidExtraFieldTypeError,
     TermTypeCategory,
-    create_product_line,
     create_term_type,
-    delete_product_line,
     delete_term_type,
     ensure_categories_schema,
-    list_product_lines,
     list_term_types,
-    update_product_line,
     update_term_type,
 )
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
@@ -96,13 +92,6 @@ async def test_create_term_type_is_draft_only_not_visible_in_confirmed():
 
     assert [t.value for t in draft_result] == ["错误码"]
     assert confirmed_result == []
-
-
-async def test_create_and_list_product_line():
-    conn = await _conn()
-    await create_product_line(conn, value="示例产品线")
-
-    assert await list_product_lines(conn) == ["示例产品线"]
 
 
 async def test_create_duplicate_term_type_raises_conflict():
@@ -339,23 +328,6 @@ async def test_delete_term_type_referenced_only_by_confirmed_allowlist_succeeds(
     assert "客房" not in remaining
 
 
-async def test_delete_product_line_in_use_raises_conflict():
-    conn = await _conn()
-    await create_product_line(conn, value="示例产品线")
-    await conn.execute(
-        "CREATE TABLE terms (standard_name TEXT PRIMARY KEY, term_type TEXT NOT NULL, "
-        "product_line TEXT NOT NULL, aliases TEXT NOT NULL DEFAULT '[]')"
-    )
-    await conn.execute(
-        "INSERT INTO terms (standard_name, term_type, product_line) VALUES (?, ?, ?)",
-        ("错误码E502", "错误码", "示例产品线"),
-    )
-    await conn.commit()
-
-    with pytest.raises(CategoryInUseError):
-        await delete_product_line(conn, "示例产品线")
-
-
 async def test_ensure_categories_schema_migrates_legacy_term_types_table():
     """模拟 2026-08-15 之前的 ontology_term_types 表（value 主键，没有
     tenant_id 列），验证迁移把存量数据归到 tenant_id='default'，并且（这一步
@@ -438,7 +410,6 @@ async def test_update_term_type_allowlist_cascade_scoped_to_same_tenant_only():
     await create_term_type(conn, tenant_id="tenant_a", value="酒店", extra_fields=[])
     await create_term_type(conn, tenant_id="tenant_b", value="客房", extra_fields=[])
     await create_term_type(conn, tenant_id="tenant_b", value="酒店", extra_fields=[])
-    await create_product_line(conn, value="示例产品线")
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.execute(
         "INSERT INTO term_type_relation_allowlist "

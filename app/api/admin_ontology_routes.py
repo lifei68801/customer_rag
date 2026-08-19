@@ -14,13 +14,9 @@ from app.graphrag.ontology_categories import (
     CategoryNotFoundError,
     ExtraFieldSpec,
     InvalidExtraFieldTypeError,
-    create_product_line,
     create_term_type,
-    delete_product_line,
     delete_term_type,
-    list_product_lines,
     list_term_types,
-    update_product_line,
     update_term_type,
 )
 from app.graphrag.ontology_constraints import (
@@ -65,10 +61,6 @@ def _to_extra_field_specs(items: list[ExtraFieldSpecRequest]) -> list[ExtraField
 
 def _extra_field_spec_to_dict(spec: ExtraFieldSpec) -> dict:
     return {"name": spec.name, "value_type": spec.value_type}
-
-
-class ProductLineWriteRequest(BaseModel):
-    value: str
 
 
 @router.get("/{tenant_id}/term-types")
@@ -224,51 +216,6 @@ async def migrate_tenant_term_type(
     return MigrateTermTypeResponse(
         terms_migrated=terms_migrated, graph_nodes_migrated=graph_nodes_migrated
     )
-
-
-@router.get("/product-lines")
-async def list_product_line_categories(
-    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-) -> dict:
-    return {"product_lines": await list_product_lines(review_conn)}
-
-
-@router.post("/product-lines")
-async def create_product_line_category(
-    payload: ProductLineWriteRequest,
-    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-) -> dict:
-    try:
-        await create_product_line(review_conn, value=payload.value)
-    except CategoryNameConflictError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {"value": payload.value}
-
-
-@router.put("/product-lines/{value}")
-async def update_product_line_category(
-    value: str,
-    payload: ProductLineWriteRequest,
-    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-) -> dict:
-    try:
-        await update_product_line(review_conn, value=value, new_value=payload.value)
-    except CategoryNotFoundError:
-        raise HTTPException(status_code=404, detail="产品线不存在")
-    except CategoryNameConflictError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {"value": payload.value}
-
-
-@router.delete("/product-lines/{value}")
-async def delete_product_line_category(
-    value: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn)
-) -> dict:
-    try:
-        await delete_product_line(review_conn, value)
-    except CategoryInUseError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    return {"deleted": True}
 
 
 class RelationTypeWriteRequest(BaseModel):

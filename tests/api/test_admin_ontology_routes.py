@@ -246,13 +246,9 @@ def test_update_term_type_still_succeeds_when_index_creation_fails(client):
 
 
 async def test_delete_term_type_in_use_returns_409(client, conn_for_testing):
-    # Fixture setup: create term_type and product_line categories
+    # Fixture setup: create term_type category
     client.post(
         "/api/admin/ontology/default/term-types", json={"value": "错误码", "extra_fields": []},
-        headers={"Authorization": "Bearer x"},
-    )
-    client.post(
-        "/api/admin/ontology/product-lines", json={"value": "示例产品线"},
         headers={"Authorization": "Bearer x"},
     )
 
@@ -440,59 +436,6 @@ def test_migrate_relation_type_route_maps_value_error_to_400(client):
     )
 
     assert resp.status_code == 400
-
-
-def test_create_update_delete_product_line(client):
-    resp = client.post(
-        "/api/admin/ontology/product-lines", json={"value": "核心平台"},
-        headers={"Authorization": "Bearer x"},
-    )
-    assert resp.status_code == 200
-
-    resp = client.put(
-        "/api/admin/ontology/product-lines/核心平台", json={"value": "旗舰平台"},
-        headers={"Authorization": "Bearer x"},
-    )
-    assert resp.status_code == 200
-    assert resp.json() == {"value": "旗舰平台"}
-
-    resp = client.get("/api/admin/ontology/product-lines", headers={"Authorization": "Bearer x"})
-    assert resp.json() == {"product_lines": ["旗舰平台"]}
-
-    resp = client.delete(
-        "/api/admin/ontology/product-lines/旗舰平台", headers={"Authorization": "Bearer x"}
-    )
-    assert resp.status_code == 200
-
-    resp = client.get("/api/admin/ontology/product-lines", headers={"Authorization": "Bearer x"})
-    assert resp.json() == {"product_lines": []}
-
-
-async def test_delete_product_line_in_use_returns_409(client, conn_for_testing):
-    client.post(
-        "/api/admin/ontology/default/term-types", json={"value": "错误码", "extra_fields": []},
-        headers={"Authorization": "Bearer x"},
-    )
-    client.post(
-        "/api/admin/ontology/product-lines", json={"value": "核心平台"},
-        headers={"Authorization": "Bearer x"},
-    )
-
-    # Directly insert a term into the database (admin_terms_routes.py is Task 4's responsibility,
-    # so we bypass it by inserting directly). This establishes the "product_line in use" condition.
-    # Use the same connection that the client fixture is using, not a new one.
-    await conn_for_testing["conn"].execute(
-        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, product_line, extra_properties) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("default", "x", "x", "[]", "错误码", "核心平台", "{}"),
-    )
-    await conn_for_testing["conn"].commit()
-
-    resp = client.delete(
-        "/api/admin/ontology/product-lines/核心平台", headers={"Authorization": "Bearer x"}
-    )
-
-    assert resp.status_code == 409
 
 
 def test_term_type_routes_are_scoped_to_tenant_in_url(client):

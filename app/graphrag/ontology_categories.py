@@ -15,9 +15,6 @@ CREATE TABLE IF NOT EXISTS ontology_term_types (
     status            TEXT NOT NULL,
     PRIMARY KEY (tenant_id, value, status)
 );
-CREATE TABLE IF NOT EXISTS ontology_product_lines (
-    value TEXT PRIMARY KEY
-);
 """
 
 _VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]"})
@@ -30,7 +27,7 @@ class CategoryNotFoundError(Exception):
 
 
 class CategoryInUseError(Exception):
-    """删除的分类枚举值仍被 terms 表引用，terms.term_type/product_line 是硬约束外键，
+    """删除的分类枚举值仍被 terms 表引用，terms.term_type 是硬约束外键，
     删除在用的值会让已有术语行结构失效，必须阻止（不同于关系类型删除——那只是写入
     白名单，不是任何表的外键约束对象，见 ontology_relations.py）。"""
 
@@ -201,6 +198,7 @@ async def _migrate_extra_fields_value_shape_if_needed(conn: aiosqlite.Connection
 
 
 async def ensure_categories_schema(conn: aiosqlite.Connection) -> None:
+    await conn.execute("DROP TABLE IF EXISTS ontology_product_lines")
     await _migrate_term_types_table_if_needed(conn)
     await _migrate_term_types_add_status_if_needed(conn)
     await conn.executescript(_SCHEMA_SQL)
@@ -228,12 +226,6 @@ async def list_term_types(
     return [_row_to_term_type(row) for row in rows]
 
 
-async def list_product_lines(conn: aiosqlite.Connection) -> list[str]:
-    cursor = await conn.execute("SELECT value FROM ontology_product_lines ORDER BY value")
-    rows = await cursor.fetchall()
-    return [row[0] for row in rows]
-
-
 async def create_term_type(
     conn: aiosqlite.Connection,
     tenant_id: str,
@@ -251,16 +243,6 @@ async def create_term_type(
         )
     except aiosqlite.IntegrityError:
         raise CategoryNameConflictError(f"{value!r} 已经是该租户草稿里的分类，不能重复创建")
-    await conn.commit()
-
-
-async def create_product_line(conn: aiosqlite.Connection, *, value: str) -> None:
-    try:
-        await conn.execute(
-            "INSERT INTO ontology_product_lines (value) VALUES (?)", (value,)
-        )
-    except aiosqlite.IntegrityError:
-        raise CategoryNameConflictError(f"{value!r} 已经是已有产品线，不能重复创建")
     await conn.commit()
 
 
@@ -307,27 +289,6 @@ async def update_term_type(
     await conn.commit()
 
 
-async def update_product_line(
-    conn: aiosqlite.Connection, *, value: str, new_value: str
-) -> None:
-    cursor = await conn.execute(
-        "SELECT 1 FROM ontology_product_lines WHERE value = ?", (value,)
-    )
-    if await cursor.fetchone() is None:
-        raise CategoryNotFoundError(f"产品线不存在: {value}")
-    try:
-        await conn.execute(
-            "UPDATE ontology_product_lines SET value = ? WHERE value = ?", (new_value, value)
-        )
-    except aiosqlite.IntegrityError:
-        raise CategoryNameConflictError(f"{new_value!r} 已经是已有产品线，不能重复使用")
-    if new_value != value:
-        await conn.execute(
-            "UPDATE terms SET product_line = ? WHERE product_line = ?", (new_value, value)
-        )
-    await conn.commit()
-
-
 async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: str) -> None:
     """terms 表引用检查范围不变（真实术语只引用已确认类型，这个检查天然
     对应"已确认版本是否在用"）；term_type_relation_allowlist 引用检查加
@@ -351,15 +312,4 @@ async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: st
         "DELETE FROM ontology_term_types WHERE tenant_id = ? AND value = ? AND status = 'draft'",
         (tenant_id, value),
     )
-    await conn.commit()
-
-
-async def delete_product_line(conn: aiosqlite.Connection, value: str) -> None:
-    cursor = await conn.execute(
-        "SELECT COUNT(*) FROM terms WHERE product_line = ?", (value,)
-    )
-    row = await cursor.fetchone()
-    if row[0] > 0:
-        raise CategoryInUseError(f"产品线 {value!r} 仍被 {row[0]} 条术语引用，无法删除")
-    await conn.execute("DELETE FROM ontology_product_lines WHERE value = ?", (value,))
     await conn.commit()
