@@ -90,8 +90,37 @@ _TERMS = [
 
 _RESOLVABLE_RELATION_JSON = (
     '{"relations": [{"subject": "网关超时示例", '
-    '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+    '"object": "示例认证模块", "relation_type": "RELATED_TO", '
+    '"subject_type": "error_code", "object_type": "module"}]}'
 )
+
+
+async def _confirm_error_code_module_related_to_ontology(
+    conn: aiosqlite.Connection, tenant_id: str = "t1"
+) -> None:
+    """把 conn 上该租户的本体 schema 建到"已确认"状态——_maybe_extract_
+    graph_relations 现在会先查 is_ontology_confirmed()（未确认则跳过图谱
+    抽取），再查 status="confirmed" 的关系类型/实体类型/允许组合传给
+    extract_and_write_graph_relations()。默认接入模式（extraction）下
+    checkout_draft() 会播种 10 种通用关系类型（含本文件用到的
+    RELATED_TO），额外补上 error_code/module 两种实体类型和它们之间的
+    RELATED_TO 允许组合，再一并确认——这是 _RESOLVABLE_RELATION_JSON 这条
+    候选关系（网关超时示例[error_code] --RELATED_TO--> 示例认证模块
+    [module]）能被放行、写进图谱所需的最小 schema。
+    """
+    from app.graphrag.ontology_categories import create_term_type
+    from app.graphrag.ontology_constraints import add_allowed_combination
+    from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
+
+    await ensure_ontology_schema(conn)
+    await checkout_draft(conn, tenant_id)
+    await create_term_type(conn, tenant_id, value="error_code")
+    await create_term_type(conn, tenant_id, value="module")
+    await add_allowed_combination(
+        conn, tenant_id,
+        subject_term_type="error_code", relation_type="RELATED_TO", object_term_type="module",
+    )
+    await confirm_ontology(conn, tenant_id)
 
 
 def _llm_registry_returning(text: str) -> ProviderRegistry:
@@ -763,6 +792,7 @@ def test_upload_with_build_graph_true_runs_graph_extraction(
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir()
     graph_client = SpyGraphClient()
+    asyncio.run(_confirm_error_code_module_related_to_ontology(review_conn))
     _upload_overrides(
         session_store,
         ingestion_conn,

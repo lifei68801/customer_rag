@@ -2,8 +2,20 @@ import aiosqlite
 
 from app.config.settings import Settings
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
 from app.ingestion.main import main
+
+
+async def _confirm_default_ontology(conn: aiosqlite.Connection, tenant_id: str = "t1") -> None:
+    """让 is_ontology_confirmed(conn, tenant_id) 返回 True——checkout_draft()
+    在默认接入模式（extraction）下会播种 10 种通用关系类型（含本文件测试
+    用到的 RELATED_TO），直接确认即可，本文件的测试用例都不依赖具体的
+    term_type/allowed_combination 组合校验（要么候选本身就没能对齐术语表，
+    要么根本没有走到 LLM 抽取那一步）。"""
+    await ensure_ontology_schema(conn)
+    await checkout_draft(conn, tenant_id)
+    await confirm_ontology(conn, tenant_id)
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
@@ -122,6 +134,7 @@ async def test_main_sends_unresolved_graph_candidates_to_injected_review_conn(
     graph_client = FakeGraphClient()
     review_conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(review_conn)
+    await _confirm_default_ontology(review_conn)
 
     await main(
         directory=tmp_path,
@@ -169,6 +182,7 @@ async def test_main_syncs_ontology_terms_into_graph_when_build_graph(tmp_path):
     graph_client = FakeGraphClient()
     review_conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(review_conn)
+    await _confirm_default_ontology(review_conn)
 
     await main(
         directory=tmp_path,

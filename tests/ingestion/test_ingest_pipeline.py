@@ -4,6 +4,9 @@ import aiosqlite
 import pytest
 
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import create_term_type
+from app.graphrag.ontology_constraints import add_allowed_combination
+from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
 from app.ingestion.pipeline import (
     ingest_directory,
@@ -17,6 +20,28 @@ from app.providers.base import ProviderCapability, ProviderRequest, ProviderResu
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
 from app.retrieval.vector_store import InMemoryVectorStore
+
+
+async def _confirm_error_code_module_related_to_ontology(
+    conn: aiosqlite.Connection, tenant_id: str = "t1"
+) -> None:
+    """在 conn 上把该租户的本体 schema 建到"已确认"状态：默认接入模式
+    （extraction）下 checkout_draft() 会播种 10 种通用关系类型（其中
+    包含本文件测试用到的 RELATED_TO），额外补上 error_code/module 两种
+    实体类型和它们之间的 RELATED_TO 允许组合，再一并确认——这是本文件
+    测试用的候选关系（网关超时示例[error_code] --RELATED_TO--> 示例
+    认证模块[module]）能被 is_ontology_confirmed 放行、并通过
+    normalize_and_write_relations 的确认范围校验所需的最小 schema。
+    """
+    await ensure_ontology_schema(conn)
+    await checkout_draft(conn, tenant_id)
+    await create_term_type(conn, tenant_id, value="error_code")
+    await create_term_type(conn, tenant_id, value="module")
+    await add_allowed_combination(
+        conn, tenant_id,
+        subject_term_type="error_code", relation_type="RELATED_TO", object_term_type="module",
+    )
+    await confirm_ontology(conn, tenant_id)
 
 
 class FakeEmbeddingProvider:
@@ -151,6 +176,73 @@ class FakeGraphClient:
         self.deleted_sources.append((source, tenant_id))
 
 
+async def test_ingest_markdown_file_skips_graph_extraction_when_ontology_unconfirmed(
+    tmp_path,
+):
+    """该租户本体 schema 未确认（is_ontology_confirmed 为 False）时跳过
+    图谱抽取这一步，但不影响向量化写入路径——两者是 _ingest_chunks 里
+    asyncio.gather 的两条独立分支。这里搭建一个只建表、不写入任何
+    confirmed 状态 tenant_relation_types 行的 graph_review_conn（
+    is_ontology_confirmed 应返回 False），断言 fake_graph_client 完全
+    没有收到 delete_relations_by_source/merge_relation 调用，同时向量库
+    那一侧照常写入。见
+    docs/superpowers/specs/2026-08-19-data-entry-unification-design.md 决策 E.4。
+    """
+    md_file = tmp_path / "network.md"
+    md_file.write_text(
+        "## 网络故障\n网关超时示例通常与示例认证模块相关\n", encoding="utf-8"
+    )
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        FixedLLMProvider(
+            '{"relations": [{"subject": "网关超时示例", '
+            '"object": "示例认证模块", "relation_type": "RELATED_TO", '
+            '"subject_type": "error_code", "object_type": "module"}]}'
+        ),
+    )
+    terms = [
+        Term(
+            tenant_id="t1", node_key="示例错误码E502",
+            standard_name="示例错误码E502", aliases=["网关超时示例"],
+            term_type="error_code", product_line="示例产品线",
+        ),
+        Term(
+            tenant_id="t1", node_key="示例登录模块",
+            standard_name="示例登录模块", aliases=["示例认证模块"],
+            term_type="module", product_line="示例产品线",
+        ),
+    ]
+    graph_client = FakeGraphClient()
+    graph_review_conn = await aiosqlite.connect(":memory:")
+    await ensure_ontology_schema(graph_review_conn)
+    # 只建表，不 checkout_draft/confirm——该租户没有任何 confirmed 状态的
+    # tenant_relation_types 行，is_ontology_confirmed 应返回 False。
+
+    count = await ingest_markdown_file(
+        md_file,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        tenant_id="t1",
+        graph_llm_registry=llm_registry,
+        graph_llm_provider_name="llm",
+        graph_terms=terms,
+        graph_client=graph_client,
+        graph_review_conn=graph_review_conn,
+    )
+
+    assert count == 1
+    assert graph_client.deleted_sources == []
+    assert graph_client.written == []
+
+
 async def test_ingest_markdown_file_splits_only_the_embedding_path_not_graph_extraction(
     tmp_path,
 ):
@@ -171,7 +263,8 @@ async def test_ingest_markdown_file_splits_only_the_embedding_path_not_graph_ext
         "llm",
         FixedLLMProvider(
             '{"relations": [{"subject": "网关超时示例", '
-            '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+            '"object": "示例认证模块", "relation_type": "RELATED_TO", '
+            '"subject_type": "error_code", "object_type": "module"}]}'
         ),
     )
     terms = [
@@ -187,6 +280,8 @@ async def test_ingest_markdown_file_splits_only_the_embedding_path_not_graph_ext
         ),
     ]
     graph_client = FakeGraphClient()
+    graph_review_conn = await aiosqlite.connect(":memory:")
+    await _confirm_error_code_module_related_to_ontology(graph_review_conn)
 
     count = await ingest_markdown_file(
         md_file,
@@ -198,6 +293,7 @@ async def test_ingest_markdown_file_splits_only_the_embedding_path_not_graph_ext
         graph_llm_provider_name="llm",
         graph_terms=terms,
         graph_client=graph_client,
+        graph_review_conn=graph_review_conn,
     )
 
     # 向量库那一侧被切分成了多条记录
@@ -236,7 +332,8 @@ async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_p
         "llm",
         FixedLLMProvider(
             '{"relations": [{"subject": "网关超时示例", '
-            '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+            '"object": "示例认证模块", "relation_type": "RELATED_TO", '
+            '"subject_type": "error_code", "object_type": "module"}]}'
         ),
     )
     terms = [
@@ -258,6 +355,8 @@ async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_p
         ),
     ]
     graph_client = FakeGraphClient()
+    graph_review_conn = await aiosqlite.connect(":memory:")
+    await _confirm_error_code_module_related_to_ontology(graph_review_conn)
 
     await ingest_markdown_file(
         md_file,
@@ -269,6 +368,7 @@ async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_p
         graph_llm_provider_name="llm",
         graph_terms=terms,
         graph_client=graph_client,
+        graph_review_conn=graph_review_conn,
     )
 
     assert graph_client.written == [
@@ -317,6 +417,7 @@ async def test_ingest_markdown_file_sends_unresolved_candidates_to_review_queue(
     graph_client = FakeGraphClient()
     review_conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(review_conn)
+    await _confirm_error_code_module_related_to_ontology(review_conn)
 
     await ingest_markdown_file(
         md_file,

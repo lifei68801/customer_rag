@@ -8,6 +8,7 @@ import aiosqlite
 from app.graphrag.llm_extractor import extract_candidate_relations
 from app.graphrag.normalization import GraphWriteClientProtocol, normalize_and_write_relations
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_constraints import AllowedCombination
 from app.ingestion.chunking import Chunk
 from app.providers.registry import ProviderRegistry
 
@@ -48,6 +49,9 @@ async def extract_and_write_graph_relations(
     source: str,
     tenant_id: str,
     now: datetime,
+    relation_types: list[str],
+    term_types: list[str],
+    allowed_combinations: list[AllowedCombination],
     review_conn: aiosqlite.Connection | None = None,
     extract_timeout_sec: float = 30.0,
     batch_max_chars: int = 3000,
@@ -59,6 +63,13 @@ async def extract_and_write_graph_relations(
     这是可选步骤（未接入 ingest_markdown_file/ingest_pdf_file 的默认路径），
     调用方需要显式提供 llm_registry/terms/graph_client 才会执行；不提供
     则摄取流程只做向量化写入，与阶段2的行为保持完全兼容。
+
+    relation_types/term_types/allowed_combinations 是该租户当前已确认
+    （status="confirmed"）的本体 schema，调用方（pipeline.py::
+    _maybe_extract_graph_relations）负责查好再传进来——这个函数本身不碰
+    ontology 相关的数据库表，只负责把它们转发给 extract_candidate_relations
+    （约束抽取范围）和 normalize_and_write_relations（约束写入范围）。见
+    docs/superpowers/specs/2026-08-19-data-entry-unification-design.md 决策 E。
 
     写入前先删掉 source+tenant_id 这个文档、这个租户之前写过的全部关系边
     （delete_relations_by_source），再重新抽取写入——和
@@ -81,6 +92,10 @@ async def extract_and_write_graph_relations(
     await graph_client.delete_relations_by_source(source, tenant_id=tenant_id)
     batches = _batch_chunks_by_char_budget(chunks, max_chars=batch_max_chars)
     semaphore = asyncio.Semaphore(max_concurrency)
+    confirmed_relation_types_set = set(relation_types)
+    allowed_combinations_set = {
+        (c.subject_term_type, c.relation_type, c.object_term_type) for c in allowed_combinations
+    }
 
     async def _process_batch(batch: list[Chunk]) -> list[dict[str, str]]:
         async with semaphore:
@@ -88,6 +103,9 @@ async def extract_and_write_graph_relations(
                 [chunk.text for chunk in batch],
                 llm_registry=llm_registry,
                 llm_provider_name=llm_provider_name,
+                relation_types=relation_types,
+                term_types=term_types,
+                allowed_combinations=allowed_combinations,
                 timeout_sec=extract_timeout_sec,
             )
 
@@ -104,6 +122,8 @@ async def extract_and_write_graph_relations(
             source=source,
             tenant_id=tenant_id,
             now=now,
+            confirmed_relation_types=confirmed_relation_types_set,
+            allowed_combinations=allowed_combinations_set,
             review_conn=review_conn,
         )
     return total_written

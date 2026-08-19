@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -8,6 +9,10 @@ import aiosqlite
 
 from app.graphrag.normalization import GraphWriteClientProtocol
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import list_term_types
+from app.graphrag.ontology_constraints import list_allowed_combinations
+from app.graphrag.ontology_lifecycle import is_ontology_confirmed
+from app.graphrag.ontology_relations import list_relation_types
 from app.ingestion.chunking import Chunk, chunk_markdown, split_oversized_chunks
 from app.ingestion.docx_parser import parse_docx
 from app.ingestion.graph_extraction import extract_and_write_graph_relations
@@ -17,6 +22,8 @@ from app.ingestion.ticket_parser import TicketColumnMapping, parse_ticket_csv
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
 from app.providers.registry import ProviderRegistry
 from app.retrieval.vector_store import VectorRecord, VectorStore
+
+logger = logging.getLogger(__name__)
 
 
 async def _embed_and_upsert(
@@ -73,6 +80,12 @@ async def _maybe_extract_graph_relations(
 
     graph_review_conn 独立于这四项之外是可选项：未能对齐术语表的候选
     关系会转入人工待审核队列而非直接丢弃（见 normalize_and_write_relations）。
+
+    该租户本体 schema 未确认（is_ontology_confirmed 为 False）时同样跳过
+    图谱抽取这一步——但仅在 graph_review_conn 可用时才能做这个判断（它
+    同时是 ontology 相关表所在的连接）；graph_review_conn 为 None 时无法
+    判断确认状态，保持跳过判断前的既有行为（不额外拦截）。见
+    docs/superpowers/specs/2026-08-19-data-entry-unification-design.md 决策 E.4。
     """
     if not (
         graph_llm_registry
@@ -81,6 +94,23 @@ async def _maybe_extract_graph_relations(
         and graph_client is not None
     ):
         return
+    if graph_review_conn is not None and not await is_ontology_confirmed(graph_review_conn, tenant_id):
+        logger.info(
+            "租户 %r 本体 schema 尚未确认，跳过文档 %r 的知识图谱抽取", tenant_id, source
+        )
+        return
+    relation_types = (
+        [rt.relation_type for rt in await list_relation_types(graph_review_conn, tenant_id, status="confirmed")]
+        if graph_review_conn is not None else []
+    )
+    term_types = (
+        [tt.value for tt in await list_term_types(graph_review_conn, tenant_id, status="confirmed")]
+        if graph_review_conn is not None else []
+    )
+    allowed_combinations = (
+        await list_allowed_combinations(graph_review_conn, tenant_id, status="confirmed")
+        if graph_review_conn is not None else []
+    )
     await extract_and_write_graph_relations(
         chunks,
         llm_registry=graph_llm_registry,
@@ -90,6 +120,9 @@ async def _maybe_extract_graph_relations(
         source=source,
         tenant_id=tenant_id,
         now=now,
+        relation_types=relation_types,
+        term_types=term_types,
+        allowed_combinations=allowed_combinations,
         review_conn=graph_review_conn,
     )
 

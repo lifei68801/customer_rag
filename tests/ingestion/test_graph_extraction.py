@@ -4,6 +4,7 @@ from datetime import datetime
 import aiosqlite
 
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_constraints import AllowedCombination
 from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
 from app.ingestion.graph_extraction import (
     _batch_chunks_by_char_budget,
@@ -14,6 +15,17 @@ from app.providers.base import ProviderCapability, ProviderRequest, ProviderResu
 from app.providers.registry import ProviderRegistry
 
 _NOW = datetime(2026, 8, 12, 12, 0, 0)
+
+# 测试场景里 FakeGraphClient/mock 断言涉及的关系类型/实体类型——所有测试
+# 用例的候选关系都是 RELATED_TO，两侧实体类型是 error_code/module（见
+# 上面 _TERMS），这里给一个宽松覆盖集合，模式与 Task 6
+# tests/graphrag/test_normalization.py 相同。
+_RELATION_TYPES = ["RELATED_TO"]
+_TERM_TYPES = ["error_code", "module"]
+_ALLOWED_COMBINATIONS = [
+    AllowedCombination(subject_term_type="error_code", relation_type="RELATED_TO", object_term_type="module"),
+    AllowedCombination(subject_term_type="module", relation_type="RELATED_TO", object_term_type="error_code"),
+]
 
 _TERMS = [
     Term(
@@ -87,7 +99,8 @@ async def test_extracts_normalizes_and_writes_relations_from_chunks():
         "llm",
         FixedLLMProvider(
             '{"relations": [{"subject": "网关超时示例", '
-            '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+            '"object": "示例认证模块", "relation_type": "RELATED_TO", '
+            '"subject_type": "error_code", "object_type": "module"}]}'
         ),
     )
     graph_client = FakeGraphClient()
@@ -102,6 +115,9 @@ async def test_extracts_normalizes_and_writes_relations_from_chunks():
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        relation_types=_RELATION_TYPES,
+        term_types=_TERM_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
 
     assert written == 1
@@ -143,6 +159,9 @@ async def test_unresolved_candidate_goes_to_review_queue_when_review_conn_provid
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        relation_types=_RELATION_TYPES,
+        term_types=_TERM_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
         review_conn=review_conn,
     )
 
@@ -161,7 +180,8 @@ async def test_reingesting_same_source_clears_stale_relations_no_longer_present(
         "llm",
         FixedLLMProvider(
             '{"relations": [{"subject": "网关超时示例", '
-            '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+            '"object": "示例认证模块", "relation_type": "RELATED_TO", '
+            '"subject_type": "error_code", "object_type": "module"}]}'
         ),
     )
     graph_client = FakeGraphClient()
@@ -175,6 +195,9 @@ async def test_reingesting_same_source_clears_stale_relations_no_longer_present(
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        relation_types=_RELATION_TYPES,
+        term_types=_TERM_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
     assert len(graph_client.written) == 1
 
@@ -194,6 +217,9 @@ async def test_reingesting_same_source_clears_stale_relations_no_longer_present(
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        relation_types=_RELATION_TYPES,
+        term_types=_TERM_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
 
     assert graph_client.written == []
@@ -211,7 +237,8 @@ async def test_reingesting_same_source_different_tenant_does_not_delete_other_te
         "llm",
         FixedLLMProvider(
             '{"relations": [{"subject": "网关超时示例", '
-            '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+            '"object": "示例认证模块", "relation_type": "RELATED_TO", '
+            '"subject_type": "error_code", "object_type": "module"}]}'
         ),
     )
     graph_client = FakeGraphClient()
@@ -225,6 +252,9 @@ async def test_reingesting_same_source_different_tenant_does_not_delete_other_te
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        relation_types=_RELATION_TYPES,
+        term_types=_TERM_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
     assert len(graph_client.written) == 1
 
@@ -241,6 +271,9 @@ async def test_reingesting_same_source_different_tenant_does_not_delete_other_te
         source="a.md",
         tenant_id="t2",
         now=_NOW,
+        relation_types=_RELATION_TYPES,
+        term_types=_TERM_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
 
     assert graph_client.written == [
@@ -316,6 +349,9 @@ async def test_extract_and_write_graph_relations_respects_max_concurrency():
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        relation_types=_RELATION_TYPES,
+        term_types=_TERM_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
         batch_max_chars=3000,
         max_concurrency=4,
     )
@@ -332,7 +368,8 @@ async def test_one_failing_batch_does_not_prevent_other_batches_from_writing():
                 raise RuntimeError("模拟这一批调用失败")
             return ProviderResult(
                 text='{"relations": [{"subject": "网关超时示例", '
-                '"object": "示例认证模块", "relation_type": "RELATED_TO"}]}'
+                '"object": "示例认证模块", "relation_type": "RELATED_TO", '
+            '"subject_type": "error_code", "object_type": "module"}]}'
             )
 
     llm_registry = ProviderRegistry()
@@ -352,6 +389,9 @@ async def test_one_failing_batch_does_not_prevent_other_batches_from_writing():
         source="a.md",
         tenant_id="t1",
         now=_NOW,
+        relation_types=_RELATION_TYPES,
+        term_types=_TERM_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
         batch_max_chars=100,
     )
 
