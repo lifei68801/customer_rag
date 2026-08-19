@@ -210,6 +210,7 @@ export function GraphReviewsPage() {
     selectedReviews.every(
       (review) =>
         review.reason !== 'invalid_relation_type' &&
+        review.reason !== 'not_in_confirmed_ontology' &&
         drafts[review.review_id]?.subject &&
         drafts[review.review_id]?.object,
     )
@@ -409,11 +410,19 @@ export function GraphReviewsPage() {
     const review = pending.find((r) => r.review_id === reviewId)
     const suggestedType =
       (field === 'subject' ? review?.subject_type_candidate : review?.object_type_candidate) ?? ''
+    // suggestedType 是 LLM 抽取阶段给出的建议值，从未针对该租户当前已确认
+    // 的实体类型枚举校验过——如果不在 termTypeOptions 里，<select> 会渲染出
+    // 一个没有匹配项的值（看起来空白/不对），但"下一步"按钮的禁用条件只看
+    // !createDraft.termType（非空字符串就算通过），用户仍能继续、最终在
+    // 提交时收到一个莫名其妙的 400。这里做同款 clamp：只有确认在当前枚举
+    // 里才采用建议值，否则退回空字符串，让下拉框的实际值和按钮的可点状态
+    // 不会互相矛盾。
+    const clampedSuggestedType = termTypeOptions.includes(suggestedType) ? suggestedType : ''
     setCreateDraft({
       reviewId,
       field,
       standardName: query,
-      termType: suggestedType,
+      termType: clampedSuggestedType,
       productLine: '',
       step: 'form',
       submitting: false,
@@ -638,6 +647,11 @@ export function GraphReviewsPage() {
                 关系类型不合法，无法批准，请驳回。
               </p>
             )}
+            {review.reason === 'not_in_confirmed_ontology' && (
+              <p className="text-xs text-status-error">
+                关系类型或实体类型组合不在已确认本体范围内，无法批准，请驳回。
+              </p>
+            )}
             <p className="text-xs text-ink-soft">来源文档：{review.source || '（无记录）'}</p>
             {review.evidence && (
               <p className="border-l-2 border-ink pl-2 text-sm italic text-ink">
@@ -710,6 +724,7 @@ export function GraphReviewsPage() {
                   !drafts[review.review_id]?.subject ||
                   !drafts[review.review_id]?.object ||
                   review.reason === 'invalid_relation_type' ||
+                  review.reason === 'not_in_confirmed_ontology' ||
                   processingId !== null ||
                   batchProcessing
                 }
