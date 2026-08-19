@@ -100,7 +100,7 @@ async def test_ensure_terms_schema_migrates_legacy_table_to_tenant_scoped():
     assert terms[0].aliases == ["网关超时"]
 
 
-async def test_ensure_terms_schema_drops_legacy_product_line_column(tmp_path):
+async def test_ensure_terms_schema_drops_legacy_product_line_column():
     """模拟一个已经是 tenant_id 新结构、但还带着 product_line 列的老库（
     本次改造前的真实状态），验证 ensure_terms_schema 会把这一列原地删掉，
     且不影响其余数据。"""
@@ -118,7 +118,8 @@ async def test_ensure_terms_schema_drops_legacy_product_line_column(tmp_path):
     )
     await conn.execute(
         "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
-        "product_line, extra_properties) VALUES ('t1', 'k1', 'n1', '[]', 'tt', 'pl', '{}')"
+        "product_line, extra_properties) VALUES "
+        "('t1', 'k1', 'n1', '[]', 'tt', 'pl', '{\"severity\": \"high\"}')"
     )
     await conn.commit()
 
@@ -129,6 +130,8 @@ async def test_ensure_terms_schema_drops_legacy_product_line_column(tmp_path):
     assert "product_line" not in columns
     term = await get_term(conn, "t1", "n1")
     assert term.standard_name == "n1"
+    assert term.term_type == "tt"
+    assert term.extra_properties == {"severity": "high"}
 
 
 async def test_ensure_terms_schema_migration_is_idempotent():

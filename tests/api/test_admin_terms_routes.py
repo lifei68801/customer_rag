@@ -614,7 +614,6 @@ def test_create_term_with_typed_extra_properties_returns_200(terms_conn):
 
 
 def test_create_term_rejects_extra_property_wrong_type_returns_400(terms_conn):
-    # 见上一个测试的说明：terms_conn fixture 已经注册过产品线 "p"，这里不重复创建。
     from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
     asyncio.run(
         create_term_type(
