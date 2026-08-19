@@ -259,6 +259,13 @@ def validate_structured_filter_query(
 
 _CORE_TERM_FIELDS = frozenset({"tenant_id", "node_key", "standard_name", "type"})
 
+# Neo4j 历史 :Term 节点上残留的 product_line 属性不清理（这是本次移除 product_line
+# 概念时的既定决定，图谱侧的历史数据不做批量迁移），但也不能以"实体自定义属性"的
+# 身份泄露进结构化查询结果、进而出现在 LLM 上下文里——这里显式排除，跟
+# _CORE_TERM_FIELDS 分开定义是为了保留语义区分：前者是当前仍然活跃的核心字段，
+# 后者是历史遗留、已经不该存在但可能仍物理存在于旧数据上的字段。
+_LEGACY_RESIDUAL_NODE_PROPERTIES = frozenset({"product_line"})
+
 
 async def run_structured_filter_query(
     raw_args: dict,
@@ -301,7 +308,9 @@ async def run_structured_filter_query(
                 "node_key": row["node_key"],
                 "term_type": row["term_type"],
                 "extra_properties": {
-                    k: v for k, v in row["all_properties"].items() if k not in _CORE_TERM_FIELDS
+                    k: v
+                    for k, v in row["all_properties"].items()
+                    if k not in _CORE_TERM_FIELDS and k not in _LEGACY_RESIDUAL_NODE_PROPERTIES
                 },
             }
             for row in result

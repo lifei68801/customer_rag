@@ -532,6 +532,39 @@ async def test_run_structured_filter_query_formats_matched_results():
     assert graph_client.last_tenant_id == "muji"
 
 
+async def test_run_structured_filter_query_excludes_legacy_product_line_residue_from_extra_properties():
+    """Neo4j 上预存在的 :Term 节点可能还残留着移除前写入的 product_line 属性（既定
+    决定：不做批量迁移清理）。properties(anchor) 会原样把它读出来，混进
+    all_properties——如果只用 _CORE_TERM_FIELDS 过滤，它会被当成"实体自定义属性"
+    泄露进 extra_properties、进而出现在 LLM 上下文里。这里断言它被
+    _LEGACY_RESIDUAL_NODE_PROPERTIES 挡住，同时真正的自定义属性不受影响。"""
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    graph_client = _FakeGraphClient(rows=[
+        {"standard_name": "圆角收纳盒 500ml", "node_key": "SKU:1", "term_type": "SKU",
+         "all_properties": {
+             "tenant_id": "muji", "node_key": "SKU:1", "standard_name": "圆角收纳盒 500ml",
+             "type": "SKU", "numeric_value": 600, "product_line": "示例产品线",
+         }},
+    ])
+
+    result = await run_structured_filter_query(
+        {"anchor_term_type": "SKU",
+         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
+        graph_client=graph_client, tenant_id="muji",
+        confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+    )
+
+    assert result["results"] == [{
+        "standard_name": "圆角收纳盒 500ml", "node_key": "SKU:1",
+        "term_type": "SKU",
+        "extra_properties": {"numeric_value": 600},
+    }]
+    extra_properties = result["results"][0]["extra_properties"]
+    assert "product_line" not in extra_properties
+    assert extra_properties["numeric_value"] == 600
+
+
 async def test_run_structured_filter_query_passes_through_group_by_result():
     from app.graphrag.structured_filter_query import run_structured_filter_query
 
