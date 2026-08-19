@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
-import { createTerm, deleteTerm, fetchTermsPage, updateTerm, type TermRecord } from './termsApi'
+import { deleteTerm, fetchTermsPage, updateTerm, type TermRecord } from './termsApi'
 import { adminFetch } from './adminApi'
 import { Pager } from './Pager'
 
 const PAGE_SIZE = 20
+
+type SourceFilter = 'all' | 'manual' | 'etl' | 'review' | 'unknown'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -35,16 +37,12 @@ function draftToRecord(draft: TermDraft): TermRecord {
       .filter((alias) => alias.length > 0),
     term_type: draft.term_type.trim(),
     product_line: draft.product_line.trim(),
-    // 占位值：draftToRecord 目前不知道术语的真实 source（创建/更新场景
-    // 都有可能）。后端在创建时会用 payload.source（这里恒为 'manual'）
-    // 或忽略它（更新时 source 永不被 payload 覆盖，见 terms_store.py
-    // update_term），所以这个占位不会污染已有数据；Task 3/9 会替换成
-    // 真实来源。
+    // 占位值：本页面创建入口已下线（见 Task 3 brief），draftToRecord 现在
+    // 只服务于编辑场景。后端 update_term 永不用 payload 覆盖已有 source
+    // （见 terms_store.py），所以这个占位不会污染已有数据。
     source: 'manual',
   }
 }
-
-const emptyDraft: TermDraft = { standard_name: '', aliases: '', term_type: '', product_line: '' }
 
 export function TermsPage() {
   const { sessionToken } = useAdminAuth()
@@ -59,8 +57,7 @@ export function TermsPage() {
   const [productLineOptions, setProductLineOptions] = useState<string[]>([])
   const [optionsLoaded, setOptionsLoaded] = useState(false)
 
-  const [newDraft, setNewDraft] = useState<TermDraft>(emptyDraft)
-  const [creating, setCreating] = useState(false)
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
 
   const [editingKey, setEditingKey] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState<TermDraft | null>(null)
@@ -103,7 +100,10 @@ export function TermsPage() {
     if (!sessionToken) return
     const requestId = ++refreshRequestIdRef.current
     try {
-      const data = await fetchTermsPage(sessionToken, tenantId, page, PAGE_SIZE)
+      const data = await fetchTermsPage(
+        sessionToken, tenantId, page, PAGE_SIZE,
+        sourceFilter === 'all' ? undefined : sourceFilter,
+      )
       if (requestId !== refreshRequestIdRef.current) return
       setTerms(data.terms)
       setTotal(data.total)
@@ -115,7 +115,7 @@ export function TermsPage() {
         setLoaded(true)
       }
     }
-  }, [sessionToken, tenantId, page])
+  }, [sessionToken, tenantId, page, sourceFilter])
 
   useEffect(() => {
     refresh().catch((err) => {
@@ -128,26 +128,14 @@ export function TermsPage() {
   }, [tenantId])
 
   useEffect(() => {
+    setPage(1)
+  }, [sourceFilter])
+
+  useEffect(() => {
     if (loaded && terms.length === 0 && page > 1) {
       setPage((p) => p - 1)
     }
   }, [loaded, terms.length, page])
-
-  const handleCreate = async () => {
-    if (!sessionToken || creating) return
-    if (!newDraft.standard_name.trim()) return
-    setError(null)
-    setCreating(true)
-    try {
-      await createTerm(sessionToken, tenantId, draftToRecord(newDraft))
-      setNewDraft(emptyDraft)
-      await refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '新增术语失败')
-    } finally {
-      setCreating(false)
-    }
-  }
 
   const handleStartEdit = (term: TermRecord) => {
     if (editingKey !== null) return
@@ -194,66 +182,24 @@ export function TermsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-bold text-ink">术语库管理</h1>
+      <h1 className="text-xl font-bold text-ink">实体列表</h1>
 
-      <div className="flex flex-col gap-3 border-2 border-ink bg-card p-4 shadow-brutal">
-        <p className="text-sm font-bold text-ink">新增术语</p>
-        <div className="flex flex-wrap gap-3">
-          <input
-            value={newDraft.standard_name}
-            onChange={(event) =>
-              setNewDraft((prev) => ({ ...prev, standard_name: event.target.value }))
-            }
-            placeholder="标准名"
-            aria-label="标准名"
-            className="min-w-[10rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
-          />
-          <input
-            value={newDraft.aliases}
-            onChange={(event) => setNewDraft((prev) => ({ ...prev, aliases: event.target.value }))}
-            placeholder="别名（逗号分隔）"
-            aria-label="别名"
-            className="min-w-[10rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
-          />
-          <select
-            value={newDraft.term_type}
-            onChange={(event) =>
-              setNewDraft((prev) => ({ ...prev, term_type: event.target.value }))
-            }
-            aria-label="类型"
-            className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
-          >
-            <option value="">（无类型）</option>
-            {termTypeOptions.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-          <select
-            value={newDraft.product_line}
-            onChange={(event) =>
-              setNewDraft((prev) => ({ ...prev, product_line: event.target.value }))
-            }
-            aria-label="产品线"
-            className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
-          >
-            <option value="">（无产品线）</option>
-            {productLineOptions.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-        </div>
-        <button
-          type="button"
-          onClick={handleCreate}
-          disabled={!newDraft.standard_name.trim() || creating}
-          className={`min-h-[44px] cursor-pointer self-start border-2 border-ink bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+      <div className="flex items-center gap-2">
+        <label htmlFor="source-filter" className="text-sm font-bold text-ink">
+          来源
+        </label>
+        <select
+          id="source-filter"
+          value={sourceFilter}
+          onChange={(event) => setSourceFilter(event.target.value as SourceFilter)}
+          className="border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
         >
-          {creating ? '新增中…' : '新增术语'}
-        </button>
+          <option value="all">全部</option>
+          <option value="manual">手工</option>
+          <option value="etl">ETL</option>
+          <option value="review">知识图谱审核</option>
+          <option value="unknown">未知（历史数据）</option>
+        </select>
       </div>
 
       {error && (
@@ -284,6 +230,13 @@ export function TermsPage() {
                     <span className="text-ink-soft">
                       {' '}
                       · {term.term_type || '（无类型）'} · {term.product_line || '（无产品线）'}
+                    </span>
+                    <span className="ml-2 border border-ink-soft px-1.5 py-0.5 text-xs text-ink-soft">
+                      来源：{
+                        { manual: '手工', etl: 'ETL', review: '知识图谱审核', unknown: '未知' }[
+                          term.source
+                        ] ?? term.source
+                      }
                     </span>
                   </span>
                   <div className="flex gap-2">
@@ -392,7 +345,9 @@ export function TermsPage() {
           )
         })}
       {loaded && !error && terms.length === 0 && (
-        <p className="text-ink-soft">还没有任何术语，用上面的表单新增一个。</p>
+        <p className="text-ink-soft">
+          还没有任何实体。实体创建只能通过「结构化数据加工」（ETL）或「非结构化数据加工」（知识图谱审核）完成。
+        </p>
       )}
       {loaded && terms.length > 0 && (
         <Pager page={page} totalPages={Math.max(1, Math.ceil(total / PAGE_SIZE))} onPageChange={setPage} />
