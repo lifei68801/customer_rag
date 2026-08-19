@@ -28,7 +28,6 @@ _TERMS = [
         standard_name="错误码E502",
         aliases=["网关超时"],
         term_type="error_code",
-        product_line="核心平台",
     ),
     Term(
         tenant_id="t1",
@@ -36,7 +35,6 @@ _TERMS = [
         standard_name="登录模块",
         aliases=["认证模块"],
         term_type="module",
-        product_line="核心平台",
     ),
 ]
 
@@ -377,7 +375,6 @@ def test_find_fuzzy_candidate_standard_name_picks_highest_ratio_not_first_match(
             standard_name="错误码E503",
             aliases=["网关超时中"],
             term_type="error_code",
-            product_line="核心平台",
         ),
         Term(
             tenant_id="t1",
@@ -385,7 +382,6 @@ def test_find_fuzzy_candidate_standard_name_picks_highest_ratio_not_first_match(
             standard_name="错误码E502",
             aliases=["网关超时"],
             term_type="error_code",
-            product_line="核心平台",
         ),
     ]
 
@@ -413,7 +409,6 @@ async def test_writes_node_key_not_standard_name_after_term_was_renamed():
             standard_name="错误码E502",
             aliases=["网关超时"],
             term_type="error_code",
-            product_line="核心平台",
         ),
         Term(
             tenant_id="t1",
@@ -421,7 +416,6 @@ async def test_writes_node_key_not_standard_name_after_term_was_renamed():
             standard_name="登录模块",
             aliases=["认证模块"],
             term_type="module",
-            product_line="核心平台",
         ),
     ]
     relations = [

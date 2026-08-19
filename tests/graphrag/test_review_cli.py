@@ -123,12 +123,12 @@ async def test_cmd_approve_writes_relation_via_graph_client():
             Term(
                 tenant_id="t1", node_key="示例错误码E502",
                 standard_name="示例错误码E502", aliases=[],
-                term_type="", product_line="",
+                term_type="",
             ),
             Term(
                 tenant_id="t1", node_key="示例登录模块",
                 standard_name="示例登录模块", aliases=[],
-                term_type="", product_line="",
+                term_type="",
             ),
         ],
     )

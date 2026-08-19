@@ -717,7 +717,6 @@ async def test_term_guard_node_forwards_tenant_id_to_graph_client():
             standard_name="错误码E502",
             aliases=[],
             term_type="error_code",
-            product_line="核心平台",
         )
     ]
     graph_client = _FakeTermGuardGraphClient()

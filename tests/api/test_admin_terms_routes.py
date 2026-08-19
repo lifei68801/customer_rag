@@ -34,7 +34,7 @@ async def _open_terms_conn() -> aiosqlite.Connection:
     await ensure_terms_schema(conn)
     # confirm_ontology/checkout_draft 需要 tenant_relation_types/
     # term_type_relation_allowlist 等表存在——ensure_terms_schema 只建
-    # ontology_term_types/ontology_product_lines 两张分类表，这里补齐完整的
+    # ontology_term_types 一张分类表，这里补齐完整的
     # 本体生命周期表结构（幂等，与 ensure_categories_schema 不冲突）。
     await ensure_ontology_schema(conn)
     # 既有测试直接用这些字面量当 term_type，早于分类枚举表存在——
@@ -584,9 +584,6 @@ def test_update_term_drops_blank_aliases(terms_conn):
 
 
 def test_create_term_with_typed_extra_properties_returns_200(terms_conn):
-    # 注意：terms_conn fixture（_open_terms_conn）已经注册过产品线 "p"，
-    # 这里不重复调用 create_product_line("p")——否则会撞上
-    # CategoryNameConflictError，跟本测试要验证的类型校验无关。
     from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
     asyncio.run(
         create_term_type(

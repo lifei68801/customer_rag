@@ -76,7 +76,6 @@ _TERMS = [
         standard_name="示例错误码E502",
         aliases=["网关超时示例"],
         term_type="error_code",
-        product_line="示例产品线",
     ),
     Term(
         tenant_id=_TENANT_ID,
@@ -84,7 +83,6 @@ _TERMS = [
         standard_name="示例登录模块",
         aliases=["示例认证模块"],
         term_type="module",
-        product_line="示例产品线",
     ),
 ]
 
@@ -205,15 +203,14 @@ async def _seed_terms(conn: aiosqlite.Connection, terms: list[Term]) -> None:
     for term in terms:
         await conn.execute(
             "INSERT OR REPLACE INTO terms "
-            "(tenant_id, node_key, standard_name, aliases, term_type, product_line, "
-            "extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(tenant_id, node_key, standard_name, aliases, term_type, "
+            "extra_properties) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 term.tenant_id,
                 term.node_key,
                 term.standard_name,
                 json.dumps(term.aliases, ensure_ascii=False),
                 term.term_type,
-                term.product_line,
                 json.dumps(term.extra_properties, ensure_ascii=False),
             ),
         )
@@ -1335,7 +1332,7 @@ def test_get_terms_queries_the_review_conn_terms_table():
     get_terms() 本身（不经过任何路由），验证它查到了这条数据（如果
     get_terms 还在读旧缓存/YAML，这条术语不会出现）。
     """
-    from app.graphrag.ontology_categories import create_product_line, create_term_type
+    from app.graphrag.ontology_categories import create_term_type
     from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
     from app.graphrag.terms_store import create_term, ensure_terms_schema
 
@@ -1350,7 +1347,7 @@ def test_get_terms_queries_the_review_conn_terms_table():
     try:
         asyncio.run(ensure_terms_schema(review_conn))
         asyncio.run(ensure_ontology_schema(review_conn))
-        # term_type/product_line 现在是硬约束，先注册这两个分类值再创建术语——
+        # term_type 现在是硬约束，先注册这个分类值再创建术语——
         # 见 app/graphrag/terms_store.py 的 UnknownCategoryError。get_terms()
         # 没传 gateway_tenant_id 时按未启用网关鉴权处理，回退到 "default"
         # 租户（见 deps.get_terms 的说明），这里的术语/分类都注册在
@@ -1358,11 +1355,10 @@ def test_get_terms_queries_the_review_conn_terms_table():
         # 创建完就立刻确认。
         asyncio.run(create_term_type(review_conn, "default", value="t"))
         asyncio.run(confirm_ontology(review_conn, "default"))
-        asyncio.run(create_product_line(review_conn, value="p"))
         asyncio.run(
             create_term(
                 review_conn, tenant_id="default", standard_name="集成测试术语",
-                aliases=[], term_type="t", product_line="p",
+                aliases=[], term_type="t",
             )
         )
 

@@ -41,8 +41,8 @@ const tabButtonClass = (active: boolean) =>
 
 // 草稿/已确认是"二选一浏览视图"，不是"开关某个功能"，语义上属于分段控件
 // （segmented control），不该用 checkbox 表达——用深色反色（bg-ink）而不是
-// 顶部一级 tab 同款的 bg-accent-pink，是为了和"实体类型/关系类型/约束/
-// 产品线"那一级导航拉开视觉层级：一级 tab 决定看哪块数据，这个二级分段
+// 顶部一级 tab 同款的 bg-accent-pink，是为了和"实体类型/关系类型/约束"
+// 那一级导航拉开视觉层级：一级 tab 决定看哪块数据，这个二级分段
 // 控件决定同一块数据看草稿还是已确认快照，二者不能长得一样，不然分不清
 // 哪个在切页面、哪个在切版本。
 const viewSegmentClass = (active: boolean) =>
@@ -226,10 +226,9 @@ export function OntologySchemaPage() {
             "当前在浏览/操作哪份数据"的即时控制，两者语义不同但都是同一件
             事（schema 生命周期）在页面头部的呈现，放在一起才读得出关联：
             徽章告诉你结果，右边的控件告诉你怎么改变这个结果。
-            四个 tab 下这一整块的位置和形状都不变，不随 tab 切换而出现/
-            消失——在实体类型/产品线 tab（没有草稿/确认概念）或前置条件
-            不满足时，用 disabled + 下方一行小字说明原因，而不是让控件
-            凭空消失，用户分不清是没做完还是压根没做出来。 */}
+            三个 tab 下这一整块的位置和形状都不变，不随 tab 切换而出现/
+            消失——前置条件不满足时，用 disabled + 下方一行小字说明原因，
+            而不是让控件凭空消失，用户分不清是没做完还是压根没做出来。 */}
         <div className="flex flex-wrap items-center gap-3">
           <span
             className={`border-2 border-ink px-3 py-1.5 text-sm font-bold shadow-brutal-sm ${

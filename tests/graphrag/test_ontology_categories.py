@@ -43,7 +43,7 @@ async def _conn() -> aiosqlite.Connection:
 # 参数而抛 TypeError。手写 SQL 完全绕开这条路径，不依赖那些尚未更新的调用点。
 _TERMS_TABLE_SQL = (
     "CREATE TABLE terms (tenant_id TEXT NOT NULL, standard_name TEXT NOT NULL, "
-    "term_type TEXT NOT NULL, product_line TEXT NOT NULL, aliases TEXT NOT NULL DEFAULT '[]', "
+    "term_type TEXT NOT NULL, aliases TEXT NOT NULL DEFAULT '[]', "
     "node_key TEXT NOT NULL, PRIMARY KEY (tenant_id, standard_name))"
 )
 
@@ -135,8 +135,8 @@ async def test_update_term_type_rename_does_not_cascade_to_terms():
     await create_term_type(conn, tenant_id="default", value="错误码")
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.execute(
-        "INSERT INTO terms (tenant_id, standard_name, term_type, product_line, node_key) VALUES (?, ?, ?, ?, ?)",
-        ("default", "错误码E502", "错误码", "示例产品线", "错误码E502"),
+        "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
+        ("default", "错误码E502", "错误码", "错误码E502"),
     )
     await conn.commit()
 
@@ -191,8 +191,8 @@ async def test_delete_term_type_in_use_raises_conflict():
     await create_term_type(conn, tenant_id="default", value="错误码")
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.execute(
-        "INSERT INTO terms (tenant_id, standard_name, term_type, product_line, node_key) VALUES (?, ?, ?, ?, ?)",
-        ("default", "错误码E502", "错误码", "示例产品线", "错误码E502"),
+        "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
+        ("default", "错误码E502", "错误码", "错误码E502"),
     )
     await conn.commit()
 
@@ -213,8 +213,8 @@ async def test_delete_term_type_in_use_by_confirmed_counterpart_raises_conflict(
     )
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.execute(
-        "INSERT INTO terms (tenant_id, standard_name, term_type, product_line, node_key) VALUES (?, ?, ?, ?, ?)",
-        ("default", "错误码E502", "错误码", "示例产品线", "错误码E502"),
+        "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
+        ("default", "错误码E502", "错误码", "错误码E502"),
     )
     await conn.commit()
 
@@ -424,12 +424,12 @@ async def test_update_term_type_allowlist_cascade_scoped_to_same_tenant_only():
         ("tenant_b", "客房", "PART_OF", "酒店", "draft"),
     )
     await conn.execute(
-        "INSERT INTO terms (tenant_id, standard_name, term_type, product_line, node_key) VALUES (?, ?, ?, ?, ?)",
-        ("tenant_a", "A栋客房", "客房", "示例产品线", "A栋客房"),
+        "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
+        ("tenant_a", "A栋客房", "客房", "A栋客房"),
     )
     await conn.execute(
-        "INSERT INTO terms (tenant_id, standard_name, term_type, product_line, node_key) VALUES (?, ?, ?, ?, ?)",
-        ("tenant_b", "B栋客房", "客房", "示例产品线", "B栋客房"),
+        "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
+        ("tenant_b", "B栋客房", "客房", "B栋客房"),
     )
     await conn.commit()
 

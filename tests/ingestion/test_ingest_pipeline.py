@@ -211,12 +211,12 @@ async def test_ingest_markdown_file_skips_graph_extraction_when_ontology_unconfi
         Term(
             tenant_id="t1", node_key="示例错误码E502",
             standard_name="示例错误码E502", aliases=["网关超时示例"],
-            term_type="error_code", product_line="示例产品线",
+            term_type="error_code",
         ),
         Term(
             tenant_id="t1", node_key="示例登录模块",
             standard_name="示例登录模块", aliases=["示例认证模块"],
-            term_type="module", product_line="示例产品线",
+            term_type="module",
         ),
     ]
     graph_client = FakeGraphClient()
@@ -271,12 +271,12 @@ async def test_ingest_markdown_file_splits_only_the_embedding_path_not_graph_ext
         Term(
             tenant_id="t1", node_key="示例错误码E502",
             standard_name="示例错误码E502", aliases=["网关超时示例"],
-            term_type="error_code", product_line="示例产品线",
+            term_type="error_code",
         ),
         Term(
             tenant_id="t1", node_key="示例登录模块",
             standard_name="示例登录模块", aliases=["示例认证模块"],
-            term_type="module", product_line="示例产品线",
+            term_type="module",
         ),
     ]
     graph_client = FakeGraphClient()
@@ -343,7 +343,6 @@ async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_p
             standard_name="示例错误码E502",
             aliases=["网关超时示例"],
             term_type="error_code",
-            product_line="示例产品线",
         ),
         Term(
             tenant_id="t1",
@@ -351,7 +350,6 @@ async def test_ingest_markdown_file_writes_graph_relations_when_configured(tmp_p
             standard_name="示例登录模块",
             aliases=["示例认证模块"],
             term_type="module",
-            product_line="示例产品线",
         ),
     ]
     graph_client = FakeGraphClient()
@@ -411,7 +409,6 @@ async def test_ingest_markdown_file_sends_unresolved_candidates_to_review_queue(
             standard_name="示例错误码E502",
             aliases=["网关超时示例"],
             term_type="error_code",
-            product_line="示例产品线",
         ),
     ]
     graph_client = FakeGraphClient()
@@ -483,7 +480,7 @@ async def test_ingest_markdown_file_runs_embedding_and_graph_extraction_concurre
         Term(
             tenant_id="t1", node_key="示例错误码E502",
             standard_name="示例错误码E502", aliases=["网关超时示例"],
-            term_type="error_code", product_line="示例产品线",
+            term_type="error_code",
         ),
     ]
 
@@ -532,7 +529,7 @@ async def test_ingest_markdown_file_propagates_embedding_failure(tmp_path):
         Term(
             tenant_id="t1", node_key="示例错误码E502",
             standard_name="示例错误码E502", aliases=["网关超时示例"],
-            term_type="error_code", product_line="示例产品线",
+            term_type="error_code",
         ),
     ]
 
@@ -582,7 +579,7 @@ async def test_ingest_markdown_file_propagates_graph_write_failure(tmp_path):
         Term(
             tenant_id="t1", node_key="示例错误码E502",
             standard_name="示例错误码E502", aliases=["网关超时示例"],
-            term_type="error_code", product_line="示例产品线",
+            term_type="error_code",
         ),
     ]
 

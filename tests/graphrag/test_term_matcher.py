@@ -8,7 +8,6 @@ _TERMS = [
         standard_name="错误码E502",
         aliases=["网关超时", "E502"],
         term_type="error_code",
-        product_line="核心平台",
     ),
     Term(
         tenant_id="t1",
@@ -16,7 +15,6 @@ _TERMS = [
         standard_name="登录模块",
         aliases=["认证模块", "登录"],
         term_type="module",
-        product_line="核心平台",
     ),
 ]
 
@@ -46,7 +44,6 @@ _FUZZY_TERMS = [
         standard_name="服务器连接超时",
         aliases=[],
         term_type="error_code",
-        product_line="核心平台",
     ),
 ]
 
@@ -81,7 +78,6 @@ _FUZZY_TERMS_WITH_ALIAS = [
         standard_name="服务器连接超时",
         aliases=["连接超时"],
         term_type="error_code",
-        product_line="核心平台",
     ),
 ]
 

@@ -41,8 +41,7 @@ def test_load_terms_from_settings_reads_configured_path(tmp_path):
         "terms:\n"
         "  - standard_name: 测试术语\n"
         "    aliases: [别名]\n"
-        "    term_type: module\n"
-        "    product_line: 测试产品线\n",
+        "    term_type: module\n",
         encoding="utf-8",
     )
     settings = Settings(

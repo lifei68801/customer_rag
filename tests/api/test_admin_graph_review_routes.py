@@ -93,15 +93,14 @@ async def _seed_terms(conn: aiosqlite.Connection, terms: list[Term]) -> None:
     for term in terms:
         await conn.execute(
             "INSERT OR REPLACE INTO terms "
-            "(tenant_id, node_key, standard_name, aliases, term_type, product_line, "
-            "extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(tenant_id, node_key, standard_name, aliases, term_type, "
+            "extra_properties) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 term.tenant_id,
                 term.node_key,
                 term.standard_name,
                 json.dumps(term.aliases, ensure_ascii=False),
                 term.term_type,
-                term.product_line,
                 json.dumps(term.extra_properties, ensure_ascii=False),
             ),
         )
@@ -165,11 +164,11 @@ def test_approve_review_calls_graph_client_and_moves_to_history(review_conn):
             [
                 Term(
                     tenant_id="t1", node_key="A", standard_name="A", aliases=[],
-                    term_type="", product_line="",
+                    term_type="",
                 ),
                 Term(
                     tenant_id="t1", node_key="B", standard_name="B", aliases=[],
-                    term_type="", product_line="",
+                    term_type="",
                 ),
             ],
         )
@@ -326,11 +325,11 @@ def test_approve_already_resolved_review_returns_409(review_conn):
             [
                 Term(
                     tenant_id="t1", node_key="A", standard_name="A", aliases=[],
-                    term_type="", product_line="",
+                    term_type="",
                 ),
                 Term(
                     tenant_id="t1", node_key="B", standard_name="B", aliases=[],
-                    term_type="", product_line="",
+                    term_type="",
                 ),
             ],
         )
@@ -414,11 +413,11 @@ def test_list_reviews_status_all_returns_both_approved_and_rejected(review_conn)
             [
                 Term(
                     tenant_id="t1", node_key="A", standard_name="A", aliases=[],
-                    term_type="", product_line="",
+                    term_type="",
                 ),
                 Term(
                     tenant_id="t1", node_key="B", standard_name="B", aliases=[],
-                    term_type="", product_line="",
+                    term_type="",
                 ),
             ],
         )
@@ -565,11 +564,11 @@ def test_approve_review_with_invalid_relation_type_returns_400(review_conn):
             [
                 Term(
                     tenant_id="t1", node_key="A", standard_name="A", aliases=[],
-                    term_type="", product_line="",
+                    term_type="",
                 ),
                 Term(
                     tenant_id="t1", node_key="B", standard_name="B", aliases=[],
-                    term_type="", product_line="",
+                    term_type="",
                 ),
             ],
         )
@@ -610,11 +609,11 @@ def test_approve_review_with_relation_type_not_in_confirmed_ontology_returns_400
             [
                 Term(
                     tenant_id="t1", node_key="A", standard_name="A", aliases=[],
-                    term_type="", product_line="",
+                    term_type="",
                 ),
                 Term(
                     tenant_id="t1", node_key="B", standard_name="B", aliases=[],
-                    term_type="", product_line="",
+                    term_type="",
                 ),
             ],
         )
@@ -651,7 +650,7 @@ def test_approve_review_with_standard_name_not_in_terms_returns_400(review_conn)
             [
                 Term(
                     tenant_id="t1", node_key="B", standard_name="B", aliases=[],
-                    term_type="", product_line="",
+                    term_type="",
                 ),
             ],
         )

@@ -42,7 +42,6 @@ def _terms(*standard_names: str, tenant_id: str = "t1") -> list[Term]:
             standard_name=name,
             aliases=[],
             term_type="",
-            product_line="",
         )
         for name in standard_names
     ]
@@ -180,7 +179,6 @@ async def test_approve_review_writes_node_key_not_standard_name_after_term_was_r
             standard_name="示例错误码E502",
             aliases=[],
             term_type="",
-            product_line="",
         ),
         Term(
             tenant_id="t1",
@@ -188,7 +186,6 @@ async def test_approve_review_writes_node_key_not_standard_name_after_term_was_r
             standard_name="示例登录模块",
             aliases=[],
             term_type="",
-            product_line="",
         ),
     ]
 
@@ -584,11 +581,11 @@ async def test_approve_review_rejects_relation_type_not_in_confirmed_ontology():
     terms = [
         Term(
             tenant_id="t1", node_key="示例错误码E502", standard_name="示例错误码E502",
-            aliases=[], term_type="error_code", product_line="",
+            aliases=[], term_type="error_code",
         ),
         Term(
             tenant_id="t1", node_key="示例登录模块", standard_name="示例登录模块",
-            aliases=[], term_type="module", product_line="",
+            aliases=[], term_type="module",
         ),
     ]
 
@@ -627,11 +624,11 @@ async def test_approve_review_rejects_type_combination_not_in_allowed_combinatio
     terms = [
         Term(
             tenant_id="t1", node_key="示例错误码E502", standard_name="示例错误码E502",
-            aliases=[], term_type="error_code", product_line="",
+            aliases=[], term_type="error_code",
         ),
         Term(
             tenant_id="t1", node_key="示例登录模块", standard_name="示例登录模块",
-            aliases=[], term_type="module", product_line="",
+            aliases=[], term_type="module",
         ),
     ]
 

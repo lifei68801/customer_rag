@@ -256,9 +256,9 @@ async def test_delete_term_type_in_use_returns_409(client, conn_for_testing):
     # so we bypass it by inserting directly). This establishes the "term_type in use" condition.
     # Use the same connection that the client fixture is using, not a new one.
     await conn_for_testing["conn"].execute(
-        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, product_line, extra_properties) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("default", "x", "x", "[]", "错误码", "示例产品线", "{}"),
+        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, extra_properties) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("default", "x", "x", "[]", "错误码", "{}"),
     )
     await conn_for_testing["conn"].commit()
 
@@ -532,13 +532,13 @@ async def test_migrate_term_type_route_migrates_terms_and_graph_nodes(client, co
     conn = conn_for_testing["conn"]
     await conn.execute(
         "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
-        "product_line, extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("t1", "k1", "网关超时", "[]", "错误码", "核心平台", "{}"),
+        "extra_properties) VALUES (?, ?, ?, ?, ?, ?)",
+        ("t1", "k1", "网关超时", "[]", "错误码", "{}"),
     )
     await conn.execute(
         "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
-        "product_line, extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("t1", "k2", "登录失败", "[]", "错误码", "核心平台", "{}"),
+        "extra_properties) VALUES (?, ?, ?, ?, ?, ?)",
+        ("t1", "k2", "登录失败", "[]", "错误码", "{}"),
     )
     await conn.commit()
 
@@ -572,8 +572,8 @@ async def test_migrate_term_type_route_reports_terms_migrated_when_graph_sync_fa
     conn = conn_for_testing["conn"]
     await conn.execute(
         "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
-        "product_line, extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("t1", "k1", "网关超时", "[]", "错误码", "核心平台", "{}"),
+        "extra_properties) VALUES (?, ?, ?, ?, ?, ?)",
+        ("t1", "k1", "网关超时", "[]", "错误码", "{}"),
     )
     await conn.commit()
 

@@ -128,7 +128,6 @@ async def test_main_sends_unresolved_graph_candidates_to_injected_review_conn(
             standard_name="示例错误码E502",
             aliases=["网关超时示例"],
             term_type="error_code",
-            product_line="示例产品线",
         )
     ]
     graph_client = FakeGraphClient()
@@ -176,7 +175,6 @@ async def test_main_syncs_ontology_terms_into_graph_when_build_graph(tmp_path):
             standard_name="示例错误码E502",
             aliases=["网关超时示例"],
             term_type="error_code",
-            product_line="示例产品线",
         )
     ]
     graph_client = FakeGraphClient()
