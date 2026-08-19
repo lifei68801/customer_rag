@@ -13,13 +13,12 @@ class Term:
     standard_name: str
     aliases: list[str]
     term_type: str
-    product_line: str
     extra_properties: dict[str, str | int | float | list[float]] = field(default_factory=dict)
     source: str = "unknown"
 
 
 def load_terminology(path: Path) -> list[Term]:
-    """加载人工维护的术语表（标准名称+别名+类型+产品线）。
+    """加载人工维护的术语表（标准名称+别名+类型）。
 
     这是第4节设计的"基准真相"：LLM 抽取的实体必须向这份表对齐，
     而不是反过来。真实内容需由业务/技术支持团队协作产出，本函数
@@ -40,7 +39,6 @@ def load_terminology(path: Path) -> list[Term]:
             standard_name=str(item["standard_name"]),
             aliases=[str(a) for a in item.get("aliases", [])],
             term_type=str(item.get("term_type", "")),
-            product_line=str(item.get("product_line", "")),
         )
         for item in terms
     ]

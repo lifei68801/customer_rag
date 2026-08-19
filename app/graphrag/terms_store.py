@@ -10,7 +10,6 @@ from app.db_migrations import add_column_if_missing
 from app.graphrag.ontology import Term, load_terminology
 from app.graphrag.ontology_categories import (
     ensure_categories_schema,
-    list_product_lines,
     list_term_types,
 )
 
@@ -23,7 +22,6 @@ CREATE TABLE IF NOT EXISTS terms (
     standard_name     TEXT NOT NULL,
     aliases           TEXT NOT NULL,
     term_type         TEXT NOT NULL,
-    product_line      TEXT NOT NULL,
     extra_properties  TEXT NOT NULL DEFAULT '{}',
     source            TEXT NOT NULL DEFAULT 'unknown',
     PRIMARY KEY (tenant_id, node_key)
@@ -45,7 +43,7 @@ class TermNameConflictError(Exception):
 
 
 class UnknownCategoryError(Exception):
-    """提交的 term_type/product_line 不在全局分类枚举表里，或 extra_properties
+    """提交的 term_type 不在全局分类枚举表里，或 extra_properties
     里出现了该 term_type 没有声明过的字段名——本体 schema 基座计划把这两项从
     "自由文本、无校验" 收紧成硬约束，理由见
     docs/superpowers/specs/2026-08-14-ontology-schema-design.md 第 3 节。"""
@@ -82,7 +80,6 @@ async def _migrate_terms_table_to_tenant_scoped_if_needed(
             standard_name     TEXT NOT NULL,
             aliases           TEXT NOT NULL,
             term_type         TEXT NOT NULL,
-            product_line      TEXT NOT NULL,
             extra_properties  TEXT NOT NULL DEFAULT '{}',
             source            TEXT NOT NULL DEFAULT 'unknown',
             PRIMARY KEY (tenant_id, node_key)
@@ -91,9 +88,8 @@ async def _migrate_terms_table_to_tenant_scoped_if_needed(
     )
     await conn.execute(
         "INSERT INTO terms_new "
-        "(tenant_id, node_key, standard_name, aliases, term_type, product_line, extra_properties, "
-        "source) "
-        "SELECT 'default', standard_name, standard_name, aliases, term_type, product_line, "
+        "(tenant_id, node_key, standard_name, aliases, term_type, extra_properties, source) "
+        "SELECT 'default', standard_name, standard_name, aliases, term_type, "
         "extra_properties, source FROM terms"
     )
     await conn.executescript(
@@ -101,6 +97,27 @@ async def _migrate_terms_table_to_tenant_scoped_if_needed(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_terms_tenant_standard_name "
         "ON terms(tenant_id, standard_name);"
     )
+    await conn.commit()
+
+
+async def _migrate_terms_drop_product_line_column_if_needed(
+    conn: aiosqlite.Connection,
+) -> None:
+    """把仍带着 product_line 列的 terms 表（tenant_id 已存在，只是还没删这一列
+    的库——本项目实际开发库/生产库的常见情况）原地去掉这一列。SQLite 3.35+
+    原生支持 ALTER TABLE ... DROP COLUMN（本项目实测 SQLite 3.49.1），不需要
+    像 _migrate_terms_table_to_tenant_scoped_if_needed 那样建新表搬数据——
+    product_line 只是普通 TEXT NOT NULL 列，不是主键的一部分、没有 CHECK/
+    UNIQUE 约束、不被任何生成列引用，满足原生语法的适用条件。幂等：列已经
+    不存在时直接跳过。不做删除前的数据备份，见
+    docs/superpowers/specs/2026-08-19-remove-product-line-design.md 决策 2
+    （这批数据本身没有实际区分意义，备份没有价值）。
+    """
+    cursor = await conn.execute("PRAGMA table_info(terms)")
+    existing_columns = {row[1] for row in await cursor.fetchall()}
+    if "product_line" not in existing_columns:
+        return
+    await conn.execute("ALTER TABLE terms DROP COLUMN product_line")
     await conn.commit()
 
 
@@ -115,7 +132,7 @@ async def ensure_terms_schema(
     是 "default"（见 ontology.py::load_terminology 的说明）。
 
     向后兼容桥接：分类枚举表为空、但 terms 表已经有历史数据（老版本
-    上线时term_type/product_line 还是自由文本，没有枚举表），自动把
+    上线时term_type 还是自由文本，没有枚举表），自动把
     历史数据里出现过的去重值导入枚举表——_bridge_seed_categories_from_
     existing_terms 现在按租户隔离（只处理传入的单个 tenant_id，查询/
     写入 ontology_term_types 时带 tenant_id 过滤），这里固定传
@@ -135,6 +152,7 @@ async def ensure_terms_schema(
             conn, table="terms", column="source", ddl="TEXT NOT NULL DEFAULT 'unknown'"
         )
         await _migrate_terms_table_to_tenant_scoped_if_needed(conn)
+        await _migrate_terms_drop_product_line_column_if_needed(conn)
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
     if not table_already_existed and seed_yaml_path is not None and seed_yaml_path.exists():
@@ -142,15 +160,14 @@ async def ensure_terms_schema(
             for term in load_terminology(seed_yaml_path):
                 await conn.execute(
                     "INSERT OR IGNORE INTO terms "
-                    "(tenant_id, node_key, standard_name, aliases, term_type, product_line, "
-                    "extra_properties) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "(tenant_id, node_key, standard_name, aliases, term_type, "
+                    "extra_properties) VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         term.tenant_id,
                         term.node_key,
                         term.standard_name,
                         json.dumps(term.aliases, ensure_ascii=False),
                         term.term_type,
-                        term.product_line,
                         json.dumps(term.extra_properties, ensure_ascii=False),
                     ),
                 )
@@ -177,31 +194,22 @@ async def _bridge_seed_categories_from_existing_terms(
     conn: aiosqlite.Connection, *, tenant_id: str
 ) -> None:
     """桥接函数：分类枚举表为空、但 terms 表已经有历史数据时，把该租户历史数据里
-    出现过的去重分类值导入枚举表。按租户隔离，每次调用只处理一个租户。
+    出现过的去重实体类型值导入枚举表。按租户隔离，每次调用只处理一个租户。
     """
     known_types = await list_term_types(conn, tenant_id, status="confirmed")
-    known_lines = await list_product_lines(conn)
-    if known_types or known_lines:
+    if known_types:
         return
     cursor = await conn.execute(
         "SELECT DISTINCT term_type FROM terms WHERE tenant_id = ?", (tenant_id,)
     )
     distinct_types = [row[0] for row in await cursor.fetchall()]
-    cursor = await conn.execute(
-        "SELECT DISTINCT product_line FROM terms WHERE tenant_id = ?", (tenant_id,)
-    )
-    distinct_lines = [row[0] for row in await cursor.fetchall()]
-    if not distinct_types and not distinct_lines:
+    if not distinct_types:
         return
     for value in distinct_types:
         await conn.execute(
             "INSERT OR IGNORE INTO ontology_term_types (tenant_id, value, extra_fields, status) "
             "VALUES (?, ?, '[]', 'confirmed')",
             (tenant_id, value),
-        )
-    for value in distinct_lines:
-        await conn.execute(
-            "INSERT OR IGNORE INTO ontology_product_lines (value) VALUES (?)", (value,)
         )
     await conn.commit()
 
@@ -227,7 +235,6 @@ def _row_to_term(row: aiosqlite.Row) -> Term:
         standard_name=row["standard_name"],
         aliases=json.loads(row["aliases"]),
         term_type=row["term_type"],
-        product_line=row["product_line"],
         extra_properties=json.loads(row["extra_properties"]),
         source=row["source"],
     )
@@ -254,14 +261,14 @@ async def list_terms(
     conn.row_factory = aiosqlite.Row
     if source is None:
         cursor = await conn.execute(
-            "SELECT tenant_id, node_key, standard_name, aliases, term_type, product_line, "
+            "SELECT tenant_id, node_key, standard_name, aliases, term_type, "
             "extra_properties, source FROM terms WHERE tenant_id = ? "
             "ORDER BY standard_name LIMIT ? OFFSET ?",
             (tenant_id, limit if limit is not None else -1, offset),
         )
     else:
         cursor = await conn.execute(
-            "SELECT tenant_id, node_key, standard_name, aliases, term_type, product_line, "
+            "SELECT tenant_id, node_key, standard_name, aliases, term_type, "
             "extra_properties, source FROM terms WHERE tenant_id = ? AND source = ? "
             "ORDER BY standard_name LIMIT ? OFFSET ?",
             (tenant_id, source, limit if limit is not None else -1, offset),
@@ -287,7 +294,7 @@ async def count_terms(
 async def get_term(conn: aiosqlite.Connection, tenant_id: str, standard_name: str) -> Term:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT tenant_id, node_key, standard_name, aliases, term_type, product_line, "
+        "SELECT tenant_id, node_key, standard_name, aliases, term_type, "
         "extra_properties, source FROM terms WHERE tenant_id = ? AND standard_name = ?",
         (tenant_id, standard_name),
     )
@@ -329,12 +336,10 @@ async def _validate_categories(
     *,
     tenant_id: str,
     term_type: str,
-    product_line: str,
     extra_properties: dict[str, object],
     existing_extra_property_keys: frozenset[str] = frozenset(),
 ) -> None:
-    """product_line 校验保持全局（不受本次改造影响）。term_type 校验
-    按租户过滤——每个租户只能使用该租户下注册的分类。
+    """term_type 校验按租户过滤——每个租户只能使用该租户下注册的分类。
 
     字段名校验（是否在白名单里）和字段值类型校验（是否匹配声明的
     value_type）是两道独立的检查：existing_extra_property_keys 里的
@@ -346,8 +351,6 @@ async def _validate_categories(
     types_by_value = {t.value: t for t in types}
     if term_type not in types_by_value:
         raise UnknownCategoryError(f"未知分类: {term_type!r}")
-    if product_line not in await list_product_lines(conn):
-        raise UnknownCategoryError(f"未知产品线: {product_line!r}")
     declared_by_name = {f.name: f for f in types_by_value[term_type].extra_fields}
     declared_fields = set(declared_by_name)
     unknown = set(extra_properties) - declared_fields - existing_extra_property_keys
@@ -372,7 +375,6 @@ async def create_term(
     standard_name: str,
     aliases: list[str],
     term_type: str,
-    product_line: str,
     extra_properties: dict[str, object] | None = None,
     source: str = "manual",
 ) -> None:
@@ -388,21 +390,20 @@ async def create_term(
     """
     extra_properties = extra_properties or {}
     await _validate_categories(
-        conn, tenant_id=tenant_id, term_type=term_type, product_line=product_line,
+        conn, tenant_id=tenant_id, term_type=term_type,
         extra_properties=extra_properties,
     )
     await _check_name_conflict(conn, tenant_id=tenant_id, standard_name=standard_name, aliases=aliases)
     try:
         await conn.execute(
             "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
-            "product_line, extra_properties, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "extra_properties, source) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 tenant_id,
                 standard_name,
                 standard_name,
                 json.dumps(aliases, ensure_ascii=False),
                 term_type,
-                product_line,
                 json.dumps(extra_properties, ensure_ascii=False),
                 source,
             ),
@@ -420,7 +421,6 @@ async def update_term(
     new_standard_name: str,
     aliases: list[str],
     term_type: str,
-    product_line: str,
     extra_properties: dict[str, object] | None = None,
 ) -> None:
     """standard_name 是当前（改名前）的名字，用来定位这条记录；
@@ -435,7 +435,7 @@ async def update_term(
     extra_properties = extra_properties or {}
     existing_term = await get_term(conn, tenant_id, standard_name)
     await _validate_categories(
-        conn, tenant_id=tenant_id, term_type=term_type, product_line=product_line,
+        conn, tenant_id=tenant_id, term_type=term_type,
         extra_properties=extra_properties,
         existing_extra_property_keys=frozenset(existing_term.extra_properties),
     )
@@ -445,13 +445,12 @@ async def update_term(
     )
     try:
         await conn.execute(
-            "UPDATE terms SET standard_name=?, aliases=?, term_type=?, product_line=?, "
+            "UPDATE terms SET standard_name=?, aliases=?, term_type=?, "
             "extra_properties=? WHERE tenant_id=? AND node_key=?",
             (
                 new_standard_name,
                 json.dumps(aliases, ensure_ascii=False),
                 term_type,
-                product_line,
                 json.dumps(extra_properties, ensure_ascii=False),
                 tenant_id,
                 existing_term.node_key,
@@ -494,7 +493,6 @@ async def upsert_term_with_node_key(
     standard_name: str,
     aliases: list[str],
     term_type: str,
-    product_line: str,
     extra_properties: dict[str, object] | None = None,
     source: str = "etl",
 ) -> None:
@@ -531,17 +529,17 @@ async def upsert_term_with_node_key(
         if existing_row is not None else frozenset()
     )
     await _validate_categories(
-        conn, tenant_id=tenant_id, term_type=term_type, product_line=product_line,
+        conn, tenant_id=tenant_id, term_type=term_type,
         extra_properties=extra_properties,
         existing_extra_property_keys=existing_extra_property_keys,
     )
     try:
         await conn.execute(
             "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
-            "product_line, extra_properties, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "extra_properties, source) VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (tenant_id, node_key) DO UPDATE SET "
             "standard_name = excluded.standard_name, aliases = excluded.aliases, "
-            "term_type = excluded.term_type, product_line = excluded.product_line, "
+            "term_type = excluded.term_type, "
             "extra_properties = excluded.extra_properties",
             (
                 tenant_id,
@@ -549,7 +547,6 @@ async def upsert_term_with_node_key(
                 standard_name,
                 json.dumps(aliases, ensure_ascii=False),
                 term_type,
-                product_line,
                 json.dumps(extra_properties, ensure_ascii=False),
                 source,
             ),

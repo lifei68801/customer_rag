@@ -9,8 +9,7 @@ def test_load_terminology_parses_terms_with_aliases(tmp_path):
         "terms:\n"
         "  - standard_name: 错误码E502\n"
         "    aliases: [网关超时, E502]\n"
-        "    term_type: error_code\n"
-        "    product_line: 核心平台\n",
+        "    term_type: error_code\n",
         encoding="utf-8",
     )
 
@@ -23,6 +22,5 @@ def test_load_terminology_parses_terms_with_aliases(tmp_path):
             standard_name="错误码E502",
             aliases=["网关超时", "E502"],
             term_type="error_code",
-            product_line="核心平台",
         )
     ]
