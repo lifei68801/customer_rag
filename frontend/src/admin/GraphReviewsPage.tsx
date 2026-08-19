@@ -4,7 +4,7 @@ import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { Pager } from './Pager'
 import { StandardNameInput } from './StandardNameInput'
-import { fetchGraphTerms, type GraphTerm } from './termsApi'
+import { fetchGraphTerms, createTerm, type GraphTerm } from './termsApi'
 
 const PAGE_SIZE = 20
 
@@ -18,6 +18,8 @@ interface PendingReview {
   evidence: string
   suggested_subject_standard_name: string | null
   suggested_object_standard_name: string | null
+  subject_type_candidate: string | null
+  object_type_candidate: string | null
 }
 
 interface ResolvedReview {
@@ -30,6 +32,17 @@ interface ResolvedReview {
   status: string
   resolved_at: string
   resolved_note: string | null
+}
+
+interface CreateEntityDraft {
+  reviewId: number
+  field: 'subject' | 'object'
+  standardName: string
+  termType: string
+  productLine: string
+  step: 'form' | 'confirm'
+  submitting: boolean
+  error: string | null
 }
 
 type Tab = 'pending' | 'history'
@@ -66,6 +79,10 @@ export function GraphReviewsPage() {
   const [pendingTotal, setPendingTotal] = useState(0)
   const [historyPage, setHistoryPage] = useState(1)
   const [historyTotal, setHistoryTotal] = useState(0)
+  const [termTypeOptions, setTermTypeOptions] = useState<string[]>([])
+  const [productLineOptions, setProductLineOptions] = useState<string[]>([])
+  const [createDraft, setCreateDraft] = useState<CreateEntityDraft | null>(null)
+  const [justCreated, setJustCreated] = useState<Record<number, { subject: boolean; object: boolean }>>({})
 
   useEffect(() => {
     document.title = '知识图谱审核 · 管理后台'
@@ -79,6 +96,28 @@ export function GraphReviewsPage() {
         console.error('加载术语表失败', err)
         setError(err instanceof Error ? err.message : '加载术语表失败，标准名自动补全不可用')
       })
+  }, [sessionToken, tenantId])
+
+  useEffect(() => {
+    if (!sessionToken) return
+    Promise.all([
+      adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=confirmed`, sessionToken)
+        .then((res) => res.json())
+        .then((data: { term_types: { value: string }[] }) =>
+          setTermTypeOptions(data.term_types.map((t) => t.value)),
+        )
+        .catch((err) => {
+          console.error('加载实体类型枚举失败', err)
+          return null
+        }),
+      adminFetch('/api/admin/ontology/product-lines', sessionToken)
+        .then((res) => res.json())
+        .then((data: { product_lines: string[] }) => setProductLineOptions(data.product_lines))
+        .catch((err) => {
+          console.error('加载产品线枚举失败', err)
+          return null
+        }),
+    ])
   }, [sessionToken, tenantId])
 
   // 切换租户时两个 tab 的页码都要回到第一页——不然停留在深页码切租户，
@@ -366,6 +405,69 @@ export function GraphReviewsPage() {
     await refreshPending()
   }
 
+  const handleOpenCreateEntity = (reviewId: number, field: 'subject' | 'object', query: string) => {
+    const review = pending.find((r) => r.review_id === reviewId)
+    const suggestedType =
+      (field === 'subject' ? review?.subject_type_candidate : review?.object_type_candidate) ?? ''
+    setCreateDraft({
+      reviewId,
+      field,
+      standardName: query,
+      termType: suggestedType,
+      productLine: '',
+      step: 'form',
+      submitting: false,
+      error: null,
+    })
+  }
+
+  const handleSubmitCreateEntity = async () => {
+    if (!sessionToken || !createDraft) return
+    if (createDraft.step === 'form') {
+      if (!createDraft.termType || !createDraft.productLine) return
+      setCreateDraft({ ...createDraft, step: 'confirm', error: null })
+      return
+    }
+    // step === 'confirm'：真正提交
+    setCreateDraft({ ...createDraft, submitting: true, error: null })
+    try {
+      await createTerm(sessionToken, tenantId, {
+        standard_name: createDraft.standardName,
+        aliases: [],
+        term_type: createDraft.termType,
+        product_line: createDraft.productLine,
+        source: 'review',
+      })
+      const { reviewId, field, standardName } = createDraft
+      setDrafts((prev) => ({
+        ...prev,
+        [reviewId]: { ...prev[reviewId], [field]: standardName },
+      }))
+      setJustCreated((prev) => ({
+        ...prev,
+        [reviewId]: { ...prev[reviewId], [field]: true },
+      }))
+      setCreateDraft(null)
+      // 创建成功后立即重新拉取本页 graphTerms，让同页其它引用同一新实体
+      // 的候选行也能立刻搜到它——见 spec 决策 A.4。
+      const refreshedTerms = await fetchGraphTerms(sessionToken, tenantId)
+      setGraphTerms(refreshedTerms)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '创建实体失败'
+      // 撞名冲突（TermNameConflictError 映射成 400）时，提示直接从下拉选择，
+      // 并自动重新拉取一次 graphTerms——见 spec 决策 A.8。
+      setCreateDraft({
+        ...createDraft,
+        step: 'confirm',
+        submitting: false,
+        error: `${message}，请刷新后从下拉列表中选择已有项`,
+      })
+      fetchGraphTerms(sessionToken, tenantId).then(setGraphTerms).catch(() => {})
+    }
+  }
+
+  const handleCancelCreateEntity = () => setCreateDraft(null)
+
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-xl font-bold text-ink">知识图谱审核（租户：{tenantId}）</h1>
@@ -398,6 +500,105 @@ export function GraphReviewsPage() {
         >
           {error}
         </p>
+      )}
+
+      {createDraft && (
+        <div className="fixed inset-0 z-20 flex items-center justify-center bg-ink/40 p-4">
+          <div className="flex w-full max-w-md flex-col gap-3 border-2 border-ink bg-paper p-5 shadow-brutal">
+            {createDraft.step === 'form' && (
+              <>
+                <p className="text-sm font-bold text-ink">创建为新实体</p>
+                <p className="text-sm text-ink-soft">标准名：{createDraft.standardName}</p>
+                <label className="flex flex-col gap-1 text-sm text-ink">
+                  实体类型
+                  <select
+                    value={createDraft.termType}
+                    onChange={(event) =>
+                      setCreateDraft({ ...createDraft, termType: event.target.value })
+                    }
+                    className="border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
+                  >
+                    <option value="">（请选择）</option>
+                    {termTypeOptions.map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-sm text-ink">
+                  产品线
+                  <select
+                    value={createDraft.productLine}
+                    onChange={(event) =>
+                      setCreateDraft({ ...createDraft, productLine: event.target.value })
+                    }
+                    className="border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
+                  >
+                    <option value="">（请选择）</option>
+                    {productLineOptions.map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={handleSubmitCreateEntity}
+                    disabled={!createDraft.termType || !createDraft.productLine}
+                    className="min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 font-bold text-ink shadow-brutal disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    下一步
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCancelCreateEntity}
+                    className="min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 font-bold text-ink shadow-brutal-sm"
+                  >
+                    取消
+                  </button>
+                </div>
+              </>
+            )}
+            {createDraft.step === 'confirm' && (
+              <>
+                <p className="text-sm font-bold text-ink">确认创建</p>
+                <p className="text-sm text-ink">
+                  标准名：{createDraft.standardName}
+                  <br />
+                  实体类型：{createDraft.termType}
+                  <br />
+                  产品线：{createDraft.productLine}
+                </p>
+                {createDraft.error && (
+                  <p role="alert" className="border-2 border-status-error bg-card px-3 py-2 text-sm text-ink">
+                    {createDraft.error}
+                  </p>
+                )}
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={handleSubmitCreateEntity}
+                    disabled={createDraft.submitting}
+                    className="min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 font-bold text-ink shadow-brutal disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {createDraft.submitting ? '创建中…' : '确认创建'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCancelCreateEntity}
+                    disabled={createDraft.submitting}
+                    className="min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 font-bold text-ink shadow-brutal-sm disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    取消
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
 
       {tab === 'pending' && !pendingLoaded && <p className="text-ink-soft">加载中…</p>}
@@ -444,36 +645,52 @@ export function GraphReviewsPage() {
               </p>
             )}
             <div className="flex gap-3">
-              <StandardNameInput
-                value={drafts[review.review_id]?.subject ?? ''}
-                onChange={(value) =>
-                  setDrafts((prev) => ({
-                    ...prev,
-                    [review.review_id]: {
-                      ...prev[review.review_id],
-                      subject: value,
-                    },
-                  }))
-                }
-                terms={graphTerms}
-                placeholder="subject 标准名"
-                ariaLabel="subject 标准名"
-              />
-              <StandardNameInput
-                value={drafts[review.review_id]?.object ?? ''}
-                onChange={(value) =>
-                  setDrafts((prev) => ({
-                    ...prev,
-                    [review.review_id]: {
-                      ...prev[review.review_id],
-                      object: value,
-                    },
-                  }))
-                }
-                terms={graphTerms}
-                placeholder="object 标准名"
-                ariaLabel="object 标准名"
-              />
+              <div className="flex flex-1 items-center gap-2">
+                <StandardNameInput
+                  value={drafts[review.review_id]?.subject ?? ''}
+                  onChange={(value) =>
+                    setDrafts((prev) => ({
+                      ...prev,
+                      [review.review_id]: {
+                        ...prev[review.review_id],
+                        subject: value,
+                      },
+                    }))
+                  }
+                  terms={graphTerms}
+                  placeholder="subject 标准名"
+                  ariaLabel="subject 标准名"
+                  onCreateNew={(query) => handleOpenCreateEntity(review.review_id, 'subject', query)}
+                />
+                {justCreated[review.review_id]?.subject && (
+                  <span className="border border-status-success px-1.5 py-0.5 text-xs text-status-success">
+                    新建
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-1 items-center gap-2">
+                <StandardNameInput
+                  value={drafts[review.review_id]?.object ?? ''}
+                  onChange={(value) =>
+                    setDrafts((prev) => ({
+                      ...prev,
+                      [review.review_id]: {
+                        ...prev[review.review_id],
+                        object: value,
+                      },
+                    }))
+                  }
+                  terms={graphTerms}
+                  placeholder="object 标准名"
+                  ariaLabel="object 标准名"
+                  onCreateNew={(query) => handleOpenCreateEntity(review.review_id, 'object', query)}
+                />
+                {justCreated[review.review_id]?.object && (
+                  <span className="border border-status-success px-1.5 py-0.5 text-xs text-status-success">
+                    新建
+                  </span>
+                )}
+              </div>
             </div>
             <textarea
               value={rejectNotes[review.review_id] ?? ''}
