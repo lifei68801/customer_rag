@@ -1,6 +1,7 @@
 import aiosqlite
 
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.review_cli import cmd_approve, cmd_list, cmd_reject
 from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema, list_pending_reviews
 
@@ -8,7 +9,34 @@ from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema, 
 async def _connect() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(conn)
+    # cmd_approve 现在还会查该租户 status="confirmed" 的关系类型/类型组合
+    # 白名单（Fix 1：approve_review 补齐了跟 normalize_and_write_relations
+    # 一样的"已确认本体范围"校验），这两张表也要建好，否则查询会报
+    # "no such table"。
+    await ensure_ontology_schema(conn)
     return conn
+
+
+async def _seed_confirmed_ontology(
+    conn: aiosqlite.Connection, *, tenant_id: str, relation_type: str,
+    subject_term_type: str, object_term_type: str,
+) -> None:
+    """直接往 tenant_relation_types/term_type_relation_allowlist 插入
+    status='confirmed' 的行，供 cmd_approve 校验通过——测试不需要走完整的
+    草稿编辑+confirm_ontology 生命周期。"""
+    await conn.execute(
+        "INSERT INTO tenant_relation_types "
+        "(tenant_id, relation_type, example_phrase, description, allow_chain_query, "
+        "source, status) VALUES (?, ?, ?, '', 0, 'custom', 'confirmed')",
+        (tenant_id, relation_type, relation_type),
+    )
+    await conn.execute(
+        "INSERT INTO term_type_relation_allowlist "
+        "(tenant_id, subject_term_type, relation_type, object_term_type, status) "
+        "VALUES (?, ?, ?, ?, 'confirmed')",
+        (tenant_id, subject_term_type, relation_type, object_term_type),
+    )
+    await conn.commit()
 
 
 class FakeGraphClient:
@@ -79,6 +107,10 @@ async def test_cmd_approve_writes_relation_via_graph_client():
         tenant_id="t1",
     )
     graph_client = FakeGraphClient()
+    await _seed_confirmed_ontology(
+        conn, tenant_id="t1", relation_type="RELATED_TO",
+        subject_term_type="", object_term_type="",
+    )
 
     await cmd_approve(
         review_conn=conn,

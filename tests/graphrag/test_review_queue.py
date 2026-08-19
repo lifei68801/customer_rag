@@ -5,6 +5,7 @@ import pytest
 
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import (
+    RelationNotInConfirmedOntologyError,
     ReviewAlreadyResolvedError,
     ReviewNotFoundError,
     StandardNameNotInTermsError,
@@ -19,6 +20,17 @@ from app.graphrag.review_queue import (
 )
 
 _NOW = datetime(2026, 8, 12, 12, 0, 0)
+
+# approve_review() 现在要求调用方声明该租户"已确认"的本体范围（跟
+# normalize_and_write_relations() 的自动写入路径同一类校验，见
+# tests/graphrag/test_normalization.py 的同名常量）。本文件大多数用例
+# 用 _terms() 构造 term_type="" 的术语、enqueue_for_review 默认
+# relation_type="RELATED_TO"，所以这里的默认"已确认"范围就覆盖
+# ("", "RELATED_TO", "") 这一种组合，够绝大多数既有用例通过；专门测试
+# "不在已确认本体范围内"这条新校验的用例会构造自己的术语/常量，不复用
+# 这两个默认值。
+_CONFIRMED_RELATION_TYPES = {"RELATED_TO"}
+_ALLOWED_COMBINATIONS = {("", "RELATED_TO", "")}
 
 
 def _terms(*standard_names: str, tenant_id: str = "t1") -> list[Term]:
@@ -123,6 +135,8 @@ async def test_approve_review_writes_relation_with_source_and_tenant_and_removes
         graph_client=graph_client,
         terms=_terms("示例错误码E502", "示例登录模块"),
         now=_NOW,
+        confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
 
     assert graph_client.written == [
@@ -187,6 +201,8 @@ async def test_approve_review_writes_node_key_not_standard_name_after_term_was_r
         graph_client=graph_client,
         terms=renamed_terms,
         now=_NOW,
+        confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
 
     assert graph_client.written[0]["subject"] == "示例错误码E502_原始名"
@@ -206,6 +222,7 @@ async def test_approve_review_from_wrong_tenant_raises_not_found():
             conn, review_id=review_id, subject_standard_name="x",
             object_standard_name="y", tenant_id="t2", graph_client=graph_client,
             terms=[], now=_NOW,
+            confirmed_relation_types=set(), allowed_combinations=set(),
         )
     assert graph_client.written == []
 
@@ -257,6 +274,8 @@ async def test_approve_unknown_review_id_raises():
             graph_client=graph_client,
             terms=[],
             now=_NOW,
+            confirmed_relation_types=set(),
+            allowed_combinations=set(),
         )
 
 
@@ -279,6 +298,8 @@ async def test_approve_already_resolved_review_raises():
             graph_client=graph_client,
             terms=[],
             now=_NOW,
+            confirmed_relation_types=set(),
+            allowed_combinations=set(),
         )
 
 
@@ -336,6 +357,8 @@ async def test_list_resolved_reviews_returns_approved_and_rejected_ordered_by_re
     await approve_review(
         conn, review_id=approved_id, subject_standard_name="A", object_standard_name="B",
         tenant_id="t1", graph_client=graph_client, terms=_terms("A", "B"), now=_NOW,
+        confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
     await reject_review(conn, review_id=rejected_id, tenant_id="t1", note="噪声")
 
@@ -417,6 +440,8 @@ async def test_count_resolved_reviews_matches_status_filter():
     await approve_review(
         conn, review_id=approved_id, subject_standard_name="A", object_standard_name="B",
         tenant_id="t1", graph_client=graph_client, terms=_terms("A", "B"), now=_NOW,
+        confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
     )
     await reject_review(conn, review_id=rejected_id, tenant_id="t1", note="噪声")
 
@@ -506,6 +531,8 @@ async def test_approve_review_rejects_standard_name_not_in_terms():
             graph_client=graph_client,
             terms=_terms("示例登录模块"),
             now=_NOW,
+            confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+            allowed_combinations=_ALLOWED_COMBINATIONS,
         )
 
     # 校验失败不写图谱、也不改变 review 状态——还留在待审核队列里，
@@ -534,6 +561,94 @@ async def test_approve_review_rejects_all_names_when_terms_list_is_empty():
             graph_client=graph_client,
             terms=[],
             now=_NOW,
+            confirmed_relation_types=set(),
+            allowed_combinations=set(),
+        )
+
+    assert graph_client.written == []
+    pending = await list_pending_reviews(conn, tenant_id="t1")
+    assert len(pending) == 1
+    assert pending[0]["review_id"] == review_id
+
+
+async def test_approve_review_rejects_relation_type_not_in_confirmed_ontology():
+    """relation_type 本身不在该租户已确认的 tenant_relation_types 里——
+    即便两侧标准名都合法，approve_review 也不能把它写进图谱，见
+    RelationNotInConfirmedOntologyError 的说明。"""
+    conn = await _connect()
+    graph_client = FakeGraphClient()
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="a", object_candidate="b", relation_type="CAUSES",
+        reason="not_in_confirmed_ontology", source="s.md", tenant_id="t1",
+    )
+    terms = [
+        Term(
+            tenant_id="t1", node_key="示例错误码E502", standard_name="示例错误码E502",
+            aliases=[], term_type="error_code", product_line="",
+        ),
+        Term(
+            tenant_id="t1", node_key="示例登录模块", standard_name="示例登录模块",
+            aliases=[], term_type="module", product_line="",
+        ),
+    ]
+
+    with pytest.raises(RelationNotInConfirmedOntologyError):
+        await approve_review(
+            conn,
+            review_id=review_id,
+            subject_standard_name="示例错误码E502",
+            object_standard_name="示例登录模块",
+            tenant_id="t1",
+            graph_client=graph_client,
+            terms=terms,
+            now=_NOW,
+            # "CAUSES" 不在这个已确认集合里——只有 RELATED_TO 被确认过
+            confirmed_relation_types={"RELATED_TO"},
+            allowed_combinations={("error_code", "CAUSES", "module")},
+        )
+
+    # 校验失败不写图谱、也不改变 review 状态——还留在待审核队列里
+    assert graph_client.written == []
+    pending = await list_pending_reviews(conn, tenant_id="t1")
+    assert len(pending) == 1
+    assert pending[0]["review_id"] == review_id
+
+
+async def test_approve_review_rejects_type_combination_not_in_allowed_combinations():
+    """relation_type 本身已确认，但 (subject.term_type, relation_type,
+    object.term_type) 这个具体组合不在已确认的 term_type_relation_allowlist
+    里——同样不能自动放行，必须在 allowed_combinations 里精确匹配到。"""
+    conn = await _connect()
+    graph_client = FakeGraphClient()
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+        reason="not_in_confirmed_ontology", source="s.md", tenant_id="t1",
+    )
+    terms = [
+        Term(
+            tenant_id="t1", node_key="示例错误码E502", standard_name="示例错误码E502",
+            aliases=[], term_type="error_code", product_line="",
+        ),
+        Term(
+            tenant_id="t1", node_key="示例登录模块", standard_name="示例登录模块",
+            aliases=[], term_type="module", product_line="",
+        ),
+    ]
+
+    with pytest.raises(RelationNotInConfirmedOntologyError):
+        await approve_review(
+            conn,
+            review_id=review_id,
+            subject_standard_name="示例错误码E502",
+            object_standard_name="示例登录模块",
+            tenant_id="t1",
+            graph_client=graph_client,
+            terms=terms,
+            now=_NOW,
+            confirmed_relation_types={"RELATED_TO"},
+            # 已确认的组合表里只有 module->error_code 这个方向，实际候选
+            # 是 error_code->module，方向不对，不应该被放行
+            allowed_combinations={("module", "RELATED_TO", "error_code")},
         )
 
     assert graph_client.written == []

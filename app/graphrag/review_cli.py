@@ -10,6 +10,8 @@ import aiosqlite
 from app.config.settings import Settings
 from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_constraints import list_allowed_combinations
+from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.review_factory import build_review_conn_from_settings
 from app.graphrag.review_queue import (
     ReviewGraphClientProtocol,
@@ -52,6 +54,16 @@ async def cmd_approve(
     graph_client: ReviewGraphClientProtocol,
     terms: list[Term],
 ) -> None:
+    # 与 admin_graph_review_routes.py 的批准路由用同一套"已确认本体范围"
+    # 数据源，两个批准入口的校验必须一致，见 approve_review() 的说明。
+    confirmed_relation_types = {
+        rt.relation_type
+        for rt in await list_relation_types(review_conn, tenant_id, status="confirmed")
+    }
+    allowed_combinations = {
+        (c.subject_term_type, c.relation_type, c.object_term_type)
+        for c in await list_allowed_combinations(review_conn, tenant_id, status="confirmed")
+    }
     await approve_review(
         review_conn,
         review_id=review_id,
@@ -61,6 +73,8 @@ async def cmd_approve(
         graph_client=graph_client,
         terms=terms,
         now=datetime.now(),
+        confirmed_relation_types=confirmed_relation_types,
+        allowed_combinations=allowed_combinations,
     )
     print(
         f"已批准 review_id={review_id}，写入图谱："

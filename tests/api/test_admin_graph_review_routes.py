@@ -9,6 +9,7 @@ from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import ensure_terms_schema
@@ -40,7 +41,34 @@ async def _open_review_conn() -> aiosqlite.Connection:
     # 必须显式建表 + 注册本文件所有用例用到的 tenant_id（"t1"）。
     await create_tenants_table(conn)
     await create_tenant(conn, tenant_id="t1", name="t1")
+    # approve 路由现在还会查该租户 status="confirmed" 的关系类型/类型组合
+    # 白名单（Fix 1：approve_review 补齐了跟 normalize_and_write_relations
+    # 一样的"已确认本体范围"校验），这两张表也要建好，否则查询会报
+    # "no such table"。
+    await ensure_ontology_schema(conn)
     return conn
+
+
+async def _seed_confirmed_ontology(
+    conn: aiosqlite.Connection, *, tenant_id: str, relation_type: str,
+    subject_term_type: str, object_term_type: str,
+) -> None:
+    """直接往 tenant_relation_types/term_type_relation_allowlist 插入
+    status='confirmed' 的行——测试只关心 approve 路由能查到这条"已确认"
+    数据，不需要走完整的草稿编辑+confirm_ontology 生命周期。"""
+    await conn.execute(
+        "INSERT INTO tenant_relation_types "
+        "(tenant_id, relation_type, example_phrase, description, allow_chain_query, "
+        "source, status) VALUES (?, ?, ?, '', 0, 'custom', 'confirmed')",
+        (tenant_id, relation_type, relation_type),
+    )
+    await conn.execute(
+        "INSERT INTO term_type_relation_allowlist "
+        "(tenant_id, subject_term_type, relation_type, object_term_type, status) "
+        "VALUES (?, ?, ?, ?, 'confirmed')",
+        (tenant_id, subject_term_type, relation_type, object_term_type),
+    )
+    await conn.commit()
 
 
 @pytest.fixture
@@ -144,6 +172,12 @@ def test_approve_review_calls_graph_client_and_moves_to_history(review_conn):
                     term_type="", product_line="",
                 ),
             ],
+        )
+    )
+    asyncio.run(
+        _seed_confirmed_ontology(
+            review_conn, tenant_id="t1", relation_type="RELATED_TO",
+            subject_term_type="", object_term_type="",
         )
     )
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
@@ -301,6 +335,12 @@ def test_approve_already_resolved_review_returns_409(review_conn):
             ],
         )
     )
+    asyncio.run(
+        _seed_confirmed_ontology(
+            review_conn, tenant_id="t1", relation_type="RELATED_TO",
+            subject_term_type="", object_term_type="",
+        )
+    )
     try:
         client = TestClient(app)
         payload = {
@@ -381,6 +421,12 @@ def test_list_reviews_status_all_returns_both_approved_and_rejected(review_conn)
                     term_type="", product_line="",
                 ),
             ],
+        )
+    )
+    asyncio.run(
+        _seed_confirmed_ontology(
+            review_conn, tenant_id="t1", relation_type="RELATED_TO",
+            subject_term_type="", object_term_type="",
         )
     )
     try:
@@ -539,6 +585,52 @@ def test_approve_review_with_invalid_relation_type_returns_400(review_conn):
         app.dependency_overrides.clear()
 
     assert response.status_code == 400
+
+
+def test_approve_review_with_relation_type_not_in_confirmed_ontology_returns_400(review_conn):
+    """Fix 1 回归测试：relation_type/类型组合两侧都合法对齐了术语表，但
+    不在该租户已确认的本体范围内——approve 路由要挡住，不能直接写图谱。
+    这里刻意不调用 _seed_confirmed_ontology，模拟该租户还没有确认任何
+    关系类型/类型组合的场景。"""
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+            reason="not_in_confirmed_ontology", source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    graph_client = FakeGraphClient()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    asyncio.run(
+        _seed_terms(
+            review_conn,
+            [
+                Term(
+                    tenant_id="t1", node_key="A", standard_name="A", aliases=[],
+                    term_type="", product_line="",
+                ),
+                Term(
+                    tenant_id="t1", node_key="B", standard_name="B", aliases=[],
+                    term_type="", product_line="",
+                ),
+            ],
+        )
+    )
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/admin/graph-reviews/{review_id}/approve",
+            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert graph_client.written == []
 
 
 def test_approve_review_with_standard_name_not_in_terms_returns_400(review_conn):

@@ -10,7 +10,10 @@ import aiosqlite
 from app.api import deps
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_constraints import list_allowed_combinations
+from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.review_queue import (
+    RelationNotInConfirmedOntologyError,
     ReviewAlreadyResolvedError,
     ReviewNotFoundError,
     StandardNameNotInTermsError,
@@ -92,6 +95,18 @@ async def approve(
     # 那套独立的 gateway_tenant_id 解析——两者在这条请求里可能不是同一个
     # 值，直接按 payload.tenant_id 加载术语表，避免跨租户读到错的术语表。
     terms: list[Term] = await list_terms(review_conn, payload.tenant_id)
+    # 与 normalize_and_write_relations() 的自动写入路径共用同一套"已确认
+    # 本体范围"数据源：这里查的是 status="confirmed"，不是草稿——审核员
+    # 批准动作最终写图谱，必须过跟自动路径一样的闸门，见
+    # RelationNotInConfirmedOntologyError 的说明。
+    confirmed_relation_types = {
+        rt.relation_type
+        for rt in await list_relation_types(review_conn, payload.tenant_id, status="confirmed")
+    }
+    allowed_combinations = {
+        (c.subject_term_type, c.relation_type, c.object_term_type)
+        for c in await list_allowed_combinations(review_conn, payload.tenant_id, status="confirmed")
+    }
     try:
         await approve_review(
             review_conn,
@@ -102,12 +117,16 @@ async def approve(
             graph_client=graph_client,
             terms=terms,
             now=datetime.now(),
+            confirmed_relation_types=confirmed_relation_types,
+            allowed_combinations=allowed_combinations,
         )
     except ReviewNotFoundError:
         raise HTTPException(status_code=404, detail="待审核记录不存在")
     except ReviewAlreadyResolvedError:
         raise HTTPException(status_code=409, detail="该记录已经处理过")
     except StandardNameNotInTermsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RelationNotInConfirmedOntologyError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

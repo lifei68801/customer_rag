@@ -60,6 +60,21 @@ class StandardNameNotInTermsError(Exception):
     加在这一处。"""
 
 
+class RelationNotInConfirmedOntologyError(Exception):
+    """人工确认的候选关系，其 relation_type 不在该租户已确认的
+    tenant_relation_types 里，或 (subject.term_type, relation_type,
+    object.term_type) 组合不在已确认的 term_type_relation_allowlist 里。
+
+    自动写入路径（normalize_and_write_relations）早就做了同一层校验——
+    两侧实体精确对齐术语表之后，还要求关系类型/类型组合落在租户已确认
+    的本体范围内，不满足就降级转人工审核而不是直接写图谱。approve_review
+    是候选关系最终真正写入图谱的唯一入口，人工批准同样不能绕开这条闸门，
+    否则审核员可以把任意关系类型/类型组合写进图谱，让"只写入已确认本体
+    范围内的关系"这条不变量在人工审核路径上形同虚设。校验失败时不写图谱、
+    也不改变 review 状态（仍是 pending），与 StandardNameNotInTermsError
+    的行为保持一致，方便审核员改对后重新提交。"""
+
+
 async def ensure_review_schema(conn: aiosqlite.Connection) -> None:
     """幂等建表+迁移，可重复调用。"""
     await conn.executescript(_SCHEMA_SQL)
@@ -290,6 +305,8 @@ async def approve_review(
     graph_client: ReviewGraphClientProtocol,
     terms: list[Term],
     now: datetime,
+    confirmed_relation_types: set[str],
+    allowed_combinations: set[tuple[str, str, str]],
 ) -> None:
     """人工确认候选关系对应的标准名称后，写入图谱并把队列状态标记为已批准。
 
@@ -299,9 +316,18 @@ async def approve_review(
     Neo4jGraphClient.merge_relation，只是 provenance 标记不同。
 
     terms 是当前生效的封闭词表，两侧标准名必须在其中，见
-    StandardNameNotInTermsError 的说明。校验失败时不写图谱、也不改变
-    review 状态（仍是 pending），方便审核员改对后重新提交，而不是必须
-    先驳回再重新走一遍抽取流程。
+    StandardNameNotInTermsError 的说明。
+
+    confirmed_relation_types/allowed_combinations 是调用方预先查好的该
+    租户 status="confirmed" 范围，与 normalize_and_write_relations() 要求
+    的同名参数是同一类校验：relation_type 必须在 confirmed_relation_types
+    里，且 (subject.term_type, relation_type, object.term_type) 必须在
+    allowed_combinations 里，任一条件不满足就抛
+    RelationNotInConfirmedOntologyError——人工批准同样不能绕开"只写入已
+    确认本体范围内的关系"这条不变量，见该异常类的说明。
+
+    以上任一校验失败都不写图谱、也不改变 review 状态（仍是 pending），
+    方便审核员改对后重新提交，而不是必须先驳回再重新走一遍抽取流程。
     """
     row = await _fetch_pending_row(conn, review_id, tenant_id=tenant_id)
     valid_standard_names = {term.standard_name for term in terms}
@@ -318,12 +344,17 @@ async def approve_review(
     # 展示名 subject_standard_name/object_standard_name（改名后就不等于
     # node_key 了）。从上面已校验过的 terms 列表按 standard_name 反查对应
     # 的 node_key，与 app/agent/tools.py::graph_query_tool 的做法一致。
-    subject_node_key = next(
-        t.node_key for t in terms if t.standard_name == subject_standard_name
-    )
-    object_node_key = next(
-        t.node_key for t in terms if t.standard_name == object_standard_name
-    )
+    subject_term = next(t for t in terms if t.standard_name == subject_standard_name)
+    object_term = next(t for t in terms if t.standard_name == object_standard_name)
+    subject_node_key = subject_term.node_key
+    object_node_key = object_term.node_key
+    combo = (subject_term.term_type, row["relation_type"], object_term.term_type)
+    if row["relation_type"] not in confirmed_relation_types or combo not in allowed_combinations:
+        raise RelationNotInConfirmedOntologyError(
+            f"关系类型 {row['relation_type']!r} 或类型组合 "
+            f"{(subject_term.term_type, row['relation_type'], object_term.term_type)!r} "
+            "不在该租户已确认的本体范围内"
+        )
     await graph_client.merge_relation(
         subject_standard_name=subject_node_key,
         object_standard_name=object_node_key,
