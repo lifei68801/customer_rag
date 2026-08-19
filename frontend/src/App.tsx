@@ -7,6 +7,7 @@ import { GraphReviewsPage } from './admin/GraphReviewsPage'
 import { TermsPage } from './admin/TermsPage'
 import { SchemaEtlPage } from './admin/SchemaEtlPage'
 import { OntologySchemaPage } from './admin/OntologySchemaPage'
+import { DataEntryPage } from './admin/DataEntryPage'
 
 function App() {
   return (
@@ -16,9 +17,15 @@ function App() {
       <Route path="/admin" element={<AdminLayout />}>
         <Route index element={<Navigate to="documents" replace />} />
         <Route path="documents" element={<DocumentsPage />} />
-        <Route path="graph-reviews" element={<GraphReviewsPage />} />
-        <Route path="terms" element={<TermsPage />} />
-        <Route path="schema-etl" element={<SchemaEtlPage />} />
+        <Route path="data-entry" element={<DataEntryPage />}>
+          <Route index element={<Navigate to="manual" replace />} />
+          <Route path="manual" element={<TermsPage />} />
+          <Route path="etl" element={<SchemaEtlPage />} />
+          <Route path="review" element={<GraphReviewsPage />} />
+        </Route>
+        <Route path="graph-reviews" element={<Navigate to="/admin/data-entry/review" replace />} />
+        <Route path="terms" element={<Navigate to="/admin/data-entry/manual" replace />} />
+        <Route path="schema-etl" element={<Navigate to="/admin/data-entry/etl" replace />} />
         <Route path="ontology" element={<OntologySchemaPage />} />
       </Route>
     </Routes>

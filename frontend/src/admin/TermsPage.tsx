@@ -65,7 +65,7 @@ export function TermsPage() {
   const [deletingKey, setDeletingKey] = useState<string | null>(null)
 
   useEffect(() => {
-    document.title = '术语库管理 · 管理后台'
+    document.title = '实体列表 · 管理后台'
   }, [])
 
   useEffect(() => {

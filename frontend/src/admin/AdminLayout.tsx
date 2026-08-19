@@ -35,14 +35,8 @@ export function AdminLayout() {
             <NavLink to="/admin/documents" className={navLinkClass}>
               文档管理
             </NavLink>
-            <NavLink to="/admin/graph-reviews" className={navLinkClass}>
-              知识图谱审核
-            </NavLink>
-            <NavLink to="/admin/schema-etl" className={navLinkClass}>
-              ETL 跑批
-            </NavLink>
-            <NavLink to="/admin/terms" className={navLinkClass}>
-              术语库管理
+            <NavLink to="/admin/data-entry" className={navLinkClass}>
+              数据填充
             </NavLink>
           </nav>
           <div className="flex flex-row flex-wrap gap-3 md:flex-col">
