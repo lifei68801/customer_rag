@@ -112,12 +112,12 @@ async def _write_entity_mapping(
             }
             await upsert_term_with_node_key(
                 conn, tenant_id=tenant_id, node_key=node_key, standard_name=standard_name,
-                aliases=[], term_type=mapping.term_type, product_line=mapping.product_line,
+                aliases=[], term_type=mapping.term_type,
                 extra_properties=extra_properties,
             )
             term = Term(
                 tenant_id=tenant_id, node_key=node_key, standard_name=standard_name,
-                aliases=[], term_type=mapping.term_type, product_line=mapping.product_line,
+                aliases=[], term_type=mapping.term_type,
                 extra_properties=extra_properties,
             )
             await graph_client.sync_term(term)

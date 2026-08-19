@@ -25,7 +25,6 @@ class AllocatedCodeNodeKeyPart:
 class EntityMapping:
     term_type: str
     source_file: str
-    product_line: str
     standard_name_column: str
     node_key_parts: list[ColumnNodeKeyPart | AllocatedCodeNodeKeyPart]
     field_mappings: dict[str, str]
@@ -75,7 +74,6 @@ def _parse_entity_mapping(raw: dict) -> EntityMapping:
         return EntityMapping(
             term_type=raw["term_type"],
             source_file=raw["source_file"],
-            product_line=raw["product_line"],
             standard_name_column=raw["standard_name_column"],
             node_key_parts=[_parse_node_key_part(part) for part in node_key_parts_raw],
             field_mappings=dict(raw.get("field_mappings") or {}),

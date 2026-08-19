@@ -13,7 +13,7 @@ from app.graphrag.etl_runs_store import (
     get_etl_run,
     list_etl_runs,
 )
-from app.graphrag.ontology_categories import create_product_line, create_term_type
+from app.graphrag.ontology_categories import create_term_type
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import ensure_terms_schema
@@ -74,7 +74,6 @@ def client(review_conn, tmp_path):
 
 async def _confirm_muji_schema(review_conn: aiosqlite.Connection) -> None:
     await create_term_type(review_conn, tenant_id="muji", value="Product")
-    await create_product_line(review_conn, value="MUJI")
     await checkout_draft(review_conn, "muji")
     await confirm_ontology(review_conn, "muji")
 

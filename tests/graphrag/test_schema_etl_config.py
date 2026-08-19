@@ -23,7 +23,6 @@ tenant_id: muji
 entities:
   - term_type: Product
     source_file: products.csv
-    product_line: "MUJI"
     standard_name_column: product_group_name
     node_key_parts:
       - column: product_group_id
@@ -32,7 +31,6 @@ entities:
 
   - term_type: VariantValue
     source_file: variant_values.csv
-    product_line: "MUJI"
     standard_name_column: label_cn
     node_key_parts:
       - column: dim_code
@@ -58,7 +56,6 @@ relations:
     product = config.entities[0]
     assert product.term_type == "Product"
     assert product.source_file == "products.csv"
-    assert product.product_line == "MUJI"
     assert product.standard_name_column == "product_group_name"
     assert product.node_key_parts == [ColumnNodeKeyPart(column="product_group_id")]
     assert product.field_mappings == {"md_no": "md_no"}
@@ -93,7 +90,6 @@ tenant_id: muji
 entities:
   - term_type: Product
     source_file: products.csv
-    product_line: "MUJI"
     standard_name_column: name
     node_key_parts: []
     field_mappings: {}
@@ -123,7 +119,6 @@ def test_load_schema_etl_config_rejects_entity_missing_required_field(tmp_path):
 tenant_id: muji
 entities:
   - term_type: Product
-    product_line: "MUJI"
     standard_name_column: name
     node_key_parts:
       - column: id
@@ -163,7 +158,6 @@ tenant_id: muji
 entities:
   - term_type: VariantValue
     source_file: variant_values.csv
-    product_line: "MUJI"
     standard_name_column: label_cn
     node_key_parts:
       - allocated_code:
@@ -186,7 +180,6 @@ tenant_id: muji
 entities:
   - term_type: VariantValue
     source_file: variant_values.csv
-    product_line: "MUJI"
     standard_name_column: label_cn
     node_key_parts:
       - allocated_code:

@@ -6,7 +6,7 @@ import aiosqlite
 import pytest
 
 from app.graphrag.etl_stable_code_registry import allocate_stable_code, ensure_stable_code_registry_schema
-from app.graphrag.ontology_categories import ExtraFieldSpec, create_product_line, create_term_type
+from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
 from app.graphrag.ontology_constraints import add_allowed_combination
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag.ontology_relations import create_relation_type
@@ -49,7 +49,6 @@ async def _confirmed_conn() -> aiosqlite.Connection:
     )
     await create_term_type(conn, tenant_id="muji", value="SKU")
     await create_term_type(conn, tenant_id="muji", value="VariantValue")
-    await create_product_line(conn, value="MUJI")
     await checkout_draft(conn, "muji")
     await create_relation_type(
         conn, "muji", relation_type="HAS_SKU", example_phrase="Product HAS_SKU SKU",
@@ -92,13 +91,13 @@ async def test_run_schema_etl_writes_entities_and_relations(tmp_path):
         tenant_id="muji",
         entities=[
             EntityMapping(
-                term_type="Product", source_file="products.csv", product_line="MUJI",
+                term_type="Product", source_file="products.csv",
                 standard_name_column="product_group_name",
                 node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
                 field_mappings={"md_no": "md_no"},
             ),
             EntityMapping(
-                term_type="SKU", source_file="skus.csv", product_line="MUJI",
+                term_type="SKU", source_file="skus.csv",
                 standard_name_column="jan",
                 node_key_parts=[ColumnNodeKeyPart(column="jan")],
                 field_mappings={},
@@ -138,7 +137,7 @@ async def test_run_schema_etl_skips_bad_row_and_reports_it(tmp_path):
         tenant_id="muji",
         entities=[
             EntityMapping(
-                term_type="Product", source_file="products.csv", product_line="MUJI",
+                term_type="Product", source_file="products.csv",
                 standard_name_column="product_group_name",
                 node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
                 field_mappings={"md_no": "md_no"},
@@ -166,7 +165,7 @@ async def test_run_schema_etl_rerun_is_idempotent(tmp_path):
         tenant_id="muji",
         entities=[
             EntityMapping(
-                term_type="Product", source_file="products.csv", product_line="MUJI",
+                term_type="Product", source_file="products.csv",
                 standard_name_column="product_group_name",
                 node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
                 field_mappings={"md_no": "md_no"},
@@ -198,7 +197,7 @@ async def test_run_schema_etl_skips_bad_row_in_the_middle_and_still_processes_th
         tenant_id="muji",
         entities=[
             EntityMapping(
-                term_type="Product", source_file="products.csv", product_line="MUJI",
+                term_type="Product", source_file="products.csv",
                 standard_name_column="product_group_name",
                 node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
                 field_mappings={"md_no": "md_no"},
@@ -234,13 +233,13 @@ async def test_run_schema_etl_unconfirmed_relation_type_skips_only_that_mapping(
         tenant_id="muji",
         entities=[
             EntityMapping(
-                term_type="Product", source_file="products.csv", product_line="MUJI",
+                term_type="Product", source_file="products.csv",
                 standard_name_column="product_group_name",
                 node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
                 field_mappings={"md_no": "md_no"},
             ),
             EntityMapping(
-                term_type="SKU", source_file="skus.csv", product_line="MUJI",
+                term_type="SKU", source_file="skus.csv",
                 standard_name_column="jan",
                 node_key_parts=[ColumnNodeKeyPart(column="jan")],
                 field_mappings={},
@@ -285,13 +284,13 @@ async def test_run_schema_etl_relation_type_confirmed_but_combination_not_allowe
         tenant_id="muji",
         entities=[
             EntityMapping(
-                term_type="Product", source_file="products.csv", product_line="MUJI",
+                term_type="Product", source_file="products.csv",
                 standard_name_column="product_group_name",
                 node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
                 field_mappings={"md_no": "md_no"},
             ),
             EntityMapping(
-                term_type="SKU", source_file="skus.csv", product_line="MUJI",
+                term_type="SKU", source_file="skus.csv",
                 standard_name_column="jan",
                 node_key_parts=[ColumnNodeKeyPart(column="jan")],
                 field_mappings={},
@@ -333,19 +332,19 @@ async def test_run_schema_etl_unregistered_term_type_skips_only_that_mapping(tmp
         tenant_id="muji",
         entities=[
             EntityMapping(
-                term_type="NotRegistered", source_file="unknown.csv", product_line="MUJI",
+                term_type="NotRegistered", source_file="unknown.csv",
                 standard_name_column="name",
                 node_key_parts=[ColumnNodeKeyPart(column="code")],
                 field_mappings={},
             ),
             EntityMapping(
-                term_type="Product", source_file="products.csv", product_line="MUJI",
+                term_type="Product", source_file="products.csv",
                 standard_name_column="product_group_name",
                 node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
                 field_mappings={"md_no": "md_no"},
             ),
             EntityMapping(
-                term_type="SKU", source_file="skus.csv", product_line="MUJI",
+                term_type="SKU", source_file="skus.csv",
                 standard_name_column="jan",
                 node_key_parts=[ColumnNodeKeyPart(column="jan")],
                 field_mappings={},
@@ -385,7 +384,7 @@ async def test_run_schema_etl_relation_endpoint_never_written_is_skipped_not_gho
         tenant_id="muji",
         entities=[
             EntityMapping(
-                term_type="VariantValue", source_file="variant_values.csv", product_line="MUJI",
+                term_type="VariantValue", source_file="variant_values.csv",
                 standard_name_column="raw_value",
                 node_key_parts=[
                     AllocatedCodeNodeKeyPart(scope_columns=["dim_code"], raw_value_column="raw_value")
@@ -431,13 +430,13 @@ async def test_run_schema_etl_reports_per_type_counts(tmp_path):
         tenant_id="muji",
         entities=[
             EntityMapping(
-                term_type="Product", source_file="products.csv", product_line="MUJI",
+                term_type="Product", source_file="products.csv",
                 standard_name_column="product_group_name",
                 node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
                 field_mappings={"md_no": "md_no"},
             ),
             EntityMapping(
-                term_type="SKU", source_file="skus.csv", product_line="MUJI",
+                term_type="SKU", source_file="skus.csv",
                 standard_name_column="jan",
                 node_key_parts=[ColumnNodeKeyPart(column="jan")],
                 field_mappings={},
