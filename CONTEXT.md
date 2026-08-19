@@ -23,7 +23,7 @@ Term 节点上的业务分类标签（如 "error_code"、"module"），描述这
 _Avoid_: 分类、Category（容易和 Neo4j 概念里的 "Category" 实体混淆，见下）
 
 **product_line（产品线）**:
-Term 节点上的另一个分类标签，描述术语所属的产品/业务线。仍是全局枚举，不受 term_type 按租户隔离这个决定影响——MUJI 场景下没有对应需求，暂不改动。
+2026-08-19 已从数据模型里彻底移除——每个租户实际只有一条产品线，这个字段形同摆设。详见 docs/superpowers/specs/2026-08-19-remove-product-line-design.md。
 
 **抽取管道（extraction pipeline）**:
 现有的知识图谱构建路径：LLM 从非结构化文档（PDF/Word/工单）里抽取专有名词间的关系，对齐到人工维护的术语表，写入前经过人工审核队列（`review_queue.py`）避免幻觉。

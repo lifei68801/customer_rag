@@ -2,6 +2,8 @@
 
 **Status**: proposed
 
+**更新（2026-08-19）**：本 ADR 提到的 `product_line` 全局枚举已被移除，见 docs/superpowers/specs/2026-08-19-remove-product-line-design.md。
+
 `ontology_term_types`（`term_type` 枚举表）在 2026-08-14 的本体 schema 基座计划（`docs/superpowers/specs/2026-08-14-ontology-schema-design.md` 第 3 节）里被明确设计为全局、不分租户——因为它要跟已上线的全局 `terms` 表口径保持一致，全部 7 个任务、多轮审查都基于这个前提。
 
 MUJI 租户接入商品知识图谱（`docs/MUJI_知识图谱_Schema设计方案_v6.md`）时，需要把 Product/SKU/Category/VariantValue 这类**结构性实体类型**也表达为 `term_type` 取值，才能复用现有 Term 节点体系而不新建平行子系统。但这些值语义上是"数据结构类型"（相当于 Neo4j 节点标签），跟其他租户已有的 `term_type` 值（如酒店客服场景的 "error_code"、"module"，纯业务分类标签）不是同一层次的概念。继续放在全局枚举里会让每个租户在后台管理界面看到所有其他租户的无关分类值，造成词表污染。
