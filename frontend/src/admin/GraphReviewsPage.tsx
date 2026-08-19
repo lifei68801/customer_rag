@@ -85,7 +85,7 @@ export function GraphReviewsPage() {
   const [justCreated, setJustCreated] = useState<Record<number, { subject: boolean; object: boolean }>>({})
 
   useEffect(() => {
-    document.title = '知识图谱审核 · 管理后台'
+    document.title = '非结构化数据加工 · 管理后台'
   }, [])
 
   useEffect(() => {
@@ -477,9 +477,23 @@ export function GraphReviewsPage() {
 
   const handleCancelCreateEntity = () => setCreateDraft(null)
 
+  // Escape 关闭弹窗——提交中（submitting）时不响应，避免用户中途关闭后
+  // fetch 仍在飞行、回调打在已经不存在的 UI 状态上。只在弹窗打开时挂
+  // 监听，卸载/关闭时清理，不用全局常驻监听器。
+  useEffect(() => {
+    if (!createDraft) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !createDraft.submitting) {
+        handleCancelCreateEntity()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [createDraft])
+
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-bold text-ink">知识图谱审核（租户：{tenantId}）</h1>
+      <h1 className="text-xl font-bold text-ink">非结构化数据加工（租户：{tenantId}）</h1>
 
       <div className="flex gap-2">
         <button
@@ -512,11 +526,27 @@ export function GraphReviewsPage() {
       )}
 
       {createDraft && (
-        <div className="fixed inset-0 z-20 flex items-center justify-center bg-ink/40 p-4">
-          <div className="flex w-full max-w-md flex-col gap-3 border-2 border-ink bg-paper p-5 shadow-brutal">
+        <div
+          className="fixed inset-0 z-20 flex items-center justify-center bg-ink/40 p-4"
+          // 只在点击落在遮罩本身（不是冒泡自弹窗内部内容）时关闭——同一个
+          // preventClose-while-submitting 规则也用在这里，跟 Escape 一致。
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !createDraft.submitting) {
+              handleCancelCreateEntity()
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-entity-dialog-title"
+            className="flex w-full max-w-md flex-col gap-3 border-2 border-ink bg-paper p-5 shadow-brutal"
+          >
             {createDraft.step === 'form' && (
               <>
-                <p className="text-sm font-bold text-ink">创建为新实体</p>
+                <p id="create-entity-dialog-title" className="text-sm font-bold text-ink">
+                  创建为新实体
+                </p>
                 <p className="text-sm text-ink-soft">标准名：{createDraft.standardName}</p>
                 <label className="flex flex-col gap-1 text-sm text-ink">
                   实体类型
@@ -573,7 +603,9 @@ export function GraphReviewsPage() {
             )}
             {createDraft.step === 'confirm' && (
               <>
-                <p className="text-sm font-bold text-ink">确认创建</p>
+                <p id="create-entity-dialog-title" className="text-sm font-bold text-ink">
+                  确认创建
+                </p>
                 <p className="text-sm text-ink">
                   标准名：{createDraft.standardName}
                   <br />

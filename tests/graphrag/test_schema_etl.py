@@ -7,6 +7,7 @@ import pytest
 
 from app.graphrag.etl_stable_code_registry import allocate_stable_code, ensure_stable_code_registry_schema
 from app.graphrag.ontology_categories import ExtraFieldSpec, create_product_line, create_term_type
+from app.graphrag.ontology_constraints import add_allowed_combination
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag.ontology_relations import create_relation_type
 from app.graphrag.schema_etl import SchemaETLNotConfirmedError, run_schema_etl
@@ -56,6 +57,13 @@ async def _confirmed_conn() -> aiosqlite.Connection:
     await create_relation_type(
         conn, "muji", relation_type="HAS_VARIANT_VALUE",
         example_phrase="VariantValue HAS_VARIANT_VALUE VariantValue",
+    )
+    await add_allowed_combination(
+        conn, "muji", subject_term_type="Product", relation_type="HAS_SKU", object_term_type="SKU",
+    )
+    await add_allowed_combination(
+        conn, "muji", subject_term_type="VariantValue", relation_type="HAS_VARIANT_VALUE",
+        object_term_type="VariantValue",
     )
     await confirm_ontology(conn, "muji")
     return conn
@@ -256,6 +264,58 @@ async def test_run_schema_etl_unconfirmed_relation_type_skips_only_that_mapping(
     assert graph_client.merged == []
     assert len(report.skipped_mappings) == 1
     assert report.skipped_mappings[0].label == "NOT_REGISTERED"
+
+
+async def test_run_schema_etl_relation_type_confirmed_but_combination_not_allowed_skips_only_that_mapping(
+    tmp_path,
+):
+    """relation_type 本身已确认，但 (subject_term_type, relation_type,
+    object_term_type) 这个组合不在已确认的允许列表里——只跳过这一个
+    mapping、记进 skipped_mappings，其余实体照常写入，不抛异常中断整次
+    运行。HAS_SKU 在 _confirmed_conn() 里只允许 (Product, HAS_SKU, SKU)
+    这一个方向，这里故意把主体/客体类型颠倒过来触发校验。"""
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,md_no\n1001,圆角收纳盒,A123\n", encoding="utf-8"
+    )
+    (tmp_path / "skus.csv").write_text(
+        "jan,product_group_id\n4901234567890,1001\n", encoding="utf-8"
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv", product_line="MUJI",
+                standard_name_column="product_group_name",
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+            EntityMapping(
+                term_type="SKU", source_file="skus.csv", product_line="MUJI",
+                standard_name_column="jan",
+                node_key_parts=[ColumnNodeKeyPart(column="jan")],
+                field_mappings={},
+            ),
+        ],
+        relations=[
+            RelationMapping(
+                relation_type="HAS_SKU", source_file="skus.csv",
+                subject_term_type="SKU", object_term_type="Product",
+            ),
+        ],
+    )
+    graph_client = FakeGraphClient()
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 2
+    assert report.relations_written == 0
+    assert graph_client.merged == []
+    assert len(report.skipped_mappings) == 1
+    assert report.skipped_mappings[0].label == "HAS_SKU"
+    assert "允许列表" in report.skipped_mappings[0].reason
 
 
 async def test_run_schema_etl_unregistered_term_type_skips_only_that_mapping(tmp_path):

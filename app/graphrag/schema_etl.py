@@ -17,6 +17,7 @@ from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import list_term_types
+from app.graphrag.ontology_constraints import list_allowed_combinations
 from app.graphrag.ontology_lifecycle import is_ontology_confirmed
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.review_factory import build_review_conn_from_settings
@@ -138,12 +139,25 @@ async def _write_relation_mapping(
     mapping: RelationMapping,
     entity_mappings_by_term_type: dict[str, EntityMapping],
     confirmed_relation_types: set[str],
+    allowed_combinations: set[tuple[str, str, str]],
     recorded_at: datetime,
     data_dir: Path,
     report: ETLRunReport,
 ) -> None:
     if mapping.relation_type not in confirmed_relation_types:
         raise RowProcessingError(f"relation_type {mapping.relation_type!r} 不在已确认 schema 里")
+    # relation_type 单独合法不代表 (subject_term_type, relation_type,
+    # object_term_type) 这个组合也在已确认的允许列表里——两者是独立声明的
+    # 字段，映射配置本身不保证组合有效。这条校验让 ETL 写入路径追平
+    # graph_extraction.py/review_queue.py 已经在做的同一种组合校验，见
+    # docs/superpowers/specs/2026-08-19-data-entry-unification-design.md
+    # "不在本次范围内"第 1 条的后续处理。
+    combo = (mapping.subject_term_type, mapping.relation_type, mapping.object_term_type)
+    if combo not in allowed_combinations:
+        raise RowProcessingError(
+            f"关系类型/实体类型组合不在已确认允许列表里: "
+            f"({mapping.subject_term_type!r}, {mapping.relation_type!r}, {mapping.object_term_type!r})"
+        )
     subject_entity = entity_mappings_by_term_type.get(mapping.subject_term_type)
     object_entity = entity_mappings_by_term_type.get(mapping.object_term_type)
     if subject_entity is None or object_entity is None:
@@ -212,13 +226,18 @@ async def run_schema_etl(
     confirmed_relation_types = {
         r.relation_type for r in await list_relation_types(conn, config.tenant_id, status="confirmed")
     }
+    allowed_combinations = {
+        (c.subject_term_type, c.relation_type, c.object_term_type)
+        for c in await list_allowed_combinations(conn, config.tenant_id, status="confirmed")
+    }
     entity_mappings_by_term_type = {m.term_type: m for m in config.entities}
     for relation_mapping in config.relations:
         try:
             await _write_relation_mapping(
                 conn=conn, graph_client=graph_client, tenant_id=config.tenant_id,
                 mapping=relation_mapping, entity_mappings_by_term_type=entity_mappings_by_term_type,
-                confirmed_relation_types=confirmed_relation_types, recorded_at=recorded_at,
+                confirmed_relation_types=confirmed_relation_types,
+                allowed_combinations=allowed_combinations, recorded_at=recorded_at,
                 data_dir=data_dir, report=report,
             )
         except RowProcessingError as exc:
