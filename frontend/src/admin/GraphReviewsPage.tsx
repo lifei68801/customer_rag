@@ -39,7 +39,6 @@ interface CreateEntityDraft {
   field: 'subject' | 'object'
   standardName: string
   termType: string
-  productLine: string
   step: 'form' | 'confirm'
   submitting: boolean
   error: string | null
@@ -80,7 +79,6 @@ export function GraphReviewsPage() {
   const [historyPage, setHistoryPage] = useState(1)
   const [historyTotal, setHistoryTotal] = useState(0)
   const [termTypeOptions, setTermTypeOptions] = useState<string[]>([])
-  const [productLineOptions, setProductLineOptions] = useState<string[]>([])
   const [createDraft, setCreateDraft] = useState<CreateEntityDraft | null>(null)
   const [justCreated, setJustCreated] = useState<Record<number, { subject: boolean; object: boolean }>>({})
 
@@ -100,24 +98,15 @@ export function GraphReviewsPage() {
 
   useEffect(() => {
     if (!sessionToken) return
-    Promise.all([
-      adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=confirmed`, sessionToken)
-        .then((res) => res.json())
-        .then((data: { term_types: { value: string }[] }) =>
-          setTermTypeOptions(data.term_types.map((t) => t.value)),
-        )
-        .catch((err) => {
-          console.error('加载实体类型枚举失败', err)
-          return null
-        }),
-      adminFetch('/api/admin/ontology/product-lines', sessionToken)
-        .then((res) => res.json())
-        .then((data: { product_lines: string[] }) => setProductLineOptions(data.product_lines))
-        .catch((err) => {
-          console.error('加载产品线枚举失败', err)
-          return null
-        }),
-    ])
+    adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=confirmed`, sessionToken)
+      .then((res) => res.json())
+      .then((data: { term_types: { value: string }[] }) =>
+        setTermTypeOptions(data.term_types.map((t) => t.value)),
+      )
+      .catch((err) => {
+        console.error('加载实体类型枚举失败', err)
+        return null
+      })
   }, [sessionToken, tenantId])
 
   // 切换租户时两个 tab 的页码都要回到第一页——不然停留在深页码切租户，
@@ -423,7 +412,6 @@ export function GraphReviewsPage() {
       field,
       standardName: query,
       termType: clampedSuggestedType,
-      productLine: '',
       step: 'form',
       submitting: false,
       error: null,
@@ -433,7 +421,7 @@ export function GraphReviewsPage() {
   const handleSubmitCreateEntity = async () => {
     if (!sessionToken || !createDraft) return
     if (createDraft.step === 'form') {
-      if (!createDraft.termType || !createDraft.productLine) return
+      if (!createDraft.termType) return
       setCreateDraft({ ...createDraft, step: 'confirm', error: null })
       return
     }
@@ -444,7 +432,6 @@ export function GraphReviewsPage() {
         standard_name: createDraft.standardName,
         aliases: [],
         term_type: createDraft.termType,
-        product_line: createDraft.productLine,
         source: 'review',
       })
       const { reviewId, field, standardName } = createDraft
@@ -565,28 +552,11 @@ export function GraphReviewsPage() {
                     ))}
                   </select>
                 </label>
-                <label className="flex flex-col gap-1 text-sm text-ink">
-                  产品线
-                  <select
-                    value={createDraft.productLine}
-                    onChange={(event) =>
-                      setCreateDraft({ ...createDraft, productLine: event.target.value })
-                    }
-                    className="border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
-                  >
-                    <option value="">（请选择）</option>
-                    {productLineOptions.map((value) => (
-                      <option key={value} value={value}>
-                        {value}
-                      </option>
-                    ))}
-                  </select>
-                </label>
                 <div className="flex gap-3">
                   <button
                     type="button"
                     onClick={handleSubmitCreateEntity}
-                    disabled={!createDraft.termType || !createDraft.productLine}
+                    disabled={!createDraft.termType}
                     className="min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 font-bold text-ink shadow-brutal disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     下一步
@@ -610,8 +580,6 @@ export function GraphReviewsPage() {
                   标准名：{createDraft.standardName}
                   <br />
                   实体类型：{createDraft.termType}
-                  <br />
-                  产品线：{createDraft.productLine}
                 </p>
                 {createDraft.error && (
                   <p role="alert" className="border-2 border-status-error bg-card px-3 py-2 text-sm text-ink">

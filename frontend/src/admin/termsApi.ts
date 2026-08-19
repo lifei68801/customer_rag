@@ -7,7 +7,6 @@ export interface GraphTerm {
 
 export interface TermRecord extends GraphTerm {
   term_type: string
-  product_line: string
   source: string
 }
 

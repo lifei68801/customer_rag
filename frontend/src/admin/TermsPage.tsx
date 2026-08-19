@@ -16,7 +16,6 @@ interface TermDraft {
   standard_name: string
   aliases: string
   term_type: string
-  product_line: string
 }
 
 function toDraft(term: TermRecord): TermDraft {
@@ -24,7 +23,6 @@ function toDraft(term: TermRecord): TermDraft {
     standard_name: term.standard_name,
     aliases: term.aliases.join(', '),
     term_type: term.term_type,
-    product_line: term.product_line,
   }
 }
 
@@ -36,7 +34,6 @@ function draftToRecord(draft: TermDraft): TermRecord {
       .map((alias) => alias.trim())
       .filter((alias) => alias.length > 0),
     term_type: draft.term_type.trim(),
-    product_line: draft.product_line.trim(),
     // 占位值：本页面创建入口已下线（见 Task 3 brief），draftToRecord 现在
     // 只服务于编辑场景。后端 update_term 永不用 payload 覆盖已有 source
     // （见 terms_store.py），所以这个占位不会污染已有数据。
@@ -54,7 +51,6 @@ export function TermsPage() {
   const [total, setTotal] = useState(0)
 
   const [termTypeOptions, setTermTypeOptions] = useState<string[]>([])
-  const [productLineOptions, setProductLineOptions] = useState<string[]>([])
   const [optionsLoaded, setOptionsLoaded] = useState(false)
 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
@@ -71,24 +67,16 @@ export function TermsPage() {
   useEffect(() => {
     if (!sessionToken) return
     setOptionsLoaded(false)
-    Promise.all([
-      adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=confirmed`, sessionToken)
-        .then((res) => res.json())
-        .then((data: { term_types: { value: string }[] }) =>
-          setTermTypeOptions(data.term_types.map((t) => t.value)),
-        )
-        .catch((err) => {
-          console.error('加载实体类型枚举失败', err)
-          return null
-        }),
-      adminFetch('/api/admin/ontology/product-lines', sessionToken)
-        .then((res) => res.json())
-        .then((data: { product_lines: string[] }) => setProductLineOptions(data.product_lines))
-        .catch((err) => {
-          console.error('加载产品线枚举失败', err)
-          return null
-        }),
-    ]).finally(() => setOptionsLoaded(true))
+    adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=confirmed`, sessionToken)
+      .then((res) => res.json())
+      .then((data: { term_types: { value: string }[] }) =>
+        setTermTypeOptions(data.term_types.map((t) => t.value)),
+      )
+      .catch((err) => {
+        console.error('加载实体类型枚举失败', err)
+        return null
+      })
+      .finally(() => setOptionsLoaded(true))
   }, [sessionToken, tenantId])
 
   // 快速连续翻页会同时有多个请求在途；每次发起请求前递增请求序号，响应回来
@@ -229,7 +217,7 @@ export function TermsPage() {
                     )}
                     <span className="text-ink-soft">
                       {' '}
-                      · {term.term_type || '（无类型）'} · {term.product_line || '（无产品线）'}
+                      · {term.term_type || '（无类型）'}
                     </span>
                     <span className="ml-2 border border-ink-soft px-1.5 py-0.5 text-xs text-ink-soft">
                       来源：{
@@ -295,26 +283,6 @@ export function TermsPage() {
                         <option value={editDraft.term_type}>{editDraft.term_type}（不在当前本体枚举中）</option>
                       )}
                       {termTypeOptions.map((value) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      value={editDraft.product_line}
-                      onChange={(event) =>
-                        setEditDraft((prev) =>
-                          prev ? { ...prev, product_line: event.target.value } : prev,
-                        )
-                      }
-                      aria-label={`产品线（${term.standard_name}）`}
-                      className="min-w-[8rem] flex-1 border-2 border-ink bg-paper px-3 py-2 text-ink focus:shadow-brutal focus:outline-none"
-                    >
-                      <option value="">（无产品线）</option>
-                      {optionsLoaded && editDraft.product_line && !productLineOptions.includes(editDraft.product_line) && (
-                        <option value={editDraft.product_line}>{editDraft.product_line}（不在当前本体枚举中）</option>
-                      )}
-                      {productLineOptions.map((value) => (
                         <option key={value} value={value}>
                           {value}
                         </option>
