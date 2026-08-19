@@ -86,6 +86,17 @@ async def ensure_review_schema(conn: aiosqlite.Connection) -> None:
         conn, table="graph_review_queue", column="evidence",
         ddl="TEXT NOT NULL DEFAULT ''",
     )
+    # subject_type_candidate/object_type_candidate 记录 LLM 抽取阶段给出的
+    # 候选实体类型（已经是从该租户已确认 term_type 集合里选出的合法值，见
+    # llm_extractor.py）——供审核页内联创建实体时预填表单的 term_type 下拉。
+    # 历史候选行没有这个信息，回填 NULL（不是空字符串：空字符串会被
+    # 内联创建表单误当成"选中了一个空选项"，NULL 更准确地表达"未知/不适用"）。
+    await add_column_if_missing(
+        conn, table="graph_review_queue", column="subject_type_candidate", ddl="TEXT",
+    )
+    await add_column_if_missing(
+        conn, table="graph_review_queue", column="object_type_candidate", ddl="TEXT",
+    )
     # tenant_id 是后加的列，不在 _SCHEMA_SQL 的建表语句里——这个复合索引
     # 必须放在上面两次 add_column_if_missing 之后创建，否则全新数据库上
     # 建表时 tenant_id 列还不存在，CREATE INDEX 会报 "no such column"。
@@ -118,6 +129,8 @@ async def enqueue_for_review(
     suggested_subject_standard_name: str | None = None,
     suggested_object_standard_name: str | None = None,
     evidence: str = "",
+    subject_type_candidate: str | None = None,
+    object_type_candidate: str | None = None,
 ) -> int:
     """把未能对齐术语表（或关系类型不合法）的候选关系存入待审核队列，返回 review_id。
 
@@ -128,13 +141,17 @@ async def enqueue_for_review(
     evidence 是抽取阶段 LLM 给出的原文引用（见 llm_extractor.py），给
     人工审核用；默认空字符串——不是所有调用方都一定拿得到这个信息
     （比如未来可能有的非 LLM 抽取来源），不强制要求。
+
+    subject_type_candidate/object_type_candidate 是 LLM 抽取阶段给出的候选
+    实体类型（见 llm_extractor.py 的动态 prompt 改造），默认 None——不是所有
+    调用方都一定拿得到（比如未来可能有的非 LLM 抽取来源），不强制要求。
     """
     cursor = await conn.execute(
         "INSERT INTO graph_review_queue "
         "(subject_candidate, object_candidate, relation_type, reason, "
         "suggested_subject_standard_name, suggested_object_standard_name, "
-        "source, tenant_id, evidence) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "source, tenant_id, evidence, subject_type_candidate, object_type_candidate) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             subject_candidate,
             object_candidate,
@@ -145,6 +162,8 @@ async def enqueue_for_review(
             source,
             tenant_id,
             evidence,
+            subject_type_candidate,
+            object_type_candidate,
         ),
     )
     await conn.commit()
@@ -167,7 +186,8 @@ async def list_pending_reviews(
     cursor = await conn.execute(
         "SELECT review_id, subject_candidate, object_candidate, relation_type, "
         "reason, suggested_subject_standard_name, suggested_object_standard_name, "
-        "source, evidence, created_at FROM graph_review_queue "
+        "source, evidence, created_at, subject_type_candidate, object_type_candidate "
+        "FROM graph_review_queue "
         "WHERE status = 'pending' AND tenant_id = ? ORDER BY review_id LIMIT ? OFFSET ?",
         (tenant_id, limit if limit is not None else -1, offset),
     )
@@ -192,7 +212,8 @@ async def list_resolved_reviews(
     if status is None:
         cursor = await conn.execute(
             "SELECT review_id, subject_candidate, object_candidate, relation_type, "
-            "reason, status, resolved_at, resolved_note, source, evidence, created_at "
+            "reason, status, resolved_at, resolved_note, source, evidence, created_at, "
+            "subject_type_candidate, object_type_candidate "
             "FROM graph_review_queue "
             "WHERE tenant_id = ? AND status IN ('approved', 'rejected') "
             "ORDER BY resolved_at DESC, review_id DESC LIMIT ? OFFSET ?",
@@ -201,7 +222,8 @@ async def list_resolved_reviews(
     else:
         cursor = await conn.execute(
             "SELECT review_id, subject_candidate, object_candidate, relation_type, "
-            "reason, status, resolved_at, resolved_note, source, evidence, created_at "
+            "reason, status, resolved_at, resolved_note, source, evidence, created_at, "
+            "subject_type_candidate, object_type_candidate "
             "FROM graph_review_queue "
             "WHERE tenant_id = ? AND status = ? "
             "ORDER BY resolved_at DESC, review_id DESC LIMIT ? OFFSET ?",

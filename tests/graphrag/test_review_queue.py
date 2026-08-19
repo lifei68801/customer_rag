@@ -540,3 +540,18 @@ async def test_approve_review_rejects_all_names_when_terms_list_is_empty():
     pending = await list_pending_reviews(conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["review_id"] == review_id
+
+
+async def test_enqueue_for_review_stores_type_candidates():
+    conn = await _connect()
+
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="错误码E509", object_candidate="重启路由器",
+        relation_type="ADDRESSED_BY", reason="subject_unresolved",
+        source="a.md", tenant_id="t1",
+        subject_type_candidate="error_code", object_type_candidate="solution",
+    )
+    pending = await list_pending_reviews(conn, tenant_id="t1")
+    row = next(r for r in pending if r["review_id"] == review_id)
+    assert row["subject_type_candidate"] == "error_code"
+    assert row["object_type_candidate"] == "solution"
