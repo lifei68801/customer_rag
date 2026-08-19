@@ -35,6 +35,12 @@ function draftToRecord(draft: TermDraft): TermRecord {
       .filter((alias) => alias.length > 0),
     term_type: draft.term_type.trim(),
     product_line: draft.product_line.trim(),
+    // 占位值：draftToRecord 目前不知道术语的真实 source（创建/更新场景
+    // 都有可能）。后端在创建时会用 payload.source（这里恒为 'manual'）
+    // 或忽略它（更新时 source 永不被 payload 覆盖，见 terms_store.py
+    // update_term），所以这个占位不会污染已有数据；Task 3/9 会替换成
+    // 真实来源。
+    source: 'manual',
   }
 }
 

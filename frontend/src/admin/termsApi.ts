@@ -8,6 +8,7 @@ export interface GraphTerm {
 export interface TermRecord extends GraphTerm {
   term_type: string
   product_line: string
+  source: string
 }
 
 export async function fetchGraphTerms(sessionToken: string, tenantId: string): Promise<GraphTerm[]> {
@@ -34,9 +35,11 @@ export async function fetchTermsPage(
   tenantId: string,
   page: number,
   pageSize: number,
+  source?: string,
 ): Promise<TermPage> {
+  const sourceParam = source ? `&source=${encodeURIComponent(source)}` : ''
   const response = await adminFetch(
-    `/api/admin/${encodeURIComponent(tenantId)}/terms?page=${page}&page_size=${pageSize}`,
+    `/api/admin/${encodeURIComponent(tenantId)}/terms?page=${page}&page_size=${pageSize}${sourceParam}`,
     sessionToken,
   )
   if (!response.ok) {

@@ -36,6 +36,7 @@ class TermResponse(BaseModel):
     term_type: str
     product_line: str
     extra_properties: dict[str, Any] = {}
+    source: str
 
 
 class TermListResponse(BaseModel):
@@ -49,6 +50,7 @@ class TermWriteRequest(BaseModel):
     term_type: str
     product_line: str
     extra_properties: dict[str, Any] = {}
+    source: str = "manual"
 
     @field_validator("standard_name")
     @classmethod
@@ -81,6 +83,7 @@ def _to_response(term: Term) -> TermResponse:
         term_type=term.term_type,
         product_line=term.product_line,
         extra_properties=term.extra_properties,
+        source=term.source,
     )
 
 
@@ -89,6 +92,7 @@ async def list_all_terms(
     tenant_id: str,
     page: int | None = None,
     page_size: int | None = None,
+    source: str | None = None,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> TermListResponse:
     # page/page_size 都不传（比如 termsApi.ts 里不分页的 fetchTerms()，
@@ -98,13 +102,15 @@ async def list_all_terms(
     # 传入（管理后台自己的分页列表 fetchTermsPage() 两个参数总是一起传），
     # 才按分页语义处理。
     if page is None and page_size is None:
-        terms = await list_terms(review_conn, tenant_id)
+        terms = await list_terms(review_conn, tenant_id, source=source)
     else:
         effective_page = page or 1
         effective_page_size = page_size or 20
         offset = (effective_page - 1) * effective_page_size
-        terms = await list_terms(review_conn, tenant_id, limit=effective_page_size, offset=offset)
-    total = await count_terms(review_conn, tenant_id)
+        terms = await list_terms(
+            review_conn, tenant_id, limit=effective_page_size, offset=offset, source=source
+        )
+    total = await count_terms(review_conn, tenant_id, source=source)
     return TermListResponse(terms=[_to_response(term) for term in terms], total=total)
 
 
@@ -128,6 +134,7 @@ async def create_new_term(
             term_type=payload.term_type,
             product_line=payload.product_line,
             extra_properties=payload.extra_properties,
+            source=payload.source,
         )
     except TermNameConflictError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -143,6 +150,7 @@ async def create_new_term(
         term_type=payload.term_type,
         product_line=payload.product_line,
         extra_properties=payload.extra_properties,
+        source=payload.source,
     )
     # 新增成功后立即同步进图谱（属性+别名节点），不留图谱异步落后的窗口。
     try:
@@ -215,6 +223,7 @@ async def update_existing_term(
         term_type=payload.term_type,
         product_line=payload.product_line,
         extra_properties=payload.extra_properties,
+        source=existing_before_update.source,
     )
     try:
         await graph_client.sync_term(term)

@@ -139,7 +139,7 @@ def test_list_terms_returns_all_terms(terms_conn):
         {
             "standard_name": "错误码E502", "aliases": ["网关超时"],
             "term_type": "error_code", "product_line": "核心平台",
-            "extra_properties": {},
+            "extra_properties": {}, "source": "manual",
         }
     ]
 
@@ -707,6 +707,116 @@ def test_create_term_rejects_bool_extra_property_via_http(terms_conn):
         assert response.status_code == 400
     finally:
         app.dependency_overrides.clear()
+
+
+def test_create_term_returns_source(terms_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "term-x", "aliases": [], "term_type": "t",
+                "product_line": "p", "source": "review",
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "review"
+
+
+def test_create_term_without_source_defaults_to_manual(terms_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={"standard_name": "term-y", "aliases": [], "term_type": "t", "product_line": "p"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "manual"
+
+
+def test_list_terms_filters_by_source_query_param(terms_conn):
+    asyncio.run(
+        create_term(
+            terms_conn, tenant_id="t1", standard_name="手工术语", aliases=[],
+            term_type="t", product_line="p", source="manual",
+        )
+    )
+    asyncio.run(
+        create_term(
+            terms_conn, tenant_id="t1", standard_name="ETL术语", aliases=[],
+            term_type="t", product_line="p", source="etl",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/admin/t1/terms",
+            params={"source": "etl"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [t["standard_name"] for t in body["terms"]] == ["ETL术语"]
+    assert body["total"] == 1
+
+
+def test_update_term_preserves_source_regardless_of_payload(terms_conn):
+    """update_term 从不修改 source（terms_store.py Task 1 的既有行为）——
+    即使请求体里带了别的 source 值，响应里的 source 也应该保持术语创建时
+    的原始值，因为 update_existing_term 是从 existing_before_update.source
+    构造响应用的 Term 对象，而不是从 payload.source。"""
+    asyncio.run(
+        create_term(
+            terms_conn, tenant_id="t1", standard_name="术语B", aliases=[],
+            term_type="t", product_line="p", source="etl",
+        )
+    )
+    session_store = AdminSessionStore()
+    graph_client = SpyGraphClient()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        response = client.put(
+            "/api/admin/t1/terms/术语B",
+            json={
+                "standard_name": "术语B", "aliases": [], "term_type": "t",
+                "product_line": "p", "source": "manual",
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "etl"
 
 
 def test_create_term_rejects_bool_inside_number_array_via_http(terms_conn):
