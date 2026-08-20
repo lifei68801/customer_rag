@@ -17,7 +17,7 @@
 | Agent 编排框架 | LangGraph | 显式状态机，便于插入强制性安全网节点，支持 checkpoint/人工介入 |
 | 向量数据库 | Milvus | 支持 hybrid search（向量+稀疏检索）与 metadata 过滤，适合万篇级规模 |
 | 图数据库 | Neo4j | Cypher 生态成熟，与 LangChain/LangGraph 集成完善 |
-| 知识图谱构建 | 人工术语表 + LLM 抽取双轨制 | 术语表提供基准真相，LLM 抽取结果强制对齐术语表做归一化 |
+| 知识图谱构建 | 手工录入 + ETL 批量导入 + LLM 抽取三渠道，共用同一套按租户草稿/确认的本体 schema | 手工只做浏览维护（创建入口已下线）；ETL 走结构化数据确定性映射；LLM 抽取的 prompt 动态按租户已确认的实体/关系类型 + 允许组合构建，写入前再校验一遍，未确认 schema 的租户直接跳过抽取，详见第 9.1 节 |
 | 检索路由 | LLM 自主决策调用工具 + 轻量强制安全网 | 保留 Agent 推理灵活性，同时用词典命中兜底，避免漏查图谱 |
 | 向量检索策略 | 混合检索（向量+BM25）+ Rerank 模型 | 兼顾语义召回与关键词精确匹配（错误码、型号等） |
 | 分块策略 | 结构感知分块 + 层级元数据 + parent-child 检索 | 保留表格/步骤说明完整语义，命中小块可回溯大块上下文 |
@@ -30,7 +30,7 @@
 | 索引更新 | 异步增量流水线 | 文档变更触发局部重新处理，不做全量重建 |
 | 服务层 | FastAPI + SSE 流式输出 | 提升客服交互的响应感知速度 |
 | 部署 | Docker Compose（单机/小集群）+ LangSmith 类 tracing | 运维成本低，推理链路可观测 |
-| 多租户 | 按产品线/租户隔离（预留设计） | 向量库用 collection/partition 隔离，图谱节点打 tenant_id 标签 |
+| 多租户 | 按租户隔离，正式租户注册表 | 向量库用 collection/partition 隔离，图谱节点打 tenant_id 标签；详见第 9 节 |
 | 内容安全 | 输入输出安全层（敏感词/PII/prompt injection 防护） | 客服场景基本合规要求 |
 
 ---
@@ -170,9 +170,9 @@ stateDiagram-v2
 
 ## 4. GraphRAG 层：专有名词准确性保障机制
 
-这是满足"基于 graph 的专有名词准确"要求的核心设计。
+这是满足"基于 graph 的专有名词准确"要求的核心设计。本节讲的是"术语表如何作为基准真相约束 LLM 抽取结果"这个归一化机制本身；术语表/图谱实体实际上有三条独立的写入渠道（手工维护、ETL 批量导入、LLM 抽取审核），三者共用同一套按租户草稿/确认的本体 schema，详见第 9.1 节。
 
-### 4.1 双轨制构建流程
+### 4.1 归一化对齐流程（LLM 抽取渠道）
 
 ```mermaid
 flowchart LR
@@ -452,11 +452,35 @@ flowchart LR
 
 ---
 
-## 9. 多租户与安全设计
+## 9. 本体 Schema 管理、多租户与安全设计
 
-- **多租户隔离**：Milvus 按产品线/租户使用独立 collection 或 partition；Neo4j 节点/关系统一打 `tenant_id` 属性（节点标签本身不区分租户，同一套 `:Term` 标签被所有租户共用，靠属性+关系边上的 `tenant_id` 隔离），所有 Cypher 查询模板强制带租户过滤条件；请求链路中 `tenant_id` 从认证层注入，业务代码不可绕过。
-- **`term_type` 按租户隔离**：术语的业务分类（`term_type`，如 `error_code`/`Product`/`SKU`）不再是跨租户共享的全局枚举，而是每个租户在 `ontology_term_types` 表里各自定义、经 draft/confirm 两阶段生命周期确认后才能使用（详见 `app/graphrag/ontology_categories.py`、ADR-0001）——这是为了支持业务域完全不同的租户（如客服问答场景的"错误码/模块"和商品目录场景的"Product/SKU/VariantValue"）共用同一套代码而不互相污染 schema。存量/未显式指定租户的数据统一归属 `tenant_id='default'`。
-- **两种接入模式（`ingestion_mode`）**：每个租户标记为 `"extraction"`（LLM 从文档抽取实体/关系，经人工审核队列后写入，默认模式）或 `"etl"`（从租户自己的结构化主数据表确定性转换写入，不经 LLM 推断、不进审核队列）。两种模式共享同一套本体 schema 定义层（分类/关系类型/约束/生命周期）和 Term 双存储写入接口，仅数据来源、写入路径与默认值不同——`checkout_draft` 只对 `"extraction"` 租户播种默认关系类型集合。详见 `docs/superpowers/specs/2026-08-15-etl-driven-schema-construction-design.md`。
+这一节覆盖的管理后台层（`app/api/admin_*_routes.py` + `frontend/src/admin/`）在最初的设计定稿之后新增，是当前代码库里实际建成度最高的子系统——每个租户要先在这里把"本体 schema 长什么样"和"数据从哪来"配置清楚，才能进入第 3-8 节描述的问答/摄取主链路。
+
+### 9.1 本体 Schema 管理与三渠道数据填充
+
+**本体 schema 的草稿/确认两态生命周期**（`app/graphrag/ontology_lifecycle.py`）：每个租户的本体 schema 分三类——实体类型（`ontology_term_types`）、关系类型（`tenant_relation_types`）、约束/允许组合（`term_type_relation_allowlist`，声明"哪个实体类型经哪种关系类型连到哪个实体类型"才合法）。三类都用复合主键 `(tenant_id, value/relation_type, status)` 区分草稿（`draft`）和已确认（`confirmed`）两态：新增/修改都先落草稿，不影响线上已生效的确认版本；`checkout_draft` 把当前确认版本复制一份到草稿供编辑，`confirm_ontology` 把草稿原子性地发布为新的确认版本。真实业务数据（`terms` 表的 `term_type`、图谱抽取用的关系类型等）**只能引用已确认版本**，约束的 subject/object 类型引用则是**校验草稿版本**（约束和实体/关系类型必须在同一次草稿编辑会话里保持自洽）。前端「本体 Schema 管理」页（`OntologySchemaPage.tsx`）三个 tab 分别管理这三类，"确认 schema"按钮要求三类草稿都至少有一条才可点击。
+
+**terms 表与 source 溯源**（`app/graphrag/terms_store.py`）：`terms` 是术语/实体的唯一存储，每条记录除了 `standard_name`/`aliases`/`term_type`/`extra_properties` 外，还有一个 `source` 字段（`manual`/`etl`/`review`/`unknown`）记录这条数据**最初**是通过哪个渠道创建的——只在创建时写入，后续人工编辑不会改变它。`node_key`（稳定身份键，创建后永不改变，见第 4.1 节）与 `standard_name`（可改名的展示名）是两个独立字段，这个设计从建表起就存在，`source` 是在此基础上新增的溯源维度。
+
+**三条数据写入渠道**，共用同一套上面的本体 schema 和 `terms` 存储，仅创建入口和信任模型不同：
+
+1. **手工**——「实体列表」页（`frontend/src/admin/TermsPage.tsx`）只做浏览/搜索/编辑/删除，**不提供新建实体的表单入口**：单条手工创建能力被认为和 ETL 批量导入功能重叠、价值低，已下线；唯一保留的创建路径是下面第 3 条里的"内联创建"。
+2. **ETL（`app/graphrag/schema_etl.py` + `schema_etl_config.py`）**——从租户提供的结构化数据文件（CSV），按 YAML 声明的列映射配置，把实体/关系确定性写入 `terms` 表和 Neo4j（`upsert_term_with_node_key`，真正的 upsert 语义，不是"创建 xor 更新"）。写入前校验 `term_type`/`relation_type` 是否在已确认 schema 里，关系写入还会校验 `(subject_term_type, relation_type, object_term_type)` 是否在已确认的允许组合里，任一校验不过就跳过这一行并记入跑批报告（不中断整批）。ETL 只在该租户本体 schema 已确认时才允许运行。
+3. **知识图谱审核（`app/graphrag/llm_extractor.py` + `review_queue.py` + `normalization.py`）**——LLM 从文档中抽取候选关系，人工审核批准后写入。这条渠道现在真正做到"按本体 schema 抽取"：LLM 抽取的 system prompt 是**动态按该租户已确认的关系类型/实体类型/允许组合拼接**的（不再是历史上那套硬编码的 10 种通用关系类型），LLM 同时要为候选关系的 subject/object 各自给出一个（已在确认范围内选出的）实体类型；写入侧对"两侧实体都已在术语表里精确匹配、原本会直接自动写入图谱"的候选，现在也补了一层校验——`relation_type`/类型组合不在已确认范围内的照样降级转人工审核，不再直接写图谱。若候选的 subject/object 在术语表里找不到匹配实体，审核页支持**内联快速创建实体**（复用 `create_term`，只要求 `term_type` 一个必填字段，二次确认后创建，创建后立即刷新本页其余候选行的自动补全数据）。该租户本体 schema 未确认时，摄取流程仍正常做文档解析+向量化，只是跳过这一步的图谱抽取。
+
+> 已删除的概念：`product_line`（产品线）曾是与 `term_type` 并列的第二条全局分类轴，2026-08-19 因"每个租户实际只有一条产品线、字段形同摆设"而从数据模型、ETL 配置、检索、LLM 上下文展示里彻底移除，不是弱化成可选字段。历史遗留：Neo4j 里预迁移的节点可能还残留这个属性（不做批量清理），代码侧已显式排除，不会泄露进查询结果。详见 `docs/superpowers/specs/2026-08-19-remove-product-line-design.md`。
+
+**前端导航**：管理后台（`frontend/src/admin/`）侧边栏三项——「本体 Schema 管理」「文档管理」「数据填充」。「数据填充」（`DataEntryPage.tsx`）用可深链接的 URL 子路径承载上面三条渠道对应的三个子 tab：`/admin/data-entry/manual`（实体列表）、`/admin/data-entry/etl`（结构化数据加工）、`/admin/data-entry/review`（非结构化数据加工）；旧的三个独立路由（`/admin/terms`、`/admin/schema-etl`、`/admin/graph-reviews`）保留重定向。
+
+### 9.2 租户注册表
+
+`app/graphrag/tenants_store.py` 维护正式的 `tenants` 注册表（不再是"约定俗成的字符串"），管理后台的所有写操作路由都经 `require_active_tenant` 门禁——租户必须存在且状态为启用才能写入。支持停用（软删除），不支持硬删除。前端侧边栏的 `TenantSwitcher.tsx` 可以直接创建新租户，`TenantContext.tsx` 向整个 admin 子树下发当前选中的租户。
+
+### 9.3 多租户隔离与安全
+
+- **多租户隔离**：Milvus 按租户使用独立 collection 或 partition；Neo4j 节点/关系统一打 `tenant_id` 属性（节点标签本身不区分租户，同一套 `:Term` 标签被所有租户共用，靠属性+关系边上的 `tenant_id` 隔离），所有 Cypher 查询模板强制带租户过滤条件；请求链路中 `tenant_id` 从认证层注入，业务代码不可绕过。
+- **`term_type` 按租户隔离**：术语的业务分类（`term_type`，如 `error_code`/`Product`/`SKU`）不是跨租户共享的全局枚举，而是每个租户在 `ontology_term_types` 表里各自定义、经第 9.1 节的 draft/confirm 生命周期确认后才能使用（详见 ADR-0001）——这是为了支持业务域完全不同的租户（如客服问答场景的"错误码/模块"和商品目录场景的"Product/SKU/VariantValue"）共用同一套代码而不互相污染 schema。存量/未显式指定租户的数据统一归属 `tenant_id='default'`。
+- **两种接入模式（`ingestion_mode`）**：每个租户标记为 `"extraction"`（对应第 9.1 节的"知识图谱审核"渠道，LLM 从文档抽取实体/关系，经人工审核队列后写入，默认模式）或 `"etl"`（对应"ETL"渠道，从租户自己的结构化主数据表确定性转换写入，不经 LLM 推断、不进审核队列）。两种模式共享同一套本体 schema 定义层和 Term 双存储写入接口，仅数据来源、写入路径与默认值不同——`checkout_draft` 只对 `"extraction"` 租户播种默认关系类型集合。详见 `docs/superpowers/specs/2026-08-15-etl-driven-schema-construction-design.md`。
 - **内容安全层**：输入侧做敏感词/PII 检测与 prompt injection 基础防护（系统 prompt 与用户输入隔离、拒绝指令覆盖尝试）；输出侧做敏感信息过滤，防止图谱/文档中的内部信息（如未脱敏的客户数据）泄露。
 
 ---
@@ -479,103 +503,131 @@ flowchart LR
 
 ---
 
-## 12. 项目目录结构
+## 12. 项目目录结构（现状）
 
-借鉴 LlamaIndex 的 ingestion/index/query 分层思想，以及 Microsoft GraphRAG 的 index/query 两阶段流水线思路，结合本项目的 Agent 编排需求重新组织：
+本节替换早期设计稿里的"目标目录结构"，改为反映当前代码库的真实结构——按 Python 包一层平铺，没有采用早期设计稿设想的多级子目录（如 `agent/nodes/`、`ingestion/parsers/`）。
 
 ```
 customer_rag/
 ├── docs/
-│   └── ARCHITECTURE.md
+│   ├── ARCHITECTURE.md                # 本文档
+│   ├── adr/                           # 架构决策记录（ADR）
+│   └── superpowers/specs|plans/       # 历次功能改造的 spec/plan 文档（grill-me → spec → plan → SDD 流程产出）
 ├── app/
 │   ├── main.py                        # FastAPI 入口
-│   ├── config/
-│   │   └── settings.py                # 环境变量/多租户配置
-│   ├── api/
-│   │   ├── routes/
-│   │   │   ├── chat.py                # SSE 流式对话接口
-│   │   │   └── admin.py               # 知识库管理/术语表维护接口
-│   │   └── deps.py                    # 依赖注入（租户上下文等）
-│   ├── agent/                         # LangGraph 编排核心
-│   │   ├── graph.py                   # 状态图定义（节点+边）
-│   │   ├── state.py                   # AgentState 数据结构
-│   │   ├── nodes/
-│   │   │   ├── input_safety.py
-│   │   │   ├── term_guard.py          # 术语强制安全网
-│   │   │   ├── planner.py
-│   │   │   ├── responder.py
-│   │   │   ├── fallback.py
-│   │   │   └── output_safety.py
-│   │   └── tools/
-│   │       ├── vector_search_tool.py
-│   │       ├── graph_query_tool.py
-│   │       ├── create_ticket_tool.py  # mock 实现，预留真实工单接口
-│   │       └── registry.py
-│   ├── retrieval/                     # 向量检索层
-│   │   ├── embedder.py
-│   │   ├── milvus_client.py
-│   │   ├── query_rewriter.py          # LLM query改写（指代补全+术语归一化），失败回退原始query
-│   │   ├── hybrid_search.py           # 原始query+改写query 向量检索 + BM25
-│   │   ├── reranker.py
-│   │   └── fusion.py                  # RRF 融合排序 + 候选池截断去重
-│   ├── graphrag/                      # 图谱层
-│   │   ├── ontology/
-│   │   │   └── terminology.yaml       # 人工术语表/同义词表
-│   │   ├── extraction/
-│   │   │   ├── dictionary_ner.py      # 规则/词典 NER
-│   │   │   └── llm_extractor.py       # LLM 抽取 + 归一化对齐
+│   ├── tenancy.py                     # tenant_id 上下文
+│   ├── config/settings.py             # 环境变量/配置
+│   ├── db_migrations.py               # SQLite 幂等建表/迁移的共享 helper（add_column_if_missing 等）
+│   │
+│   ├── api/                           # FastAPI 路由，前台与后台分开
+│   │   ├── qa_routes.py               # 前台问答（SSE 流式）
+│   │   ├── agent_routes.py / session_routes.py / voice_routes.py
+│   │   ├── admin_auth_routes.py / admin_session.py     # 管理后台登录/会话
+│   │   ├── admin_tenant_routes.py     # 租户注册表 CRUD（见 9.2 节）
+│   │   ├── admin_ontology_routes.py   # 本体 schema：实体类型/关系类型/约束 + 草稿确认生命周期（见 9.1 节）
+│   │   ├── admin_terms_routes.py      # 术语（实体）CRUD
+│   │   ├── admin_schema_etl_routes.py # ETL 跑批
+│   │   ├── admin_graph_review_routes.py # 知识图谱审核队列
+│   │   ├── admin_document_routes.py   # 文档管理（上传/摄取任务）
+│   │   └── deps.py                    # 依赖注入（租户上下文、各 SQLite 连接、Neo4j client 等）
+│   │
+│   ├── agent/                         # LangGraph 编排核心，见第 3 节
+│   │   ├── graph.py                   # 状态图定义
+│   │   ├── planner.py / state.py / tools.py
+│   │   └── create_ticket_tool.py      # mock 实现，预留真实工单接口
+│   │
+│   ├── qa/                            # 问答主链路的非 Agent 部分
+│   │   ├── answer.py
+│   │   └── query_rewrite.py           # LLM query 改写，见 5 节
+│   │
+│   ├── retrieval/                     # 向量检索层，见第 5 节
+│   │   ├── vector_store.py / milvus_store.py / collection_init.py
+│   │   ├── bm25.py / hybrid_search.py / fusion.py       # RRF 融合
+│   │   └── factory.py
+│   │
+│   ├── graphrag/                      # 图谱层 + 本体 schema 管理，见第 4、9.1 节
+│   │   ├── ontology.py                # Term 数据类 + 术语 YAML 种子加载
+│   │   ├── ontology_categories.py     # 实体类型（ontology_term_types）
+│   │   ├── ontology_relations.py      # 关系类型（tenant_relation_types）
+│   │   ├── ontology_constraints.py    # 约束/允许组合（term_type_relation_allowlist）
+│   │   ├── ontology_lifecycle.py      # 草稿/确认两态生命周期（checkout_draft/confirm_ontology）
+│   │   ├── tenants_store.py           # 租户注册表
+│   │   ├── tenant_ingestion_config.py # 每租户的 ingestion_mode（extraction/etl）
+│   │   ├── terms_store.py             # terms 表核心 CRUD + source 溯源字段
+│   │   ├── term_matcher.py / term_guard.py            # 术语安全网（第 3.2 节 TermGuard）
+│   │   ├── llm_extractor.py           # LLM 抽取，prompt 按租户已确认本体动态拼接
+│   │   ├── normalization.py           # 候选关系归一化对齐术语表 + 确认范围校验
+│   │   ├── review_queue.py / review_cli.py / review_factory.py  # 知识图谱审核队列
+│   │   ├── schema_etl.py / schema_etl_config.py / schema_etl_row_processing.py  # ETL 引擎
+│   │   ├── etl_runs_store.py / etl_stable_code_registry.py      # ETL 跑批记录 + 稳定码分配
+│   │   ├── structured_filter_query.py # structured_filter_query_tool 的解析/校验/执行
 │   │   ├── neo4j_client.py
-│   │   └── graph_query_engine.py      # 别名归一化 + 子图查询
-│   ├── ingestion/                     # 摄取流水线
-│   │   ├── parsers/
-│   │   │   ├── pdf_parser.py
-│   │   │   ├── docx_parser.py
-│   │   │   ├── ocr_parser.py
-│   │   │   └── ticket_parser.py
-│   │   ├── chunking/
-│   │   │   └── structural_chunker.py  # 结构感知分块 + parent-child
-│   │   ├── pipeline/
-│   │   │   ├── incremental_pipeline.py
-│   │   │   └── tasks.py               # Celery/RQ 异步任务
-│   │   └── watcher.py                 # 文档变更监听
-│   ├── memory/                        # 分层记忆体系，详见第 6 节
-│   │   ├── session_window.py          # 会话滑窗
+│   │   └── provenance.py              # 图谱边的 provenance 标记（AUTO_MERGED/HUMAN_APPROVED/ETL）
+│   │
+│   ├── ingestion/                     # 摄取流水线，见第 8 节
+│   │   ├── pdf_parser.py / docx_parser.py / ocr_parser.py / ticket_parser.py / dashscope_ocr.py / ocr_factory.py
+│   │   ├── table_extraction.py / table_extraction_factory.py
+│   │   ├── chunking.py                # 结构感知分块 + parent-child + 兜底切分
+│   │   ├── graph_extraction.py        # 摄取时触发的图谱抽取编排（接入本体确认门禁）
+│   │   ├── pipeline.py                # 单文档摄取主流程
+│   │   ├── main.py / incremental_main.py  # 批量摄取 / 增量摄取入口脚本
+│   │   ├── scan_changes.py / scan_and_enqueue.py / ingestion_queue.py / tracking.py  # 增量变更检测与任务队列
+│   │
+│   ├── memory/                        # 分层记忆体系，见第 6 节（32 个模块，按职责平铺，不分子目录）
+│   │   ├── session_window.py / session_window_store.py / session_window_factory.py / chat_sessions.py
 │   │   ├── compaction.py              # 摘要压缩
-│   │   ├── fact_extractor.py          # LLM 事实抽取
-│   │   ├── conflict_resolver.py       # ADD/UPDATE/DELETE/NONE 决策
-│   │   ├── action_executor.py         # 记忆动作执行 + 历史审计
-│   │   ├── consolidation_queue.py     # 异步 consolidation 队列
-│   │   ├── recall/
-│   │   │   ├── recall_service.py      # 多源召回编排
-│   │   │   ├── recall_ranker.py       # 加权融合 + BM25 + MMR
-│   │   │   └── temporal_resolver.py   # 时间改写 + 澄清状态机
-│   │   ├── proactive/
-│   │   │   ├── followup_engine.py     # 主动跟进触发与文案生成
-│   │   │   └── delivery_policy.py     # 频率治理策略
-│   │   ├── customer_profile.py        # 客户画像
-│   │   └── projection_policy.py       # 存储-投影映射与审计
-│   ├── safety/
-│   │   ├── input_guard.py             # PII/敏感词/prompt injection
-│   │   └── output_guard.py
-│   ├── voice/                          # 语音输入输出，详见第 7 节
-│   │   ├── asr_stream_router.py        # WebSocket 流式ASR接入
-│   │   ├── asr_finalize.py             # 全量二次识别
-│   │   ├── asr_term_correction.py      # 专有名词ASR校正
-│   │   ├── tts_provider.py             # TTS provider 抽象与降级
-│   │   └── voice_output_gate.py        # 按需触发 + 输出安全前置
-│   ├── tenancy/
-│   │   └── context.py                 # tenant_id 路由与隔离
-│   └── eval/
-│       ├── datasets/                  # 回归测试集
-│       ├── ragas_runner.py
-│       └── ci_check.py
+│   │   ├── fact_extractor.py / conflict_resolver.py / action_executor.py  # 事实抽取→冲突决策→动作执行
+│   │   ├── consolidation.py / consolidation_queue.py / consolidation_worker.py
+│   │   ├── recall.py / structured_recall.py / similarity.py / context_injection.py  # 多源召回融合
+│   │   ├── temporal_resolver.py / clarification.py / delayed_confirmation.py  # 时间改写 + 澄清状态机
+│   │   ├── correction_intent.py / delay_intent.py  # 意图识别（纠错/延迟确认）
+│   │   ├── followup_engine.py / delivery_policy.py / proactive_channel.py / proactive_scan.py / proactive_scan_worker.py  # 主动跟进引擎
+│   │   ├── known_fixes.py / known_fix_cli.py / ticket_fix_notifications.py  # 已知故障修复通知
+│   │   ├── customer_profile.py / memory_store.py / schema.py / factory.py
+│   │
+│   ├── voice/                         # 语音输入输出，见第 7 节
+│   │   ├── asr_stream_processing.py / asr_term_correction.py
+│   │   ├── sentence_segmenter.py / streaming_responder.py / voice_output.py
+│   │
+│   ├── safety/                        # 输入/输出安全层，见第 9.3 节
+│   │   ├── prompt_injection.py / rules.py         # 输入侧：注入检测、规则/词典级敏感词
+│   │   └── leakage_detection.py / semantic_review.py  # 输出侧：泄露检测、语义级安全审查
+│   │
+│   ├── providers/                     # LLM/Embedding/Rerank/ASR/TTS 供应商抽象层
+│   │   ├── base.py / registry.py / factory.py / config.py
+│   │   ├── openai_compatible.py       # 兼容 OpenAI 接口的通用 provider（覆盖多数国产云 API）
+│   │   ├── embedding.py / rerank.py / rerank_factory.py
+│   │   └── asr.py / tts.py / dashscope_tts.py / voice_factory.py
+│   │
+│   └── eval/                          # 评估体系，见第 10 节
+│       ├── dataset.py / runner.py
+│       └── metrics.py / llm_judged_metrics.py / terminology_accuracy.py
+│
+├── frontend/                          # React + TypeScript 管理后台 + 前台聊天界面
+│   └── src/
+│       ├── pages/ChatPage.tsx         # 前台问答页
+│       ├── components/                # 聊天 UI 组件（ChatWindow/ChatInput/MessageBubble/SourceCitations 等）
+│       ├── hooks/useAgentChat.ts / lib/                # SSE 客户端、会话 API
+│       └── admin/                     # 管理后台，见第 9 节
+│           ├── AdminLayout.tsx        # 侧边栏导航（本体 Schema 管理 / 文档管理 / 数据填充）+ 租户切换
+│           ├── OntologySchemaPage.tsx # 本体 schema 三个 tab
+│           ├── DataEntryPage.tsx      # 「数据填充」容器，三个可深链接子 tab
+│           ├── TermsPage.tsx          # 实体列表（浏览/编辑，无创建入口）
+│           ├── SchemaEtlPage.tsx      # 结构化数据加工（ETL 跑批）
+│           ├── GraphReviewsPage.tsx   # 非结构化数据加工（知识图谱审核 + 内联创建实体）
+│           ├── StandardNameInput.tsx  # 标准名自动补全组件（含"创建为新实体"入口）
+│           ├── TenantSwitcher.tsx / TenantContext.tsx / DocumentsPage.tsx / LoginPage.tsx
+│           └── adminApi.ts / termsApi.ts / pagination.ts / Pager.tsx
+│
+├── tests/                             # pytest，与 app/ 目录结构一一对应
 ├── docker-compose.yml
-├── requirements.txt
-└── main.py                            # 现有 PyCharm 示例入口，后续可移除
+└── requirements.txt
 ```
 
 ---
 
 ## 13. 与现有代码的关系
 
-当前仓库仅有 PyCharm 生成的示例 `main.py`，无既有架构约束，本方案为全新设计，可直接按上述目录结构落地。
+本文档最初写于项目立项阶段（第 1-11 节多数内容仍是设计层面的目标状态），当时仓库只有一个 PyCharm 示例 `main.py`。此后项目按本方案逐步落地，目前已是一个功能完整、持续迭代的系统：Agent 推理核心、检索层、图谱层、摄取流水线、分层记忆、语音模块、评估体系均有对应实现（见第 12 节真实目录结构），并且新增了原方案未覆盖的一整套本体 Schema/租户/数据填充管理后台（第 9.1-9.2 节）。
+
+后续对第 6/7/10 节（记忆/语音/评估）等章节的设计描述与实际实现是否完全一致，未逐行核对——这几节的实现文件已经存在（见第 12 节），但具体行为细节以代码和对应的 `tests/` 为准，本次更新只保证第 9 节（本体 Schema/租户/数据填充）与第 12 节（目录结构）反映当前真实状态。功能改造的详细设计过程记录在 `docs/superpowers/specs/` 与 `docs/superpowers/plans/` 下，按日期命名，是比本文档更细粒度、更贴近具体实现细节的参考。
