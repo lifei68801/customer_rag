@@ -12,15 +12,15 @@ export default {
         },
         card: 'var(--color-card)',
         accent: {
-          pink: '#FE7DA8',
-          yellow: '#FFD440',
-          cyan: '#27CCF3',
-          green: '#A9D877',
-          orange: '#F8A16F',
+          pink: 'var(--color-accent-pink)',
+          yellow: 'var(--color-accent-yellow)',
+          cyan: 'var(--color-accent-cyan)',
+          green: 'var(--color-accent-green)',
+          orange: 'var(--color-accent-orange)',
         },
         status: {
-          success: '#A9D877',
-          error: '#DC2626',
+          success: 'var(--color-status-success)',
+          error: 'var(--color-status-error)',
         },
       },
       fontFamily: {
