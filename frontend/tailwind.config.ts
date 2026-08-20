@@ -11,6 +11,9 @@ export default {
           soft: 'var(--color-ink-soft)',
         },
         card: 'var(--color-card)',
+        interactive: {
+          hover: 'var(--color-interactive-hover)',
+        },
         accent: {
           pink: 'var(--color-accent-pink)',
           yellow: 'var(--color-accent-yellow)',

@@ -63,7 +63,7 @@ export function StandardNameInput({
                     onChange(term.standard_name)
                     setIsOpen(false)
                   }}
-                  className="block w-full cursor-pointer px-3 py-2 text-left text-sm text-ink hover:bg-card"
+                  className="block w-full cursor-pointer px-3 py-2 text-left text-sm text-ink hover:bg-interactive-hover"
                 >
                   {term.standard_name}
                   {matchedAlias && (
@@ -82,7 +82,7 @@ export function StandardNameInput({
                   onCreateNew?.(query)
                   setIsOpen(false)
                 }}
-                className="block w-full cursor-pointer border-t-2 border-ink px-3 py-2 text-left text-sm font-bold text-ink hover:bg-card"
+                className="block w-full cursor-pointer border-t-2 border-ink px-3 py-2 text-left text-sm font-bold text-ink hover:bg-interactive-hover"
               >
                 + 创建为新实体"{query}"
               </button>

@@ -11,7 +11,7 @@ const focusRing =
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `border-2 border-ink px-3 py-2.5 text-sm font-bold transition ${focusRing} ${
-    isActive ? 'bg-accent-pink text-ink shadow-brutal-sm' : 'bg-paper text-ink hover:bg-card'
+    isActive ? 'bg-accent-pink text-ink shadow-brutal-sm' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
 export function AdminLayout() {

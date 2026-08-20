@@ -37,7 +37,7 @@ const focusRing =
 
 const tabButtonClass = (active: boolean) =>
   `border-2 border-ink px-3 py-2 text-sm font-bold transition ${focusRing} ${
-    active ? 'bg-accent-pink text-ink shadow-brutal-sm' : 'bg-paper text-ink hover:bg-card'
+    active ? 'bg-accent-pink text-ink shadow-brutal-sm' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
 // 草稿/已确认是"二选一浏览视图"，不是"开关某个功能"，语义上属于分段控件
@@ -48,7 +48,7 @@ const tabButtonClass = (active: boolean) =>
 // 哪个在切页面、哪个在切版本。
 const viewSegmentClass = (active: boolean) =>
   `min-h-[36px] cursor-pointer px-3 text-xs font-bold uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50 ${focusRing} ${
-    active ? 'bg-ink text-paper' : 'bg-paper text-ink hover:bg-card'
+    active ? 'bg-ink text-paper' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
 const emptyTermTypeDraft = (): TermType => ({ value: '', extra_fields: [] })

@@ -7,6 +7,7 @@
   --color-ink: #141111;
   --color-ink-soft: #5C5750;
   --color-card: #FFFFFF;
+  --color-interactive-hover: #FFFFFF;
   --color-accent-pink: #FE7DA8;
   --color-accent-yellow: #FFD440;
   --color-accent-cyan: #27CCF3;
@@ -21,6 +22,7 @@
   --color-ink: #f9fafb;
   --color-ink-soft: #cfd3d6;
   --color-card: #2C2C2E;
+  --color-interactive-hover: #2C2C2E;
   --color-accent-pink: #FF7AB8;
   --color-accent-yellow: #FFD93D;
   --color-accent-cyan: #38D9F0;
@@ -35,6 +37,7 @@
   --color-ink: #1B2430;
   --color-ink-soft: #5A6B7B;
   --color-card: #FFFFFF;
+  --color-interactive-hover: #FFFFFF;
   --color-accent-pink: #6E7FB0;
   --color-accent-yellow: #C9A24B;
   --color-accent-cyan: #4A87A6;
