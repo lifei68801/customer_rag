@@ -13,6 +13,7 @@ from app.ingestion.ingestion_queue import (
     list_pending_jobs,
     mark_job_completed,
     mark_job_failed,
+    mark_job_started,
     process_pending_jobs,
     retry_job,
 )
@@ -30,6 +31,16 @@ async def _connect():
     await ensure_tracking_schema(conn)
     await ensure_ingestion_queue_schema(conn)
     return conn
+
+
+async def _backdate_started_at(conn: aiosqlite.Connection, job_id: str, *, minutes_ago: int) -> None:
+    """把某条任务的 started_at 直接改写到 N 分钟前，绕开真实时间流逝来
+    测试 _is_stuck_pending 的阈值判断（_STUCK_AFTER_MINUTES = 30）。"""
+    await conn.execute(
+        "UPDATE ingestion_jobs SET started_at = datetime('now', ?) WHERE job_id = ?",
+        (f"-{minutes_ago} minutes", job_id),
+    )
+    await conn.commit()
 
 
 class FakeEmbeddingProvider:
@@ -478,3 +489,149 @@ async def test_delete_job_raises_when_job_is_not_dead():
         await delete_job(conn, job_id, tenant_id="t1")
     # 还在 pending，没有被误删
     assert len(await list_pending_jobs(conn, tenant_id="t1")) == 1
+
+
+async def test_list_pending_jobs_does_not_mark_never_started_job_as_stuck():
+    conn = await _connect()
+    await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+
+    pending = await list_pending_jobs(conn, tenant_id="t1")
+
+    assert pending[0]["started_at"] is None
+    assert pending[0]["is_stuck"] is False
+
+
+async def test_list_pending_jobs_does_not_mark_recently_started_job_as_stuck():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await mark_job_started(conn, job_id)
+
+    pending = await list_pending_jobs(conn, tenant_id="t1")
+
+    assert pending[0]["is_stuck"] is False
+
+
+async def test_list_pending_jobs_marks_job_as_stuck_after_threshold():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await mark_job_started(conn, job_id)
+    await _backdate_started_at(conn, job_id, minutes_ago=31)
+
+    pending = await list_pending_jobs(conn, tenant_id="t1")
+
+    assert pending[0]["is_stuck"] is True
+
+
+async def test_list_pending_jobs_does_not_mark_job_stuck_just_under_threshold():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await mark_job_started(conn, job_id)
+    await _backdate_started_at(conn, job_id, minutes_ago=29)
+
+    pending = await list_pending_jobs(conn, tenant_id="t1")
+
+    assert pending[0]["is_stuck"] is False
+
+
+async def test_retry_job_raises_for_pending_job_that_is_not_stuck():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await mark_job_started(conn, job_id)
+    await _backdate_started_at(conn, job_id, minutes_ago=5)
+
+    with pytest.raises(JobNotDeadError):
+        await retry_job(conn, job_id, tenant_id="t1")
+
+
+async def test_retry_job_clears_started_at_for_stuck_pending_job():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await mark_job_started(conn, job_id)
+    await _backdate_started_at(conn, job_id, minutes_ago=45)
+
+    await retry_job(conn, job_id, tenant_id="t1")
+
+    pending_after = await list_pending_jobs(conn, tenant_id="t1")
+    assert len(pending_after) == 1
+    assert pending_after[0]["job_id"] == job_id
+    assert pending_after[0]["status"] == "pending"
+    assert pending_after[0]["started_at"] is None
+    assert pending_after[0]["is_stuck"] is False
+
+
+async def test_delete_job_raises_for_pending_job_that_is_not_stuck():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await mark_job_started(conn, job_id)
+    await _backdate_started_at(conn, job_id, minutes_ago=5)
+
+    with pytest.raises(JobNotDeadError):
+        await delete_job(conn, job_id, tenant_id="t1")
+    assert len(await list_pending_jobs(conn, tenant_id="t1")) == 1
+
+
+async def test_delete_job_removes_stuck_pending_job_and_returns_its_file_path():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await mark_job_started(conn, job_id)
+    await _backdate_started_at(conn, job_id, minutes_ago=45)
+
+    file_path = await delete_job(conn, job_id, tenant_id="t1")
+
+    assert file_path == "a.md"
+    assert await list_pending_jobs(conn, tenant_id="t1") == []
+
+
+async def test_mark_job_started_sets_started_at():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+
+    await mark_job_started(conn, job_id)
+
+    pending = await list_pending_jobs(conn, tenant_id="t1")
+    assert pending[0]["started_at"] is not None
+
+
+async def test_process_pending_jobs_sets_started_at_before_processing_even_on_failure(
+    tmp_path,
+):
+    missing_file = tmp_path / "does_not_exist.md"
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path=str(missing_file), content_hash="h1",
+        action="ingest",
+    )
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    vector_store = InMemoryVectorStore()
+
+    await process_pending_jobs(
+        conn,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+    )
+
+    pending = await list_pending_jobs(conn, tenant_id="t1")
+    assert len(pending) == 1
+    assert pending[0]["job_id"] == job_id
+    assert pending[0]["started_at"] is not None

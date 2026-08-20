@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -53,9 +54,32 @@ class JobNotFoundError(Exception):
 
 
 class JobNotDeadError(Exception):
-    """指定的 job_id 存在，但当前状态不是 dead（可能还在 pending 排队/
-    处理中，或已经 completed）——重试/删除只对确认失败的任务开放，不该
-    误伤正常任务的进度。"""
+    """指定的 job_id 存在，但既不是 dead 状态，也不是"疑似卡死"的
+    pending 状态（见 _is_stuck_pending）——重试/删除只对"确认不会再有
+    活跃 worker 处理它"的任务开放，不该误伤正在正常排队/处理中的任务。"""
+
+
+_STUCK_AFTER_MINUTES = 30
+"""pending 任务从"实际开始处理"（started_at）到现在超过这个阈值，判定
+为"疑似卡死"（大概率是进程崩溃/重启导致这次处理再也不会完成，没有任何
+自动机制会重新捡起它——process_pending_jobs() 只在下一次上传/重试触发
+时扫描 pending 队列，不会主动纠正一个卡在半途的任务）。30 分钟远超过
+任意单次摄取（含 OCR、表格抽取）的合理耗时，避免把"正常处理中，只是
+这份文档比较大"误判为卡死。"""
+
+
+def _is_stuck_pending(job: dict[str, Any]) -> bool:
+    """判定见 _STUCK_AFTER_MINUTES 的说明。`started_at` 为空表示这条任务
+    还在排队、从未被 worker 实际取用过（process_pending_jobs 的
+    list_pending_jobs 每次只拉 limit 条，队列较长时排在后面的任务会合法
+    地等待下一次触发）——这种情况不算卡死，只是"轮到它还需要时间"，跟
+    "被取用后进程崩溃、再也没有 worker 会碰它"是两回事，不能一概而论。
+    """
+    if job["status"] != "pending" or not job["started_at"]:
+        return False
+    started_at = datetime.strptime(job["started_at"], "%Y-%m-%d %H:%M:%S")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return now - started_at > timedelta(minutes=_STUCK_AFTER_MINUTES)
 
 
 _PARSERS = {
@@ -79,6 +103,13 @@ async def ensure_ingestion_queue_schema(conn: aiosqlite.Connection) -> None:
     await add_column_if_missing(
         conn, table="ingestion_jobs", column="build_graph",
         ddl="INTEGER NOT NULL DEFAULT 0",
+    )
+    # started_at 记录一条任务"实际开始被 worker 处理"的时间，跟 created_at
+    # （入队时间）是两个不同的概念——用于判定卡死任务，见 _is_stuck_pending。
+    # 历史任务默认 NULL：既不会被误判为"刚开始处理"，也不会被误判为卡死
+    # （_is_stuck_pending 对 started_at 为空的任务直接返回 False）。
+    await add_column_if_missing(
+        conn, table="ingestion_jobs", column="started_at", ddl="TEXT",
     )
 
 
@@ -144,7 +175,13 @@ async def list_pending_jobs(
             (tenant_id, limit),
         )
     rows = await cursor.fetchall()
-    return [dict(row) for row in rows]
+    jobs = [dict(row) for row in rows]
+    # is_stuck 是派生字段，不落库——每次查询按当前时间现算，供管理后台
+    # 决定是否对这一行展示"重新执行/删除"（正常排队/处理中的任务不展示，
+    # 避免误伤，见 _is_stuck_pending 的说明）。
+    for job in jobs:
+        job["is_stuck"] = _is_stuck_pending(job)
+    return jobs
 
 
 async def list_dead_jobs(
@@ -185,36 +222,72 @@ async def _fetch_job(
 
 
 async def retry_job(conn: aiosqlite.Connection, job_id: str, *, tenant_id: str) -> None:
-    """人工点击重试：把一个 dead 任务重新拉回 pending 队列，attempts 清零、
-    last_error 清空——下一轮处理会把它当成一个全新任务重新尝试一次完整的
-    3 次自动重试，不受它之前已经用完的重试次数影响。
+    """人工点击重试。两种任务状态可以走到这里：
+
+    - **dead**（失败任务区块）：重新拉回 pending 队列，attempts 清零、
+      last_error 清空——下一轮处理会把它当成一个全新任务重新尝试一次完整
+      的 3 次自动重试，不受它之前已经用完的重试次数影响。
+    - **疑似卡死的 pending 任务**（处理中任务区块，见 _is_stuck_pending）：
+      任务本来就还是 pending 状态，不需要状态迁移，只需要把 started_at
+      清空——process_pending_jobs() 的 list_pending_jobs() 查询本来就没有
+      "已被取用不能再取"这层锁（job_concurrency 只限制同一批内的并发度，
+      不是跨批次的任务级锁），下一次触发时这条任务会被当成一条正常排队
+      的任务重新捡起来，就像它从未被处理过一样。
+
+    两种情况之外（任务当前正常排队中，或正在被处理，或已完成）一律拒绝，
+    见 JobNotDeadError 的说明。
     """
     job = await _fetch_job(conn, job_id, tenant_id=tenant_id)
-    if job["status"] != "dead":
-        raise JobNotDeadError(f"任务不是失败状态，无法重试: {job_id}")
-    await conn.execute(
-        "UPDATE ingestion_jobs SET status='pending', attempts=0, last_error=NULL, "
-        "updated_at=datetime('now') WHERE job_id=? AND tenant_id=?",
-        (job_id, tenant_id),
-    )
-    await conn.commit()
+    if job["status"] == "dead":
+        await conn.execute(
+            "UPDATE ingestion_jobs SET status='pending', attempts=0, last_error=NULL, "
+            "started_at=NULL, updated_at=datetime('now') WHERE job_id=? AND tenant_id=?",
+            (job_id, tenant_id),
+        )
+        await conn.commit()
+        return
+    if _is_stuck_pending(job):
+        await conn.execute(
+            "UPDATE ingestion_jobs SET started_at=NULL, updated_at=datetime('now') "
+            "WHERE job_id=? AND tenant_id=?",
+            (job_id, tenant_id),
+        )
+        await conn.commit()
+        return
+    raise JobNotDeadError(f"任务当前不是失败状态、也不是疑似卡死的处理中状态，无法重试: {job_id}")
 
 
 async def delete_job(conn: aiosqlite.Connection, job_id: str, *, tenant_id: str) -> str:
-    """删除一条失败任务记录，返回它的 file_path 供调用方清理磁盘上的孤儿
-    文件——这个函数本身不碰文件系统，"删磁盘文件"这个副作用留给调用方
+    """删除一条任务记录，返回它的 file_path 供调用方清理磁盘上的孤儿文件
+    ——这个函数本身不碰文件系统，"删磁盘文件"这个副作用留给调用方
     （app/api/admin_document_routes.py 已经有 _unlink_uploaded_file()
     做路径安全校验，delete_document() 也在用同一个函数，不重复实现一遍）。
+
+    允许删除的两种状态（dead / 疑似卡死的 pending，见 retry_job 的同款
+    说明和 _is_stuck_pending）都可能在中途已经往向量库写入过部分 chunk
+    （_embed_and_upsert 分批 upsert，中途失败/中断不会回滚已经 upsert 的
+    批次），调用方需要额外清理，这个函数本身只负责队列记录本身。
     """
     job = await _fetch_job(conn, job_id, tenant_id=tenant_id)
-    if job["status"] != "dead":
-        raise JobNotDeadError(f"任务不是失败状态，无法删除: {job_id}")
+    if job["status"] != "dead" and not _is_stuck_pending(job):
+        raise JobNotDeadError(f"任务当前不是失败状态、也不是疑似卡死的处理中状态，无法删除: {job_id}")
     await conn.execute(
         "DELETE FROM ingestion_jobs WHERE job_id=? AND tenant_id=?",
         (job_id, tenant_id),
     )
     await conn.commit()
     return job["file_path"]
+
+
+async def mark_job_started(conn: aiosqlite.Connection, job_id: str) -> None:
+    """在 worker 真正开始处理一条任务（而不是仅仅"排在队列里"）时调用，
+    记录 started_at——这是判定"卡死"的唯一依据，见 _is_stuck_pending。"""
+    await conn.execute(
+        "UPDATE ingestion_jobs SET started_at=datetime('now'), updated_at=datetime('now') "
+        "WHERE job_id=?",
+        (job_id,),
+    )
+    await conn.commit()
 
 
 async def mark_job_completed(conn: aiosqlite.Connection, job_id: str) -> None:
@@ -338,6 +411,7 @@ async def process_pending_jobs(
         async with job_semaphore:
             tenant_id = job["tenant_id"]
             file_path = job["file_path"]
+            await mark_job_started(conn, job["job_id"])
             try:
                 await vector_store.delete_by_source(source=file_path, tenant_id=tenant_id)
                 if job["action"] == "delete":

@@ -24,6 +24,9 @@ interface PendingJob {
   file_path: string
   status: string
   last_error: string | null
+  // 后端按 started_at 是否超过卡死阈值现算——只有这里是 true 时才展示
+  // 重新执行/删除按钮，避免误伤正常排队/正在处理中的任务。
+  is_stuck: boolean
 }
 
 interface DeadJob {
@@ -216,7 +219,7 @@ export function DocumentsPage() {
     if (!sessionToken || jobActionId !== null) return
     if (
       !window.confirm(
-        `确定要删除失败任务「${displayFileName(filePath)}」吗？关联的上传文件也会被清理，此操作不可撤销。`,
+        `确定要删除任务「${displayFileName(filePath)}」吗？关联的上传文件也会被清理，此操作不可撤销。`,
       )
     ) {
       return
@@ -337,34 +340,68 @@ export function DocumentsPage() {
         </button>
       </form>
 
+      {jobError && (
+        <p
+          role="alert"
+          className="border-2 border-status-error bg-card px-3 py-2 text-sm text-ink shadow-brutal-sm"
+        >
+          {jobError}
+        </p>
+      )}
+
       {pendingJobs.length > 0 && (
         <div className="flex flex-col gap-2">
           <h2 className="font-bold text-ink">处理中的任务</h2>
-          {pendingJobs.map((job) => (
-            <div
-              key={job.job_id}
-              className={`border bg-accent-yellow px-3 py-2 text-sm text-ink shadow-brutal-sm ${
-                job.last_error ? 'border-status-error' : 'border-ink'
-              }`}
-            >
-              {displayFileName(job.file_path)} — {job.status}
-              {job.last_error && <span className="text-ink"> (错误：{job.last_error})</span>}
-            </div>
-          ))}
+          {pendingJobs.map((job) =>
+            job.is_stuck ? (
+              <div
+                key={job.job_id}
+                className="flex items-center justify-between border-2 border-status-error bg-card px-4 py-3 shadow-brutal-sm"
+              >
+                <span className="text-ink">
+                  {displayFileName(job.file_path)}
+                  <span className="text-ink-soft">
+                    {' '}
+                    （疑似卡死：处理开始已超过 30 分钟未完成，很可能是服务重启导致这次处理再也不会完成，可以手动重新执行或删除）
+                  </span>
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleRetryJob(job.job_id)}
+                    disabled={jobActionId !== null}
+                    className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  >
+                    {jobActionId === job.job_id ? '处理中…' : '重新执行'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteJob(job.job_id, job.file_path)}
+                    disabled={jobActionId !== null}
+                    className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  >
+                    {jobActionId === job.job_id ? '处理中…' : '删除'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div
+                key={job.job_id}
+                className={`border bg-accent-yellow px-3 py-2 text-sm text-ink shadow-brutal-sm ${
+                  job.last_error ? 'border-status-error' : 'border-ink'
+                }`}
+              >
+                {displayFileName(job.file_path)} — {job.status}
+                {job.last_error && <span className="text-ink"> (错误：{job.last_error})</span>}
+              </div>
+            ),
+          )}
         </div>
       )}
 
       {deadJobs.length > 0 && (
         <div className="flex flex-col gap-2">
           <h2 className="font-bold text-ink">失败任务</h2>
-          {jobError && (
-            <p
-              role="alert"
-              className="border-2 border-status-error bg-card px-3 py-2 text-sm text-ink shadow-brutal-sm"
-            >
-              {jobError}
-            </p>
-          )}
           {deadJobs.map((job) => (
             <div
               key={job.job_id}
