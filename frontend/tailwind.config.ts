@@ -24,6 +24,7 @@ export default {
         status: {
           success: 'var(--color-status-success)',
           error: 'var(--color-status-error)',
+          'error-hover': 'var(--color-status-error-hover)',
         },
       },
       fontFamily: {

@@ -18,11 +18,12 @@ interface SkinContextValue {
 const SkinContext = createContext<SkinContextValue | null>(null)
 
 /**
- * 当前管理员选择的配色皮肤——个人偏好，存 localStorage（不是
- * TenantContext 用的 sessionStorage：皮肤偏好要跨浏览器会话保留，不像
- * "当前操作哪个租户"那样是会话级状态）。用 Context 是为了跟
- * TenantContext 保持同一套架构模式，即便目前只有 SkinSwitcher 自己读
- * 这个状态，也方便以后有别的地方需要读。
+ * 当前选择的配色皮肤——站点级个人偏好（前台聊天页 + 后台管理共用同一份），
+ * 存 localStorage（不是 TenantContext 用的 sessionStorage：皮肤偏好要跨
+ * 浏览器会话保留，不像"当前操作哪个租户"那样是会话级状态）。用 Context 是
+ * 为了跟 TenantContext 保持同一套架构模式。SkinProvider 挂载在 main.tsx
+ * 的根节点，而不是只挂在 AdminLayout 下——否则前台路由永远拿不到这个
+ * Provider，data-skin 属性也就永远不会被设置。
  */
 export function SkinProvider({ children }: { children: ReactNode }) {
   const [skin, setSkinState] = useState<SkinId>(() => {

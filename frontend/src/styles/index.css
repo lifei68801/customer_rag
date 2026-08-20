@@ -15,6 +15,7 @@
   --color-accent-orange: #F8A16F;
   --color-status-success: #A9D877;
   --color-status-error: #DC2626;
+  --color-status-error-hover: #FBD8D8;
 }
 
 :root[data-skin='dark'] {
@@ -30,6 +31,7 @@
   --color-accent-orange: #FFA45C;
   --color-status-success: #95E066;
   --color-status-error: #FF5C5C;
+  --color-status-error-hover: #3A2226;
 }
 
 :root[data-skin='business-blue'] {
@@ -45,6 +47,7 @@
   --color-accent-orange: #A67C52;
   --color-status-success: #6B9B7C;
   --color-status-error: #B33A3A;
+  --color-status-error-hover: #EAD9D9;
 }
 
 body {
