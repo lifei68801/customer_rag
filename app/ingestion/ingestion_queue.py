@@ -60,26 +60,29 @@ class JobNotDeadError(Exception):
 
 
 _STUCK_AFTER_MINUTES = 30
-"""pending 任务从"实际开始处理"（started_at）到现在超过这个阈值，判定
-为"疑似卡死"（大概率是进程崩溃/重启导致这次处理再也不会完成，没有任何
-自动机制会重新捡起它——process_pending_jobs() 只在下一次上传/重试触发
-时扫描 pending 队列，不会主动纠正一个卡在半途的任务）。30 分钟远超过
-任意单次摄取（含 OCR、表格抽取）的合理耗时，避免把"正常处理中，只是
-这份文档比较大"误判为卡死。"""
+"""pending 任务的 updated_at 到现在超过这个阈值，判定为"疑似卡死"。30
+分钟远超过任意单次摄取（含 OCR、表格抽取）的合理耗时，避免把"正常处理
+中，只是这份文档比较大"误判为卡死。"""
 
 
 def _is_stuck_pending(job: dict[str, Any]) -> bool:
-    """判定见 _STUCK_AFTER_MINUTES 的说明。`started_at` 为空表示这条任务
-    还在排队、从未被 worker 实际取用过（process_pending_jobs 的
-    list_pending_jobs 每次只拉 limit 条，队列较长时排在后面的任务会合法
-    地等待下一次触发）——这种情况不算卡死，只是"轮到它还需要时间"，跟
-    "被取用后进程崩溃、再也没有 worker 会碰它"是两回事，不能一概而论。
+    """判定见 _STUCK_AFTER_MINUTES 的说明。以 updated_at（而不是只看
+    started_at）作判据——本系统没有任何周期性调度器，process_pending_jobs()
+    只在"新上传/手动重试"这类外部动作触发时才会跑一次，所以"入队后从未被
+    worker 取用过"（started_at 为空）不是罕见的竞态，而是常见的终态：
+    队列较长、或者没有别的上传/重试再来触发一次批处理时，这条任务会一直
+    停在 pending，永远等不到下一次处理。只看 started_at 会漏掉这整类任务
+    （实测：线上确实存在 created_at 是几天前、started_at 仍为空的 pending
+    任务）。updated_at 在入队、开始处理（mark_job_started）、每次失败重试
+    （mark_job_failed）时都会刷新，统一覆盖"从未被取用"和"取用后处理中途
+    异常终止"两种情况——只要最近 _STUCK_AFTER_MINUTES 分钟内这条记录完全
+    没被碰过，就判定为疑似卡死。
     """
-    if job["status"] != "pending" or not job["started_at"]:
+    if job["status"] != "pending":
         return False
-    started_at = datetime.strptime(job["started_at"], "%Y-%m-%d %H:%M:%S")
+    updated_at = datetime.strptime(job["updated_at"], "%Y-%m-%d %H:%M:%S")
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    return now - started_at > timedelta(minutes=_STUCK_AFTER_MINUTES)
+    return now - updated_at > timedelta(minutes=_STUCK_AFTER_MINUTES)
 
 
 _PARSERS = {

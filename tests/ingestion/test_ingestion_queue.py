@@ -33,11 +33,11 @@ async def _connect():
     return conn
 
 
-async def _backdate_started_at(conn: aiosqlite.Connection, job_id: str, *, minutes_ago: int) -> None:
-    """把某条任务的 started_at 直接改写到 N 分钟前，绕开真实时间流逝来
-    测试 _is_stuck_pending 的阈值判断（_STUCK_AFTER_MINUTES = 30）。"""
+async def _backdate_updated_at(conn: aiosqlite.Connection, job_id: str, *, minutes_ago: int) -> None:
+    """把某条任务的 updated_at（_is_stuck_pending 的判据）直接改写到 N 分钟
+    前，绕开真实时间流逝来测试阈值判断（_STUCK_AFTER_MINUTES = 30）。"""
     await conn.execute(
-        "UPDATE ingestion_jobs SET started_at = datetime('now', ?) WHERE job_id = ?",
+        "UPDATE ingestion_jobs SET updated_at = datetime('now', ?) WHERE job_id = ?",
         (f"-{minutes_ago} minutes", job_id),
     )
     await conn.commit()
@@ -491,7 +491,7 @@ async def test_delete_job_raises_when_job_is_not_dead():
     assert len(await list_pending_jobs(conn, tenant_id="t1")) == 1
 
 
-async def test_list_pending_jobs_does_not_mark_never_started_job_as_stuck():
+async def test_list_pending_jobs_does_not_mark_freshly_enqueued_job_as_stuck():
     conn = await _connect()
     await enqueue_ingestion_job(
         conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
@@ -501,6 +501,23 @@ async def test_list_pending_jobs_does_not_mark_never_started_job_as_stuck():
 
     assert pending[0]["started_at"] is None
     assert pending[0]["is_stuck"] is False
+
+
+async def test_list_pending_jobs_marks_never_started_job_as_stuck_after_threshold():
+    # 回归测试：本系统没有周期性调度器，一条从未被 worker 取用过
+    # （started_at 为空）的 pending 任务如果长期没有其他上传/重试触发
+    # 批处理，会永远卡在队列里——这种情况也必须能被判定为疑似卡死，
+    # 不能因为 started_at 是空的就放过。
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await _backdate_updated_at(conn, job_id, minutes_ago=31)
+
+    pending = await list_pending_jobs(conn, tenant_id="t1")
+
+    assert pending[0]["started_at"] is None
+    assert pending[0]["is_stuck"] is True
 
 
 async def test_list_pending_jobs_does_not_mark_recently_started_job_as_stuck():
@@ -521,7 +538,7 @@ async def test_list_pending_jobs_marks_job_as_stuck_after_threshold():
         conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
     )
     await mark_job_started(conn, job_id)
-    await _backdate_started_at(conn, job_id, minutes_ago=31)
+    await _backdate_updated_at(conn, job_id, minutes_ago=31)
 
     pending = await list_pending_jobs(conn, tenant_id="t1")
 
@@ -534,7 +551,7 @@ async def test_list_pending_jobs_does_not_mark_job_stuck_just_under_threshold():
         conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
     )
     await mark_job_started(conn, job_id)
-    await _backdate_started_at(conn, job_id, minutes_ago=29)
+    await _backdate_updated_at(conn, job_id, minutes_ago=29)
 
     pending = await list_pending_jobs(conn, tenant_id="t1")
 
@@ -547,7 +564,7 @@ async def test_retry_job_raises_for_pending_job_that_is_not_stuck():
         conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
     )
     await mark_job_started(conn, job_id)
-    await _backdate_started_at(conn, job_id, minutes_ago=5)
+    await _backdate_updated_at(conn, job_id, minutes_ago=5)
 
     with pytest.raises(JobNotDeadError):
         await retry_job(conn, job_id, tenant_id="t1")
@@ -559,7 +576,7 @@ async def test_retry_job_clears_started_at_for_stuck_pending_job():
         conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
     )
     await mark_job_started(conn, job_id)
-    await _backdate_started_at(conn, job_id, minutes_ago=45)
+    await _backdate_updated_at(conn, job_id, minutes_ago=45)
 
     await retry_job(conn, job_id, tenant_id="t1")
 
@@ -571,13 +588,28 @@ async def test_retry_job_clears_started_at_for_stuck_pending_job():
     assert pending_after[0]["is_stuck"] is False
 
 
+async def test_retry_job_recovers_a_never_started_stuck_job():
+    conn = await _connect()
+    job_id = await enqueue_ingestion_job(
+        conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
+    )
+    await _backdate_updated_at(conn, job_id, minutes_ago=45)
+
+    await retry_job(conn, job_id, tenant_id="t1")
+
+    pending_after = await list_pending_jobs(conn, tenant_id="t1")
+    assert len(pending_after) == 1
+    assert pending_after[0]["status"] == "pending"
+    assert pending_after[0]["is_stuck"] is False
+
+
 async def test_delete_job_raises_for_pending_job_that_is_not_stuck():
     conn = await _connect()
     job_id = await enqueue_ingestion_job(
         conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
     )
     await mark_job_started(conn, job_id)
-    await _backdate_started_at(conn, job_id, minutes_ago=5)
+    await _backdate_updated_at(conn, job_id, minutes_ago=5)
 
     with pytest.raises(JobNotDeadError):
         await delete_job(conn, job_id, tenant_id="t1")
@@ -590,7 +622,7 @@ async def test_delete_job_removes_stuck_pending_job_and_returns_its_file_path():
         conn, tenant_id="t1", file_path="a.md", content_hash="h1", action="ingest"
     )
     await mark_job_started(conn, job_id)
-    await _backdate_started_at(conn, job_id, minutes_ago=45)
+    await _backdate_updated_at(conn, job_id, minutes_ago=45)
 
     file_path = await delete_job(conn, job_id, tenant_id="t1")
 

@@ -362,7 +362,7 @@ export function DocumentsPage() {
                   {displayFileName(job.file_path)}
                   <span className="text-ink-soft">
                     {' '}
-                    （疑似卡死：处理开始已超过 30 分钟未完成，很可能是服务重启导致这次处理再也不会完成，可以手动重新执行或删除）
+                    （疑似卡死：超过 30 分钟没有任何进展，很可能是服务重启中断了处理、或者一直没有等到下一次批处理触发，可以手动重新执行或删除）
                   </span>
                 </span>
                 <div className="flex gap-2">
