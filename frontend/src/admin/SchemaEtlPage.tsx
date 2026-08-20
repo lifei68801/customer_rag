@@ -37,6 +37,11 @@ interface RunDetail {
   error: string | null
 }
 
+interface SampleFile {
+  filename: string
+  content: string
+}
+
 const SKIPPED_ROWS_PREVIEW_LIMIT = 50
 
 const focusRing =
@@ -53,6 +58,12 @@ export function SchemaEtlPage() {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [downloadingReport, setDownloadingReport] = useState(false)
+  const [sampleExpanded, setSampleExpanded] = useState(false)
+  const [sampleFiles, setSampleFiles] = useState<SampleFile[] | null>(null)
+  const [sampleSelectedFilename, setSampleSelectedFilename] = useState<string | null>(null)
+  const [sampleLoading, setSampleLoading] = useState(false)
+  const [sampleError, setSampleError] = useState<string | null>(null)
+  const [downloadingSample, setDownloadingSample] = useState(false)
   // 轮询期间才需要知道"上一次拿到的历史列表里是不是还有 running 记录"，
   // 不需要触发重渲染。
   const hasRunningRef = useRef(false)
@@ -88,6 +99,45 @@ export function SchemaEtlPage() {
   useEffect(() => {
     refreshStatus().catch((err) => console.error('查询 schema 确认状态失败', err))
   }, [refreshStatus])
+
+  // 切换租户时，之前缓存的示例文件属于旧租户，必须清空，否则下次展开会
+  // 直接复用过期数据（sampleFiles !== null 会跳过重新请求）。
+  useEffect(() => {
+    setSampleFiles(null)
+    setSampleSelectedFilename(null)
+    setSampleError(null)
+  }, [tenantId])
+
+  useEffect(() => {
+    if (!sampleExpanded || sampleFiles !== null || sampleLoading || !sessionToken) return
+    let cancelled = false
+    const load = async () => {
+      setSampleLoading(true)
+      setSampleError(null)
+      try {
+        const response = await adminFetch(
+          `/api/admin/${encodeURIComponent(tenantId)}/schema-etl/sample`,
+          sessionToken,
+        )
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(extractErrorDetail(body, '生成示例失败'))
+        }
+        const data = (await response.json()) as { files: SampleFile[] }
+        if (cancelled) return
+        setSampleFiles(data.files)
+        setSampleSelectedFilename(data.files[0]?.filename ?? null)
+      } catch (err) {
+        if (!cancelled) setSampleError(err instanceof Error ? err.message : '生成示例失败')
+      } finally {
+        if (!cancelled) setSampleLoading(false)
+      }
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [sampleExpanded, sampleFiles, sampleLoading, sessionToken, tenantId])
 
   useEffect(() => {
     let cancelled = false
@@ -203,6 +253,35 @@ export function SchemaEtlPage() {
     }
   }
 
+  const handleDownloadSample = async () => {
+    if (!sessionToken || downloadingSample) return
+    setSampleError(null)
+    setDownloadingSample(true)
+    try {
+      const response = await adminFetch(
+        `/api/admin/${encodeURIComponent(tenantId)}/schema-etl/sample.zip`,
+        sessionToken,
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '下载示例失败'))
+      }
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${tenantId}_schema_etl_sample.zip`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (err) {
+      setSampleError(err instanceof Error ? err.message : '下载示例失败')
+    } finally {
+      setDownloadingSample(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-xl font-bold text-ink">结构化数据加工（租户：{tenantId}）</h1>
@@ -212,6 +291,61 @@ export function SchemaEtlPage() {
           该租户本体 schema 尚未确认，请先完成本体 schema 确认后再触发 ETL。
         </div>
       )}
+
+      <div className="flex flex-col gap-2 border-2 border-ink bg-card shadow-brutal-sm">
+        <button
+          type="button"
+          onClick={() => setSampleExpanded((prev) => !prev)}
+          className={`flex items-center justify-between px-4 py-3 text-left font-bold text-ink ${focusRing}`}
+        >
+          <span>
+            查看示例数据
+            <span className="ml-2 font-normal text-ink-soft">
+              不知道 config.yaml 和 CSV 该怎么写？点这里生成一份可以直接跑通的示例
+            </span>
+          </span>
+          <span aria-hidden="true">{sampleExpanded ? '▾' : '▸'}</span>
+        </button>
+        {sampleExpanded && (
+          <div className="flex flex-col gap-3 border-t-2 border-ink p-4">
+            {sampleLoading && <p className="text-ink-soft">生成中…</p>}
+            {sampleError && (
+              <p role="alert" className="text-sm text-ink">
+                {sampleError}
+              </p>
+            )}
+            {sampleFiles && sampleFiles.length > 0 && (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  {sampleFiles.map((file) => (
+                    <button
+                      key={file.filename}
+                      type="button"
+                      onClick={() => setSampleSelectedFilename(file.filename)}
+                      className={`border-2 border-ink px-3 py-1.5 text-xs font-bold text-ink shadow-brutal-sm ${
+                        sampleSelectedFilename === file.filename ? 'bg-accent-pink' : 'bg-paper'
+                      } ${focusRing}`}
+                    >
+                      {file.filename}
+                    </button>
+                  ))}
+                </div>
+                <pre className="max-h-80 overflow-auto border-2 border-ink bg-paper p-3 text-xs text-ink">
+                  {sampleFiles.find((f) => f.filename === sampleSelectedFilename)?.content ?? ''}
+                </pre>
+                <button
+                  type="button"
+                  onClick={handleDownloadSample}
+                  disabled={downloadingSample}
+                  className={`self-start border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                >
+                  {downloadingSample ? '下载中…' : '下载全部（zip）'}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
       <form
         onSubmit={handleUpload}
