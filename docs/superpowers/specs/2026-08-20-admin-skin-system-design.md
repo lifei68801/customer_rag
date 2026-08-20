@@ -63,7 +63,11 @@ DSH 的原始机制面向的是一个桌面端 AI 编程工具的插件生态：
 - `status.success`: `#A9D877`
 - `status.error`: `#DC2626`
 
-**更新（2026-08-20，实现完成后）**：原计划这两组"三套皮肤共用、不随皮肤变化"，后来被推翻——见上方"决策记录"第 5 条的更新说明。暗色皮肤：`accent.pink #FF8FC0` / `accent.yellow #FFDD5C` / `accent.cyan #4DD8FF` / `accent.green #B8E68C` / `accent.orange #FFAD7D` / `status.success #B8E68C` / `status.error #EF4444`。商务蓝皮肤：`accent.pink #C97B94` / `accent.yellow #D4A94A` / `accent.cyan #5A9BB8` / `accent.green #7FA688` / `accent.orange #C98A5D` / `status.success #7FA688` / `status.error #C0392B`。
+**更新（2026-08-20，实现完成后）**：原计划这两组"三套皮肤共用、不随皮肤变化"，后来被推翻——见上方"决策记录"第 5 条的更新说明。取值经过两轮迭代，第一轮只是把默认皮肤的五个色相统一调亮/调暗（商务蓝变成了一套"浅灰版彩虹"，没有真正体现"蓝"这个主题），第二轮重新设计：
+
+暗色皮肤（从"调亮默认色"改成"宝石色调"，更饱和、更贴合暗色主题原生的观感）：`accent.pink #FF7AB8` / `accent.yellow #FFD93D` / `accent.cyan #38D9F0` / `accent.green #95E066` / `accent.orange #FFA45C` / `status.success #95E066` / `status.error #FF5C5C`。
+
+商务蓝皮肤（整体转向蓝色系，只有 success/error 保留绿/红这种承载语义识别度的色相；`accent.pink` 这个 token 名字虽然没变，但实际颜色已经换成靛蓝紫，接替它原来"主操作色"的角色——这套系统里 token 名字只是默认皮肤下的样子，不是跨皮肤的色相承诺，`ink` 在暗色皮肤下也不是黑色，同理）：`accent.pink #6E7FB0` / `accent.yellow #C9A24B` / `accent.cyan #4A87A6` / `accent.green #6B9B7C` / `accent.orange #A67C52` / `status.success #6B9B7C` / `status.error #B33A3A`。
 
 ## 作用范围（未在访谈里单独讨论，这里作为实现细节直接确定，不构成新的开放决策）
 
