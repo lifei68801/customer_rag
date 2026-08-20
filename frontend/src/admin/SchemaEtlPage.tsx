@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
+import { SchemaEtlConfigBuilder } from './schemaEtlConfigBuilder/SchemaEtlConfigBuilder'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 
@@ -64,6 +65,7 @@ export function SchemaEtlPage() {
   const [sampleLoading, setSampleLoading] = useState(false)
   const [sampleError, setSampleError] = useState<string | null>(null)
   const [downloadingSample, setDownloadingSample] = useState(false)
+  const [builderExpanded, setBuilderExpanded] = useState(false)
   // 轮询期间才需要知道"上一次拿到的历史列表里是不是还有 running 记录"，
   // 不需要触发重渲染。
   const hasRunningRef = useRef(false)
@@ -350,6 +352,32 @@ export function SchemaEtlPage() {
               </>
             )}
           </div>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-2 border-2 border-ink bg-card shadow-brutal-sm">
+        <button
+          type="button"
+          onClick={() => setBuilderExpanded((prev) => !prev)}
+          className={`flex items-center justify-between px-4 py-3 text-left font-bold text-ink ${focusRing}`}
+        >
+          <span>
+            配置构建向导
+            <span className="ml-2 font-normal text-ink-soft">
+              对着自己的数据列一步步配出 config.yaml，不用手写 YAML
+            </span>
+          </span>
+          <span aria-hidden="true">{builderExpanded ? '▾' : '▸'}</span>
+        </button>
+        {builderExpanded && sessionToken && (
+          <SchemaEtlConfigBuilder
+            tenantId={tenantId}
+            sessionToken={sessionToken}
+            disabled={confirmed !== true}
+            onSubmitted={() => {
+              pollNowRef.current()
+            }}
+          />
         )}
       </div>
 
