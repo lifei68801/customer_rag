@@ -137,7 +137,13 @@ export function SchemaEtlPage() {
     return () => {
       cancelled = true
     }
-  }, [sampleExpanded, sampleFiles, sampleLoading, sessionToken, tenantId])
+    // sampleLoading 故意不放进依赖数组：它是这个 effect 自己在 load() 里第一步
+    // set 的状态，放进来会导致 setSampleLoading(true) 触发 effect 自我重跑——
+    // 重跑时 cleanup 先把上一次的 cancelled 置 true，新一轮的 guard 又因为
+    // sampleLoading 已经是 true 而直接 return，原来那次真正在飞的请求最终拿到
+    // 结果时发现自己已被标记 cancelled，直接丢弃，sampleLoading 永远卡在 true。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sampleExpanded, sampleFiles, sessionToken, tenantId])
 
   useEffect(() => {
     let cancelled = false
