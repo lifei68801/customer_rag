@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
+import { useConfirm } from './ConfirmContext'
 import { useAdminTenant } from './TenantContext'
 
 type Tab = 'term-types' | 'relation-types' | 'constraints'
@@ -61,6 +62,7 @@ const emptyRelationTypeDraft = (): RelationType => ({
 export function OntologySchemaPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
+  const confirm = useConfirm()
   const [tab, setTab] = useState<Tab>('term-types')
   const [confirmed, setConfirmed] = useState<boolean | null>(null)
   const [pageError, setPageError] = useState<string | null>(null)
@@ -183,9 +185,9 @@ export function OntologySchemaPage() {
   const handleConfirm = async () => {
     if (!sessionToken || confirmDisabled) return
     if (
-      !window.confirm(
+      !(await confirm(
         `确认后，当前草稿将成为新的已确认版本，旧的已确认版本会被换掉、无法恢复。确认要确认租户「${tenantId}」吗？`,
-      )
+      ))
     ) {
       return
     }
@@ -373,6 +375,7 @@ function TermTypesTab({
   confirmVersion: number
   onDataChanged: () => void
 }) {
+  const confirm = useConfirm()
   const [items, setItems] = useState<TermType[]>([])
   const [loaded, setLoaded] = useState(false)
   const [editingValue, setEditingValue] = useState<string | null>(null)
@@ -483,7 +486,7 @@ function TermTypesTab({
 
   const handleDelete = async (value: string) => {
     if (!sessionToken || deletingValue !== null) return
-    if (!window.confirm(`确定要删除实体类型「${value}」吗？此操作不可撤销。`)) return
+    if (!(await confirm(`确定要删除实体类型「${value}」吗？此操作不可撤销。`))) return
     onError(null)
     setDeletingValue(value)
     try {
@@ -509,9 +512,9 @@ function TermTypesTab({
     event.preventDefault()
     if (!sessionToken || migratingFrom === null || migrating) return
     if (
-      !window.confirm(
+      !(await confirm(
         `这会把租户「${tenantId}」所有 term_type 为「${migratingFrom}」的真实术语和图谱节点批量改成「${migrateTarget}」，不可逆。确定要继续吗？`,
-      )
+      ))
     ) {
       return
     }
@@ -764,6 +767,7 @@ function RelationTypesTab({
   confirmVersion: number
   onDataChanged: () => void
 }) {
+  const confirm = useConfirm()
   const [items, setItems] = useState<RelationType[]>([])
   const [loaded, setLoaded] = useState(false)
   const [editingType, setEditingType] = useState<string | null>(null)
@@ -861,7 +865,7 @@ function RelationTypesTab({
 
   const handleDelete = async (relationType: string) => {
     if (!sessionToken || deletingType !== null) return
-    if (!window.confirm(`确定要删除关系类型「${relationType}」吗？此操作不可撤销。`)) return
+    if (!(await confirm(`确定要删除关系类型「${relationType}」吗？此操作不可撤销。`))) return
     onError(null)
     setDeletingType(relationType)
     try {
@@ -887,9 +891,9 @@ function RelationTypesTab({
     event.preventDefault()
     if (!sessionToken || migratingFrom === null || migrating) return
     if (
-      !window.confirm(
+      !(await confirm(
         `这会遍历租户「${tenantId}」在 Neo4j 图谱里所有类型为「${migratingFrom}」的边，批量改成「${migrateTarget}」，不可逆。确定要继续吗？`,
-      )
+      ))
     ) {
       return
     }
@@ -1126,6 +1130,7 @@ function ConstraintsTab({
   confirmVersion: number
   onDataChanged: () => void
 }) {
+  const confirm = useConfirm()
   const [constraints, setConstraints] = useState<Constraint[]>([])
   const [termTypes, setTermTypes] = useState<string[]>([])
   const [draftRelationTypes, setDraftRelationTypes] = useState<string[]>([])
@@ -1220,7 +1225,7 @@ function ConstraintsTab({
   const handleRemove = async (constraint: Constraint) => {
     if (!sessionToken || removingKey !== null) return
     const key = constraintKey(constraint)
-    if (!window.confirm('确定要删除这条约束吗？')) return
+    if (!(await confirm('确定要删除这条约束吗？'))) return
     onError(null)
     setRemovingKey(key)
     try {

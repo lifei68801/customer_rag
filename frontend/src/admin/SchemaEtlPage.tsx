@@ -3,6 +3,17 @@ import { adminFetch, extractErrorDetail } from './adminApi'
 import { SchemaEtlConfigBuilder } from './schemaEtlConfigBuilder/SchemaEtlConfigBuilder'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
+import { CopyButton } from './CopyButton'
+import { TaskStatusBadge } from './TaskStatusBadge'
+
+// etl_runs 表的 status 只有这三种取值（app/graphrag/etl_runs_store.py），
+// 映射成统一的徽章语气 + 中文文案。
+function etlRunStatusBadge(status: string): { tone: 'active' | 'success' | 'error' | 'neutral'; label: string } {
+  if (status === 'running') return { tone: 'active', label: '运行中' }
+  if (status === 'completed') return { tone: 'success', label: '已完成' }
+  if (status === 'failed') return { tone: 'error', label: '失败' }
+  return { tone: 'neutral', label: status }
+}
 
 interface RunSummary {
   run_id: string
@@ -315,7 +326,12 @@ export function SchemaEtlPage() {
               对着自己的数据列一步步配出 config.yaml，不用手写 YAML
             </span>
           </span>
-          <span aria-hidden="true">{builderExpanded ? '▾' : '▸'}</span>
+          <span
+            aria-hidden="true"
+            className={`inline-block transition-transform duration-200 ${builderExpanded ? 'rotate-0' : '-rotate-90'}`}
+          >
+            ▾
+          </span>
         </button>
         {builderExpanded && sessionToken && (
           <SchemaEtlConfigBuilder
@@ -339,7 +355,12 @@ export function SchemaEtlPage() {
             高级：查看示例数据 / 直接上传已有的 config.yaml
             <span className="ml-2 font-normal text-ink-soft">想看看格式范例，或者已经有验证过的配置文件？</span>
           </span>
-          <span aria-hidden="true">{uploadFormExpanded ? '▾' : '▸'}</span>
+          <span
+            aria-hidden="true"
+            className={`inline-block transition-transform duration-200 ${uploadFormExpanded ? 'rotate-0' : '-rotate-90'}`}
+          >
+            ▾
+          </span>
         </button>
         {uploadFormExpanded && (
           <div className="flex flex-col gap-4 border-t-2 border-ink p-4">
@@ -375,6 +396,11 @@ export function SchemaEtlPage() {
                   <pre className="max-h-80 overflow-auto border-2 border-ink bg-paper p-3 text-xs text-ink">
                     {sampleFiles.find((f) => f.filename === sampleSelectedFilename)?.content ?? ''}
                   </pre>
+                  <CopyButton
+                    getText={() =>
+                      sampleFiles.find((f) => f.filename === sampleSelectedFilename)?.content ?? ''
+                    }
+                  />
                   <button
                     type="button"
                     onClick={handleDownloadSample}
@@ -455,7 +481,9 @@ export function SchemaEtlPage() {
                     }`}
                   >
                     <td className="px-3 py-2 font-mono text-xs">{run.run_id}</td>
-                    <td className="px-3 py-2">{run.status}</td>
+                    <td className="px-3 py-2">
+                      <TaskStatusBadge {...etlRunStatusBadge(run.status)} />
+                    </td>
                     <td className="px-3 py-2">{run.started_at}</td>
                     <td className="px-3 py-2">{run.finished_at ?? '-'}</td>
                   </tr>

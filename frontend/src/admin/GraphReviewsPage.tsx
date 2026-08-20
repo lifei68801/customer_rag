@@ -4,6 +4,7 @@ import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { Pager } from './Pager'
 import { StandardNameInput } from './StandardNameInput'
+import { TaskStatusBadge } from './TaskStatusBadge'
 import { fetchGraphTerms, createTerm, type GraphTerm } from './termsApi'
 
 const PAGE_SIZE = 20
@@ -839,9 +840,15 @@ export function GraphReviewsPage() {
                 原文引用："{review.evidence}"
               </p>
             )}
-            <p className="text-xs text-ink-soft">
-              {review.status === 'approved' ? '已批准' : '已驳回'} · {review.resolved_at}
-              {review.resolved_note && ` · ${review.resolved_note}`}
+            <p className="flex flex-wrap items-center gap-2 text-xs text-ink-soft">
+              <TaskStatusBadge
+                tone={review.status === 'approved' ? 'success' : 'error'}
+                label={review.status === 'approved' ? '已批准' : '已驳回'}
+              />
+              <span>
+                {review.resolved_at}
+                {review.resolved_note && ` · ${review.resolved_note}`}
+              </span>
             </p>
           </div>
         ))}

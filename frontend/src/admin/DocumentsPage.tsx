@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
+import { useConfirm } from './ConfirmContext'
 import { useAdminTenant } from './TenantContext'
 import { Pager } from './Pager'
+import { TaskStatusBadge } from './TaskStatusBadge'
 
 const PAGE_SIZE = 20
 
@@ -43,6 +45,7 @@ const focusRing =
 export function DocumentsPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
+  const confirm = useConfirm()
   const [documents, setDocuments] = useState<TrackedDocument[]>([])
   const [pendingJobs, setPendingJobs] = useState<PendingJob[]>([])
   const [deadJobs, setDeadJobs] = useState<DeadJob[]>([])
@@ -170,7 +173,7 @@ export function DocumentsPage() {
 
   const handleDelete = async (filePath: string) => {
     if (!sessionToken || deletingPath !== null) return
-    if (!window.confirm(`确定要删除「${displayFileName(filePath)}」吗？此操作不可撤销。`)) {
+    if (!(await confirm(`确定要删除「${displayFileName(filePath)}」吗？此操作不可撤销。`))) {
       return
     }
     setDeleteError(null)
@@ -218,9 +221,9 @@ export function DocumentsPage() {
   const handleDeleteJob = async (jobId: string, filePath: string) => {
     if (!sessionToken || jobActionId !== null) return
     if (
-      !window.confirm(
+      !(await confirm(
         `确定要删除任务「${displayFileName(filePath)}」吗？关联的上传文件也会被清理，此操作不可撤销。`,
-      )
+      ))
     ) {
       return
     }
@@ -391,7 +394,8 @@ export function DocumentsPage() {
                   job.last_error ? 'border-status-error' : 'border-ink'
                 }`}
               >
-                {displayFileName(job.file_path)} — {job.status}
+                {displayFileName(job.file_path)}{' '}
+                <TaskStatusBadge tone="active" label="处理中" />
                 {job.last_error && <span className="text-ink"> (错误：{job.last_error})</span>}
               </div>
             ),

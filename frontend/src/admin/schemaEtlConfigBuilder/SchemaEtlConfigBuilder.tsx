@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { adminFetch, extractErrorDetail } from '../adminApi'
+import { CopyButton } from '../CopyButton'
 import { buildConfigYaml } from './buildConfigYaml'
 import { readCsvHeaderColumns } from './csvHeader'
 import { EntityMappingEditor } from './EntityMappingEditor'
@@ -179,6 +180,7 @@ export function SchemaEtlConfigBuilder({
         <pre className="max-h-80 overflow-auto border-2 border-ink bg-card p-3 text-xs text-ink">
           {buildConfigYaml({ tenantId, entities, relations, files })}
         </pre>
+        <CopyButton getText={() => buildConfigYaml({ tenantId, entities, relations, files })} />
         {submitError && (
           <p role="alert" className="text-sm text-ink">
             {submitError}

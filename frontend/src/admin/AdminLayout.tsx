@@ -1,5 +1,6 @@
 import { Link, NavLink, Navigate, Outlet } from 'react-router-dom'
 import { useAdminAuth } from './useAdminAuth'
+import { ConfirmProvider } from './ConfirmContext'
 import { SkinProvider } from './SkinContext'
 import { SkinSwitcher } from './SkinSwitcher'
 import { TenantProvider } from './TenantContext'
@@ -29,41 +30,43 @@ export function AdminLayout() {
   return (
     <SkinProvider>
       <TenantProvider>
-        <div className="flex min-h-dvh flex-col bg-paper md:flex-row">
-          <aside className="flex flex-col gap-3 border-b-2 border-ink bg-card p-4 md:w-56 md:flex-shrink-0 md:flex-col md:justify-between md:border-b-0 md:border-r-2">
-            <nav className="flex flex-row flex-wrap gap-2 md:flex-col">
-              <NavLink to="/admin/ontology" className={navLinkClass}>
-                本体管理
-              </NavLink>
-              <NavLink to="/admin/documents" className={navLinkClass}>
-                文档管理
-              </NavLink>
-              <NavLink to="/admin/data-entry" className={navLinkClass}>
-                数据加工
-              </NavLink>
-            </nav>
-            <div className="flex flex-row flex-wrap gap-3 md:flex-col">
-              <TenantSwitcher />
-              <SkinSwitcher />
-              <Link
-                to="/"
-                className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-2 text-center text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
-              >
-                返回前台
-              </Link>
-              <button
-                type="button"
-                onClick={logout}
-                className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
-              >
-                登出
-              </button>
-            </div>
-          </aside>
-          <main className="flex-1 overflow-y-auto p-6">
-            <Outlet />
-          </main>
-        </div>
+        <ConfirmProvider>
+          <div className="flex min-h-dvh flex-col bg-paper md:flex-row">
+            <aside className="flex flex-col gap-3 border-b-2 border-ink bg-card p-4 md:w-56 md:flex-shrink-0 md:flex-col md:justify-between md:border-b-0 md:border-r-2">
+              <nav className="flex flex-row flex-wrap gap-2 md:flex-col">
+                <NavLink to="/admin/ontology" className={navLinkClass}>
+                  本体管理
+                </NavLink>
+                <NavLink to="/admin/documents" className={navLinkClass}>
+                  文档管理
+                </NavLink>
+                <NavLink to="/admin/data-entry" className={navLinkClass}>
+                  数据加工
+                </NavLink>
+              </nav>
+              <div className="flex flex-row flex-wrap gap-3 md:flex-col">
+                <TenantSwitcher />
+                <SkinSwitcher />
+                <Link
+                  to="/"
+                  className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-2 text-center text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+                >
+                  返回前台
+                </Link>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+                >
+                  登出
+                </button>
+              </div>
+            </aside>
+            <main className="flex-1 overflow-y-auto p-6">
+              <Outlet />
+            </main>
+          </div>
+        </ConfirmProvider>
       </TenantProvider>
     </SkinProvider>
   )

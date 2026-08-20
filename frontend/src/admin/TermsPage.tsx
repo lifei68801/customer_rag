@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAdminAuth } from './useAdminAuth'
+import { useConfirm } from './ConfirmContext'
 import { useAdminTenant } from './TenantContext'
 import { deleteTerm, fetchTermsPage, updateTerm, type TermRecord } from './termsApi'
 import { adminFetch } from './adminApi'
@@ -44,6 +45,7 @@ function draftToRecord(draft: TermDraft): TermRecord {
 export function TermsPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
+  const confirm = useConfirm()
   const [terms, setTerms] = useState<TermRecord[]>([])
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -155,7 +157,7 @@ export function TermsPage() {
 
   const handleDelete = async (standardName: string) => {
     if (!sessionToken || deletingKey !== null) return
-    if (!window.confirm(`确定要删除术语「${standardName}」吗？此操作不可撤销。`)) return
+    if (!(await confirm(`确定要删除术语「${standardName}」吗？此操作不可撤销。`))) return
     setError(null)
     setDeletingKey(standardName)
     try {
