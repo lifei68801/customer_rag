@@ -31,6 +31,19 @@ export function SchemaEtlConfigBuilder({
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
+  // 切换租户时，之前添加的文件/实体映射/关系映射都是针对旧租户的本体选出来的
+  // termType/relationType，必须清空——否则用户在向导展开状态下切换租户，
+  // buildConfigYaml 会拿新租户的 tenantId 拼上旧租户选出来的 termType，
+  // 生成一份看似合法、实际本体不匹配的配置。跟 SchemaEtlPage.tsx 里
+  // "查看示例数据" 区块切换租户时清空 sampleFiles 的处理是同一个模式。
+  useEffect(() => {
+    setFiles([])
+    setEntities([])
+    setRelations([])
+    setFileError(null)
+    setSubmitError(null)
+  }, [tenantId])
+
   useEffect(() => {
     let cancelled = false
     const load = async () => {
