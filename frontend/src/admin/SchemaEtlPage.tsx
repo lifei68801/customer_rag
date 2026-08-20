@@ -59,7 +59,6 @@ export function SchemaEtlPage() {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [downloadingReport, setDownloadingReport] = useState(false)
-  const [sampleExpanded, setSampleExpanded] = useState(false)
   const [sampleFiles, setSampleFiles] = useState<SampleFile[] | null>(null)
   const [sampleSelectedFilename, setSampleSelectedFilename] = useState<string | null>(null)
   const [sampleLoading, setSampleLoading] = useState(false)
@@ -115,7 +114,7 @@ export function SchemaEtlPage() {
   }, [tenantId])
 
   useEffect(() => {
-    if (!sampleExpanded || sampleFiles !== null || sampleLoading || !sessionToken) return
+    if (!uploadFormExpanded || sampleFiles !== null || sampleLoading || !sessionToken) return
     let cancelled = false
     const load = async () => {
       setSampleLoading(true)
@@ -149,7 +148,7 @@ export function SchemaEtlPage() {
     // sampleLoading 已经是 true 而直接 return，原来那次真正在飞的请求最终拿到
     // 结果时发现自己已被标记 cancelled，直接丢弃，sampleLoading 永远卡在 true。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sampleExpanded, sampleFiles, sessionToken, tenantId])
+  }, [uploadFormExpanded, sampleFiles, sessionToken, tenantId])
 
   useEffect(() => {
     let cancelled = false
@@ -307,61 +306,6 @@ export function SchemaEtlPage() {
       <div className="flex flex-col gap-2 border-2 border-ink bg-card shadow-brutal-sm">
         <button
           type="button"
-          onClick={() => setSampleExpanded((prev) => !prev)}
-          className={`flex items-center justify-between px-4 py-3 text-left font-bold text-ink ${focusRing}`}
-        >
-          <span>
-            查看示例数据
-            <span className="ml-2 font-normal text-ink-soft">
-              不知道 config.yaml 和 CSV 该怎么写？点这里生成一份可以直接跑通的示例
-            </span>
-          </span>
-          <span aria-hidden="true">{sampleExpanded ? '▾' : '▸'}</span>
-        </button>
-        {sampleExpanded && (
-          <div className="flex flex-col gap-3 border-t-2 border-ink p-4">
-            {sampleLoading && <p className="text-ink-soft">生成中…</p>}
-            {sampleError && (
-              <p role="alert" className="text-sm text-ink">
-                {sampleError}
-              </p>
-            )}
-            {sampleFiles && sampleFiles.length > 0 && (
-              <>
-                <div className="flex flex-wrap gap-2">
-                  {sampleFiles.map((file) => (
-                    <button
-                      key={file.filename}
-                      type="button"
-                      onClick={() => setSampleSelectedFilename(file.filename)}
-                      className={`border-2 border-ink px-3 py-1.5 text-xs font-bold text-ink shadow-brutal-sm ${
-                        sampleSelectedFilename === file.filename ? 'bg-accent-pink' : 'bg-paper'
-                      } ${focusRing}`}
-                    >
-                      {file.filename}
-                    </button>
-                  ))}
-                </div>
-                <pre className="max-h-80 overflow-auto border-2 border-ink bg-paper p-3 text-xs text-ink">
-                  {sampleFiles.find((f) => f.filename === sampleSelectedFilename)?.content ?? ''}
-                </pre>
-                <button
-                  type="button"
-                  onClick={handleDownloadSample}
-                  disabled={downloadingSample}
-                  className={`self-start border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
-                >
-                  {downloadingSample ? '下载中…' : '下载全部（zip）'}
-                </button>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="flex flex-col gap-2 border-2 border-ink bg-card shadow-brutal-sm">
-        <button
-          type="button"
           onClick={() => setBuilderExpanded((prev) => !prev)}
           className={`flex items-center justify-between px-4 py-3 text-left font-bold text-ink ${focusRing}`}
         >
@@ -392,51 +336,98 @@ export function SchemaEtlPage() {
           className={`flex items-center justify-between px-4 py-3 text-left font-bold text-ink ${focusRing}`}
         >
           <span>
-            高级：直接上传已有的 config.yaml
-            <span className="ml-2 font-normal text-ink-soft">已经有验证过的配置文件？跳过向导直接提交</span>
+            高级：查看示例数据 / 直接上传已有的 config.yaml
+            <span className="ml-2 font-normal text-ink-soft">想看看格式范例，或者已经有验证过的配置文件？</span>
           </span>
           <span aria-hidden="true">{uploadFormExpanded ? '▾' : '▸'}</span>
         </button>
         {uploadFormExpanded && (
-          <form
-            onSubmit={handleUpload}
-            className="flex flex-col gap-3 border-t-2 border-ink p-4"
-          >
-            <label className="flex flex-col gap-1 text-sm font-bold text-ink">
-              列映射配置（YAML）
-              <input
-                type="file"
-                name="config"
-                accept=".yaml,.yml"
-                required
-                disabled={confirmed !== true}
-                className="text-ink"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm font-bold text-ink">
-              数据文件（CSV，可多选）
-              <input
-                type="file"
-                name="data_files"
-                accept=".csv"
-                multiple
-                disabled={confirmed !== true}
-                className="text-ink"
-              />
-            </label>
-            {uploadError && (
-              <p role="alert" className="text-sm text-ink">
-                {uploadError}
-              </p>
-            )}
-            <button
-              type="submit"
-              disabled={uploading || confirmed !== true}
-              className={`min-h-[44px] cursor-pointer self-start border-2 border-ink bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          <div className="flex flex-col gap-4 border-t-2 border-ink p-4">
+            <div className="flex flex-col gap-3">
+              <span className="font-bold text-ink">
+                查看示例数据
+                <span className="ml-2 font-normal text-ink-soft">
+                  基于已确认本体生成一份可以直接跑通的示例，帮助理解 config.yaml 的格式
+                </span>
+              </span>
+              {sampleLoading && <p className="text-ink-soft">生成中…</p>}
+              {sampleError && (
+                <p role="alert" className="text-sm text-ink">
+                  {sampleError}
+                </p>
+              )}
+              {sampleFiles && sampleFiles.length > 0 && (
+                <>
+                  <div className="flex flex-wrap gap-2">
+                    {sampleFiles.map((file) => (
+                      <button
+                        key={file.filename}
+                        type="button"
+                        onClick={() => setSampleSelectedFilename(file.filename)}
+                        className={`border-2 border-ink px-3 py-1.5 text-xs font-bold text-ink shadow-brutal-sm ${
+                          sampleSelectedFilename === file.filename ? 'bg-accent-pink' : 'bg-paper'
+                        } ${focusRing}`}
+                      >
+                        {file.filename}
+                      </button>
+                    ))}
+                  </div>
+                  <pre className="max-h-80 overflow-auto border-2 border-ink bg-paper p-3 text-xs text-ink">
+                    {sampleFiles.find((f) => f.filename === sampleSelectedFilename)?.content ?? ''}
+                  </pre>
+                  <button
+                    type="button"
+                    onClick={handleDownloadSample}
+                    disabled={downloadingSample}
+                    className={`self-start border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  >
+                    {downloadingSample ? '下载中…' : '下载全部（zip）'}
+                  </button>
+                </>
+              )}
+            </div>
+
+            <form
+              onSubmit={handleUpload}
+              className="flex flex-col gap-3 border-t-2 border-ink pt-4"
             >
-              {uploading ? '提交中…' : '开始运行'}
-            </button>
-          </form>
+              <span className="font-bold text-ink">直接上传</span>
+              <label className="flex flex-col gap-1 text-sm font-bold text-ink">
+                列映射配置（YAML）
+                <input
+                  type="file"
+                  name="config"
+                  accept=".yaml,.yml"
+                  required
+                  disabled={confirmed !== true}
+                  className="text-ink"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm font-bold text-ink">
+                数据文件（CSV，可多选）
+                <input
+                  type="file"
+                  name="data_files"
+                  accept=".csv"
+                  multiple
+                  disabled={confirmed !== true}
+                  className="text-ink"
+                />
+              </label>
+              {uploadError && (
+                <p role="alert" className="text-sm text-ink">
+                  {uploadError}
+                </p>
+              )}
+              <button
+                type="submit"
+                disabled={uploading || confirmed !== true}
+                className={`min-h-[44px] cursor-pointer self-start border-2 border-ink bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              >
+                {uploading ? '提交中…' : '开始运行'}
+              </button>
+            </form>
+          </div>
         )}
       </div>
 
