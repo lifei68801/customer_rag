@@ -15,6 +15,7 @@ from app.graphrag.etl_runs_store import (
 )
 from app.graphrag.ontology_categories import create_term_type
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
+from app.graphrag.ontology_relations import create_relation_type
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
@@ -282,3 +283,94 @@ def test_report_csv_returns_csv_with_header_for_completed_run(client, review_con
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/csv")
     assert response.text.splitlines()[0] == "label,source_file,row_number,reason"
+
+
+def test_get_sample_returns_400_when_ontology_not_confirmed():
+    async def override_review_conn():
+        conn = await _open_review_conn()
+        yield conn
+        await conn.close()
+
+    app.dependency_overrides[deps.get_review_conn] = override_review_conn
+    app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
+    client = TestClient(app)
+    try:
+        response = client.get("/api/admin/demo/schema-etl/sample")
+        assert response.status_code == 400
+        assert "确认" in response.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_get_sample_returns_400_when_schema_confirmed_but_has_no_term_types():
+    async def override_review_conn():
+        conn = await _open_review_conn()
+        await checkout_draft(conn, "demo")
+        await create_relation_type(conn, "demo", relation_type="SAMPLE_LINK", example_phrase="A SAMPLE_LINK B")
+        await confirm_ontology(conn, "demo")
+        yield conn
+        await conn.close()
+
+    app.dependency_overrides[deps.get_review_conn] = override_review_conn
+    app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
+    client = TestClient(app)
+    try:
+        response = client.get("/api/admin/demo/schema-etl/sample")
+        assert response.status_code == 400
+        assert "没有任何已确认的实体类型" in response.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_get_sample_returns_files_with_config_yaml_first():
+    async def override_review_conn():
+        conn = await _open_review_conn()
+        await create_term_type(conn, tenant_id="demo", value="商品")
+        await checkout_draft(conn, "demo")
+        await create_relation_type(conn, "demo", relation_type="SAMPLE_LINK", example_phrase="A SAMPLE_LINK B")
+        await confirm_ontology(conn, "demo")
+        yield conn
+        await conn.close()
+
+    app.dependency_overrides[deps.get_review_conn] = override_review_conn
+    app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
+    client = TestClient(app)
+    try:
+        response = client.get("/api/admin/demo/schema-etl/sample")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["files"][0]["filename"] == "config.yaml"
+        assert any(f["filename"] == "商品.csv" for f in data["files"])
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_download_sample_zip_returns_a_valid_zip_containing_the_same_files():
+    import zipfile
+    import io
+
+    async def override_review_conn():
+        conn = await _open_review_conn()
+        await create_term_type(conn, tenant_id="demo", value="商品")
+        await checkout_draft(conn, "demo")
+        await create_relation_type(conn, "demo", relation_type="SAMPLE_LINK", example_phrase="A SAMPLE_LINK B")
+        await confirm_ontology(conn, "demo")
+        yield conn
+        await conn.close()
+
+    app.dependency_overrides[deps.get_review_conn] = override_review_conn
+    app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
+    client = TestClient(app)
+    try:
+        response = client.get("/api/admin/demo/schema-etl/sample.zip")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/zip"
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        assert "config.yaml" in archive.namelist()
+        assert "商品.csv" in archive.namelist()
+    finally:
+        app.dependency_overrides.clear()

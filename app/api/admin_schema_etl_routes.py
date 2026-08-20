@@ -7,6 +7,7 @@ import logging
 import re
 import shutil
 import uuid
+import zipfile
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -27,9 +28,16 @@ from app.graphrag.etl_runs_store import (
     mark_etl_run_failed,
 )
 from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.ontology_categories import list_term_types
+from app.graphrag.ontology_constraints import list_allowed_combinations
 from app.graphrag.ontology_lifecycle import is_ontology_confirmed
 from app.graphrag.schema_etl import run_schema_etl
 from app.graphrag.schema_etl_config import load_schema_etl_config
+from app.graphrag.schema_etl_sample import (
+    EmptySchemaError,
+    SampleFile,
+    generate_schema_etl_sample_files,
+)
 from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
 
 logger = logging.getLogger(__name__)
@@ -86,6 +94,32 @@ class RunDetailResponse(BaseModel):
     finished_at: str | None
     report: dict | None
     error: str | None
+
+
+class SampleFileResponse(BaseModel):
+    filename: str
+    content: str
+
+
+class SampleResponse(BaseModel):
+    files: list[SampleFileResponse]
+
+
+async def _build_sample_files(
+    tenant_id: str, review_conn: aiosqlite.Connection
+) -> list[SampleFile]:
+    if not await is_ontology_confirmed(review_conn, tenant_id):
+        raise HTTPException(
+            status_code=400, detail=f"租户 {tenant_id!r} 的本体 schema 还没有确认"
+        )
+    term_types = await list_term_types(review_conn, tenant_id, status="confirmed")
+    allowed_combinations = await list_allowed_combinations(review_conn, tenant_id, status="confirmed")
+    try:
+        return generate_schema_etl_sample_files(
+            tenant_id=tenant_id, term_types=term_types, allowed_combinations=allowed_combinations,
+        )
+    except EmptySchemaError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/status", response_model=StatusResponse)
@@ -241,4 +275,29 @@ async def download_schema_etl_report_csv(
         iter([buffer.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{run_id}_skipped_rows.csv"'},
+    )
+
+
+@router.get("/sample", response_model=SampleResponse)
+async def get_schema_etl_sample(
+    tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn)
+) -> SampleResponse:
+    files = await _build_sample_files(tenant_id, review_conn)
+    return SampleResponse(files=[SampleFileResponse(filename=f.filename, content=f.content) for f in files])
+
+
+@router.get("/sample.zip")
+async def download_schema_etl_sample_zip(
+    tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn)
+) -> StreamingResponse:
+    files = await _build_sample_files(tenant_id, review_conn)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file in files:
+            zf.writestr(file.filename, file.content)
+    buffer.seek(0)
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{tenant_id}_schema_etl_sample.zip"'},
     )
