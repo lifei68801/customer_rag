@@ -5,12 +5,12 @@ export default {
   theme: {
     extend: {
       colors: {
-        paper: '#FFFAEF',
+        paper: 'var(--color-paper)',
         ink: {
-          DEFAULT: '#141111',
-          soft: '#5C5750',
+          DEFAULT: 'var(--color-ink)',
+          soft: 'var(--color-ink-soft)',
         },
-        card: '#FFFFFF',
+        card: 'var(--color-card)',
         accent: {
           pink: '#FE7DA8',
           yellow: '#FFD440',
@@ -34,8 +34,8 @@ export default {
         mono: ['"Space Mono"', 'ui-monospace', '"SFMono-Regular"', 'monospace'],
       },
       boxShadow: {
-        brutal: '2px 2px 0 0 #141111',
-        'brutal-sm': '1px 1px 0 0 #141111',
+        brutal: '2px 2px 0 0 var(--color-ink)',
+        'brutal-sm': '1px 1px 0 0 var(--color-ink)',
       },
     },
   },

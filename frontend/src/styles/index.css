@@ -2,6 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --color-paper: #FFFAEF;
+  --color-ink: #141111;
+  --color-ink-soft: #5C5750;
+  --color-card: #FFFFFF;
+}
+
+:root[data-skin='dark'] {
+  --color-paper: #151517;
+  --color-ink: #f9fafb;
+  --color-ink-soft: #cfd3d6;
+  --color-card: #2C2C2E;
+}
+
+:root[data-skin='business-blue'] {
+  --color-paper: #F4F6F8;
+  --color-ink: #1B2430;
+  --color-ink-soft: #5A6B7B;
+  --color-card: #FFFFFF;
+}
+
 body {
   @apply bg-paper text-ink font-sans;
 }
