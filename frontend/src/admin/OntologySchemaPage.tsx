@@ -90,7 +90,7 @@ export function OntologySchemaPage() {
   const bumpReadiness = useCallback(() => setReadinessVersion((v) => v + 1), [])
 
   useEffect(() => {
-    document.title = '本体 Schema 管理 · 管理后台'
+    document.title = '本体管理 · 管理后台'
   }, [])
 
   const refreshStatus = useCallback(async () => {
@@ -219,7 +219,7 @@ export function OntologySchemaPage() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-bold text-ink">本体 Schema 管理（租户：{tenantId}）</h1>
+        <h1 className="text-xl font-bold text-ink">本体管理（租户：{tenantId}）</h1>
         {/* 状态徽章、草稿/已确认分段切换、确认按钮同处一个视觉层级——徽章是
             "这个租户有没有确认过 schema"的持久状态（跟当前在哪个 tab、看
             草稿还是已确认无关，来自 GET .../status），分段控件+确认按钮是

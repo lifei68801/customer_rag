@@ -184,8 +184,8 @@ export function TermsPage() {
         >
           <option value="all">全部</option>
           <option value="manual">手工</option>
-          <option value="etl">ETL</option>
-          <option value="review">知识图谱审核</option>
+          <option value="etl">表格导入</option>
+          <option value="review">文档抽取</option>
           <option value="unknown">未知（历史数据）</option>
         </select>
       </div>
@@ -221,7 +221,7 @@ export function TermsPage() {
                     </span>
                     <span className="ml-2 border border-ink-soft px-1.5 py-0.5 text-xs text-ink-soft">
                       来源：{
-                        { manual: '手工', etl: 'ETL', review: '知识图谱审核', unknown: '未知' }[
+                        { manual: '手工', etl: '表格导入', review: '文档抽取', unknown: '未知' }[
                           term.source
                         ] ?? term.source
                       }
@@ -314,7 +314,7 @@ export function TermsPage() {
         })}
       {loaded && !error && terms.length === 0 && (
         <p className="text-ink-soft">
-          还没有任何实体。实体创建只能通过「结构化数据加工」（ETL）或「非结构化数据加工」（知识图谱审核）完成。
+          还没有任何实体。实体创建只能通过「表格导入」或「文档抽取」完成。
         </p>
       )}
       {loaded && terms.length > 0 && (

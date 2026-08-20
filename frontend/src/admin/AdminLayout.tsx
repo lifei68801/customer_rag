@@ -30,13 +30,13 @@ export function AdminLayout() {
         <aside className="flex flex-col gap-3 border-b-2 border-ink bg-card p-4 md:w-56 md:flex-shrink-0 md:flex-col md:justify-between md:border-b-0 md:border-r-2">
           <nav className="flex flex-row flex-wrap gap-2 md:flex-col">
             <NavLink to="/admin/ontology" className={navLinkClass}>
-              本体 Schema 管理
+              本体管理
             </NavLink>
             <NavLink to="/admin/documents" className={navLinkClass}>
               文档管理
             </NavLink>
             <NavLink to="/admin/data-entry" className={navLinkClass}>
-              数据填充
+              数据加工
             </NavLink>
           </nav>
           <div className="flex flex-row flex-wrap gap-3 md:flex-col">

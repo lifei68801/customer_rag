@@ -77,7 +77,7 @@ export function SchemaEtlPage() {
   const pollNowRef = useRef<() => Promise<void>>(async () => {})
 
   useEffect(() => {
-    document.title = '结构化数据加工 · 管理后台'
+    document.title = '表格导入 · 管理后台'
   }, [])
 
   const refreshStatus = useCallback(async () => {
@@ -295,7 +295,7 @@ export function SchemaEtlPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-bold text-ink">结构化数据加工（租户：{tenantId}）</h1>
+      <h1 className="text-xl font-bold text-ink">表格导入（租户：{tenantId}）</h1>
 
       {confirmed === false && (
         <div className="border-2 border-ink bg-accent-yellow px-3 py-2 text-sm text-ink shadow-brutal-sm">

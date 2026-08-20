@@ -83,7 +83,7 @@ export function GraphReviewsPage() {
   const [justCreated, setJustCreated] = useState<Record<number, { subject: boolean; object: boolean }>>({})
 
   useEffect(() => {
-    document.title = '非结构化数据加工 · 管理后台'
+    document.title = '文档抽取 · 管理后台'
   }, [])
 
   useEffect(() => {
@@ -480,7 +480,7 @@ export function GraphReviewsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-bold text-ink">非结构化数据加工（租户：{tenantId}）</h1>
+      <h1 className="text-xl font-bold text-ink">文档抽取（租户：{tenantId}）</h1>
 
       <div className="flex gap-2">
         <button
