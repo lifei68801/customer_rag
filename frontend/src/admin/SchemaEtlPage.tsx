@@ -65,7 +65,11 @@ export function SchemaEtlPage() {
   const [sampleLoading, setSampleLoading] = useState(false)
   const [sampleError, setSampleError] = useState<string | null>(null)
   const [downloadingSample, setDownloadingSample] = useState(false)
-  const [builderExpanded, setBuilderExpanded] = useState(false)
+  // 向导是面向新手的主路径，默认展开——不能让用户先自己发现"这里能点开"
+  // 才看到引导流程；裸上传表单是面向已有 config.yaml 的老手场景，默认折叠
+  // 在下面的"高级"区块里，见 uploadFormExpanded。
+  const [builderExpanded, setBuilderExpanded] = useState(true)
+  const [uploadFormExpanded, setUploadFormExpanded] = useState(false)
   // 轮询期间才需要知道"上一次拿到的历史列表里是不是还有 running 记录"，
   // 不需要触发重渲染。
   const hasRunningRef = useRef(false)
@@ -381,45 +385,60 @@ export function SchemaEtlPage() {
         )}
       </div>
 
-      <form
-        onSubmit={handleUpload}
-        className="flex flex-col gap-3 border-2 border-ink bg-card p-4 shadow-brutal"
-      >
-        <label className="flex flex-col gap-1 text-sm font-bold text-ink">
-          列映射配置（YAML）
-          <input
-            type="file"
-            name="config"
-            accept=".yaml,.yml"
-            required
-            disabled={confirmed !== true}
-            className="text-ink"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-sm font-bold text-ink">
-          数据文件（CSV，可多选）
-          <input
-            type="file"
-            name="data_files"
-            accept=".csv"
-            multiple
-            disabled={confirmed !== true}
-            className="text-ink"
-          />
-        </label>
-        {uploadError && (
-          <p role="alert" className="text-sm text-ink">
-            {uploadError}
-          </p>
-        )}
+      <div className="flex flex-col gap-2 border-2 border-ink bg-card shadow-brutal-sm">
         <button
-          type="submit"
-          disabled={uploading || confirmed !== true}
-          className={`min-h-[44px] cursor-pointer self-start border-2 border-ink bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          type="button"
+          onClick={() => setUploadFormExpanded((prev) => !prev)}
+          className={`flex items-center justify-between px-4 py-3 text-left font-bold text-ink ${focusRing}`}
         >
-          {uploading ? '提交中…' : '开始运行'}
+          <span>
+            高级：直接上传已有的 config.yaml
+            <span className="ml-2 font-normal text-ink-soft">已经有验证过的配置文件？跳过向导直接提交</span>
+          </span>
+          <span aria-hidden="true">{uploadFormExpanded ? '▾' : '▸'}</span>
         </button>
-      </form>
+        {uploadFormExpanded && (
+          <form
+            onSubmit={handleUpload}
+            className="flex flex-col gap-3 border-t-2 border-ink p-4"
+          >
+            <label className="flex flex-col gap-1 text-sm font-bold text-ink">
+              列映射配置（YAML）
+              <input
+                type="file"
+                name="config"
+                accept=".yaml,.yml"
+                required
+                disabled={confirmed !== true}
+                className="text-ink"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm font-bold text-ink">
+              数据文件（CSV，可多选）
+              <input
+                type="file"
+                name="data_files"
+                accept=".csv"
+                multiple
+                disabled={confirmed !== true}
+                className="text-ink"
+              />
+            </label>
+            {uploadError && (
+              <p role="alert" className="text-sm text-ink">
+                {uploadError}
+              </p>
+            )}
+            <button
+              type="submit"
+              disabled={uploading || confirmed !== true}
+              className={`min-h-[44px] cursor-pointer self-start border-2 border-ink bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-brutal transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+            >
+              {uploading ? '提交中…' : '开始运行'}
+            </button>
+          </form>
+        )}
+      </div>
 
       <div className="flex flex-col gap-2">
         <h2 className="font-bold text-ink">历史跑批</h2>
