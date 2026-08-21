@@ -203,11 +203,12 @@ def test_start_run_sanitizes_dotdot_data_filename_and_stays_inside_run_dir(clien
     对着一个已存在的目录 write_bytes() 会抛 IsADirectoryError，变成一个
     未捕获的 500，而不是"逃出 run_dir 写坏东西"式的任意路径穿越。这里
     验证：(1) 请求不再 500；(2) 落盘的每个文件都真的在 run_dir 内部，
-    不是靠"没报错"就断言过关。"""
+    不是靠"没报错"就断言过关。使用 ..data.csv 作为测试文件名（有有效扩展名），
+    它会被 _sanitize_data_filename 转换成 __data.csv，仍然测试了文件名消毒逻辑。"""
     asyncio.run(_confirm_muji_schema(review_conn))
     files = [
         ("config", ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")),
-        ("data_files", ("..", b"attempted traversal payload")),
+        ("data_files", ("..data.csv", b"attempted traversal payload")),
     ]
 
     response = client.post("/api/admin/muji/schema-etl/runs", files=files)
@@ -374,3 +375,49 @@ def test_download_sample_zip_returns_a_valid_zip_containing_the_same_files():
         assert "商品.csv" in archive.namelist()
     finally:
         app.dependency_overrides.clear()
+
+
+def test_start_run_rejects_unsupported_data_file_extension(client, review_conn):
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = [
+        ("config", ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")),
+        ("data_files", ("report.pdf", b"%PDF-1.4 fake pdf content")),
+    ]
+
+    response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+
+    assert response.status_code == 400
+    assert "report.pdf" in response.json()["detail"]
+    assert "不支持的文件类型" in response.json()["detail"]
+
+
+def test_start_run_rejects_unsupported_extension_cleans_up_run_dir(client, review_conn, tmp_path):
+    """扩展名校验失败要清理已经创建的 run_dir，不能在磁盘上留下半成品目录
+    ——跟本文件其它 400 分支（tenant_id 不一致、配置解析失败）的清理方式
+    保持一致。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    tenant_dir = tmp_path / "uploads" / "schema-etl" / "muji"
+    before = sorted(p.name for p in tenant_dir.iterdir()) if tenant_dir.exists() else []
+    files = [
+        ("config", ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")),
+        ("data_files", ("report.pdf", b"%PDF-1.4 fake pdf content")),
+    ]
+
+    client.post("/api/admin/muji/schema-etl/runs", files=files)
+
+    after = sorted(p.name for p in tenant_dir.iterdir()) if tenant_dir.exists() else []
+    assert after == before, "校验失败后不应该在 tenant 目录下留下新的 run_id 目录"
+
+
+def test_start_run_accepts_xlsx_data_file(client, review_conn):
+    """扩展名白名单要放行 xlsx，不能因为加了白名单反而把新支持的格式也
+    挡在外面。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = [
+        ("config", ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")),
+        ("data_files", ("products.xlsx", b"PK\x03\x04fake xlsx bytes")),
+    ]
+
+    response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+
+    assert response.status_code == 200

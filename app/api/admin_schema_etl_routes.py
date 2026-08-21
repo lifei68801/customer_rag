@@ -68,6 +68,25 @@ def _sanitize_data_filename(filename: str) -> str:
     return sanitized
 
 
+_ALLOWED_DATA_FILE_EXTENSIONS = {".csv", ".tsv", ".xlsx", ".xls"}
+
+
+def _validate_data_file_extensions(data_files: list[UploadFile]) -> None:
+    """上传的数据文件必须是白名单里的格式——见
+    docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md
+    决策 4。在文件写盘之前做，不满足直接 400，不留下垃圾文件。"""
+    for data_file in data_files:
+        if not data_file.filename:
+            continue
+        suffix = Path(data_file.filename).suffix.lower()
+        if suffix not in _ALLOWED_DATA_FILE_EXTENSIONS:
+            allowed = "/".join(sorted(_ALLOWED_DATA_FILE_EXTENSIONS))
+            raise HTTPException(
+                status_code=400,
+                detail=f"{data_file.filename!r}: 不支持的文件类型，只支持 {allowed}",
+            )
+
+
 class StatusResponse(BaseModel):
     ontology_confirmed: bool
 
@@ -199,6 +218,12 @@ async def start_schema_etl_run(
             status_code=400,
             detail=f"配置文件里的 tenant_id {parsed_config.tenant_id!r} 与当前操作的租户 {tenant_id!r} 不一致",
         )
+
+    try:
+        _validate_data_file_extensions(data_files)
+    except HTTPException:
+        shutil.rmtree(run_dir, ignore_errors=True)
+        raise
 
     for data_file in data_files:
         if not data_file.filename:
