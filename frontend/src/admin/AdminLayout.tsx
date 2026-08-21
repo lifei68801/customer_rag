@@ -1,6 +1,5 @@
 import { Link, NavLink, Navigate, Outlet } from 'react-router-dom'
 import { useAdminAuth } from './useAdminAuth'
-import { ConfirmProvider } from './ConfirmContext'
 import { SkinSwitcher } from './SkinSwitcher'
 import { TenantProvider } from './TenantContext'
 import { TenantSwitcher } from './TenantSwitcher'
@@ -27,12 +26,11 @@ export function AdminLayout() {
   // aside 内部改 flex-row 排布，避免固定 w-56 的侧边栏在手机宽度下把主内容区
   // 挤到不到 150px 宽、必须横向滚动才能看全的问题。
   //
-  // SkinProvider 现在挂载在 main.tsx 的根节点（站点级偏好，前台/后台共用），
-  // 这里不再重复包一层。
+  // SkinProvider/ConfirmProvider 现在都挂载在 main.tsx 的根节点（站点级
+  // 能力，前台/后台共用），这里不再重复包一层。
   return (
     <TenantProvider>
-      <ConfirmProvider>
-        <div className="flex min-h-dvh flex-col bg-paper md:flex-row">
+      <div className="flex min-h-dvh flex-col bg-paper md:flex-row">
           <aside className="flex flex-col gap-3 border-b-2 border-ink bg-card p-4 md:w-56 md:flex-shrink-0 md:flex-col md:justify-between md:border-b-0 md:border-r-2">
             <nav className="flex flex-row flex-wrap gap-2 md:flex-col">
               <NavLink to="/admin/ontology" className={navLinkClass}>
@@ -67,7 +65,6 @@ export function AdminLayout() {
             <Outlet />
           </main>
         </div>
-      </ConfirmProvider>
     </TenantProvider>
   )
 }
