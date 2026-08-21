@@ -26,9 +26,9 @@ export default {
           error: 'var(--color-status-error)',
           'error-hover': 'var(--color-status-error-hover)',
         },
-        border: {
-          subtle: 'var(--color-border-subtle)',
-        },
+      },
+      borderColor: {
+        subtle: 'var(--color-border-subtle)',
       },
       fontFamily: {
         sans: [
