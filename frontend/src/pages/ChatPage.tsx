@@ -54,7 +54,7 @@ export function ChatPage() {
         <span className="font-bold text-ink">企业数字员工</span>
         <Link
           to="/admin"
-          className={`flex min-h-[44px] cursor-pointer items-center gap-1.5 border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
+          className={`flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
         >
           <GearIcon />
           管理后台
@@ -73,7 +73,7 @@ export function ChatPage() {
         />
         <div className="flex flex-1 flex-col">
           <Hero />
-          <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
+          <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col">
             <ChatWindow messages={messages} />
             <ChatInput disabled={isSending} onSend={sendQuestion} />
           </main>

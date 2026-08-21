@@ -12,7 +12,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[75%] border-2 px-4 py-3 shadow-soft ${
+        className={`max-w-[75%] rounded-card border-2 px-4 py-3 shadow-soft ${
           isUser
             ? 'border-ink bg-accent-pink text-ink'
             : message.isError

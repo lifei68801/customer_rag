@@ -72,7 +72,7 @@ const components: Components = {
     )
   },
   pre: ({ children }) => (
-    <pre className="overflow-x-auto rounded border border-subtle bg-paper p-3">{children}</pre>
+    <pre className="overflow-x-auto rounded-card border border-subtle bg-paper p-3">{children}</pre>
   ),
   table: ({ children }) => (
     <div className="overflow-x-auto">
