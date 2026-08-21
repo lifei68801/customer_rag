@@ -2,6 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 下面这批 --color-* 变量必须写成空格分隔的 RGB 三元组（"20 17 17"），不能写 hex
+   （"#141111"）——tailwind.config.ts 用 rgb(var(--x) / <alpha-value>) 消费它们才能支持
+   bg-x/40 这类透明度修饰符，写成 hex 会让该颜色的所有 Tailwind class（不只是透明度修饰符）
+   静默编译失败。--color-border-subtle / --shadow-color-1 / --shadow-color-2 是例外，它们
+   各自带固定 alpha 通道，以完整 rgba(...) 值直接使用，不走这条转换路径，保持 rgba 写法不变。 */
 :root {
   --color-paper: 255 250 239;
   --color-ink: 20 17 17;
