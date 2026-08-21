@@ -1,4 +1,7 @@
 import { useState } from 'react'
+import { useConfirm } from '../admin/ConfirmContext'
+import { Tooltip } from '../admin/Tooltip'
+import { useToast } from '../admin/ToastContext'
 import type { SessionSummary } from '../lib/sessionsApi'
 
 const focusRing =
@@ -42,13 +45,16 @@ export function ChatSidebar({
 }: ChatSidebarProps) {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const confirm = useConfirm()
+  const showToast = useToast()
 
   const handleDelete = async (session: SessionSummary) => {
-    if (!window.confirm(`确定要删除会话「${session.title}」吗？此操作不可撤销。`)) return
+    if (!(await confirm(`确定要删除会话「${session.title}」吗？此操作不可撤销。`))) return
     setDeletingId(session.session_id)
     setDeleteError(null)
     try {
       await onDeleteSession(session.session_id)
+      showToast('已删除会话')
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : '删除会话失败')
     } finally {
@@ -73,7 +79,7 @@ export function ChatSidebar({
         )}
         {deleteError && <p className="p-2 text-sm text-status-error">{deleteError}</p>}
         {sessions.length === 0 && !sessionsError && (
-          <p className="p-2 text-sm text-ink-soft">还没有历史会话</p>
+          <p className="p-2 text-sm text-ink-soft">还没有历史会话，点击上方「+ 新建会话」开始</p>
         )}
         <ul className="flex flex-col gap-1.5">
           {sessions.map((session) => {
@@ -92,15 +98,17 @@ export function ChatSidebar({
                 >
                   {session.title}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => handleDelete(session)}
-                  disabled={deletingId === session.session_id}
-                  aria-label={`删除会话「${session.title}」`}
-                  className={`flex min-h-[44px] w-10 flex-shrink-0 cursor-pointer items-center justify-center border-2 border-ink bg-paper text-ink shadow-brutal-sm transition hover:bg-status-error-hover active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
-                >
-                  <TrashIcon />
-                </button>
+                <Tooltip label="删除会话">
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(session)}
+                    disabled={deletingId === session.session_id}
+                    aria-label={`删除会话「${session.title}」`}
+                    className={`flex min-h-[44px] w-10 flex-shrink-0 cursor-pointer items-center justify-center border-2 border-ink bg-paper text-ink shadow-brutal-sm transition hover:bg-status-error-hover active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  >
+                    <TrashIcon />
+                  </button>
+                </Tooltip>
               </li>
             )
           })}
