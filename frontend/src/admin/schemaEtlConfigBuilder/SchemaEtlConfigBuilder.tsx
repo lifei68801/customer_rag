@@ -102,7 +102,7 @@ export function SchemaEtlConfigBuilder({
   }
 
   return (
-    <div className="flex flex-col gap-4 border-t-2 border-ink p-4">
+    <div className="flex flex-col gap-4 border-t border-subtle p-4">
       <div className="flex flex-col gap-2">
         <span className="text-sm font-bold text-ink">1. 添加数据文件</span>
         <input

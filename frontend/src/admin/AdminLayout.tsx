@@ -34,7 +34,7 @@ export function AdminLayout() {
     <TenantProvider>
       <DensityProvider>
         <div className="flex min-h-dvh flex-col bg-paper md:flex-row">
-          <aside className="flex flex-col gap-3 border-b-2 border-ink bg-card p-4 md:w-56 md:flex-shrink-0 md:flex-col md:justify-between md:border-b-0 md:border-r-2">
+          <aside className="flex flex-col gap-3 border-b border-subtle bg-card p-4 md:w-56 md:flex-shrink-0 md:flex-col md:justify-between md:border-b-0 md:border-r">
             <nav className="flex flex-row flex-wrap gap-2 md:flex-col">
               <NavLink to="/admin/ontology" className={navLinkClass}>
                 本体管理

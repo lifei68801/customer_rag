@@ -366,7 +366,7 @@ export function SchemaEtlPage() {
           </span>
         </button>
         {uploadFormExpanded && (
-          <div className="flex flex-col gap-4 border-t-2 border-ink p-4">
+          <div className="flex flex-col gap-4 border-t border-subtle p-4">
             <div className="flex flex-col gap-3">
               <span className="font-bold text-ink">
                 查看示例数据
@@ -418,7 +418,7 @@ export function SchemaEtlPage() {
 
             <form
               onSubmit={handleUpload}
-              className="flex flex-col gap-3 border-t-2 border-ink pt-4"
+              className="flex flex-col gap-3 border-t border-subtle pt-4"
             >
               <span className="font-bold text-ink">直接上传</span>
               <label className="flex flex-col gap-1 text-sm font-bold text-ink">
@@ -469,7 +469,7 @@ export function SchemaEtlPage() {
           <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card shadow-soft-sm">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b-2 border-ink bg-paper text-ink">
+                <tr className="border-b border-subtle bg-paper text-ink">
                   <th className="px-3 py-2">run_id</th>
                   <th className="px-3 py-2">状态</th>
                   <th className="px-3 py-2">开始时间</th>
@@ -518,7 +518,7 @@ export function SchemaEtlPage() {
               <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle shadow-soft-sm">
                 <table className="w-full text-left text-sm">
                   <thead>
-                    <tr className="border-b-2 border-ink bg-paper text-ink">
+                    <tr className="border-b border-subtle bg-paper text-ink">
                       <th className="px-3 py-2">类型</th>
                       <th className="px-3 py-2">写入</th>
                       <th className="px-3 py-2">跳过</th>
@@ -552,7 +552,7 @@ export function SchemaEtlPage() {
                   <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle shadow-soft-sm">
                     <table className="w-full text-left text-sm">
                       <thead>
-                        <tr className="border-b-2 border-ink bg-paper text-ink">
+                        <tr className="border-b border-subtle bg-paper text-ink">
                           <th className="px-3 py-2">类型</th>
                           <th className="px-3 py-2">文件</th>
                           <th className="px-3 py-2">原因</th>
@@ -580,7 +580,7 @@ export function SchemaEtlPage() {
                   <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle shadow-soft-sm">
                     <table className="w-full text-left text-sm">
                       <thead>
-                        <tr className="border-b-2 border-ink bg-paper text-ink">
+                        <tr className="border-b border-subtle bg-paper text-ink">
                           <th className="px-3 py-2">类型</th>
                           <th className="px-3 py-2">文件</th>
                           <th className="px-3 py-2">行号</th>

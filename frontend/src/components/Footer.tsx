@@ -1,6 +1,6 @@
 export function Footer() {
   return (
-    <footer className="border-t-2 border-ink bg-ink px-6 py-8 text-accent-yellow/60">
+    <footer className="border-t border-subtle bg-ink px-6 py-8 text-accent-yellow/60">
       <div className="mx-auto flex max-w-3xl flex-col items-center gap-2 text-center">
         <span className="font-bold text-accent-yellow">企业数字员工</span>
         <p className="font-mono text-xs uppercase tracking-widest">

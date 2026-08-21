@@ -514,11 +514,11 @@ export function DocumentsPage() {
                   </div>
                 </div>
                 {preview && preview !== 'loading' && (
-                  <div className="flex flex-col gap-1 border-t-2 border-ink pt-2">
+                  <div className="flex flex-col gap-1 border-t border-subtle pt-2">
                     {preview.chunks.map((text, i) => (
                       <p
                         key={i}
-                        className="rounded-chip border border-subtle bg-paper px-2 py-1 text-xs text-ink-soft"
+                        className="rounded border border-subtle bg-paper px-2 py-1 text-xs text-ink-soft"
                       >
                         [{i}] {text}
                       </p>

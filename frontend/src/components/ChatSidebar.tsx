@@ -63,8 +63,8 @@ export function ChatSidebar({
   }
 
   return (
-    <aside className="flex max-h-64 flex-col border-b-2 border-ink bg-card md:h-auto md:max-h-none md:w-64 md:flex-shrink-0 md:border-b-0 md:border-r-2">
-      <div className="border-b-2 border-ink p-3">
+    <aside className="flex max-h-64 flex-col border-b border-subtle bg-card md:h-auto md:max-h-none md:w-64 md:flex-shrink-0 md:border-b-0 md:border-r">
+      <div className="border-b border-subtle p-3">
         <button
           type="button"
           onClick={onNewSession}

@@ -1,6 +1,6 @@
 export function Hero() {
   return (
-    <header className="border-b-2 border-ink px-6 py-10 text-center">
+    <header className="border-b border-subtle px-6 py-10 text-center">
       <h1 className="text-3xl font-bold text-ink sm:text-4xl">
         企业数字员工
       </h1>

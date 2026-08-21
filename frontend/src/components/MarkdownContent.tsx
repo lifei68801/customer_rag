@@ -33,8 +33,8 @@ function normalizeMath(text: string): string {
 // LLM 回复习惯性会带标准 markdown 语法（列表/加粗/表格/代码块），聊天气泡
 // 之前是纯文本渲染（<p>{text}</p>），用户看到的是没转换过的原始符号。
 // components 覆盖每个元素的样式而不是引入 @tailwindcss/typography，是为了
-// 跟这套 neo-brutalist 设计 token（border-ink/accent-*/shadow-soft）保持
-// 一致，而不是套一个通用 prose 主题。
+// 跟这套圆角 + 柔和阴影的设计 token（rounded-*/border-subtle/accent-*/
+// shadow-soft）保持一致，而不是套一个通用 prose 主题。
 const components: Components = {
   p: ({ children }) => <p className="whitespace-pre-wrap leading-relaxed">{children}</p>,
   strong: ({ children }) => <strong className="font-bold">{children}</strong>,
@@ -72,7 +72,7 @@ const components: Components = {
     )
   },
   pre: ({ children }) => (
-    <pre className="overflow-x-auto rounded-card border border-subtle bg-paper p-3">{children}</pre>
+    <pre className="overflow-x-auto rounded border border-subtle bg-paper p-3">{children}</pre>
   ),
   table: ({ children }) => (
     <div className="overflow-x-auto">
@@ -83,7 +83,7 @@ const components: Components = {
     <th className="border border-subtle bg-paper px-2 py-1 text-left font-bold">{children}</th>
   ),
   td: ({ children }) => <td className="border border-subtle px-2 py-1">{children}</td>,
-  hr: () => <hr className="border-t-2 border-ink" />,
+  hr: () => <hr className="border-t border-subtle" />,
 }
 
 export function MarkdownContent({ text }: MarkdownContentProps) {

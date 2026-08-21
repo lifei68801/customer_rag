@@ -8,9 +8,10 @@ const CARD_WIDTHS = ['55%', '30%']
 
 /**
  * 加载态占位——用方块骨架而不是纯文字"加载中…"，让加载前后的高度基本
- * 一致，避免内容到达时整块跳动（CLS）。不用 DSH 的圆形旋转 spinner：
- * 圆形旋转跟这个项目 0 圆角/实边的新粗野主义语言冲突，改用方块 +
- * Tailwind 内置 animate-pulse（透明度 1↔0.5 循环）。
+ * 一致，避免内容到达时整块跳动（CLS）。不用居中的圆形旋转 spinner：
+ * spinner 只是一个跟内容无关的符号，撑不出真实布局，仍然会在数据到达时
+ * 跳动；方块骨架直接复刻表格行/卡片的形状和尺寸。动效用 Tailwind 内置
+ * animate-pulse（透明度 1↔0.5 循环）。
  */
 export function Skeleton({ variant, count = 3 }: SkeletonProps) {
   if (variant === 'table-rows') {
