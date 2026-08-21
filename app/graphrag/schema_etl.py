@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Iterator
 
 import aiosqlite
+import xlrd
+from openpyxl import load_workbook
 
 from app.config.settings import Settings
 from app.graphrag import provenance
@@ -22,7 +24,12 @@ from app.graphrag.ontology_lifecycle import is_ontology_confirmed
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.review_factory import build_review_conn_from_settings
 from app.graphrag.schema_etl_config import EntityMapping, RelationMapping, SchemaETLConfig, load_schema_etl_config
-from app.graphrag.schema_etl_row_processing import RowProcessingError, compute_node_key, convert_field_value
+from app.graphrag.schema_etl_row_processing import (
+    RowProcessingError,
+    compute_node_key,
+    convert_excel_cell_to_string,
+    convert_field_value,
+)
 from app.graphrag.terms_store import TermNameConflictError, UnknownCategoryError, upsert_term_with_node_key
 
 
@@ -85,6 +92,77 @@ def _read_delimited_rows(path: Path, *, delimiter: str) -> Iterator[dict[str, st
         yield from csv.DictReader(handle, delimiter=delimiter)
 
 
+def _read_xlsx_rows(path: Path) -> Iterator[dict[str, str]]:
+    """流式读取 xlsx 第一个工作表，第一行是表头——见决策 2（固定读第一个
+    sheet）。read_only=True 让 openpyxl 用懒加载模式逐行产出，不把整个
+    工作表读进内存，跟 CSV 路径同一个"18 万+ 行不能爆内存"的约束。
+    data_only=True 拿单元格公式算出来的值，不拿公式字符串本身。"""
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    try:
+        worksheet = workbook.worksheets[0]
+        rows_iter = worksheet.iter_rows(values_only=True)
+        try:
+            header_row = next(rows_iter)
+        except StopIteration:
+            return
+        header = [str(cell).strip() if cell is not None else "" for cell in header_row]
+        for row in rows_iter:
+            yield {
+                header[i]: convert_excel_cell_to_string(row[i] if i < len(row) else None)
+                for i in range(len(header))
+            }
+    finally:
+        workbook.close()
+
+
+def _xlrd_cell_to_python_value(cell: "xlrd.sheet.Cell", datemode: int) -> object:
+    """把 xlrd 的 Cell（用 ctype 标记类型、日期存成 Excel 序列号）归一化成
+    openpyxl 风格的原生 Python 值（int/float/str/bool/datetime/None），
+    这样就能复用同一个 convert_excel_cell_to_string 做字符串化，不用给
+    xlrd 单独写一套转换规则。"""
+    if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+        return None
+    if cell.ctype == xlrd.XL_CELL_BOOLEAN:
+        return bool(cell.value)
+    if cell.ctype == xlrd.XL_CELL_DATE:
+        return xlrd.xldate_as_datetime(cell.value, datemode)
+    return cell.value  # XL_CELL_NUMBER（float）/ XL_CELL_TEXT（str）/ XL_CELL_ERROR
+
+
+def _read_xls_rows(path: Path) -> Iterator[dict[str, str]]:
+    """读取旧版二进制 xls 第一个工作表，第一行是表头。xlrd 没有 openpyxl
+    那种懒加载流式模式，会把整个工作表读进内存——xls 是被淘汰的旧格式，
+    体量通常不大，这里不为了流式特意做额外处理。"""
+    workbook = xlrd.open_workbook(str(path))
+    worksheet = workbook.sheet_by_index(0)
+    if worksheet.nrows == 0:
+        return
+    header = [str(worksheet.cell_value(0, col)).strip() for col in range(worksheet.ncols)]
+    for row_idx in range(1, worksheet.nrows):
+        yield {
+            header[col_idx]: convert_excel_cell_to_string(
+                _xlrd_cell_to_python_value(worksheet.cell(row_idx, col_idx), workbook.datemode)
+            )
+            for col_idx in range(len(header))
+        }
+
+
+def _read_table_rows(path: Path) -> Iterator[dict[str, str]]:
+    """按扩展名分流到对应的行读取器，统一产出 dict[str, str]——见
+    docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md。"""
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        yield from _read_delimited_rows(path, delimiter=",")
+    elif suffix == ".tsv":
+        yield from _read_delimited_rows(path, delimiter="\t")
+    elif suffix == ".xlsx":
+        yield from _read_xlsx_rows(path)
+    elif suffix == ".xls":
+        yield from _read_xls_rows(path)
+    else:
+        raise RowProcessingError(f"不支持的数据文件类型: {suffix!r}（{path.name}）")
+
+
 def _record_written(report: ETLRunReport, *, label: str) -> None:
     report.written_by_type[label] = report.written_by_type.get(label, 0) + 1
 
@@ -113,7 +191,7 @@ async def _write_entity_mapping(
         raise RowProcessingError(f"term_type {mapping.term_type!r} 不在已确认 schema 里")
     extra_field_specs = {f.name: f for f in types_by_value[mapping.term_type].extra_fields}
 
-    for row_number, row in enumerate(_read_delimited_rows(data_dir / mapping.source_file, delimiter=","), start=2):  # 第 1 行是表头
+    for row_number, row in enumerate(_read_table_rows(data_dir / mapping.source_file), start=2):  # 第 1 行是表头
         try:
             node_key = await compute_node_key(
                 conn, tenant_id=tenant_id, term_type=mapping.term_type,
@@ -185,7 +263,7 @@ async def _write_relation_mapping(
             f"关系 {mapping.relation_type!r} 引用的实体类型未在 entities 段声明"
         )
 
-    for row_number, row in enumerate(_read_delimited_rows(data_dir / mapping.source_file, delimiter=","), start=2):
+    for row_number, row in enumerate(_read_table_rows(data_dir / mapping.source_file), start=2):
         try:
             subject_key = await compute_node_key(
                 conn, tenant_id=tenant_id, term_type=mapping.subject_term_type,

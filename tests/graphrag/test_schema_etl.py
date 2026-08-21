@@ -519,3 +519,130 @@ async def test_run_schema_etl_reads_tsv_source_file(tmp_path):
     term = await get_term(conn, tenant_id="muji", standard_name="圆角收纳盒")
     assert term is not None
     assert term.node_key == "Product:1001"
+
+
+def _write_xlsx_fixture(path, *, header: list[str], rows: list[list[object]]) -> None:
+    """用 openpyxl 生成一个最小的 xlsx 测试夹具文件——openpyxl 既能读也能
+    写，不需要额外引入别的库。"""
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append(header)
+    for row in rows:
+        worksheet.append(row)
+    workbook.save(str(path))
+
+
+def _write_xls_fixture(path, *, header: list[str], rows: list[list[object]]) -> None:
+    """用 xlwt 生成一个最小的 xls（旧版二进制 Excel）测试夹具文件——xlrd
+    只能读 xls 不能写，xlwt 只能写 xls 不能写 xlsx，两个库分工明确，这里
+    只用来造测试数据，生产代码不导入 xlwt。"""
+    import xlwt
+
+    workbook = xlwt.Workbook()
+    worksheet = workbook.add_sheet("Sheet1")
+    for col, name in enumerate(header):
+        worksheet.write(0, col, name)
+    for row_idx, row in enumerate(rows, start=1):
+        for col, value in enumerate(row):
+            worksheet.write(row_idx, col, value)
+    workbook.save(str(path))
+
+
+async def test_run_schema_etl_reads_xlsx_source_file(tmp_path):
+    conn = await _confirmed_conn()
+    _write_xlsx_fixture(
+        tmp_path / "products.xlsx",
+        header=["product_group_id", "product_group_name", "md_no"],
+        rows=[[1001, "圆角收纳盒", "A123"]],
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.xlsx",
+                standard_name_column="product_group_name",
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 1
+    assert report.entities_skipped == 0
+    term = await get_term(conn, tenant_id="muji", standard_name="圆角收纳盒")
+    assert term is not None
+    assert term.node_key == "Product:1001"
+    # xlsx 单元格里 1001 是原生 int，node_key 必须是 "Product:1001" 而不是
+    # "Product:1001.0"——验证 convert_excel_cell_to_string 真的被用在了
+    # 读取路径上，不是只在 Task 2 的单元测试里孤立存在。
+    # 注意：get_term(conn, tenant_id, standard_name) 的真实签名只接受
+    # standard_name，不接受 node_key 参数（Task 3 审查已经发现并修正过
+    # 这处签名笔误，这里直接用修正后的正确调用方式）——按 standard_name
+    # 查询，再断言返回对象的 .node_key 字段。
+
+
+async def test_run_schema_etl_reads_xls_source_file(tmp_path):
+    conn = await _confirmed_conn()
+    _write_xls_fixture(
+        tmp_path / "products.xls",
+        header=["product_group_id", "product_group_name", "md_no"],
+        rows=[[1001, "圆角收纳盒", "A123"]],
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.xls",
+                standard_name_column="product_group_name",
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 1
+    term = await get_term(conn, tenant_id="muji", standard_name="圆角收纳盒")
+    assert term is not None
+    assert term.node_key == "Product:1001"
+
+
+async def test_run_schema_etl_xlsx_empty_sheet_writes_nothing(tmp_path):
+    """只有表头没有数据行的 xlsx，不应该报错，也不应该写入任何实体——跟
+    CSV 场景下"只有表头"的行为一致。"""
+    conn = await _confirmed_conn()
+    _write_xlsx_fixture(
+        tmp_path / "products.xlsx",
+        header=["product_group_id", "product_group_name", "md_no"],
+        rows=[],
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.xlsx",
+                standard_name_column="product_group_name",
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 0
+    assert report.entities_skipped == 0
