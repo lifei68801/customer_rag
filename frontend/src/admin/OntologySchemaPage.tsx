@@ -274,7 +274,7 @@ export function OntologySchemaPage() {
               onClick={handleConfirm}
               disabled={confirmDisabled}
               title={confirmDisabledReason ?? undefined}
-              className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-green px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-green px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {confirming ? '确认中…' : '确认 schema'}
             </button>
@@ -627,7 +627,7 @@ function TermTypesTab({
         <button
           type="button"
           onClick={startCreate}
-          className={`min-h-[44px] cursor-pointer self-start border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer self-start border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
         >
           + 新增实体类型
         </button>
@@ -683,7 +683,7 @@ function TermTypesTab({
             <button
               type="button"
               onClick={addField}
-              className={`self-start border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`self-start border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
             >
               + 添加字段
             </button>
@@ -693,14 +693,14 @@ function TermTypesTab({
             <button
               type="submit"
               disabled={creating || savingValue !== null}
-              className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {creating || savingValue !== null ? '保存中…' : '保存'}
             </button>
             <button
               type="button"
               onClick={cancelEdit}
-              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
             >
               取消
             </button>
@@ -736,7 +736,7 @@ function TermTypesTab({
             <button
               type="submit"
               disabled={migrating}
-              className={`min-h-[44px] cursor-pointer border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {migrating ? '迁移中…' : '确认迁移'}
             </button>
@@ -745,7 +745,7 @@ function TermTypesTab({
               onClick={() => {
                 setMigratingFrom(null)
               }}
-              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
             >
               取消
             </button>
@@ -1012,7 +1012,7 @@ function RelationTypesTab({
         <button
           type="button"
           onClick={startCreate}
-          className={`min-h-[44px] cursor-pointer self-start border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer self-start border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
         >
           + 新增关系类型
         </button>
@@ -1061,14 +1061,14 @@ function RelationTypesTab({
             <button
               type="submit"
               disabled={creating || savingType !== null}
-              className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {creating || savingType !== null ? '保存中…' : '保存'}
             </button>
             <button
               type="button"
               onClick={cancelEdit}
-              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
             >
               取消
             </button>
@@ -1104,7 +1104,7 @@ function RelationTypesTab({
             <button
               type="submit"
               disabled={migrating}
-              className={`min-h-[44px] cursor-pointer border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {migrating ? '迁移中…' : '确认迁移'}
             </button>
@@ -1113,7 +1113,7 @@ function RelationTypesTab({
               onClick={() => {
                 setMigratingFrom(null)
               }}
-              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
             >
               取消
             </button>
@@ -1371,7 +1371,7 @@ function ConstraintsTab({
           <button
             type="submit"
             disabled={adding}
-            className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+            className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
           >
             {adding ? '添加中…' : '+ 添加约束'}
           </button>

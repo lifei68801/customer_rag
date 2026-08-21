@@ -244,7 +244,7 @@ export function TermsPage() {
                       type="button"
                       onClick={() => handleStartEdit(term)}
                       disabled={editingKey !== null || deletingKey !== null}
-                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       编辑
                     </button>
@@ -252,7 +252,7 @@ export function TermsPage() {
                       type="button"
                       onClick={() => handleDelete(term.standard_name)}
                       disabled={editingKey !== null || deletingKey !== null}
-                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       {deletingKey === term.standard_name ? '删除中…' : '删除'}
                     </button>
@@ -306,7 +306,7 @@ export function TermsPage() {
                       type="button"
                       onClick={() => handleSaveEdit(term.standard_name)}
                       disabled={!editDraft.standard_name.trim() || savingKey !== null}
-                      className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       {savingKey === term.standard_name ? '保存中…' : '保存'}
                     </button>
@@ -314,7 +314,7 @@ export function TermsPage() {
                       type="button"
                       onClick={handleCancelEdit}
                       disabled={savingKey !== null}
-                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       取消
                     </button>

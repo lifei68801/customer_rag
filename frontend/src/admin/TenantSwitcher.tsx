@@ -109,7 +109,7 @@ export function TenantSwitcher() {
         <button
           type="button"
           onClick={() => setShowCreateForm(true)}
-          className={`min-h-[36px] cursor-pointer border border-subtle bg-paper px-2 text-xs font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+          className={`min-h-[36px] cursor-pointer border border-subtle bg-paper px-2 text-xs font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
         >
           + 新建租户
         </button>
@@ -134,7 +134,7 @@ export function TenantSwitcher() {
             <button
               type="submit"
               disabled={creating || !newTenantId.trim() || !newTenantName.trim()}
-              className={`min-h-[32px] flex-1 cursor-pointer border border-subtle bg-accent-pink px-2 text-xs font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[32px] flex-1 cursor-pointer border border-subtle bg-accent-pink px-2 text-xs font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {creating ? '创建中…' : '创建'}
             </button>
@@ -147,7 +147,7 @@ export function TenantSwitcher() {
                 setError(null)
               }}
               disabled={creating}
-              className={`min-h-[32px] cursor-pointer border border-subtle bg-card px-2 text-xs font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`min-h-[32px] cursor-pointer border border-subtle bg-card px-2 text-xs font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
             >
               取消
             </button>

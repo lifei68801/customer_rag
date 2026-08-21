@@ -218,7 +218,7 @@ export function SchemaEtlConfigBuilder({
               setSubmitting(false)
             }
           }}
-          className={`min-h-[44px] cursor-pointer self-start border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer self-start border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           {submitting ? '提交中…' : '确认并开始运行'}
         </button>

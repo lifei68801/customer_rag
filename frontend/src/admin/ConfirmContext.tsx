@@ -81,14 +81,14 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 onClick={() => settle(false)}
-                className={`min-h-[44px] cursor-pointer border border-subtle bg-card px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer border border-subtle bg-card px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
               >
                 {pending.cancelLabel}
               </button>
               <button
                 type="button"
                 onClick={() => settle(true)}
-                className={`min-h-[44px] cursor-pointer border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
               >
                 {pending.confirmLabel}
               </button>

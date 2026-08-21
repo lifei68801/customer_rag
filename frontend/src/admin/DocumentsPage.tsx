@@ -347,7 +347,7 @@ export function DocumentsPage() {
         <button
           type="submit"
           disabled={uploading}
-          className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           {uploading ? '上传中…' : '上传文档'}
         </button>
@@ -383,7 +383,7 @@ export function DocumentsPage() {
                     type="button"
                     onClick={() => handleRetryJob(job.job_id)}
                     disabled={jobActionId !== null}
-                    className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                   >
                     {jobActionId === job.job_id ? '处理中…' : '重新执行'}
                   </button>
@@ -391,7 +391,7 @@ export function DocumentsPage() {
                     type="button"
                     onClick={() => handleDeleteJob(job.job_id, job.file_path)}
                     disabled={jobActionId !== null}
-                    className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                   >
                     {jobActionId === job.job_id ? '处理中…' : '删除'}
                   </button>
@@ -430,7 +430,7 @@ export function DocumentsPage() {
                   type="button"
                   onClick={() => handleRetryJob(job.job_id)}
                   disabled={jobActionId !== null}
-                  className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                 >
                   {jobActionId === job.job_id ? '处理中…' : '重试'}
                 </button>
@@ -438,7 +438,7 @@ export function DocumentsPage() {
                   type="button"
                   onClick={() => handleDeleteJob(job.job_id, job.file_path)}
                   disabled={jobActionId !== null}
-                  className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                 >
                   {jobActionId === job.job_id ? '处理中…' : '删除'}
                 </button>
@@ -487,7 +487,7 @@ export function DocumentsPage() {
                       type="button"
                       onClick={() => handleTogglePreview(doc.file_path)}
                       disabled={preview === 'loading'}
-                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       {preview === 'loading'
                         ? '加载中…'
@@ -499,7 +499,7 @@ export function DocumentsPage() {
                       type="button"
                       onClick={() => handleDownloadFile(doc.file_path)}
                       disabled={downloadingPath !== null}
-                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       {downloadingPath === doc.file_path ? '打开中…' : '查看原文件'}
                     </button>
@@ -507,7 +507,7 @@ export function DocumentsPage() {
                       type="button"
                       onClick={() => handleDelete(doc.file_path)}
                       disabled={deletingPath !== null}
-                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       {deletingPath === doc.file_path ? '删除中…' : '删除'}
                     </button>

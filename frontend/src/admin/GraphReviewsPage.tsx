@@ -741,7 +741,7 @@ export function GraphReviewsPage() {
                   processingId !== null ||
                   batchProcessing
                 }
-                className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
               >
                 {processingId === review.review_id ? '批准中…' : '批准'}
               </button>
@@ -749,7 +749,7 @@ export function GraphReviewsPage() {
                 type="button"
                 onClick={() => handleReject(review.review_id)}
                 disabled={processingId !== null || batchProcessing}
-                className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
               >
                 {processingId === review.review_id ? '驳回中…' : '驳回'}
               </button>
@@ -774,7 +774,7 @@ export function GraphReviewsPage() {
                   type="button"
                   onClick={handleBatchApprove}
                   disabled={!canBatchApprove || batchProcessing || processingId !== null}
-                  className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                 >
                   {batchProcessing ? '批量处理中…' : '批量通过'}
                 </button>
@@ -782,7 +782,7 @@ export function GraphReviewsPage() {
                   type="button"
                   onClick={handleBatchReject}
                   disabled={batchProcessing || processingId !== null}
-                  className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                 >
                   {batchProcessing ? '批量处理中…' : '批量驳回'}
                 </button>

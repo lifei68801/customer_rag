@@ -408,7 +408,7 @@ export function SchemaEtlPage() {
                     type="button"
                     onClick={handleDownloadSample}
                     disabled={downloadingSample}
-                    className={`self-start border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    className={`self-start border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                   >
                     {downloadingSample ? '下载中…' : '下载全部（zip）'}
                   </button>
@@ -451,7 +451,7 @@ export function SchemaEtlPage() {
               <button
                 type="submit"
                 disabled={uploading || confirmed !== true}
-                className={`min-h-[44px] cursor-pointer self-start border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer self-start border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
               >
                 {uploading ? '提交中…' : '开始运行'}
               </button>
