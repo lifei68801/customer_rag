@@ -5,26 +5,26 @@ export default {
   theme: {
     extend: {
       colors: {
-        paper: 'var(--color-paper)',
+        paper: 'rgb(var(--color-paper) / <alpha-value>)',
         ink: {
-          DEFAULT: 'var(--color-ink)',
-          soft: 'var(--color-ink-soft)',
+          DEFAULT: 'rgb(var(--color-ink) / <alpha-value>)',
+          soft: 'rgb(var(--color-ink-soft) / <alpha-value>)',
         },
-        card: 'var(--color-card)',
+        card: 'rgb(var(--color-card) / <alpha-value>)',
         interactive: {
-          hover: 'var(--color-interactive-hover)',
+          hover: 'rgb(var(--color-interactive-hover) / <alpha-value>)',
         },
         accent: {
-          pink: 'var(--color-accent-pink)',
-          yellow: 'var(--color-accent-yellow)',
-          cyan: 'var(--color-accent-cyan)',
-          green: 'var(--color-accent-green)',
-          orange: 'var(--color-accent-orange)',
+          pink: 'rgb(var(--color-accent-pink) / <alpha-value>)',
+          yellow: 'rgb(var(--color-accent-yellow) / <alpha-value>)',
+          cyan: 'rgb(var(--color-accent-cyan) / <alpha-value>)',
+          green: 'rgb(var(--color-accent-green) / <alpha-value>)',
+          orange: 'rgb(var(--color-accent-orange) / <alpha-value>)',
         },
         status: {
-          success: 'var(--color-status-success)',
-          error: 'var(--color-status-error)',
-          'error-hover': 'var(--color-status-error-hover)',
+          success: 'rgb(var(--color-status-success) / <alpha-value>)',
+          error: 'rgb(var(--color-status-error) / <alpha-value>)',
+          'error-hover': 'rgb(var(--color-status-error-hover) / <alpha-value>)',
         },
       },
       borderColor: {
