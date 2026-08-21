@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useConfirm } from './ConfirmContext'
+import { useAdminDensity } from './DensityContext'
+import { Skeleton } from './Skeleton'
 import { useAdminTenant } from './TenantContext'
-import { Pager } from './Pager'
 import { TaskStatusBadge } from './TaskStatusBadge'
+import { useToast } from './ToastContext'
+import { Pager } from './Pager'
 
 const PAGE_SIZE = 20
 
@@ -46,6 +50,8 @@ export function DocumentsPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const confirm = useConfirm()
+  const showToast = useToast()
+  const { density } = useAdminDensity()
   const [documents, setDocuments] = useState<TrackedDocument[]>([])
   const [pendingJobs, setPendingJobs] = useState<PendingJob[]>([])
   const [deadJobs, setDeadJobs] = useState<DeadJob[]>([])
@@ -158,6 +164,7 @@ export function DocumentsPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '上传失败'))
       }
+      showToast('已提交上传')
       form.reset()
       // 复选框是 React 受控组件，form.reset() 只重置原生 file input，
       // 不重置这个状态——不手动清掉的话下一次上传会在不知情的情况下
@@ -188,6 +195,7 @@ export function DocumentsPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '删除失败'))
       }
+      showToast('已删除文档')
       await pollNowRef.current()
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : '删除失败')
@@ -210,6 +218,7 @@ export function DocumentsPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '重试失败'))
       }
+      showToast('已重新提交')
       await pollNowRef.current()
     } catch (err) {
       setJobError(err instanceof Error ? err.message : '重试失败')
@@ -239,6 +248,7 @@ export function DocumentsPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '删除失败'))
       }
+      showToast('已删除任务')
       await pollNowRef.current()
     } catch (err) {
       setJobError(err instanceof Error ? err.message : '删除失败')
@@ -448,7 +458,7 @@ export function DocumentsPage() {
             {deleteError}
           </p>
         )}
-        {!loaded && <p className="text-ink-soft">加载中…</p>}
+        {!loaded && <Skeleton variant="card-list" count={3} />}
         {previewError && (
           <p
             role="alert"
@@ -463,7 +473,9 @@ export function DocumentsPage() {
             return (
               <div
                 key={doc.file_path}
-                className="flex flex-col gap-2 border-2 border-ink bg-card px-4 py-3 shadow-brutal-sm"
+                className={`flex flex-col gap-2 border-2 border-ink bg-card shadow-brutal-sm ${
+                  density === 'compact' ? 'px-2.5 py-1.5' : 'px-4 py-3'
+                }`}
               >
                 <div className="flex items-center justify-between">
                   <span className="text-ink" title={doc.file_path}>
@@ -525,7 +537,13 @@ export function DocumentsPage() {
             )
           })}
         {loaded && documents.length === 0 && (
-          <p className="text-ink-soft">当前租户还没有已摄取的文档。</p>
+          <p className="text-ink-soft">
+            当前租户还没有已摄取的文档。去
+            <Link to="/admin/data-entry" className="font-bold underline">
+              数据加工
+            </Link>
+            上传一份试试。
+          </p>
         )}
         {loaded && documents.length > 0 && (
           <Pager
