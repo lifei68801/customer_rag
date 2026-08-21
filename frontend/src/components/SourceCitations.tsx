@@ -26,7 +26,7 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
       {sources.map((source) => (
         <span
           key={source}
-          className="flex items-center gap-1 rounded-chip border border-subtle bg-accent-yellow px-2.5 py-1 text-xs text-ink shadow-soft-sm"
+          className="flex items-center gap-1 rounded-chip border border-subtle bg-accent-yellow px-2.5 py-1 text-xs text-on-accent shadow-soft-sm"
         >
           <DocumentIcon />
           {source}

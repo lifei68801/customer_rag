@@ -14,7 +14,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       <div
         className={`max-w-[75%] rounded-card border px-4 py-3 shadow-soft ${
           isUser
-            ? 'border-subtle bg-accent-pink text-ink'
+            ? 'border-subtle bg-accent-pink text-on-accent'
             : message.isError
               ? 'border-status-error bg-card text-ink'
               : 'border-subtle bg-card text-ink'

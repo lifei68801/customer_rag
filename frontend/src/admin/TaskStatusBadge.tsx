@@ -10,10 +10,10 @@ interface TaskStatusBadgeProps {
 // 本身不认识任何具体业务状态值，只负责统一视觉呈现。
 const TONE_CLASS: Record<BadgeTone, string> = {
   neutral: 'border-subtle bg-paper text-ink',
-  active: 'border-subtle bg-accent-cyan text-ink',
+  active: 'border-subtle bg-accent-cyan text-on-accent',
   success: 'border-status-success bg-paper text-status-success',
   error: 'border-status-error bg-paper text-status-error',
-  warning: 'border-subtle bg-accent-yellow text-ink',
+  warning: 'border-subtle bg-accent-yellow text-on-accent',
 }
 
 export function TaskStatusBadge({ tone, label }: TaskStatusBadgeProps) {
@@ -24,7 +24,7 @@ export function TaskStatusBadge({ tone, label }: TaskStatusBadgeProps) {
       {tone === 'active' && (
         <span
           aria-hidden="true"
-          className="h-2 w-2 flex-shrink-0 animate-pulse bg-ink motion-reduce:animate-none"
+          className="h-2 w-2 flex-shrink-0 animate-pulse bg-on-accent motion-reduce:animate-none"
         />
       )}
       {label}

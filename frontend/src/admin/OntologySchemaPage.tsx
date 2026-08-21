@@ -40,7 +40,7 @@ const focusRing =
 
 const tabButtonClass = (active: boolean) =>
   `rounded-control border border-subtle px-3 py-2 text-sm font-bold transition ${focusRing} ${
-    active ? 'bg-accent-pink text-ink shadow-soft-sm' : 'bg-paper text-ink hover:bg-interactive-hover'
+    active ? 'bg-accent-pink text-on-accent shadow-soft-sm' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
 // 草稿/已确认是"二选一浏览视图"，不是"开关某个功能"，语义上属于分段控件
@@ -239,7 +239,7 @@ export function OntologySchemaPage() {
         <div className="flex flex-wrap items-center gap-3">
           <span
             className={`rounded-chip border border-subtle px-3 py-1.5 text-sm font-bold shadow-soft-sm ${
-              confirmed ? 'bg-accent-green text-ink' : 'bg-accent-yellow text-ink'
+              confirmed ? 'bg-accent-green text-on-accent' : 'bg-accent-yellow text-on-accent'
             }`}
           >
             {confirmed === null ? '加载中…' : confirmed ? '已确认' : '草稿中（未确认）'}
@@ -274,7 +274,7 @@ export function OntologySchemaPage() {
               onClick={handleConfirm}
               disabled={confirmDisabled}
               title={confirmDisabledReason ?? undefined}
-              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-green px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-green px-4 py-2 text-sm font-bold text-on-accent shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {confirming ? '确认中…' : '确认 schema'}
             </button>
@@ -627,7 +627,7 @@ function TermTypesTab({
         <button
           type="button"
           onClick={startCreate}
-          className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-on-accent shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
         >
           + 新增实体类型
         </button>
@@ -693,7 +693,7 @@ function TermTypesTab({
             <button
               type="submit"
               disabled={creating || savingValue !== null}
-              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {creating || savingValue !== null ? '保存中…' : '保存'}
             </button>
@@ -1012,7 +1012,7 @@ function RelationTypesTab({
         <button
           type="button"
           onClick={startCreate}
-          className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-on-accent shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
         >
           + 新增关系类型
         </button>
@@ -1061,7 +1061,7 @@ function RelationTypesTab({
             <button
               type="submit"
               disabled={creating || savingType !== null}
-              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {creating || savingType !== null ? '保存中…' : '保存'}
             </button>
@@ -1371,7 +1371,7 @@ function ConstraintsTab({
           <button
             type="submit"
             disabled={adding}
-            className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+            className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
           >
             {adding ? '添加中…' : '+ 添加约束'}
           </button>

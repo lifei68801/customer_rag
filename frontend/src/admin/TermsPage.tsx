@@ -306,7 +306,7 @@ export function TermsPage() {
                       type="button"
                       onClick={() => handleSaveEdit(term.standard_name)}
                       disabled={!editDraft.standard_name.trim() || savingKey !== null}
-                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       {savingKey === term.standard_name ? '保存中…' : '保存'}
                     </button>

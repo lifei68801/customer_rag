@@ -498,7 +498,7 @@ export function GraphReviewsPage() {
           type="button"
           onClick={() => setTab('pending')}
           className={`min-h-[44px] cursor-pointer rounded-control border border-subtle px-4 py-2 text-sm font-bold transition ${focusRing} ${
-            tab === 'pending' ? 'bg-accent-pink text-ink shadow-soft-sm' : 'bg-paper text-ink'
+            tab === 'pending' ? 'bg-accent-pink text-on-accent shadow-soft-sm' : 'bg-paper text-ink'
           }`}
         >
           待审核
@@ -507,7 +507,7 @@ export function GraphReviewsPage() {
           type="button"
           onClick={() => setTab('history')}
           className={`min-h-[44px] cursor-pointer rounded-control border border-subtle px-4 py-2 text-sm font-bold transition ${focusRing} ${
-            tab === 'history' ? 'bg-accent-pink text-ink shadow-soft-sm' : 'bg-paper text-ink'
+            tab === 'history' ? 'bg-accent-pink text-on-accent shadow-soft-sm' : 'bg-paper text-ink'
           }`}
         >
           历史记录
@@ -568,7 +568,7 @@ export function GraphReviewsPage() {
                     type="button"
                     onClick={handleSubmitCreateEntity}
                     disabled={!createDraft.termType}
-                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-ink shadow-soft disabled:cursor-not-allowed disabled:opacity-50"
+                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-on-accent shadow-soft disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     下一步
                   </button>
@@ -602,7 +602,7 @@ export function GraphReviewsPage() {
                     type="button"
                     onClick={handleSubmitCreateEntity}
                     disabled={createDraft.submitting}
-                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-ink shadow-soft disabled:cursor-not-allowed disabled:opacity-50"
+                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-on-accent shadow-soft disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {createDraft.submitting ? '创建中…' : '确认创建'}
                   </button>
@@ -741,7 +741,7 @@ export function GraphReviewsPage() {
                   processingId !== null ||
                   batchProcessing
                 }
-                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
               >
                 {processingId === review.review_id ? '批准中…' : '批准'}
               </button>
@@ -774,7 +774,7 @@ export function GraphReviewsPage() {
                   type="button"
                   onClick={handleBatchApprove}
                   disabled={!canBatchApprove || batchProcessing || processingId !== null}
-                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                 >
                   {batchProcessing ? '批量处理中…' : '批量通过'}
                 </button>
@@ -825,7 +825,7 @@ export function GraphReviewsPage() {
               onClick={() => setHistoryFilter(filter)}
               className={`min-h-[44px] cursor-pointer rounded-control border border-subtle px-3 py-1.5 text-sm font-bold transition ${focusRing} ${
                 historyFilter === filter
-                  ? 'bg-accent-pink text-ink shadow-soft-sm'
+                  ? 'bg-accent-pink text-on-accent shadow-soft-sm'
                   : 'bg-paper text-ink'
               }`}
             >

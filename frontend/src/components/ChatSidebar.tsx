@@ -68,7 +68,7 @@ export function ChatSidebar({
         <button
           type="button"
           onClick={onNewSession}
-          className={`min-h-[44px] w-full cursor-pointer rounded-control border border-subtle bg-accent-pink px-3 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
+          className={`min-h-[44px] w-full cursor-pointer rounded-control border border-subtle bg-accent-pink px-3 py-2 text-sm font-bold text-on-accent shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
         >
           + 新建会话
         </button>
@@ -91,7 +91,7 @@ export function ChatSidebar({
                   onClick={() => onSelectSession(session.session_id)}
                   className={`min-h-[44px] flex-1 cursor-pointer truncate rounded-control border border-subtle px-3 py-2 text-left text-sm font-bold transition ${focusRing} ${
                     isActive
-                      ? 'bg-accent-yellow text-ink shadow-soft-sm'
+                      ? 'bg-accent-yellow text-on-accent shadow-soft-sm'
                       : 'bg-paper text-ink hover:bg-interactive-hover'
                   }`}
                   title={session.title}

@@ -312,7 +312,7 @@ export function SchemaEtlPage() {
       <h1 className="text-xl font-bold text-ink">表格导入（租户：{tenantId}）</h1>
 
       {confirmed === false && (
-        <div className="rounded-card border border-subtle bg-accent-yellow px-3 py-2 text-sm text-ink shadow-soft-sm">
+        <div className="rounded-card border border-subtle bg-accent-yellow px-3 py-2 text-sm text-on-accent shadow-soft-sm">
           该租户本体 schema 尚未确认，请先完成本体 schema 确认后再触发 ETL。
         </div>
       )}
@@ -451,7 +451,7 @@ export function SchemaEtlPage() {
               <button
                 type="submit"
                 disabled={uploading || confirmed !== true}
-                className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
               >
                 {uploading ? '提交中…' : '开始运行'}
               </button>

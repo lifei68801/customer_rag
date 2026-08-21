@@ -347,7 +347,7 @@ export function DocumentsPage() {
         <button
           type="submit"
           disabled={uploading}
-          className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           {uploading ? '上传中…' : '上传文档'}
         </button>
@@ -383,7 +383,7 @@ export function DocumentsPage() {
                     type="button"
                     onClick={() => handleRetryJob(job.job_id)}
                     disabled={jobActionId !== null}
-                    className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-3 py-1.5 text-sm font-bold text-on-accent shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                   >
                     {jobActionId === job.job_id ? '处理中…' : '重新执行'}
                   </button>
@@ -400,13 +400,13 @@ export function DocumentsPage() {
             ) : (
               <div
                 key={job.job_id}
-                className={`rounded-card border bg-accent-yellow px-3 py-2 text-sm text-ink shadow-soft-sm ${
+                className={`rounded-card border bg-accent-yellow px-3 py-2 text-sm text-on-accent shadow-soft-sm ${
                   job.last_error ? 'border-status-error' : 'border-subtle'
                 }`}
               >
                 {displayFileName(job.file_path)}{' '}
                 <TaskStatusBadge tone="active" label="处理中" />
-                {job.last_error && <span className="text-ink"> (错误：{job.last_error})</span>}
+                {job.last_error && <span className="text-on-accent"> (错误：{job.last_error})</span>}
               </div>
             ),
           )}
@@ -430,7 +430,7 @@ export function DocumentsPage() {
                   type="button"
                   onClick={() => handleRetryJob(job.job_id)}
                   disabled={jobActionId !== null}
-                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-3 py-1.5 text-sm font-bold text-on-accent shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                 >
                   {jobActionId === job.job_id ? '处理中…' : '重试'}
                 </button>

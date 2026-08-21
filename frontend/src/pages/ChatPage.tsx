@@ -47,11 +47,11 @@ export function ChatPage() {
 
   return (
     <div className="flex min-h-dvh flex-col bg-paper">
-      <div className="border-b border-subtle bg-ink px-4 py-2 text-center font-mono text-xs uppercase tracking-widest text-accent-yellow">
+      <div className="border-b border-subtle bg-ink px-4 py-2 text-center font-mono text-xs uppercase tracking-widest text-paper">
         知识驱动的企业数字员工
       </div>
       <nav className="flex items-center justify-between border-b border-subtle bg-accent-yellow px-6 py-4">
-        <span className="font-bold text-ink">企业数字员工</span>
+        <span className="font-bold text-on-accent">企业数字员工</span>
         <Link
           to="/admin"
           className={`flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
