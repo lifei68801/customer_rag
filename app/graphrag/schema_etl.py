@@ -58,11 +58,31 @@ class ETLRunReport:
     skipped_mappings: list[SkippedMapping] = field(default_factory=list)
 
 
-def _read_csv_rows(path: Path) -> Iterator[dict[str, str]]:
-    """逐行流式产出源文件的行，不把整个文件读进内存——设计文档第 6.4 节
-    给出的真实规模是"MUJI 一张 SKU 表 18 万+ 行"。"""
-    with path.open(encoding="utf-8", newline="") as handle:
-        yield from csv.DictReader(handle)
+def _detect_text_encoding(path: Path) -> str:
+    """CSV/TSV 源文件的编码探测：优先按 UTF-8 严格解码，失败则回退尝试
+    GBK（国内 Excel 导出 CSV 最常见的默认编码）——见
+    docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md
+    决策 6。这里读一遍原始字节只是为了做 decode 测试，不保留解码结果；
+    真正的行级处理仍然通过 csv.DictReader 用确定的编码重新打开文件、
+    流式进行，不会把整份解码后的文本一次性留在内存里。两种编码都解码
+    失败时，让 GBK 阶段的 UnicodeDecodeError 原样往上抛，不做进一步猜测。
+    """
+    raw = path.read_bytes()
+    try:
+        raw.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        pass
+    raw.decode("gbk")
+    return "gbk"
+
+
+def _read_delimited_rows(path: Path, *, delimiter: str) -> Iterator[dict[str, str]]:
+    """逐行流式产出 CSV/TSV 源文件的行，不把整个文件读进内存——设计文档第
+    6.4 节给出的真实规模是"MUJI 一张 SKU 表 18 万+ 行"。"""
+    encoding = _detect_text_encoding(path)
+    with path.open(encoding=encoding, newline="") as handle:
+        yield from csv.DictReader(handle, delimiter=delimiter)
 
 
 def _record_written(report: ETLRunReport, *, label: str) -> None:
@@ -93,7 +113,7 @@ async def _write_entity_mapping(
         raise RowProcessingError(f"term_type {mapping.term_type!r} 不在已确认 schema 里")
     extra_field_specs = {f.name: f for f in types_by_value[mapping.term_type].extra_fields}
 
-    for row_number, row in enumerate(_read_csv_rows(data_dir / mapping.source_file), start=2):  # 第 1 行是表头
+    for row_number, row in enumerate(_read_delimited_rows(data_dir / mapping.source_file, delimiter=","), start=2):  # 第 1 行是表头
         try:
             node_key = await compute_node_key(
                 conn, tenant_id=tenant_id, term_type=mapping.term_type,
@@ -165,7 +185,7 @@ async def _write_relation_mapping(
             f"关系 {mapping.relation_type!r} 引用的实体类型未在 entities 段声明"
         )
 
-    for row_number, row in enumerate(_read_csv_rows(data_dir / mapping.source_file), start=2):
+    for row_number, row in enumerate(_read_delimited_rows(data_dir / mapping.source_file, delimiter=","), start=2):
         try:
             subject_key = await compute_node_key(
                 conn, tenant_id=tenant_id, term_type=mapping.subject_term_type,

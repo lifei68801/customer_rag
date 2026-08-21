@@ -456,3 +456,66 @@ async def test_run_schema_etl_reports_per_type_counts(tmp_path):
 
     assert report.written_by_type == {"Product": 1, "SKU": 1, "HAS_SKU": 1}
     assert report.skipped_by_type == {}
+
+
+async def test_run_schema_etl_reads_gbk_encoded_csv(tmp_path):
+    """国内 Excel 导出 CSV 常见默认编码是 GBK，不是 UTF-8——见
+    docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md
+    决策 6。这里直接写 GBK 编码的字节，不依赖任何自动转码工具，验证读取器
+    自己能探测出编码并正确解码出中文列名/值。"""
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_bytes(
+        "product_group_id,product_group_name,md_no\n1001,圆角收纳盒,A123\n".encode("gbk")
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_column="product_group_name",
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 1
+    assert report.entities_skipped == 0
+    term = await get_term(conn, tenant_id="muji", standard_name="圆角收纳盒")
+    assert term is not None
+    assert term.node_key == "Product:1001"
+
+
+async def test_run_schema_etl_reads_tsv_source_file(tmp_path):
+    """TSV 只是分隔符从逗号换成制表符，验证扩展名 .tsv 能被正确识别并用
+    制表符分隔解析——见决策 1。"""
+    conn = await _confirmed_conn()
+    (tmp_path / "products.tsv").write_text(
+        "product_group_id\tproduct_group_name\tmd_no\n1001\t圆角收纳盒\tA123\n", encoding="utf-8"
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.tsv",
+                standard_name_column="product_group_name",
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 1
+    term = await get_term(conn, tenant_id="muji", standard_name="圆角收纳盒")
+    assert term is not None
+    assert term.node_key == "Product:1001"
