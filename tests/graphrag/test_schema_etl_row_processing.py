@@ -170,3 +170,57 @@ def test_convert_field_value_raises_on_non_numeric_string_for_number_type():
     specs = {"numeric_value": ExtraFieldSpec(name="numeric_value", value_type="number")}
     with pytest.raises(RowProcessingError):
         convert_field_value(extra_field_specs=specs, field_name="numeric_value", raw_value="不是数字")
+
+
+from datetime import date, datetime
+
+from app.graphrag.schema_etl_row_processing import convert_excel_cell_to_string
+
+
+def test_convert_excel_cell_to_string_int():
+    assert convert_excel_cell_to_string(123) == "123"
+
+
+def test_convert_excel_cell_to_string_float_integer_value_drops_trailing_zero():
+    assert convert_excel_cell_to_string(123.0) == "123"
+
+
+def test_convert_excel_cell_to_string_float_with_decimal_part():
+    assert convert_excel_cell_to_string(123.45) == "123.45"
+
+
+def test_convert_excel_cell_to_string_datetime_with_time_part():
+    assert convert_excel_cell_to_string(datetime(2026, 8, 21, 14, 30, 0)) == "2026-08-21 14:30:00"
+
+
+def test_convert_excel_cell_to_string_datetime_at_midnight_formats_as_date_only():
+    assert convert_excel_cell_to_string(datetime(2026, 8, 21, 0, 0, 0)) == "2026-08-21"
+
+
+def test_convert_excel_cell_to_string_date_object():
+    assert convert_excel_cell_to_string(date(2026, 8, 21)) == "2026-08-21"
+
+
+def test_convert_excel_cell_to_string_bool_true():
+    assert convert_excel_cell_to_string(True) == "True"
+
+
+def test_convert_excel_cell_to_string_bool_false():
+    assert convert_excel_cell_to_string(False) == "False"
+
+
+def test_convert_excel_cell_to_string_none_is_empty_string():
+    assert convert_excel_cell_to_string(None) == ""
+
+
+def test_convert_excel_cell_to_string_string_value_is_stripped():
+    assert convert_excel_cell_to_string("  圆角收纳盒  ") == "圆角收纳盒"
+
+
+def test_convert_excel_cell_to_string_bool_is_not_caught_by_int_branch():
+    """回归测试：bool 是 int 的子类，如果 isinstance(value, int) 的判断排在
+    isinstance(value, bool) 前面，True 会被 int 分支吞掉变成 "1" 而不是
+    "True"——这条测试专门守住分支顺序，不依赖上面两条 bool 测试的巧合。"""
+    result = convert_excel_cell_to_string(True)
+    assert result == "True"
+    assert result != "1"

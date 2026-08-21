@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, datetime
+
 from app.graphrag.etl_stable_code_registry import allocate_stable_code, lookup_stable_code
 from app.graphrag.ontology_categories import ExtraFieldSpec
 from app.graphrag.schema_etl_config import AllocatedCodeNodeKeyPart, ColumnNodeKeyPart
@@ -86,3 +88,33 @@ def convert_field_value(
             f"字段 {field_name!r} 的值 {raw_value!r} 无法转换成声明的类型 {value_type!r}"
         )
     raise RowProcessingError(f"字段 {field_name!r} 声明了未知的 value_type: {value_type!r}")
+
+
+def convert_excel_cell_to_string(value: object) -> str:
+    """把 Excel 单元格的原生值（openpyxl/xlrd 读出来的 int/float/str/bool/
+    datetime/date/None）转换成字符串，跟 CSV 场景里"一行是 dict[str, str]"
+    的契约对齐——见
+    docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md
+    决策 3 的转换规则表。
+
+    分支顺序不能打乱：bool 是 int 的子类（isinstance(True, int) 也是
+    True），bool 分支必须排在 int 分支前面；datetime 是 date 的子类，
+    datetime 分支必须排在 date 分支前面。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return str(value)
+    if isinstance(value, datetime):
+        if (value.hour, value.minute, value.second, value.microsecond) == (0, 0, 0, 0):
+            return value.strftime("%Y-%m-%d")
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    return str(value).strip()
