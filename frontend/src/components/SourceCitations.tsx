@@ -22,11 +22,11 @@ function DocumentIcon() {
 
 export function SourceCitations({ sources }: SourceCitationsProps) {
   return (
-    <div className="mt-3 flex flex-wrap gap-2 border-t border-ink pt-2">
+    <div className="mt-3 flex flex-wrap gap-2 border-t border-subtle pt-2">
       {sources.map((source) => (
         <span
           key={source}
-          className="flex items-center gap-1 rounded-chip border border-ink bg-accent-yellow px-2.5 py-1 text-xs text-ink shadow-soft-sm"
+          className="flex items-center gap-1 rounded-chip border border-subtle bg-accent-yellow px-2.5 py-1 text-xs text-ink shadow-soft-sm"
         >
           <DocumentIcon />
           {source}

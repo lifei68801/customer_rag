@@ -401,7 +401,7 @@ export function DocumentsPage() {
               <div
                 key={job.job_id}
                 className={`rounded-card border bg-accent-yellow px-3 py-2 text-sm text-ink shadow-soft-sm ${
-                  job.last_error ? 'border-status-error' : 'border-ink'
+                  job.last_error ? 'border-status-error' : 'border-subtle'
                 }`}
               >
                 {displayFileName(job.file_path)}{' '}
