@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAdminAuth } from './useAdminAuth'
 import { useConfirm } from './ConfirmContext'
+import { useAdminDensity } from './DensityContext'
+import { Skeleton } from './Skeleton'
 import { useAdminTenant } from './TenantContext'
 import { deleteTerm, fetchTermsPage, updateTerm, type TermRecord } from './termsApi'
+import { useToast } from './ToastContext'
 import { adminFetch } from './adminApi'
 import { Pager } from './Pager'
 
@@ -46,6 +50,8 @@ export function TermsPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const confirm = useConfirm()
+  const showToast = useToast()
+  const { density } = useAdminDensity()
   const [terms, setTerms] = useState<TermRecord[]>([])
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -145,6 +151,7 @@ export function TermsPage() {
     setSavingKey(originalStandardName)
     try {
       await updateTerm(sessionToken, tenantId, originalStandardName, draftToRecord(editDraft))
+      showToast('已保存')
       setEditingKey(null)
       setEditDraft(null)
       await refresh()
@@ -162,6 +169,7 @@ export function TermsPage() {
     setDeletingKey(standardName)
     try {
       await deleteTerm(sessionToken, tenantId, standardName)
+      showToast('已删除实体')
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除术语失败')
@@ -201,14 +209,16 @@ export function TermsPage() {
         </p>
       )}
 
-      {!loaded && <p className="text-ink-soft">加载中…</p>}
+      {!loaded && <Skeleton variant="table-rows" count={5} />}
       {loaded &&
         terms.map((term) => {
           const isEditing = editingKey === term.standard_name
           return (
             <div
               key={term.standard_name}
-              className="flex flex-col gap-3 border-2 border-ink bg-card p-4 shadow-brutal-sm"
+              className={`flex flex-col gap-3 border-2 border-ink bg-card shadow-brutal-sm ${
+                density === 'compact' ? 'p-2.5' : 'p-4'
+              }`}
             >
               {!isEditing && (
                 <div className="flex items-center justify-between gap-3">
@@ -316,7 +326,15 @@ export function TermsPage() {
         })}
       {loaded && !error && terms.length === 0 && (
         <p className="text-ink-soft">
-          还没有任何实体。实体创建只能通过「表格导入」或「文档抽取」完成。
+          还没有任何实体。实体创建只能通过「
+          <Link to="/admin/data-entry/etl" className="font-bold underline">
+            表格导入
+          </Link>
+          」或「
+          <Link to="/admin/data-entry/review" className="font-bold underline">
+            文档抽取
+          </Link>
+          」完成。
         </p>
       )}
       {loaded && terms.length > 0 && (
