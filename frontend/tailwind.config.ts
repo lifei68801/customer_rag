@@ -26,6 +26,9 @@ export default {
           error: 'var(--color-status-error)',
           'error-hover': 'var(--color-status-error-hover)',
         },
+        border: {
+          subtle: 'var(--color-border-subtle)',
+        },
       },
       fontFamily: {
         sans: [
@@ -37,9 +40,18 @@ export default {
         ],
         mono: ['"Space Mono"', 'ui-monospace', '"SFMono-Regular"', 'monospace'],
       },
+      borderRadius: {
+        chip: '6px',
+        control: '7px',
+        DEFAULT: '8px',
+        card: '12px',
+        panel: '14px',
+        modal: '18px',
+        container: '24px',
+      },
       boxShadow: {
-        brutal: '2px 2px 0 0 var(--color-ink)',
-        'brutal-sm': '1px 1px 0 0 var(--color-ink)',
+        soft: '0 4px 6px -1px var(--shadow-color-1), 0 2px 4px -2px var(--shadow-color-2)',
+        'soft-sm': '0 1px 3px 0 var(--shadow-color-1), 0 1px 2px -1px var(--shadow-color-2)',
       },
     },
   },

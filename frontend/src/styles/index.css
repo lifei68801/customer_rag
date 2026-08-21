@@ -16,6 +16,9 @@
   --color-status-success: #A9D877;
   --color-status-error: #DC2626;
   --color-status-error-hover: #FBD8D8;
+  --color-border-subtle: rgba(20, 17, 17, 0.12);
+  --shadow-color-1: rgba(20, 17, 17, 0.08);
+  --shadow-color-2: rgba(20, 17, 17, 0.14);
 }
 
 :root[data-skin='dark'] {
@@ -32,6 +35,9 @@
   --color-status-success: #95E066;
   --color-status-error: #FF5C5C;
   --color-status-error-hover: #3A2226;
+  --color-border-subtle: rgba(249, 250, 251, 0.14);
+  --shadow-color-1: rgba(0, 0, 0, 0.35);
+  --shadow-color-2: rgba(0, 0, 0, 0.5);
 }
 
 :root[data-skin='business-blue'] {
@@ -48,6 +54,9 @@
   --color-status-success: #6B9B7C;
   --color-status-error: #B33A3A;
   --color-status-error-hover: #EAD9D9;
+  --color-border-subtle: rgba(27, 36, 48, 0.12);
+  --shadow-color-1: rgba(27, 36, 48, 0.08);
+  --shadow-color-2: rgba(27, 36, 48, 0.14);
 }
 
 body {
