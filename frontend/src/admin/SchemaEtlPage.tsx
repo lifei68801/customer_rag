@@ -466,7 +466,7 @@ export function SchemaEtlPage() {
           <p className="text-ink-soft">还没有任何跑批记录。在上方上传数据文件开始第一次运行。</p>
         )}
         {runs.length > 0 && (
-          <div className="overflow-x-auto rounded-card border border-subtle bg-card shadow-soft-sm">
+          <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card shadow-soft-sm">
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b-2 border-ink bg-paper text-ink">
@@ -515,7 +515,7 @@ export function SchemaEtlPage() {
                 {selectedRun.report.relations_written ?? 0} 条，跳过{' '}
                 {selectedRun.report.relations_skipped ?? 0} 条
               </p>
-              <div className="overflow-x-auto rounded-card border border-subtle shadow-soft-sm">
+              <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle shadow-soft-sm">
                 <table className="w-full text-left text-sm">
                   <thead>
                     <tr className="border-b-2 border-ink bg-paper text-ink">
@@ -549,7 +549,7 @@ export function SchemaEtlPage() {
                   <h3 className="font-bold text-ink">
                     映射级跳过（共 {selectedRun.report.skipped_mappings.length} 条）
                   </h3>
-                  <div className="overflow-x-auto rounded-card border border-subtle shadow-soft-sm">
+                  <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle shadow-soft-sm">
                     <table className="w-full text-left text-sm">
                       <thead>
                         <tr className="border-b-2 border-ink bg-paper text-ink">
@@ -577,7 +577,7 @@ export function SchemaEtlPage() {
                     跳过明细（预览前 {SKIPPED_ROWS_PREVIEW_LIMIT} 条，共{' '}
                     {selectedRun.report.skipped_rows.length} 条）
                   </h3>
-                  <div className="overflow-x-auto rounded-card border border-subtle shadow-soft-sm">
+                  <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle shadow-soft-sm">
                     <table className="w-full text-left text-sm">
                       <thead>
                         <tr className="border-b-2 border-ink bg-paper text-ink">

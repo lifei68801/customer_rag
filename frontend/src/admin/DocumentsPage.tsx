@@ -518,7 +518,7 @@ export function DocumentsPage() {
                     {preview.chunks.map((text, i) => (
                       <p
                         key={i}
-                        className="rounded-card border border-subtle bg-paper px-2 py-1 text-xs text-ink-soft"
+                        className="rounded-chip border border-subtle bg-paper px-2 py-1 text-xs text-ink-soft"
                       >
                         [{i}] {text}
                       </p>

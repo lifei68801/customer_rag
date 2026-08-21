@@ -247,7 +247,7 @@ export function OntologySchemaPage() {
           <div
             role="group"
             aria-label="查看版本"
-            className="flex divide-x-2 divide-ink rounded-control border border-subtle shadow-soft-sm"
+            className="flex divide-x-2 divide-ink overflow-hidden rounded-control border border-subtle shadow-soft-sm"
           >
             <button
               type="button"
@@ -564,7 +564,7 @@ function TermTypesTab({
         </p>
       )}
       {items.length > 0 && (
-        <div className="overflow-x-auto rounded-card border border-subtle bg-card shadow-soft-sm">
+        <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card shadow-soft-sm">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b-2 border-ink bg-paper text-ink">
@@ -946,7 +946,7 @@ function RelationTypesTab({
         </p>
       )}
       {items.length > 0 && (
-        <div className="overflow-x-auto rounded-card border border-subtle bg-card shadow-soft-sm">
+        <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card shadow-soft-sm">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b-2 border-ink bg-paper text-ink">
@@ -1280,7 +1280,7 @@ function ConstraintsTab({
         </p>
       )}
       {constraints.length > 0 && (
-        <div className="overflow-x-auto rounded-card border border-subtle bg-card shadow-soft-sm">
+        <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card shadow-soft-sm">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b-2 border-ink bg-paper text-ink">
