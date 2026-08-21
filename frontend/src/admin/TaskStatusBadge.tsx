@@ -18,7 +18,15 @@ const TONE_CLASS: Record<BadgeTone, string> = {
 
 export function TaskStatusBadge({ tone, label }: TaskStatusBadgeProps) {
   return (
-    <span className={`inline-block border-2 px-2 py-0.5 text-xs font-bold ${TONE_CLASS[tone]}`}>
+    <span
+      className={`inline-flex items-center gap-1.5 border-2 px-2 py-0.5 text-xs font-bold ${TONE_CLASS[tone]}`}
+    >
+      {tone === 'active' && (
+        <span
+          aria-hidden="true"
+          className="h-2 w-2 flex-shrink-0 animate-pulse bg-ink motion-reduce:animate-none"
+        />
+      )}
       {label}
     </span>
   )
