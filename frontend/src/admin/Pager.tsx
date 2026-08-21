@@ -1,4 +1,5 @@
 import { getPageNumbers } from './pagination'
+import { Tooltip } from './Tooltip'
 
 interface PagerProps {
   page: number
@@ -19,15 +20,17 @@ export function Pager({ page, totalPages, onPageChange }: PagerProps) {
 
   return (
     <nav aria-label="分页" className="flex items-center gap-1.5">
-      <button
-        type="button"
-        onClick={() => onPageChange(page - 1)}
-        disabled={page <= 1}
-        aria-label="上一页"
-        className={`${pageButtonClass(false)} disabled:cursor-not-allowed disabled:opacity-50`}
-      >
-        ‹
-      </button>
+      <Tooltip label="上一页">
+        <button
+          type="button"
+          onClick={() => onPageChange(page - 1)}
+          disabled={page <= 1}
+          aria-label="上一页"
+          className={`${pageButtonClass(false)} disabled:cursor-not-allowed disabled:opacity-50`}
+        >
+          ‹
+        </button>
+      </Tooltip>
       {getPageNumbers(page, totalPages).map((token, index) =>
         token === 'ellipsis' ? (
           <span key={`ellipsis-${index}`} className="px-1 text-ink-soft">
@@ -45,15 +48,17 @@ export function Pager({ page, totalPages, onPageChange }: PagerProps) {
           </button>
         ),
       )}
-      <button
-        type="button"
-        onClick={() => onPageChange(page + 1)}
-        disabled={page >= totalPages}
-        aria-label="下一页"
-        className={`${pageButtonClass(false)} disabled:cursor-not-allowed disabled:opacity-50`}
-      >
-        ›
-      </button>
+      <Tooltip label="下一页">
+        <button
+          type="button"
+          onClick={() => onPageChange(page + 1)}
+          disabled={page >= totalPages}
+          aria-label="下一页"
+          className={`${pageButtonClass(false)} disabled:cursor-not-allowed disabled:opacity-50`}
+        >
+          ›
+        </button>
+      </Tooltip>
     </nav>
   )
 }
