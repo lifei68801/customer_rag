@@ -11,7 +11,7 @@ const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
 const pageButtonClass = (active: boolean) =>
-  `min-h-[36px] min-w-[36px] cursor-pointer border-2 border-ink px-2 text-sm font-bold transition ${focusRing} ${
+  `min-h-[36px] min-w-[36px] cursor-pointer border border-subtle px-2 text-sm font-bold transition ${focusRing} ${
     active ? 'bg-accent-pink text-ink shadow-soft-sm' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 

@@ -16,7 +16,7 @@ export function SkinSwitcher() {
         value={skin}
         onChange={(event) => setSkin(event.target.value as SkinId)}
         aria-label="切换配色皮肤"
-        className="min-h-[44px] w-full border-2 border-ink bg-paper px-2 text-sm font-bold text-ink"
+        className="min-h-[44px] w-full border border-subtle bg-paper px-2 text-sm font-bold text-ink"
       >
         {SKIN_OPTIONS.map((option) => (
           <option key={option.id} value={option.id}>

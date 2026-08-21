@@ -36,7 +36,7 @@ export function LoginPage() {
     <div className="flex min-h-dvh flex-col items-center justify-center bg-paper px-4">
       <form
         onSubmit={handleSubmit}
-        className="flex w-full max-w-sm flex-col gap-4 border-2 border-ink bg-card p-6 shadow-soft"
+        className="flex w-full max-w-sm flex-col gap-4 border border-subtle bg-card p-6 shadow-soft"
       >
         <h1 className="text-xl font-bold text-ink">管理后台登录</h1>
         <label htmlFor="admin-token" className="text-sm font-bold text-ink">
@@ -50,12 +50,12 @@ export function LoginPage() {
           onChange={(event) => setAdminToken(event.target.value)}
           placeholder="管理员 token"
           disabled={loggingIn}
-          className={`border-2 border-ink bg-paper px-4 py-2.5 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none disabled:opacity-50 ${focusRing}`}
+          className={`border border-subtle bg-paper px-4 py-2.5 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none disabled:opacity-50 ${focusRing}`}
         />
         {error && (
           <p
             role="alert"
-            className="border-2 border-status-error bg-paper px-3 py-2 text-sm text-ink shadow-soft-sm"
+            className="border border-status-error bg-paper px-3 py-2 text-sm text-ink shadow-soft-sm"
           >
             {error}
           </p>
@@ -63,7 +63,7 @@ export function LoginPage() {
         <button
           type="submit"
           disabled={loggingIn || !adminToken}
-          className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           {loggingIn ? '登录中…' : '登录'}
         </button>

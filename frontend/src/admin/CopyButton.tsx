@@ -27,7 +27,7 @@ export function CopyButton({ getText, label = '复制' }: CopyButtonProps) {
     <button
       type="button"
       onClick={handleClick}
-      className={`self-start border-2 border-ink bg-paper px-3 py-1.5 text-xs font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+      className={`self-start border border-subtle bg-paper px-3 py-1.5 text-xs font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
     >
       {copied ? '已复制' : label}
     </button>

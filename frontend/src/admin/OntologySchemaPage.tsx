@@ -39,7 +39,7 @@ const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
 const tabButtonClass = (active: boolean) =>
-  `border-2 border-ink px-3 py-2 text-sm font-bold transition ${focusRing} ${
+  `border border-subtle px-3 py-2 text-sm font-bold transition ${focusRing} ${
     active ? 'bg-accent-pink text-ink shadow-soft-sm' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
@@ -238,7 +238,7 @@ export function OntologySchemaPage() {
             而不是让控件凭空消失，用户分不清是没做完还是压根没做出来。 */}
         <div className="flex flex-wrap items-center gap-3">
           <span
-            className={`border-2 border-ink px-3 py-1.5 text-sm font-bold shadow-soft-sm ${
+            className={`border border-subtle px-3 py-1.5 text-sm font-bold shadow-soft-sm ${
               confirmed ? 'bg-accent-green text-ink' : 'bg-accent-yellow text-ink'
             }`}
           >
@@ -247,7 +247,7 @@ export function OntologySchemaPage() {
           <div
             role="group"
             aria-label="查看版本"
-            className="flex divide-x-2 divide-ink border-2 border-ink shadow-soft-sm"
+            className="flex divide-x-2 divide-ink border border-subtle shadow-soft-sm"
           >
             <button
               type="button"
@@ -274,7 +274,7 @@ export function OntologySchemaPage() {
               onClick={handleConfirm}
               disabled={confirmDisabled}
               title={confirmDisabledReason ?? undefined}
-              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-green px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-green px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {confirming ? '确认中…' : '确认 schema'}
             </button>
@@ -286,7 +286,7 @@ export function OntologySchemaPage() {
       </div>
 
       {pageError && (
-        <p role="alert" className="border-2 border-status-error bg-card px-3 py-2 text-sm text-ink shadow-soft-sm">
+        <p role="alert" className="border border-status-error bg-card px-3 py-2 text-sm text-ink shadow-soft-sm">
           {pageError}
         </p>
       )}
@@ -564,7 +564,7 @@ function TermTypesTab({
         </p>
       )}
       {items.length > 0 && (
-        <div className="overflow-x-auto border-2 border-ink bg-card shadow-soft-sm">
+        <div className="overflow-x-auto border border-subtle bg-card shadow-soft-sm">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b-2 border-ink bg-paper text-ink">
@@ -627,14 +627,14 @@ function TermTypesTab({
         <button
           type="button"
           onClick={startCreate}
-          className={`min-h-[44px] cursor-pointer self-start border-2 border-ink bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer self-start border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none ${focusRing}`}
         >
           + 新增实体类型
         </button>
       )}
 
       {view === 'draft' && editingValue !== null && (
-        <form onSubmit={submit} className="flex flex-col gap-3 border-2 border-ink bg-card p-4 shadow-soft">
+        <form onSubmit={submit} className="flex flex-col gap-3 border border-subtle bg-card p-4 shadow-soft">
           <label className="flex flex-col gap-1 text-sm font-bold text-ink">
             类型名
             <input
@@ -642,7 +642,7 @@ function TermTypesTab({
               required
               value={draft.value}
               onChange={(e) => setDraft((prev) => ({ ...prev, value: e.target.value }))}
-              className="border-2 border-ink bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className="border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
             />
           </label>
 
@@ -657,13 +657,13 @@ function TermTypesTab({
                   required
                   value={field.name}
                   onChange={(e) => updateField(index, { name: e.target.value })}
-                  className="border-2 border-ink bg-paper px-2 py-1.5 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none"
+                  className="border border-subtle bg-paper px-2 py-1.5 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none"
                 />
                 <select
                   value={field.value_type}
                   aria-label="字段类型"
                   onChange={(e) => updateField(index, { value_type: e.target.value })}
-                  className="border-2 border-ink bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+                  className="border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
                 >
                   {VALUE_TYPES.map((t) => (
                     <option key={t} value={t}>
@@ -683,7 +683,7 @@ function TermTypesTab({
             <button
               type="button"
               onClick={addField}
-              className={`self-start border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`self-start border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
             >
               + 添加字段
             </button>
@@ -693,14 +693,14 @@ function TermTypesTab({
             <button
               type="submit"
               disabled={creating || savingValue !== null}
-              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {creating || savingValue !== null ? '保存中…' : '保存'}
             </button>
             <button
               type="button"
               onClick={cancelEdit}
-              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
             >
               取消
             </button>
@@ -711,7 +711,7 @@ function TermTypesTab({
       {migratingFrom !== null && (
         <form
           onSubmit={handleMigrate}
-          className="flex flex-col gap-3 border-2 border-status-error bg-card p-4 shadow-soft"
+          className="flex flex-col gap-3 border border-status-error bg-card p-4 shadow-soft"
         >
           <p className="text-sm text-ink">
             把租户「{tenantId}」所有 term_type 为「{migratingFrom}」的真实术语和图谱节点迁移成：
@@ -721,7 +721,7 @@ function TermTypesTab({
             value={migrateTarget}
             onChange={(e) => setMigrateTarget(e.target.value)}
             aria-label="迁移目标类型"
-            className="border-2 border-ink bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none"
+            className="border border-subtle bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none"
           >
             <option value="">请选择新类型</option>
             {items
@@ -736,7 +736,7 @@ function TermTypesTab({
             <button
               type="submit"
               disabled={migrating}
-              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {migrating ? '迁移中…' : '确认迁移'}
             </button>
@@ -745,7 +745,7 @@ function TermTypesTab({
               onClick={() => {
                 setMigratingFrom(null)
               }}
-              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
             >
               取消
             </button>
@@ -946,7 +946,7 @@ function RelationTypesTab({
         </p>
       )}
       {items.length > 0 && (
-        <div className="overflow-x-auto border-2 border-ink bg-card shadow-soft-sm">
+        <div className="overflow-x-auto border border-subtle bg-card shadow-soft-sm">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b-2 border-ink bg-paper text-ink">
@@ -1012,14 +1012,14 @@ function RelationTypesTab({
         <button
           type="button"
           onClick={startCreate}
-          className={`min-h-[44px] cursor-pointer self-start border-2 border-ink bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer self-start border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none ${focusRing}`}
         >
           + 新增关系类型
         </button>
       )}
 
       {view === 'draft' && editingType !== null && (
-        <form onSubmit={submit} className="flex flex-col gap-3 border-2 border-ink bg-card p-4 shadow-soft">
+        <form onSubmit={submit} className="flex flex-col gap-3 border border-subtle bg-card p-4 shadow-soft">
           <label className="flex flex-col gap-1 text-sm font-bold text-ink">
             关系类型名（大写字母/数字/下划线）
             <input
@@ -1027,7 +1027,7 @@ function RelationTypesTab({
               required
               value={draft.relation_type}
               onChange={(e) => setDraft((prev) => ({ ...prev, relation_type: e.target.value }))}
-              className="border-2 border-ink bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none"
+              className="border border-subtle bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none"
             />
           </label>
           <label className="flex flex-col gap-1 text-sm font-bold text-ink">
@@ -1037,7 +1037,7 @@ function RelationTypesTab({
               required
               value={draft.example_phrase}
               onChange={(e) => setDraft((prev) => ({ ...prev, example_phrase: e.target.value }))}
-              className="border-2 border-ink bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className="border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
             />
           </label>
           <label className="flex flex-col gap-1 text-sm font-bold text-ink">
@@ -1046,7 +1046,7 @@ function RelationTypesTab({
               type="text"
               value={draft.description}
               onChange={(e) => setDraft((prev) => ({ ...prev, description: e.target.value }))}
-              className="border-2 border-ink bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className="border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
             />
           </label>
           <label className="flex items-center gap-2 text-sm font-bold text-ink">
@@ -1061,14 +1061,14 @@ function RelationTypesTab({
             <button
               type="submit"
               disabled={creating || savingType !== null}
-              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {creating || savingType !== null ? '保存中…' : '保存'}
             </button>
             <button
               type="button"
               onClick={cancelEdit}
-              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
             >
               取消
             </button>
@@ -1079,7 +1079,7 @@ function RelationTypesTab({
       {migratingFrom !== null && (
         <form
           onSubmit={handleMigrate}
-          className="flex flex-col gap-3 border-2 border-status-error bg-card p-4 shadow-soft"
+          className="flex flex-col gap-3 border border-status-error bg-card p-4 shadow-soft"
         >
           <p className="text-sm text-ink">
             把租户「{tenantId}」图谱里所有类型为「{migratingFrom}」的边迁移成：
@@ -1089,7 +1089,7 @@ function RelationTypesTab({
             value={migrateTarget}
             onChange={(e) => setMigrateTarget(e.target.value)}
             aria-label="迁移目标类型"
-            className="border-2 border-ink bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none"
+            className="border border-subtle bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none"
           >
             <option value="">请选择新类型</option>
             {items
@@ -1104,7 +1104,7 @@ function RelationTypesTab({
             <button
               type="submit"
               disabled={migrating}
-              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {migrating ? '迁移中…' : '确认迁移'}
             </button>
@@ -1113,7 +1113,7 @@ function RelationTypesTab({
               onClick={() => {
                 setMigratingFrom(null)
               }}
-              className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
             >
               取消
             </button>
@@ -1280,7 +1280,7 @@ function ConstraintsTab({
         </p>
       )}
       {constraints.length > 0 && (
-        <div className="overflow-x-auto border-2 border-ink bg-card shadow-soft-sm">
+        <div className="overflow-x-auto border border-subtle bg-card shadow-soft-sm">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b-2 border-ink bg-paper text-ink">
@@ -1318,7 +1318,7 @@ function ConstraintsTab({
       {view === 'draft' && (
         <form
           onSubmit={handleAdd}
-          className="flex flex-wrap items-end gap-3 border-2 border-ink bg-card p-4 shadow-soft"
+          className="flex flex-wrap items-end gap-3 border border-subtle bg-card p-4 shadow-soft"
         >
           <label className="flex flex-col gap-1 text-sm font-bold text-ink">
             主体类型
@@ -1326,7 +1326,7 @@ function ConstraintsTab({
               required
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              className="border-2 border-ink bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className="border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
             >
               <option value="">请选择</option>
               {termTypes.map((t) => (
@@ -1342,7 +1342,7 @@ function ConstraintsTab({
               required
               value={relationType}
               onChange={(e) => setRelationType(e.target.value)}
-              className="border-2 border-ink bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className="border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
             >
               <option value="">请选择</option>
               {draftRelationTypes.map((r) => (
@@ -1358,7 +1358,7 @@ function ConstraintsTab({
               required
               value={object}
               onChange={(e) => setObject(e.target.value)}
-              className="border-2 border-ink bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className="border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
             >
               <option value="">请选择</option>
               {termTypes.map((t) => (
@@ -1371,7 +1371,7 @@ function ConstraintsTab({
           <button
             type="submit"
             disabled={adding}
-            className={`min-h-[44px] cursor-pointer border-2 border-ink bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+            className={`min-h-[44px] cursor-pointer border border-subtle bg-accent-pink px-4 py-2 text-sm font-bold text-ink shadow-soft transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
           >
             {adding ? '添加中…' : '+ 添加约束'}
           </button>

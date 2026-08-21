@@ -72,7 +72,7 @@ const components: Components = {
     )
   },
   pre: ({ children }) => (
-    <pre className="overflow-x-auto rounded border-2 border-ink bg-paper p-3">{children}</pre>
+    <pre className="overflow-x-auto rounded border border-subtle bg-paper p-3">{children}</pre>
   ),
   table: ({ children }) => (
     <div className="overflow-x-auto">
@@ -80,9 +80,9 @@ const components: Components = {
     </div>
   ),
   th: ({ children }) => (
-    <th className="border-2 border-ink bg-paper px-2 py-1 text-left font-bold">{children}</th>
+    <th className="border border-subtle bg-paper px-2 py-1 text-left font-bold">{children}</th>
   ),
-  td: ({ children }) => <td className="border-2 border-ink px-2 py-1">{children}</td>,
+  td: ({ children }) => <td className="border border-subtle px-2 py-1">{children}</td>,
   hr: () => <hr className="border-t-2 border-ink" />,
 }
 

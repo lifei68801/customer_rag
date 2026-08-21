@@ -95,7 +95,7 @@ export function TenantSwitcher() {
           value={tenantId}
           onChange={(event) => setTenantId(event.target.value)}
           aria-label="切换租户"
-          className="min-h-[44px] w-full border-2 border-ink bg-paper px-2 text-sm font-bold text-ink"
+          className="min-h-[44px] w-full border border-subtle bg-paper px-2 text-sm font-bold text-ink"
         >
           {options.map((tenant) => (
             <option key={tenant.tenant_id} value={tenant.tenant_id}>
@@ -109,32 +109,32 @@ export function TenantSwitcher() {
         <button
           type="button"
           onClick={() => setShowCreateForm(true)}
-          className={`min-h-[36px] cursor-pointer border-2 border-ink bg-paper px-2 text-xs font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+          className={`min-h-[36px] cursor-pointer border border-subtle bg-paper px-2 text-xs font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
         >
           + 新建租户
         </button>
       )}
       {showCreateForm && (
-        <form onSubmit={handleCreate} className="flex flex-col gap-2 border-2 border-ink bg-paper p-2">
+        <form onSubmit={handleCreate} className="flex flex-col gap-2 border border-subtle bg-paper p-2">
           <input
             value={newTenantId}
             onChange={(event) => setNewTenantId(event.target.value)}
             placeholder="tenant_id"
             aria-label="新租户 ID"
-            className="border-2 border-ink bg-card px-2 py-1.5 text-xs text-ink placeholder:text-ink-soft focus:outline-none"
+            className="border border-subtle bg-card px-2 py-1.5 text-xs text-ink placeholder:text-ink-soft focus:outline-none"
           />
           <input
             value={newTenantName}
             onChange={(event) => setNewTenantName(event.target.value)}
             placeholder="显示名"
             aria-label="新租户显示名"
-            className="border-2 border-ink bg-card px-2 py-1.5 text-xs text-ink placeholder:text-ink-soft focus:outline-none"
+            className="border border-subtle bg-card px-2 py-1.5 text-xs text-ink placeholder:text-ink-soft focus:outline-none"
           />
           <div className="flex gap-2">
             <button
               type="submit"
               disabled={creating || !newTenantId.trim() || !newTenantName.trim()}
-              className={`min-h-[32px] flex-1 cursor-pointer border-2 border-ink bg-accent-pink px-2 text-xs font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[32px] flex-1 cursor-pointer border border-subtle bg-accent-pink px-2 text-xs font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {creating ? '创建中…' : '创建'}
             </button>
@@ -147,7 +147,7 @@ export function TenantSwitcher() {
                 setError(null)
               }}
               disabled={creating}
-              className={`min-h-[32px] cursor-pointer border-2 border-ink bg-card px-2 text-xs font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+              className={`min-h-[32px] cursor-pointer border border-subtle bg-card px-2 text-xs font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
             >
               取消
             </button>

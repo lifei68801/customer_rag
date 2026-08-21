@@ -15,7 +15,7 @@ export function DensitySwitcher() {
         value={density}
         onChange={(event) => setDensity(event.target.value as DensityId)}
         aria-label="切换列表密度"
-        className="min-h-[44px] w-full border-2 border-ink bg-paper px-2 text-sm font-bold text-ink"
+        className="min-h-[44px] w-full border border-subtle bg-paper px-2 text-sm font-bold text-ink"
       >
         {DENSITY_OPTIONS.map((option) => (
           <option key={option.id} value={option.id}>

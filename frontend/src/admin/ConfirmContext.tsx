@@ -72,7 +72,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
             role="alertdialog"
             aria-modal="true"
             aria-labelledby="confirm-dialog-message"
-            className="flex w-full max-w-sm flex-col gap-4 border-2 border-ink bg-paper p-5 shadow-soft"
+            className="flex w-full max-w-sm flex-col gap-4 border border-subtle bg-paper p-5 shadow-soft"
           >
             <p id="confirm-dialog-message" className="text-sm text-ink">
               {pending.message}
@@ -81,14 +81,14 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 onClick={() => settle(false)}
-                className={`min-h-[44px] cursor-pointer border-2 border-ink bg-card px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer border border-subtle bg-card px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
               >
                 {pending.cancelLabel}
               </button>
               <button
                 type="button"
                 onClick={() => settle(true)}
-                className={`min-h-[44px] cursor-pointer border-2 border-ink bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
               >
                 {pending.confirmLabel}
               </button>
