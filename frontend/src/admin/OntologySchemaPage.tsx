@@ -736,7 +736,7 @@ function TermTypesTab({
             <button
               type="submit"
               disabled={migrating}
-              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-error-strong px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {migrating ? '迁移中…' : '确认迁移'}
             </button>
@@ -1104,7 +1104,7 @@ function RelationTypesTab({
             <button
               type="submit"
               disabled={migrating}
-              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-error-strong px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {migrating ? '迁移中…' : '确认迁移'}
             </button>

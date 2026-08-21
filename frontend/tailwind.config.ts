@@ -24,6 +24,7 @@ export default {
         status: {
           success: 'rgb(var(--color-status-success) / <alpha-value>)',
           error: 'rgb(var(--color-status-error) / <alpha-value>)',
+          'error-strong': 'rgb(var(--color-status-error-strong) / <alpha-value>)',
           'error-hover': 'rgb(var(--color-status-error-hover) / <alpha-value>)',
         },
         'on-accent': 'rgb(var(--color-text-on-accent) / <alpha-value>)',

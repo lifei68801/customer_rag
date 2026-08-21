@@ -88,7 +88,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 onClick={() => settle(true)}
-                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-error-strong px-4 py-2 text-sm font-bold text-white shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
               >
                 {pending.confirmLabel}
               </button>

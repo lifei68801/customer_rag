@@ -388,8 +388,10 @@ export function SchemaEtlPage() {
                         key={file.filename}
                         type="button"
                         onClick={() => setSampleSelectedFilename(file.filename)}
-                        className={`rounded-control border border-subtle px-3 py-1.5 text-xs font-bold text-ink shadow-soft-sm ${
-                          sampleSelectedFilename === file.filename ? 'bg-accent-pink' : 'bg-paper'
+                        className={`rounded-control border border-subtle px-3 py-1.5 text-xs font-bold shadow-soft-sm ${
+                          sampleSelectedFilename === file.filename
+                            ? 'bg-accent-pink text-on-accent'
+                            : 'bg-paper text-ink'
                         } ${focusRing}`}
                       >
                         {file.filename}

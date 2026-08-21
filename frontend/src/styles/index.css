@@ -20,6 +20,7 @@
   --color-accent-orange: 248 161 111;
   --color-status-success: 169 216 119;
   --color-status-error: 220 38 38;
+  --color-status-error-strong: 220 38 38;
   --color-status-error-hover: 251 216 216;
   --color-text-on-accent: 20 17 17;
   --color-border-subtle: rgba(20, 17, 17, 0.12);
@@ -39,7 +40,8 @@
   --color-accent-green: 149 224 102;
   --color-accent-orange: 255 164 92;
   --color-status-success: 149 224 102;
-  --color-status-error: 237 0 0;
+  --color-status-error: 255 92 92;
+  --color-status-error-strong: 237 0 0;
   --color-status-error-hover: 58 34 38;
   --color-text-on-accent: 21 21 23;
   --color-border-subtle: rgba(249, 250, 251, 0.14);
@@ -60,6 +62,7 @@
   --color-accent-orange: 166 124 82;
   --color-status-success: 107 155 124;
   --color-status-error: 179 58 58;
+  --color-status-error-strong: 179 58 58;
   --color-status-error-hover: 234 217 217;
   --color-text-on-accent: 27 36 48;
   --color-border-subtle: rgba(27, 36, 48, 0.12);
