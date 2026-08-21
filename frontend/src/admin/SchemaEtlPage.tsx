@@ -3,6 +3,7 @@ import { adminFetch, extractErrorDetail } from './adminApi'
 import { SchemaEtlConfigBuilder } from './schemaEtlConfigBuilder/SchemaEtlConfigBuilder'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
+import { useToast } from './ToastContext'
 import { CopyButton } from './CopyButton'
 import { TaskStatusBadge } from './TaskStatusBadge'
 
@@ -62,6 +63,7 @@ const focusRing =
 export function SchemaEtlPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
+  const showToast = useToast()
   const [confirmed, setConfirmed] = useState<boolean | null>(null)
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
@@ -233,6 +235,7 @@ export function SchemaEtlPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '启动失败'))
       }
+      showToast('已提交运行')
       form.reset()
       await pollNowRef.current()
     } catch (err) {
@@ -459,7 +462,9 @@ export function SchemaEtlPage() {
 
       <div className="flex flex-col gap-2">
         <h2 className="font-bold text-ink">历史跑批</h2>
-        {runs.length === 0 && <p className="text-ink-soft">还没有任何跑批记录。</p>}
+        {runs.length === 0 && (
+          <p className="text-ink-soft">还没有任何跑批记录。在上方上传数据文件开始第一次运行。</p>
+        )}
         {runs.length > 0 && (
           <div className="overflow-x-auto border-2 border-ink bg-card shadow-brutal-sm">
             <table className="w-full text-left text-sm">
