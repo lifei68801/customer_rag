@@ -481,7 +481,7 @@ export function SchemaEtlPage() {
                   <tr
                     key={run.run_id}
                     onClick={() => setSelectedRunId(run.run_id)}
-                    className={`cursor-pointer border-b border-ink/20 text-ink last:border-b-0 hover:bg-paper ${
+                    className={`cursor-pointer border-b border-subtle text-ink last:border-b-0 hover:bg-paper ${
                       selectedRunId === run.run_id ? 'bg-paper' : ''
                     }`}
                   >
@@ -531,7 +531,7 @@ export function SchemaEtlPage() {
                         ...Object.keys(selectedRun.report.skipped_by_type ?? {}),
                       ]),
                     ).map((label) => (
-                      <tr key={label} className="border-b border-ink/20 text-ink last:border-b-0">
+                      <tr key={label} className="border-b border-subtle text-ink last:border-b-0">
                         <td className="px-3 py-2">{label}</td>
                         <td className="px-3 py-2">
                           {selectedRun.report?.written_by_type?.[label] ?? 0}
@@ -560,7 +560,7 @@ export function SchemaEtlPage() {
                       </thead>
                       <tbody>
                         {selectedRun.report.skipped_mappings.map((mapping, idx) => (
-                          <tr key={idx} className="border-b border-ink/20 text-ink last:border-b-0">
+                          <tr key={idx} className="border-b border-subtle text-ink last:border-b-0">
                             <td className="px-3 py-2">{mapping.label}</td>
                             <td className="px-3 py-2">{mapping.source_file}</td>
                             <td className="px-3 py-2">{mapping.reason}</td>
@@ -591,7 +591,7 @@ export function SchemaEtlPage() {
                         {selectedRun.report.skipped_rows
                           .slice(0, SKIPPED_ROWS_PREVIEW_LIMIT)
                           .map((row, idx) => (
-                            <tr key={idx} className="border-b border-ink/20 text-ink last:border-b-0">
+                            <tr key={idx} className="border-b border-subtle text-ink last:border-b-0">
                               <td className="px-3 py-2">{row.label}</td>
                               <td className="px-3 py-2">{row.source_file}</td>
                               <td className="px-3 py-2">{row.row_number}</td>

@@ -18,7 +18,7 @@ export function Skeleton({ variant, count = 3 }: SkeletonProps) {
     return (
       <div className="overflow-x-auto rounded-card border border-subtle bg-card shadow-soft-sm" aria-hidden="true">
         {Array.from({ length: count }, (_, row) => (
-          <div key={row} className="flex items-center gap-4 border-b border-ink/20 px-3 py-2 last:border-b-0">
+          <div key={row} className="flex items-center gap-4 border-b border-subtle px-3 py-2 last:border-b-0">
             {ROW_WIDTHS.map((width, col) => (
               <div key={col} className="h-4 animate-pulse motion-reduce:animate-none bg-ink-soft/40" style={{ width }} />
             ))}

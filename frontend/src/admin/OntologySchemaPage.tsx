@@ -575,7 +575,7 @@ function TermTypesTab({
             </thead>
             <tbody>
               {items.map((item) => (
-                <tr key={item.value} className="border-b border-ink/20 text-ink last:border-b-0">
+                <tr key={item.value} className="border-b border-subtle text-ink last:border-b-0">
                   <td className={cellPadding}>{item.value}</td>
                   <td className={cellPadding}>{item.extra_fields.length}</td>
                   {view === 'draft' && (
@@ -959,7 +959,7 @@ function RelationTypesTab({
             </thead>
             <tbody>
               {items.map((item) => (
-                <tr key={item.relation_type} className="border-b border-ink/20 text-ink last:border-b-0">
+                <tr key={item.relation_type} className="border-b border-subtle text-ink last:border-b-0">
                   <td className={`${cellPadding} font-mono text-xs`}>{item.relation_type}</td>
                   <td className={cellPadding}>{item.example_phrase}</td>
                   <td className={cellPadding}>{item.description || '-'}</td>
@@ -1292,7 +1292,7 @@ function ConstraintsTab({
             </thead>
             <tbody>
               {constraints.map((c) => (
-                <tr key={constraintKey(c)} className="border-b border-ink/20 text-ink last:border-b-0">
+                <tr key={constraintKey(c)} className="border-b border-subtle text-ink last:border-b-0">
                   <td className={cellPadding}>{c.subject_term_type}</td>
                   <td className={`${cellPadding} font-mono text-xs`}>{c.relation_type}</td>
                   <td className={cellPadding}>{c.object_term_type}</td>

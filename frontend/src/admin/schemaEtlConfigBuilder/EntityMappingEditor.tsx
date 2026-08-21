@@ -86,7 +86,7 @@ export function EntityMappingEditor({
       <div className="flex flex-col gap-2">
         <span className="text-sm font-bold text-ink">Node Key（唯一标识列）</span>
         {entity.nodeKeyParts.map((part, index) => (
-          <div key={index} className="flex flex-col gap-1 rounded-card border border-ink/40 p-2">
+          <div key={index} className="flex flex-col gap-1 rounded-card border border-subtle p-2">
             {part.kind === 'column' ? (
               <>
                 <select
