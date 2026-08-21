@@ -53,7 +53,7 @@ export function RelationMappingEditor({
             const [subject, rel, object] = e.target.value.split('|')
             onChange({ ...relation, subjectTermType: subject, relationType: rel, objectTermType: object })
           }}
-          className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+          className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
         >
           <option value="">请选择</option>
           {combinations.map((c) => (
@@ -69,7 +69,7 @@ export function RelationMappingEditor({
         <select
           value={relation.fileId ?? ''}
           onChange={(e) => onChange({ ...relation, fileId: e.target.value || null })}
-          className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+          className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
         >
           <option value="">请选择</option>
           {files.map((f) => (

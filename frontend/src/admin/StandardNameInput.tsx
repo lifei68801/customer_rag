@@ -10,6 +10,9 @@ interface StandardNameInputProps {
   onCreateNew?: (query: string) => void
 }
 
+const focusRing =
+  'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
+
 const MAX_SUGGESTIONS = 8
 
 export function StandardNameInput({
@@ -46,7 +49,7 @@ export function StandardNameInput({
         onBlur={() => setIsOpen(false)}
         placeholder={placeholder}
         aria-label={ariaLabel}
-        className="w-full rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none"
+        className={`w-full rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none ${focusRing}`}
       />
       {isOpen && (suggestions.length > 0 || showCreateNew) && (
         <ul className="absolute z-10 mt-1 w-full overflow-hidden rounded-modal border border-subtle bg-paper shadow-soft-sm">
@@ -82,7 +85,7 @@ export function StandardNameInput({
                   onCreateNew?.(query)
                   setIsOpen(false)
                 }}
-                className="block w-full cursor-pointer border-t-2 border-ink px-3 py-2 text-left text-sm font-bold text-ink hover:bg-interactive-hover"
+                className="block w-full cursor-pointer border-t border-subtle px-3 py-2 text-left text-sm font-bold text-ink hover:bg-interactive-hover"
               >
                 + 创建为新实体"{query}"
               </button>

@@ -190,7 +190,7 @@ export function TermsPage() {
           id="source-filter"
           value={sourceFilter}
           onChange={(event) => setSourceFilter(event.target.value as SourceFilter)}
-          className="rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:shadow-soft focus:outline-none"
+          className={`rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
         >
           <option value="all">全部</option>
           <option value="manual">手工</option>
@@ -271,7 +271,7 @@ export function TermsPage() {
                       }
                       placeholder="标准名"
                       aria-label={`标准名（${term.standard_name}）`}
-                      className="min-w-[10rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none"
+                      className={`min-w-[10rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none ${focusRing}`}
                     />
                     <input
                       value={editDraft.aliases}
@@ -280,7 +280,7 @@ export function TermsPage() {
                       }
                       placeholder="别名（逗号分隔）"
                       aria-label={`别名（${term.standard_name}）`}
-                      className="min-w-[10rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none"
+                      className={`min-w-[10rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none ${focusRing}`}
                     />
                     <select
                       value={editDraft.term_type}
@@ -288,7 +288,7 @@ export function TermsPage() {
                         setEditDraft((prev) => (prev ? { ...prev, term_type: event.target.value } : prev))
                       }
                       aria-label={`类型（${term.standard_name}）`}
-                      className="min-w-[8rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:shadow-soft focus:outline-none"
+                      className={`min-w-[8rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
                     >
                       <option value="">（无类型）</option>
                       {optionsLoaded && editDraft.term_type && !termTypeOptions.includes(editDraft.term_type) && (

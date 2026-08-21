@@ -39,7 +39,7 @@ export function EntityMappingEditor({
         <select
           value={entity.termType}
           onChange={(e) => onChange({ ...entity, termType: e.target.value, fieldMappings: {} })}
-          className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+          className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
         >
           <option value="">请选择</option>
           {termTypes.map((t) => (
@@ -55,7 +55,7 @@ export function EntityMappingEditor({
         <select
           value={entity.fileId ?? ''}
           onChange={(e) => onChange({ ...entity, fileId: e.target.value || null, standardNameColumn: '' })}
-          className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+          className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
         >
           <option value="">请选择</option>
           {files.map((f) => (
@@ -72,7 +72,7 @@ export function EntityMappingEditor({
           value={entity.standardNameColumn}
           onChange={(e) => onChange({ ...entity, standardNameColumn: e.target.value })}
           disabled={columns.length === 0}
-          className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none disabled:opacity-50"
+          className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none disabled:opacity-50 ${focusRing}`}
         >
           <option value="">{columns.length === 0 ? '请先选择数据文件' : '请选择'}</option>
           {columns.map((col) => (
@@ -97,7 +97,7 @@ export function EntityMappingEditor({
                     onChange({ ...entity, nodeKeyParts: next })
                   }}
                   disabled={columns.length === 0}
-                  className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none disabled:opacity-50"
+                  className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none disabled:opacity-50 ${focusRing}`}
                 >
                   <option value="">请选择列</option>
                   {columns.map((col) => (
@@ -131,7 +131,7 @@ export function EntityMappingEditor({
                       next[index] = { ...part, scopeColumns: selected }
                       onChange({ ...entity, nodeKeyParts: next })
                     }}
-                    className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+                    className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
                   >
                     {columns.map((col) => (
                       <option key={col} value={col}>
@@ -149,7 +149,7 @@ export function EntityMappingEditor({
                       next[index] = { ...part, rawValueColumn: e.target.value }
                       onChange({ ...entity, nodeKeyParts: next })
                     }}
-                    className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+                    className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
                   >
                     <option value="">请选择列</option>
                     {columns.map((col) => (
@@ -215,7 +215,7 @@ export function EntityMappingEditor({
                   }
                   onChange({ ...entity, fieldMappings: nextMappings })
                 }}
-                className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+                className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
               >
                 <option value="">不映射</option>
                 {columns.map((col) => (

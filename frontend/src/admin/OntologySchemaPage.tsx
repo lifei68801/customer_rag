@@ -247,7 +247,7 @@ export function OntologySchemaPage() {
           <div
             role="group"
             aria-label="查看版本"
-            className="flex divide-x-2 divide-ink overflow-hidden rounded-control border border-subtle shadow-soft-sm"
+            className="flex divide-x divide-subtle overflow-hidden rounded-control border border-subtle shadow-soft-sm"
           >
             <button
               type="button"
@@ -567,7 +567,7 @@ function TermTypesTab({
         <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card shadow-soft-sm">
           <table className="w-full text-left text-sm">
             <thead>
-              <tr className="border-b-2 border-ink bg-paper text-ink">
+              <tr className="border-b border-subtle bg-paper text-ink">
                 <th className={cellPadding}>类型名</th>
                 <th className={cellPadding}>属性字段数</th>
                 {view === 'draft' && <th className={cellPadding}>操作</th>}
@@ -642,7 +642,7 @@ function TermTypesTab({
               required
               value={draft.value}
               onChange={(e) => setDraft((prev) => ({ ...prev, value: e.target.value }))}
-              className="rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
             />
           </label>
 
@@ -657,13 +657,13 @@ function TermTypesTab({
                   required
                   value={field.name}
                   onChange={(e) => updateField(index, { name: e.target.value })}
-                  className="rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none"
+                  className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none ${focusRing}`}
                 />
                 <select
                   value={field.value_type}
                   aria-label="字段类型"
                   onChange={(e) => updateField(index, { value_type: e.target.value })}
-                  className="rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+                  className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
                 >
                   {VALUE_TYPES.map((t) => (
                     <option key={t} value={t}>
@@ -721,7 +721,7 @@ function TermTypesTab({
             value={migrateTarget}
             onChange={(e) => setMigrateTarget(e.target.value)}
             aria-label="迁移目标类型"
-            className="rounded-control border border-subtle bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none"
+            className={`rounded-control border border-subtle bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
           >
             <option value="">请选择新类型</option>
             {items
@@ -949,7 +949,7 @@ function RelationTypesTab({
         <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card shadow-soft-sm">
           <table className="w-full text-left text-sm">
             <thead>
-              <tr className="border-b-2 border-ink bg-paper text-ink">
+              <tr className="border-b border-subtle bg-paper text-ink">
                 <th className={cellPadding}>关系类型</th>
                 <th className={cellPadding}>示例短语</th>
                 <th className={cellPadding}>说明</th>
@@ -1027,7 +1027,7 @@ function RelationTypesTab({
               required
               value={draft.relation_type}
               onChange={(e) => setDraft((prev) => ({ ...prev, relation_type: e.target.value }))}
-              className="rounded-control border border-subtle bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none"
+              className={`rounded-control border border-subtle bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
             />
           </label>
           <label className="flex flex-col gap-1 text-sm font-bold text-ink">
@@ -1037,7 +1037,7 @@ function RelationTypesTab({
               required
               value={draft.example_phrase}
               onChange={(e) => setDraft((prev) => ({ ...prev, example_phrase: e.target.value }))}
-              className="rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
             />
           </label>
           <label className="flex flex-col gap-1 text-sm font-bold text-ink">
@@ -1046,7 +1046,7 @@ function RelationTypesTab({
               type="text"
               value={draft.description}
               onChange={(e) => setDraft((prev) => ({ ...prev, description: e.target.value }))}
-              className="rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
             />
           </label>
           <label className="flex items-center gap-2 text-sm font-bold text-ink">
@@ -1089,7 +1089,7 @@ function RelationTypesTab({
             value={migrateTarget}
             onChange={(e) => setMigrateTarget(e.target.value)}
             aria-label="迁移目标类型"
-            className="rounded-control border border-subtle bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none"
+            className={`rounded-control border border-subtle bg-paper px-2 py-1.5 font-mono text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
           >
             <option value="">请选择新类型</option>
             {items
@@ -1283,7 +1283,7 @@ function ConstraintsTab({
         <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card shadow-soft-sm">
           <table className="w-full text-left text-sm">
             <thead>
-              <tr className="border-b-2 border-ink bg-paper text-ink">
+              <tr className="border-b border-subtle bg-paper text-ink">
                 <th className={cellPadding}>主体类型</th>
                 <th className={cellPadding}>关系类型</th>
                 <th className={cellPadding}>客体类型</th>
@@ -1326,7 +1326,7 @@ function ConstraintsTab({
               required
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              className="rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
             >
               <option value="">请选择</option>
               {termTypes.map((t) => (
@@ -1342,7 +1342,7 @@ function ConstraintsTab({
               required
               value={relationType}
               onChange={(e) => setRelationType(e.target.value)}
-              className="rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
             >
               <option value="">请选择</option>
               {draftRelationTypes.map((r) => (
@@ -1358,7 +1358,7 @@ function ConstraintsTab({
               required
               value={object}
               onChange={(e) => setObject(e.target.value)}
-              className="rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+              className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
             >
               <option value="">请选择</option>
               {termTypes.map((t) => (

@@ -553,7 +553,7 @@ export function GraphReviewsPage() {
                     onChange={(event) =>
                       setCreateDraft({ ...createDraft, termType: event.target.value })
                     }
-                    className="rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:shadow-soft focus:outline-none"
+                    className={`rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
                   >
                     <option value="">（请选择）</option>
                     {termTypeOptions.map((value) => (
@@ -667,7 +667,7 @@ export function GraphReviewsPage() {
             )}
             <p className="text-xs text-ink-soft">来源文档：{review.source || '（无记录）'}</p>
             {review.evidence && (
-              <p className="border-l-2 border-ink pl-2 text-sm italic text-ink">
+              <p className="border-l border-subtle pl-2 text-sm italic text-ink">
                 原文引用："{review.evidence}"
               </p>
             )}
@@ -727,7 +727,7 @@ export function GraphReviewsPage() {
               placeholder="驳回备注（可选，仅驳回时提交）"
               aria-label="驳回备注"
               rows={2}
-              className="rounded-control border border-subtle bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none"
+              className={`rounded-control border border-subtle bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none ${focusRing}`}
             />
             <div className="flex gap-3">
               <button
@@ -767,7 +767,7 @@ export function GraphReviewsPage() {
                 placeholder="批量驳回备注（可选，应用到本次选中的所有记录）"
                 aria-label="批量驳回备注"
                 rows={2}
-                className="rounded-control border border-subtle bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none"
+                className={`rounded-control border border-subtle bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none ${focusRing}`}
               />
               <div className="flex gap-3">
                 <button
@@ -850,7 +850,7 @@ export function GraphReviewsPage() {
             </p>
             <p className="text-xs text-ink-soft">来源文档：{review.source || '（无记录）'}</p>
             {review.evidence && (
-              <p className="border-l-2 border-ink pl-2 text-sm italic text-ink">
+              <p className="border-l border-subtle pl-2 text-sm italic text-ink">
                 原文引用："{review.evidence}"
               </p>
             )}
