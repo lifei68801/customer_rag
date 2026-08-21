@@ -19,7 +19,7 @@ export function Skeleton({ variant, count = 3 }: SkeletonProps) {
         {Array.from({ length: count }, (_, row) => (
           <div key={row} className="flex items-center gap-4 border-b border-ink/20 px-3 py-2 last:border-b-0">
             {ROW_WIDTHS.map((width, col) => (
-              <div key={col} className="h-4 animate-pulse bg-ink-soft/40" style={{ width }} />
+              <div key={col} className="h-4 animate-pulse motion-reduce:animate-none bg-ink-soft/40" style={{ width }} />
             ))}
           </div>
         ))}
@@ -32,7 +32,7 @@ export function Skeleton({ variant, count = 3 }: SkeletonProps) {
       {Array.from({ length: count }, (_, card) => (
         <div key={card} className="flex flex-col gap-2 border-2 border-ink bg-card p-4 shadow-brutal-sm">
           {CARD_WIDTHS.map((width, line) => (
-            <div key={line} className="h-4 animate-pulse bg-ink-soft/40" style={{ width }} />
+            <div key={line} className="h-4 animate-pulse motion-reduce:animate-none bg-ink-soft/40" style={{ width }} />
           ))}
         </div>
       ))}
