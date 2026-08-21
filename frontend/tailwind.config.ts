@@ -26,6 +26,7 @@ export default {
           error: 'rgb(var(--color-status-error) / <alpha-value>)',
           'error-hover': 'rgb(var(--color-status-error-hover) / <alpha-value>)',
         },
+        'on-accent': 'rgb(var(--color-text-on-accent) / <alpha-value>)',
       },
       borderColor: {
         subtle: 'var(--color-border-subtle)',

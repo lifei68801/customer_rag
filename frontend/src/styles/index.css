@@ -21,6 +21,7 @@
   --color-status-success: 169 216 119;
   --color-status-error: 220 38 38;
   --color-status-error-hover: 251 216 216;
+  --color-text-on-accent: 20 17 17;
   --color-border-subtle: rgba(20, 17, 17, 0.12);
   --shadow-color-1: rgba(20, 17, 17, 0.08);
   --shadow-color-2: rgba(20, 17, 17, 0.14);
@@ -38,8 +39,9 @@
   --color-accent-green: 149 224 102;
   --color-accent-orange: 255 164 92;
   --color-status-success: 149 224 102;
-  --color-status-error: 255 92 92;
+  --color-status-error: 237 0 0;
   --color-status-error-hover: 58 34 38;
+  --color-text-on-accent: 21 21 23;
   --color-border-subtle: rgba(249, 250, 251, 0.14);
   --shadow-color-1: rgba(0, 0, 0, 0.35);
   --shadow-color-2: rgba(0, 0, 0, 0.5);
@@ -51,14 +53,15 @@
   --color-ink-soft: 90 107 123;
   --color-card: 255 255 255;
   --color-interactive-hover: 255 255 255;
-  --color-accent-pink: 110 127 176;
+  --color-accent-pink: 122 137 182;
   --color-accent-yellow: 93 152 142;
-  --color-accent-cyan: 74 135 166;
+  --color-accent-cyan: 82 146 178;
   --color-accent-green: 107 155 124;
   --color-accent-orange: 166 124 82;
   --color-status-success: 107 155 124;
   --color-status-error: 179 58 58;
   --color-status-error-hover: 234 217 217;
+  --color-text-on-accent: 27 36 48;
   --color-border-subtle: rgba(27, 36, 48, 0.12);
   --shadow-color-1: rgba(27, 36, 48, 0.08);
   --shadow-color-2: rgba(27, 36, 48, 0.14);
