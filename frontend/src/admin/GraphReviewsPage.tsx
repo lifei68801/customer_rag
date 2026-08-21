@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
+import { useAdminDensity } from './DensityContext'
+import { Skeleton } from './Skeleton'
 import { useAdminTenant } from './TenantContext'
+import { useToast } from './ToastContext'
 import { Pager } from './Pager'
 import { StandardNameInput } from './StandardNameInput'
 import { TaskStatusBadge } from './TaskStatusBadge'
@@ -54,6 +57,8 @@ const focusRing =
 export function GraphReviewsPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
+  const showToast = useToast()
+  const { density } = useAdminDensity()
   const [tab, setTab] = useState<Tab>('pending')
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [pending, setPending] = useState<PendingReview[]>([])
@@ -283,6 +288,7 @@ export function GraphReviewsPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '批准失败'))
       }
+      showToast('已批准')
       await refreshPending()
     } catch (err) {
       setError(err instanceof Error ? err.message : '批准失败')
@@ -306,6 +312,7 @@ export function GraphReviewsPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '驳回失败'))
       }
+      showToast('已驳回')
       setRejectNotes((prev) => {
         const next = { ...prev }
         delete next[reviewId]
@@ -355,6 +362,7 @@ export function GraphReviewsPage() {
       }
     }
     setBatchResult({ success, failures })
+    if (success > 0) showToast(`已批准 ${success} 条`)
     setBatchProcessing(false)
     await refreshPending()
   }
@@ -391,6 +399,7 @@ export function GraphReviewsPage() {
       }
     }
     setBatchResult({ success, failures })
+    if (success > 0) showToast(`已驳回 ${success} 条`)
     setBatchRejectNote('')
     setBatchProcessing(false)
     await refreshPending()
@@ -444,6 +453,7 @@ export function GraphReviewsPage() {
         ...prev,
         [reviewId]: { ...prev[reviewId], [field]: true },
       }))
+      showToast('已创建实体候选')
       setCreateDraft(null)
       // 创建成功后立即重新拉取本页 graphTerms，让同页其它引用同一新实体
       // 的候选行也能立刻搜到它——见 spec 决策 A.4。
@@ -611,7 +621,7 @@ export function GraphReviewsPage() {
         </div>
       )}
 
-      {tab === 'pending' && !pendingLoaded && <p className="text-ink-soft">加载中…</p>}
+      {tab === 'pending' && !pendingLoaded && <Skeleton variant="card-list" count={3} />}
       {tab === 'pending' && pendingLoaded && pending.length > 0 && (
         <label className="flex items-center gap-2 text-sm text-ink">
           <input
@@ -628,7 +638,9 @@ export function GraphReviewsPage() {
         pending.map((review) => (
           <div
             key={review.review_id}
-            className="flex flex-col gap-3 border-2 border-ink bg-card p-4 shadow-brutal"
+            className={`flex flex-col gap-3 border-2 border-ink bg-card shadow-brutal ${
+              density === 'compact' ? 'p-2.5' : 'p-4'
+            }`}
           >
             <label className="flex items-center gap-2 text-sm text-ink">
               <input
@@ -823,13 +835,15 @@ export function GraphReviewsPage() {
         </div>
       )}
 
-      {tab === 'history' && !historyLoaded && <p className="text-ink-soft">加载中…</p>}
+      {tab === 'history' && !historyLoaded && <Skeleton variant="card-list" count={3} />}
       {tab === 'history' &&
         historyLoaded &&
         history.map((review) => (
           <div
             key={review.review_id}
-            className="flex flex-col gap-1 border-2 border-ink bg-card p-4 shadow-brutal-sm"
+            className={`flex flex-col gap-1 border-2 border-ink bg-card shadow-brutal-sm ${
+              density === 'compact' ? 'p-2.5' : 'p-4'
+            }`}
           >
             <p className="text-sm text-ink">
               {review.subject_candidate} —[{review.relation_type}]→ {review.object_candidate}
@@ -853,7 +867,7 @@ export function GraphReviewsPage() {
           </div>
         ))}
       {tab === 'history' && historyLoaded && history.length === 0 && (
-        <p className="text-ink-soft">还没有处理过的记录。</p>
+        <p className="text-ink-soft">还没有处理过的记录——批准或驳回的候选会出现在这里。</p>
       )}
       {tab === 'history' && historyLoaded && history.length > 0 && (
         <Pager
