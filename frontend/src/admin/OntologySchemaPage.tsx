@@ -2,7 +2,10 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useConfirm } from './ConfirmContext'
+import { useAdminDensity } from './DensityContext'
+import { Skeleton } from './Skeleton'
 import { useAdminTenant } from './TenantContext'
+import { useToast } from './ToastContext'
 
 type Tab = 'term-types' | 'relation-types' | 'constraints'
 type ViewMode = 'draft' | 'confirmed'
@@ -63,6 +66,7 @@ export function OntologySchemaPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const confirm = useConfirm()
+  const showToast = useToast()
   const [tab, setTab] = useState<Tab>('term-types')
   const [confirmed, setConfirmed] = useState<boolean | null>(null)
   const [pageError, setPageError] = useState<string | null>(null)
@@ -203,6 +207,7 @@ export function OntologySchemaPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '确认失败'))
       }
+      showToast('已确认')
       await refreshStatus()
       setConfirmVersion((v) => v + 1)
       // 确认会把草稿行的 status 原地改成 confirmed（不再是 draft），
@@ -376,6 +381,8 @@ function TermTypesTab({
   onDataChanged: () => void
 }) {
   const confirm = useConfirm()
+  const showToast = useToast()
+  const { density } = useAdminDensity()
   const [items, setItems] = useState<TermType[]>([])
   const [loaded, setLoaded] = useState(false)
   const [editingValue, setEditingValue] = useState<string | null>(null)
@@ -386,7 +393,6 @@ function TermTypesTab({
   const [migratingFrom, setMigratingFrom] = useState<string | null>(null)
   const [migrateTarget, setMigrateTarget] = useState('')
   const [migrating, setMigrating] = useState(false)
-  const [migrateSuccessMessage, setMigrateSuccessMessage] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
@@ -499,6 +505,7 @@ function TermTypesTab({
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '删除实体类型失败'))
       }
+      showToast('已删除实体类型')
       await refresh()
       onDataChanged()
     } catch (err) {
@@ -535,7 +542,7 @@ function TermTypesTab({
         throw new Error(extractErrorDetail(body, '迁移实体类型失败'))
       }
       const data = (await response.json()) as { terms_migrated: number; graph_nodes_migrated: number }
-      setMigrateSuccessMessage(`已迁移 ${data.terms_migrated} 条术语、${data.graph_nodes_migrated} 个图谱节点`)
+      showToast(`已迁移 ${data.terms_migrated} 条术语、${data.graph_nodes_migrated} 个图谱节点`)
       setMigratingFrom(null)
       setMigrateTarget('')
     } catch (err) {
@@ -545,29 +552,34 @@ function TermTypesTab({
     }
   }
 
+  const cellPadding = density === 'compact' ? 'px-2 py-1' : 'px-3 py-2'
+
   return (
     <div className="flex flex-col gap-4">
-      {!loaded && <p className="text-ink-soft">加载中…</p>}
+      {!loaded && <Skeleton variant="table-rows" count={4} />}
       {loaded && items.length === 0 && editingValue === null && (
-        <p className="text-ink-soft">还没有任何{view === 'draft' ? '草稿' : '已确认的'}实体类型。</p>
+        <p className="text-ink-soft">
+          还没有任何{view === 'draft' ? '草稿' : '已确认的'}实体类型。
+          {view === 'draft' && '点击下方「+ 新增实体类型」创建一个。'}
+        </p>
       )}
       {items.length > 0 && (
         <div className="overflow-x-auto border-2 border-ink bg-card shadow-brutal-sm">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b-2 border-ink bg-paper text-ink">
-                <th className="px-3 py-2">类型名</th>
-                <th className="px-3 py-2">属性字段数</th>
-                {view === 'draft' && <th className="px-3 py-2">操作</th>}
+                <th className={cellPadding}>类型名</th>
+                <th className={cellPadding}>属性字段数</th>
+                {view === 'draft' && <th className={cellPadding}>操作</th>}
               </tr>
             </thead>
             <tbody>
               {items.map((item) => (
                 <tr key={item.value} className="border-b border-ink/20 text-ink last:border-b-0">
-                  <td className="px-3 py-2">{item.value}</td>
-                  <td className="px-3 py-2">{item.extra_fields.length}</td>
+                  <td className={cellPadding}>{item.value}</td>
+                  <td className={cellPadding}>{item.extra_fields.length}</td>
                   {view === 'draft' && (
-                    <td className="px-3 py-2">
+                    <td className={cellPadding}>
                       <button
                         type="button"
                         className={`mr-2 font-bold underline disabled:opacity-50 ${focusRing}`}
@@ -582,7 +594,6 @@ function TermTypesTab({
                         onClick={() => {
                           setMigratingFrom(item.value)
                           setMigrateTarget('')
-                          setMigrateSuccessMessage(null)
                         }}
                         disabled={migrating}
                       >
@@ -697,8 +708,6 @@ function TermTypesTab({
         </form>
       )}
 
-      {migrateSuccessMessage && <p className="text-sm text-ink">{migrateSuccessMessage}</p>}
-
       {migratingFrom !== null && (
         <form
           onSubmit={handleMigrate}
@@ -735,7 +744,6 @@ function TermTypesTab({
               type="button"
               onClick={() => {
                 setMigratingFrom(null)
-                setMigrateSuccessMessage(null)
               }}
               className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
             >
@@ -768,6 +776,8 @@ function RelationTypesTab({
   onDataChanged: () => void
 }) {
   const confirm = useConfirm()
+  const showToast = useToast()
+  const { density } = useAdminDensity()
   const [items, setItems] = useState<RelationType[]>([])
   const [loaded, setLoaded] = useState(false)
   const [editingType, setEditingType] = useState<string | null>(null)
@@ -778,7 +788,6 @@ function RelationTypesTab({
   const [migratingFrom, setMigratingFrom] = useState<string | null>(null)
   const [migrateTarget, setMigrateTarget] = useState('')
   const [migrating, setMigrating] = useState(false)
-  const [migrateSuccessMessage, setMigrateSuccessMessage] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
@@ -878,6 +887,7 @@ function RelationTypesTab({
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '删除关系类型失败'))
       }
+      showToast('已删除关系类型')
       await refresh()
       onDataChanged()
     } catch (err) {
@@ -914,7 +924,7 @@ function RelationTypesTab({
         throw new Error(extractErrorDetail(body, '迁移图谱边失败'))
       }
       const data = (await response.json()) as { migrated_count: number }
-      setMigrateSuccessMessage(`已迁移 ${data.migrated_count} 条边`)
+      showToast(`已迁移 ${data.migrated_count} 条边`)
       setMigratingFrom(null)
       setMigrateTarget('')
     } catch (err) {
@@ -924,31 +934,38 @@ function RelationTypesTab({
     }
   }
 
+  const cellPadding = density === 'compact' ? 'px-2 py-1' : 'px-3 py-2'
+
   return (
     <div className="flex flex-col gap-4">
-      {!loaded && <p className="text-ink-soft">加载中…</p>}
-      {loaded && items.length === 0 && <p className="text-ink-soft">还没有任何{view === 'draft' ? '草稿' : '已确认的'}关系类型。</p>}
+      {!loaded && <Skeleton variant="table-rows" count={4} />}
+      {loaded && items.length === 0 && (
+        <p className="text-ink-soft">
+          还没有任何{view === 'draft' ? '草稿' : '已确认的'}关系类型。
+          {view === 'draft' && '点击下方「+ 新增关系类型」创建一个。'}
+        </p>
+      )}
       {items.length > 0 && (
         <div className="overflow-x-auto border-2 border-ink bg-card shadow-brutal-sm">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b-2 border-ink bg-paper text-ink">
-                <th className="px-3 py-2">关系类型</th>
-                <th className="px-3 py-2">示例短语</th>
-                <th className="px-3 py-2">说明</th>
-                <th className="px-3 py-2">支持链式查询</th>
-                {view === 'draft' && <th className="px-3 py-2">操作</th>}
+                <th className={cellPadding}>关系类型</th>
+                <th className={cellPadding}>示例短语</th>
+                <th className={cellPadding}>说明</th>
+                <th className={cellPadding}>支持链式查询</th>
+                {view === 'draft' && <th className={cellPadding}>操作</th>}
               </tr>
             </thead>
             <tbody>
               {items.map((item) => (
                 <tr key={item.relation_type} className="border-b border-ink/20 text-ink last:border-b-0">
-                  <td className="px-3 py-2 font-mono text-xs">{item.relation_type}</td>
-                  <td className="px-3 py-2">{item.example_phrase}</td>
-                  <td className="px-3 py-2">{item.description || '-'}</td>
-                  <td className="px-3 py-2">{item.allow_chain_query ? '是' : '否'}</td>
+                  <td className={`${cellPadding} font-mono text-xs`}>{item.relation_type}</td>
+                  <td className={cellPadding}>{item.example_phrase}</td>
+                  <td className={cellPadding}>{item.description || '-'}</td>
+                  <td className={cellPadding}>{item.allow_chain_query ? '是' : '否'}</td>
                   {view === 'draft' && (
-                    <td className="px-3 py-2">
+                    <td className={cellPadding}>
                       <button
                         type="button"
                         className={`mr-2 font-bold underline disabled:opacity-50 ${focusRing}`}
@@ -963,7 +980,6 @@ function RelationTypesTab({
                         onClick={() => {
                           setMigratingFrom(item.relation_type)
                           setMigrateTarget('')
-                          setMigrateSuccessMessage(null)
                         }}
                         disabled={migrating}
                       >
@@ -1060,8 +1076,6 @@ function RelationTypesTab({
         </form>
       )}
 
-      {migrateSuccessMessage && <p className="text-sm text-ink">{migrateSuccessMessage}</p>}
-
       {migratingFrom !== null && (
         <form
           onSubmit={handleMigrate}
@@ -1098,7 +1112,6 @@ function RelationTypesTab({
               type="button"
               onClick={() => {
                 setMigratingFrom(null)
-                setMigrateSuccessMessage(null)
               }}
               className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-4 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
             >
@@ -1131,6 +1144,8 @@ function ConstraintsTab({
   onDataChanged: () => void
 }) {
   const confirm = useConfirm()
+  const showToast = useToast()
+  const { density } = useAdminDensity()
   const [constraints, setConstraints] = useState<Constraint[]>([])
   const [termTypes, setTermTypes] = useState<string[]>([])
   const [draftRelationTypes, setDraftRelationTypes] = useState<string[]>([])
@@ -1210,6 +1225,7 @@ function ConstraintsTab({
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '新增约束失败'))
       }
+      showToast('已添加约束')
       setSubject('')
       setRelationType('')
       setObject('')
@@ -1242,6 +1258,7 @@ function ConstraintsTab({
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '删除约束失败'))
       }
+      showToast('已删除约束')
       await refresh()
       onDataChanged()
     } catch (err) {
@@ -1251,31 +1268,36 @@ function ConstraintsTab({
     }
   }
 
+  const cellPadding = density === 'compact' ? 'px-2 py-1' : 'px-3 py-2'
+
   return (
     <div className="flex flex-col gap-4">
-      {!loaded && <p className="text-ink-soft">加载中…</p>}
+      {!loaded && <Skeleton variant="table-rows" count={3} />}
       {loaded && constraints.length === 0 && (
-        <p className="text-ink-soft">还没有任何{view === 'draft' ? '草稿' : '已确认的'}约束。</p>
+        <p className="text-ink-soft">
+          还没有任何{view === 'draft' ? '草稿' : '已确认的'}约束。
+          {view === 'draft' && '在下方表单里添加一个。'}
+        </p>
       )}
       {constraints.length > 0 && (
         <div className="overflow-x-auto border-2 border-ink bg-card shadow-brutal-sm">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b-2 border-ink bg-paper text-ink">
-                <th className="px-3 py-2">主体类型</th>
-                <th className="px-3 py-2">关系类型</th>
-                <th className="px-3 py-2">客体类型</th>
-                {view === 'draft' && <th className="px-3 py-2">操作</th>}
+                <th className={cellPadding}>主体类型</th>
+                <th className={cellPadding}>关系类型</th>
+                <th className={cellPadding}>客体类型</th>
+                {view === 'draft' && <th className={cellPadding}>操作</th>}
               </tr>
             </thead>
             <tbody>
               {constraints.map((c) => (
                 <tr key={constraintKey(c)} className="border-b border-ink/20 text-ink last:border-b-0">
-                  <td className="px-3 py-2">{c.subject_term_type}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{c.relation_type}</td>
-                  <td className="px-3 py-2">{c.object_term_type}</td>
+                  <td className={cellPadding}>{c.subject_term_type}</td>
+                  <td className={`${cellPadding} font-mono text-xs`}>{c.relation_type}</td>
+                  <td className={cellPadding}>{c.object_term_type}</td>
                   {view === 'draft' && (
-                    <td className="px-3 py-2">
+                    <td className={cellPadding}>
                       <button
                         type="button"
                         className={`font-bold text-status-error underline disabled:opacity-50 ${focusRing}`}
