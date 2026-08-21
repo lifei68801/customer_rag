@@ -53,7 +53,7 @@ export function Tooltip({ label, children }: TooltipProps) {
       {mounted && (
         <span
           role="tooltip"
-          className={`pointer-events-none absolute bottom-full left-1/2 z-40 mb-1.5 -translate-x-1/2 whitespace-nowrap border-2 border-ink bg-ink px-2 py-1 text-xs font-bold text-paper shadow-brutal-sm transition-opacity duration-150 motion-reduce:transition-none ${
+          className={`pointer-events-none absolute bottom-full left-1/2 z-40 mb-1.5 -translate-x-1/2 whitespace-nowrap border-2 border-ink bg-ink px-2 py-1 text-xs font-bold text-paper shadow-soft-sm transition-opacity duration-150 motion-reduce:transition-none ${
             visible ? 'opacity-100' : 'opacity-0'
           }`}
         >

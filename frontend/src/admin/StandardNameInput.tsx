@@ -46,10 +46,10 @@ export function StandardNameInput({
         onBlur={() => setIsOpen(false)}
         placeholder={placeholder}
         aria-label={ariaLabel}
-        className="w-full border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-brutal focus:outline-none"
+        className="w-full border-2 border-ink bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none"
       />
       {isOpen && (suggestions.length > 0 || showCreateNew) && (
-        <ul className="absolute z-10 mt-1 w-full border-2 border-ink bg-paper shadow-brutal-sm">
+        <ul className="absolute z-10 mt-1 w-full border-2 border-ink bg-paper shadow-soft-sm">
           {suggestions.map((term) => {
             const matchedAlias = term.standard_name.includes(query)
               ? null

@@ -12,7 +12,7 @@ const focusRing =
 
 const pageButtonClass = (active: boolean) =>
   `min-h-[36px] min-w-[36px] cursor-pointer border-2 border-ink px-2 text-sm font-bold transition ${focusRing} ${
-    active ? 'bg-accent-pink text-ink shadow-brutal-sm' : 'bg-paper text-ink hover:bg-interactive-hover'
+    active ? 'bg-accent-pink text-ink shadow-soft-sm' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
 export function Pager({ page, totalPages, onPageChange }: PagerProps) {

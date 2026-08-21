@@ -11,7 +11,7 @@ const focusRing =
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `border-2 border-ink px-3 py-2.5 text-sm font-bold transition ${focusRing} ${
-    isActive ? 'bg-accent-pink text-ink shadow-brutal-sm' : 'bg-paper text-ink hover:bg-interactive-hover'
+    isActive ? 'bg-accent-pink text-ink shadow-soft-sm' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
 export function AdminLayout() {
@@ -52,14 +52,14 @@ export function AdminLayout() {
               <DensitySwitcher />
               <Link
                 to="/"
-                className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-2 text-center text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-2 text-center text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
               >
                 返回前台
               </Link>
               <button
                 type="button"
                 onClick={logout}
-                className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
               >
                 登出
               </button>

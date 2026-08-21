@@ -42,7 +42,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         <div
           role="status"
           aria-live="polite"
-          className={`pointer-events-none fixed left-1/2 top-4 z-50 -translate-x-1/2 border-2 border-ink bg-ink px-4 py-2 text-sm font-bold text-paper shadow-brutal transition-opacity duration-150 motion-reduce:transition-none ${
+          className={`pointer-events-none fixed left-1/2 top-4 z-50 -translate-x-1/2 border-2 border-ink bg-ink px-4 py-2 text-sm font-bold text-paper shadow-soft transition-opacity duration-150 motion-reduce:transition-none ${
             visible ? 'opacity-100' : 'opacity-0'
           }`}
         >

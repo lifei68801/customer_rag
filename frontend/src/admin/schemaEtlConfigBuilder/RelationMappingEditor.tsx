@@ -29,7 +29,7 @@ export function RelationMappingEditor({
   })
 
   return (
-    <div className="flex flex-col gap-3 border-2 border-ink bg-paper p-3 shadow-brutal-sm">
+    <div className="flex flex-col gap-3 border-2 border-ink bg-paper p-3 shadow-soft-sm">
       <div className="flex items-center justify-between">
         <span className="font-bold text-ink">关系映射</span>
         <button
@@ -53,7 +53,7 @@ export function RelationMappingEditor({
             const [subject, rel, object] = e.target.value.split('|')
             onChange({ ...relation, subjectTermType: subject, relationType: rel, objectTermType: object })
           }}
-          className="border-2 border-ink bg-card px-2 py-1.5 text-ink focus:shadow-brutal focus:outline-none"
+          className="border-2 border-ink bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
         >
           <option value="">请选择</option>
           {combinations.map((c) => (
@@ -69,7 +69,7 @@ export function RelationMappingEditor({
         <select
           value={relation.fileId ?? ''}
           onChange={(e) => onChange({ ...relation, fileId: e.target.value || null })}
-          className="border-2 border-ink bg-card px-2 py-1.5 text-ink focus:shadow-brutal focus:outline-none"
+          className="border-2 border-ink bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
         >
           <option value="">请选择</option>
           {files.map((f) => (

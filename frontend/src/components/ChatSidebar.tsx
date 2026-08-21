@@ -68,7 +68,7 @@ export function ChatSidebar({
         <button
           type="button"
           onClick={onNewSession}
-          className={`min-h-[44px] w-full cursor-pointer border-2 border-ink bg-accent-pink px-3 py-2 text-sm font-bold text-ink shadow-brutal-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
+          className={`min-h-[44px] w-full cursor-pointer border-2 border-ink bg-accent-pink px-3 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:translate-x-px active:translate-y-px active:shadow-none ${focusRing}`}
         >
           + 新建会话
         </button>
@@ -91,7 +91,7 @@ export function ChatSidebar({
                   onClick={() => onSelectSession(session.session_id)}
                   className={`min-h-[44px] flex-1 cursor-pointer truncate border-2 border-ink px-3 py-2 text-left text-sm font-bold transition ${focusRing} ${
                     isActive
-                      ? 'bg-accent-yellow text-ink shadow-brutal-sm'
+                      ? 'bg-accent-yellow text-ink shadow-soft-sm'
                       : 'bg-paper text-ink hover:bg-interactive-hover'
                   }`}
                   title={session.title}
@@ -104,7 +104,7 @@ export function ChatSidebar({
                     onClick={() => handleDelete(session)}
                     disabled={deletingId === session.session_id}
                     aria-label={`删除会话「${session.title}」`}
-                    className={`flex min-h-[44px] w-10 flex-shrink-0 cursor-pointer items-center justify-center border-2 border-ink bg-paper text-ink shadow-brutal-sm transition hover:bg-status-error-hover active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    className={`flex min-h-[44px] w-10 flex-shrink-0 cursor-pointer items-center justify-center border-2 border-ink bg-paper text-ink shadow-soft-sm transition hover:bg-status-error-hover active:translate-x-px active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                   >
                     <TrashIcon />
                   </button>
