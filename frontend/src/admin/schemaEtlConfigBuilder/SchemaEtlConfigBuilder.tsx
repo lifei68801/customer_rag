@@ -147,7 +147,7 @@ export function SchemaEtlConfigBuilder({
           type="button"
           onClick={handleAddEntity}
           disabled={disabled || files.length === 0}
-          className={`self-start border border-subtle bg-card px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          className={`self-start rounded-control border border-subtle bg-card px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           + 添加实体映射
         </button>
@@ -169,7 +169,7 @@ export function SchemaEtlConfigBuilder({
           type="button"
           onClick={handleAddRelation}
           disabled={disabled || files.length === 0}
-          className={`self-start border border-subtle bg-card px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          className={`self-start rounded-control border border-subtle bg-card px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           + 添加关系映射
         </button>
@@ -177,7 +177,7 @@ export function SchemaEtlConfigBuilder({
 
       <div className="flex flex-col gap-2">
         <span className="text-sm font-bold text-ink">4. 预览并提交</span>
-        <pre className="max-h-80 overflow-auto border border-subtle bg-card p-3 text-xs text-ink">
+        <pre className="max-h-80 overflow-auto rounded-card border border-subtle bg-card p-3 text-xs text-ink">
           {buildConfigYaml({ tenantId, entities, relations, files })}
         </pre>
         <CopyButton getText={() => buildConfigYaml({ tenantId, entities, relations, files })} />
@@ -218,7 +218,7 @@ export function SchemaEtlConfigBuilder({
               setSubmitting(false)
             }
           }}
-          className={`min-h-[44px] cursor-pointer self-start border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           {submitting ? '提交中…' : '确认并开始运行'}
         </button>

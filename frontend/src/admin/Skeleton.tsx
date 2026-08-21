@@ -15,7 +15,7 @@ const CARD_WIDTHS = ['55%', '30%']
 export function Skeleton({ variant, count = 3 }: SkeletonProps) {
   if (variant === 'table-rows') {
     return (
-      <div className="overflow-x-auto border border-subtle bg-card shadow-soft-sm" aria-hidden="true">
+      <div className="overflow-x-auto rounded-card border border-subtle bg-card shadow-soft-sm" aria-hidden="true">
         {Array.from({ length: count }, (_, row) => (
           <div key={row} className="flex items-center gap-4 border-b border-ink/20 px-3 py-2 last:border-b-0">
             {ROW_WIDTHS.map((width, col) => (
@@ -30,7 +30,7 @@ export function Skeleton({ variant, count = 3 }: SkeletonProps) {
   return (
     <div className="flex flex-col gap-2" aria-hidden="true">
       {Array.from({ length: count }, (_, card) => (
-        <div key={card} className="flex flex-col gap-2 border border-subtle bg-card p-4 shadow-soft-sm">
+        <div key={card} className="flex flex-col gap-2 rounded-card border border-subtle bg-card p-4 shadow-soft-sm">
           {CARD_WIDTHS.map((width, line) => (
             <div key={line} className="h-4 animate-pulse motion-reduce:animate-none bg-ink-soft/40" style={{ width }} />
           ))}

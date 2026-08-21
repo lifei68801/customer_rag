@@ -19,7 +19,7 @@ const TONE_CLASS: Record<BadgeTone, string> = {
 export function TaskStatusBadge({ tone, label }: TaskStatusBadgeProps) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 border-2 px-2 py-0.5 text-xs font-bold ${TONE_CLASS[tone]}`}
+      className={`inline-flex items-center gap-1.5 rounded-chip border-2 px-2 py-0.5 text-xs font-bold ${TONE_CLASS[tone]}`}
     >
       {tone === 'active' && (
         <span

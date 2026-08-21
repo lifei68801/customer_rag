@@ -23,7 +23,7 @@ export function EntityMappingEditor({
   const selectedTermType = termTypes.find((t) => t.value === entity.termType) ?? null
 
   return (
-    <div className="flex flex-col gap-3 border border-subtle bg-paper p-3 shadow-soft-sm">
+    <div className="flex flex-col gap-3 rounded-card border border-subtle bg-paper p-3 shadow-soft-sm">
       <div className="flex items-center justify-between">
         <span className="font-bold text-ink">实体映射</span>
         <button
@@ -39,7 +39,7 @@ export function EntityMappingEditor({
         <select
           value={entity.termType}
           onChange={(e) => onChange({ ...entity, termType: e.target.value, fieldMappings: {} })}
-          className="border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+          className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
         >
           <option value="">请选择</option>
           {termTypes.map((t) => (
@@ -55,7 +55,7 @@ export function EntityMappingEditor({
         <select
           value={entity.fileId ?? ''}
           onChange={(e) => onChange({ ...entity, fileId: e.target.value || null, standardNameColumn: '' })}
-          className="border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+          className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
         >
           <option value="">请选择</option>
           {files.map((f) => (
@@ -72,7 +72,7 @@ export function EntityMappingEditor({
           value={entity.standardNameColumn}
           onChange={(e) => onChange({ ...entity, standardNameColumn: e.target.value })}
           disabled={columns.length === 0}
-          className="border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none disabled:opacity-50"
+          className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none disabled:opacity-50"
         >
           <option value="">{columns.length === 0 ? '请先选择数据文件' : '请选择'}</option>
           {columns.map((col) => (
@@ -86,7 +86,7 @@ export function EntityMappingEditor({
       <div className="flex flex-col gap-2">
         <span className="text-sm font-bold text-ink">Node Key（唯一标识列）</span>
         {entity.nodeKeyParts.map((part, index) => (
-          <div key={index} className="flex flex-col gap-1 border border-ink/40 p-2">
+          <div key={index} className="flex flex-col gap-1 rounded-card border border-ink/40 p-2">
             {part.kind === 'column' ? (
               <>
                 <select
@@ -97,7 +97,7 @@ export function EntityMappingEditor({
                     onChange({ ...entity, nodeKeyParts: next })
                   }}
                   disabled={columns.length === 0}
-                  className="border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none disabled:opacity-50"
+                  className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none disabled:opacity-50"
                 >
                   <option value="">请选择列</option>
                   {columns.map((col) => (
@@ -131,7 +131,7 @@ export function EntityMappingEditor({
                       next[index] = { ...part, scopeColumns: selected }
                       onChange({ ...entity, nodeKeyParts: next })
                     }}
-                    className="border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+                    className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
                   >
                     {columns.map((col) => (
                       <option key={col} value={col}>
@@ -149,7 +149,7 @@ export function EntityMappingEditor({
                       next[index] = { ...part, rawValueColumn: e.target.value }
                       onChange({ ...entity, nodeKeyParts: next })
                     }}
-                    className="border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+                    className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
                   >
                     <option value="">请选择列</option>
                     {columns.map((col) => (
@@ -192,7 +192,7 @@ export function EntityMappingEditor({
             const columnPart: ColumnKeyPart = { kind: 'column', column: '' }
             onChange({ ...entity, nodeKeyParts: [...entity.nodeKeyParts, columnPart] })
           }}
-          className={`self-start border border-subtle bg-card px-3 py-1.5 text-xs font-bold text-ink shadow-soft-sm ${focusRing}`}
+          className={`self-start rounded-control border border-subtle bg-card px-3 py-1.5 text-xs font-bold text-ink shadow-soft-sm ${focusRing}`}
         >
           + 添加另一列（组成复合 key）
         </button>
@@ -215,7 +215,7 @@ export function EntityMappingEditor({
                   }
                   onChange({ ...entity, fieldMappings: nextMappings })
                 }}
-                className="border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
+                className="rounded-control border border-subtle bg-card px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none"
               >
                 <option value="">不映射</option>
                 {columns.map((col) => (
