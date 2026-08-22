@@ -465,7 +465,7 @@ flowchart LR
 **三条数据写入渠道**，共用同一套上面的本体 schema 和 `terms` 存储，仅创建入口和信任模型不同：
 
 1. **手工**——「实体列表」页（`frontend/src/admin/TermsPage.tsx`）只做浏览/搜索/编辑/删除，**不提供新建实体的表单入口**：单条手工创建能力被认为和 ETL 批量导入功能重叠、价值低，已下线；唯一保留的创建路径是下面第 3 条里的"内联创建"。
-2. **ETL（`app/graphrag/schema_etl.py` + `schema_etl_config.py`）**——从租户提供的结构化数据文件（CSV），按 YAML 声明的列映射配置，把实体/关系确定性写入 `terms` 表和 Neo4j（`upsert_term_with_node_key`，真正的 upsert 语义，不是"创建 xor 更新"）。写入前校验 `term_type`/`relation_type` 是否在已确认 schema 里，关系写入还会校验 `(subject_term_type, relation_type, object_term_type)` 是否在已确认的允许组合里，任一校验不过就跳过这一行并记入跑批报告（不中断整批）。ETL 只在该租户本体 schema 已确认时才允许运行。
+2. **ETL（`app/graphrag/schema_etl.py` + `schema_etl_config.py`）**——从租户提供的结构化数据文件（CSV/TSV/XLSX/XLS），按 YAML 声明的列映射配置，把实体/关系确定性写入 `terms` 表和 Neo4j（`upsert_term_with_node_key`，真正的 upsert 语义，不是"创建 xor 更新"）。写入前校验 `term_type`/`relation_type` 是否在已确认 schema 里，关系写入还会校验 `(subject_term_type, relation_type, object_term_type)` 是否在已确认的允许组合里，任一校验不过就跳过这一行并记入跑批报告（不中断整批）。ETL 只在该租户本体 schema 已确认时才允许运行。
 3. **知识图谱审核（`app/graphrag/llm_extractor.py` + `review_queue.py` + `normalization.py`）**——LLM 从文档中抽取候选关系，人工审核批准后写入。这条渠道现在真正做到"按本体 schema 抽取"：LLM 抽取的 system prompt 是**动态按该租户已确认的关系类型/实体类型/允许组合拼接**的（不再是历史上那套硬编码的 10 种通用关系类型），LLM 同时要为候选关系的 subject/object 各自给出一个（已在确认范围内选出的）实体类型；写入侧对"两侧实体都已在术语表里精确匹配、原本会直接自动写入图谱"的候选，现在也补了一层校验——`relation_type`/类型组合不在已确认范围内的照样降级转人工审核，不再直接写图谱。若候选的 subject/object 在术语表里找不到匹配实体，审核页支持**内联快速创建实体**（复用 `create_term`，只要求 `term_type` 一个必填字段，二次确认后创建，创建后立即刷新本页其余候选行的自动补全数据）。该租户本体 schema 未确认时，摄取流程仍正常做文档解析+向量化，只是跳过这一步的图谱抽取。
 
 > 已删除的概念：`product_line`（产品线）曾是与 `term_type` 并列的第二条全局分类轴，2026-08-19 因"每个租户实际只有一条产品线、字段形同摆设"而从数据模型、ETL 配置、检索、LLM 上下文展示里彻底移除，不是弱化成可选字段。历史遗留：Neo4j 里预迁移的节点可能还残留这个属性（不做批量清理），代码侧已显式排除，不会泄露进查询结果。详见 `docs/superpowers/specs/2026-08-19-remove-product-line-design.md`。
