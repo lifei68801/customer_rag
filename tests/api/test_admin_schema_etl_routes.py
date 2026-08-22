@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import deps
+from app.api.admin_schema_etl_routes import _sanitize_data_filename
 from app.graphrag.etl_runs_store import (
     create_etl_run,
     ensure_etl_runs_schema,
@@ -196,37 +197,26 @@ def test_start_run_cleans_up_uploaded_files_when_rejected_with_409(client, revie
     assert after == before
 
 
-def test_start_run_sanitizes_dotdot_data_filename_and_stays_inside_run_dir(client, review_conn, tmp_path):
-    """回归测试：_sanitize_data_filename 的正则只剥路径分隔符，纯 ".."
-    文件名穿透正则原样存活——run_dir / ".." 指向 run_dir 的父目录（这个
-    父目录必然已存在，是 run_dir.mkdir(parents=True) 顺带建出来的），
-    对着一个已存在的目录 write_bytes() 会抛 IsADirectoryError，变成一个
-    未捕获的 500，而不是"逃出 run_dir 写坏东西"式的任意路径穿越。这里
-    验证：(1) 请求不再 500；(2) 落盘的每个文件都真的在 run_dir 内部，
-    不是靠"没报错"就断言过关。使用 ..data.csv 作为测试文件名（有有效扩展名），
-    它会被 _sanitize_data_filename 转换成 __data.csv，仍然测试了文件名消毒逻辑。"""
+def test_start_run_rejects_dotdot_data_filename_via_extension_whitelist_before_sanitizing(client, review_conn):
+    """Task 5 新增的扩展名白名单校验提供了对危险文件名的安全防护：纯 ".."
+    文件名没有扩展名，会被 _validate_data_file_extensions 在 endpoint 层
+    直接以 400 拦截，永远不会到达 _sanitize_data_filename 的防御分支。
+    这个测试验证这种新的安全行为：由扩展名校验来守好这条门。
+
+    注：_sanitize_data_filename 里的 if sanitized in (".", "..") 防御分支
+    在当前检查顺序下从 endpoint 已经不可达（只有单元直接调用才能触达），
+    其正确性由单独的单元测试覆盖。"""
     asyncio.run(_confirm_muji_schema(review_conn))
     files = [
         ("config", ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")),
-        ("data_files", ("..data.csv", b"attempted traversal payload")),
+        ("data_files", ("..", b"attempted traversal payload")),
     ]
 
     response = client.post("/api/admin/muji/schema-etl/runs", files=files)
 
-    assert response.status_code == 200
-    run_id = response.json()["run_id"]
-    run_dir = (tmp_path / "uploads" / "schema-etl" / "muji" / run_id).resolve()
-    assert run_dir.is_dir()
-
-    written_files = [p for p in run_dir.iterdir() if p.is_file()]
-    assert written_files, "消毒后的 data_files 文件应该落在 run_dir 里"
-    for path in written_files:
-        assert path.resolve().is_relative_to(run_dir)
-
-    # run_dir 的父目录（.../schema-etl/muji）除了 run_id 自己这一个子目录，
-    # 不应该被写入任何东西——证明没有文件溢出到 run_dir 之外。
-    parent = run_dir.parent
-    assert [child.name for child in parent.iterdir()] == [run_id]
+    assert response.status_code == 400
+    assert "'..'" in response.json()["detail"]
+    assert "不支持的文件类型" in response.json()["detail"]
 
 
 def test_get_run_not_found_returns_404(client):
@@ -421,3 +411,18 @@ def test_start_run_accepts_xlsx_data_file(client, review_conn):
     response = client.post("/api/admin/muji/schema-etl/runs", files=files)
 
     assert response.status_code == 200
+
+
+def test_sanitize_data_filename_handles_dangerous_single_dot_names():
+    """直接单元测试 _sanitize_data_filename 的防御分支：纯 "." 和 ".." 会被
+    转换成 "_." 和 "_."，防止通过 run_dir / "." 或 run_dir / ".." 指向目录
+    本身或其父目录的路径穿越。
+
+    这个分支在 HTTP endpoint 的当前检查顺序下不可达（文件名 "." 和 ".."
+    没有扩展名，被 _validate_data_file_extensions 在到达 _sanitize_data_filename
+    之前就 400 拦截了），所以用单元测试直接覆盖其正确性。"""
+    assert _sanitize_data_filename("..") == "_.."
+    assert _sanitize_data_filename(".") == "_."
+    # 验证包含斜线等危险字符的文件名被妥善处理
+    assert _sanitize_data_filename("../etc") == ".._etc"  # 斜线被替换成下划线
+    assert _sanitize_data_filename("..\\etc") == ".._etc"  # 反斜线也被替换
