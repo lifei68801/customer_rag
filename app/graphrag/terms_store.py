@@ -36,10 +36,15 @@ class TermNotFoundError(Exception):
 
 
 class TermNameConflictError(Exception):
-    """提交的 standard_name 或某个 alias，跟另一个已存在的术语的
-    standard_name/alias 重复——resolve_to_standard_name() 按顺序遍历命中
-    第一个匹配就返回，允许重叠会让抽取结果变成"看列表顺序"决定的、
-    不可预测。"""
+    """提交的 standard_name 或某个 alias，跟同一租户、同一 term_type 下
+    另一个已存在的术语的 standard_name/alias 重复——所有"按名字查 Term"
+    的调用路径（`app/graphrag/normalization.py::_resolve_term`、
+    `app/graphrag/ontology.py::find_term_by_type_hint`，供管理后台编辑/
+    删除、人工审核批准、RAG 检索工具复用）统一按"这个名字在目标类型下
+    只对应一条术语才算解析成功，出现两条以上视为歧义"的策略消歧；一旦
+    同一类型内允许两条术语共享同一个名字/别名，这些调用路径就会把它
+    们判定为无法解析（返回 None/"未找到"），而不是随便选中其中一个——
+    这条约束就是防止这种歧义在写入时就产生，而不是留到查询时才发现。"""
 
 
 class UnknownCategoryError(Exception):
@@ -356,19 +361,26 @@ async def _check_name_conflict(
     term_type: str,
     standard_name: str,
     aliases: list[str],
-    exclude_standard_name: str | None = None,
+    exclude_node_key: str | None = None,
 ) -> None:
     """检查 standard_name 和 aliases 有没有跟同一租户、同一 term_type 下别的
     术语（编辑时排除自己）的 standard_name/alias 重叠。按 (租户, 类型)
     扫描——不同类型之间允许共享同一个名字/别名（2026-08-22 起，见
     idx_terms_tenant_standard_name 的新定义），不同租户之间也允许，见
     Global Constraints"标准名同类型内唯一"。
+
+    exclude_node_key 按身份（node_key）排除"自己"，不能按名字排除——
+    2026-08-22 起 standard_name 不再租户内全局唯一，如果编辑操作同时改了
+    term_type（该记录第一次进入目标类型的 same_type_terms 集合），按旧名字
+    排除会误伤一个只是恰好同名、但其实是完全不相关的术语（该术语在目标
+    类型下可能早就存在，旧的按名字排除会让这次冲突检查对它视而不见），
+    见 2026-08-23 C1 修复的调查记录。
     """
     tenant_terms = await list_terms(conn, tenant_id)
     same_type_terms = [t for t in tenant_terms if t.term_type == term_type]
     candidate_names = {standard_name, *aliases}
     for term in same_type_terms:
-        if term.standard_name == exclude_standard_name:
+        if term.node_key == exclude_node_key:
             continue
         existing_names = {term.standard_name, *term.aliases}
         overlap = candidate_names & existing_names
@@ -509,7 +521,7 @@ async def update_term(
     await _check_name_conflict(
         conn, tenant_id=tenant_id, term_type=term_type,
         standard_name=new_standard_name, aliases=aliases,
-        exclude_standard_name=standard_name,
+        exclude_node_key=existing_term.node_key,
     )
     try:
         await conn.execute(
@@ -634,6 +646,6 @@ async def upsert_term_with_node_key(
         )
     except aiosqlite.IntegrityError:
         raise TermNameConflictError(
-            f"{standard_name!r} 已经是租户 {tenant_id!r} 下另一个术语的标准名，无法写入"
+            f"{standard_name!r} 已经是同类型（{term_type!r}）术语的标准名，无法写入"
         )
     await conn.commit()

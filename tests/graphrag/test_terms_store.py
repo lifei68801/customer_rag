@@ -1111,3 +1111,34 @@ async def test_update_term_rename_still_rejects_conflict_within_same_type():
             conn, tenant_id="t1", standard_name="拿铁", new_standard_name="Coffee",
             aliases=[], term_type="产品", current_term_type="产品",
         )
+
+
+async def test_update_term_rename_and_retype_in_one_call_still_detects_conflict_with_unrelated_term():
+    """2026-08-23 C1 回归测试：编辑动作在同一次调用里既改名又改类型时（管理
+    后台编辑表单里 term_type 是一个下拉选择框，这是一次正常操作），
+    _check_name_conflict 以前按"旧名字"排除自己——但 standard_name 现在不再
+    租户内全局唯一，如果目标类型下恰好已经存在一个同名（等于被编辑术语的
+    旧名字）但完全无关的术语，按名字排除会连它一起误伤，冲突检查被静默
+    跳过。
+
+    产品"Coffee"（别名"拿铁"）被编辑：改名"Coffee"->"拿铁"、改类型
+    产品->类目，同时把旧名字"Coffee"留作新别名——这会让它在目标类型"类目"
+    下产生一个别名"Coffee"，跟已经存在、完全无关的类目"Coffee"撞名，
+    必须被拒绝，而不是静默写成两条都在"类目"类型下、一个标准名一个别名
+    都叫"Coffee"的重复状态。
+    """
+    conn = await _connect_t1_with_product_category_types()
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=["拿铁"], term_type="产品")
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="类目")
+
+    with pytest.raises(TermNameConflictError):
+        await update_term(
+            conn, tenant_id="t1", standard_name="Coffee", new_standard_name="拿铁",
+            aliases=["Coffee"], term_type="类目", current_term_type="产品",
+        )
+
+    # 冲突检查必须发生在写入之前——两条记录都应该保持编辑前的原状。
+    product = await get_term(conn, "t1", "Coffee", "产品")
+    category = await get_term(conn, "t1", "Coffee", "类目")
+    assert product.aliases == ["拿铁"]
+    assert category.term_type == "类目"
