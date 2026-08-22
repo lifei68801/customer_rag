@@ -666,3 +666,68 @@ def test_approve_review_with_standard_name_not_in_terms_returns_400(review_conn)
         app.dependency_overrides.clear()
 
     assert response.status_code == 400
+
+
+def test_approve_review_accepts_optional_term_type_hints(review_conn):
+    """Task 4：请求体新增的 subject_term_type/object_term_type 是可选字段，
+    加了之后请求依然成功（不报 422）；这里同时验证它们真的被透传给
+    approve_review 并生效——两个同名不同类型的术语（"Coffee" 同时存在
+    "产品"/"类目" 两种类型）如果不传类型提示会因为 standard_name 有歧义
+    被拒绝（见 test_review_queue.py 的
+    test_approve_review_rejects_ambiguous_standard_name_without_hint），
+    传了类型提示之后应该精确解析到对应类型的那一条，写入图谱时用它的
+    node_key。"""
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="Coffee", object_candidate="Coffee",
+            relation_type="PART_OF", reason="fuzzy_match_needs_confirmation",
+            source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    graph_client = FakeGraphClient()
+    asyncio.run(
+        _seed_terms(
+            review_conn,
+            [
+                Term(
+                    tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee",
+                    aliases=[], term_type="产品",
+                ),
+                Term(
+                    tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee",
+                    aliases=[], term_type="类目",
+                ),
+            ],
+        )
+    )
+    asyncio.run(
+        _seed_confirmed_ontology(
+            review_conn, tenant_id="t1", relation_type="PART_OF",
+            subject_term_type="产品", object_term_type="类目",
+        )
+    )
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/admin/graph-reviews/{review_id}/approve",
+            json={
+                "tenant_id": "t1",
+                "subject_standard_name": "Coffee",
+                "object_standard_name": "Coffee",
+                "subject_term_type": "产品",
+                "object_term_type": "类目",
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert len(graph_client.written) == 1
+    assert graph_client.written[0]["subject_standard_name"] == "产品:Coffee"
+    assert graph_client.written[0]["object_standard_name"] == "类目:Coffee"

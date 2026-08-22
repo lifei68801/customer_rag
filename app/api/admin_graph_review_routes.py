@@ -41,6 +41,8 @@ class ApproveRequest(BaseModel):
     tenant_id: str
     subject_standard_name: str
     object_standard_name: str
+    subject_term_type: str | None = None
+    object_term_type: str | None = None
 
 
 class RejectRequest(BaseModel):
@@ -119,6 +121,8 @@ async def approve(
             now=datetime.now(),
             confirmed_relation_types=confirmed_relation_types,
             allowed_combinations=allowed_combinations,
+            subject_term_type_hint=payload.subject_term_type,
+            object_term_type_hint=payload.object_term_type,
         )
     except ReviewNotFoundError:
         raise HTTPException(status_code=404, detail="待审核记录不存在")

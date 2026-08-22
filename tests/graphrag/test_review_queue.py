@@ -667,3 +667,68 @@ async def test_enqueue_for_review_stores_type_candidates():
     row = next(r for r in pending if r["review_id"] == review_id)
     assert row["subject_type_candidate"] == "error_code"
     assert row["object_type_candidate"] == "solution"
+
+
+async def test_approve_review_disambiguates_by_term_type_hint():
+    """两个同名不同类型的术语存在时，传 term_type_hint 应该精确解析到
+    对应类型的那一条，写入图谱时用它的 node_key。"""
+    conn = await _connect()
+    terms = [
+        Term(
+            tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee",
+            aliases=[], term_type="产品",
+        ),
+        Term(
+            tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee",
+            aliases=[], term_type="类目",
+        ),
+    ]
+    confirmed_relation_types = {"PART_OF"}
+    allowed_combinations = {("产品", "PART_OF", "类目")}
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="Coffee", object_candidate="Coffee",
+        relation_type="PART_OF", reason="fuzzy_match_needs_confirmation",
+        source="test", tenant_id="t1",
+    )
+    graph_client = FakeGraphClient()
+
+    await approve_review(
+        conn, review_id=review_id, subject_standard_name="Coffee",
+        object_standard_name="Coffee", tenant_id="t1", graph_client=graph_client,
+        terms=terms, now=_NOW, confirmed_relation_types=confirmed_relation_types,
+        allowed_combinations=allowed_combinations,
+        subject_term_type_hint="产品", object_term_type_hint="类目",
+    )
+
+    assert len(graph_client.written) == 1
+
+
+async def test_approve_review_rejects_ambiguous_standard_name_without_hint():
+    """没有类型提示、且这个名字确实对应多个不同类型的术语时，明确拒绝
+    （StandardNameNotInTermsError），不能随便选一个——这是本次改动收紧
+    的行为，2026-08-22 之前 standard_name 不可能重复，这个场景不存在。"""
+    conn = await _connect()
+    terms = [
+        Term(
+            tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee",
+            aliases=[], term_type="产品",
+        ),
+        Term(
+            tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee",
+            aliases=[], term_type="类目",
+        ),
+    ]
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="Coffee", object_candidate="Coffee",
+        relation_type="RELATED_TO", reason="fuzzy_match_needs_confirmation",
+        source="test", tenant_id="t1",
+    )
+    graph_client = FakeGraphClient()
+
+    with pytest.raises(StandardNameNotInTermsError):
+        await approve_review(
+            conn, review_id=review_id, subject_standard_name="Coffee",
+            object_standard_name="Coffee", tenant_id="t1", graph_client=graph_client,
+            terms=terms, now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+            allowed_combinations=_ALLOWED_COMBINATIONS,
+        )

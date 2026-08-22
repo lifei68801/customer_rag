@@ -7,7 +7,7 @@ import aiosqlite
 
 from app.db_migrations import add_column_if_missing
 from app.graphrag.provenance import HUMAN_APPROVED
-from app.graphrag.ontology import Term
+from app.graphrag.ontology import Term, find_term_by_type_hint
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS graph_review_queue (
@@ -307,16 +307,25 @@ async def approve_review(
     now: datetime,
     confirmed_relation_types: set[str],
     allowed_combinations: set[tuple[str, str, str]],
+    subject_term_type_hint: str | None = None,
+    object_term_type_hint: str | None = None,
 ) -> None:
     """人工确认候选关系对应的标准名称后，写入图谱并把队列状态标记为已批准。
+
+    subject_term_type_hint/object_term_type_hint 是可选的类型提示（通常
+    来自 LLM 抽取时给出的 subject_type_candidate/object_type_candidate，
+    见 app/api/admin_graph_review_routes.py 的调用方）：传了且该类型下
+    确实存在这个 standard_name，就精确解析到那一条；没传、或者传了但
+    那个类型下没有，退回"这个名字在全部术语里是否唯一"——唯一就照样
+    解析成功（2026-08-22 之前的默认行为，标准名当年不可能重复，这个
+    场景下结果不变），不唯一就拒绝（StandardNameNotInTermsError），不
+    会像旧实现那样从多个候选里随便选一个。见
+    app/graphrag/ontology.py::find_term_by_type_hint 的完整说明。
 
     写入的边标记 provenance=HUMAN_APPROVED（见 app/graphrag/provenance.py）
     ——这是这条边第一次、也是唯一一次被写入图谱的时刻（进了审核队列的
     候选，在此之前从未调用过 merge_relation），与自动写入路径共用同一个
     Neo4jGraphClient.merge_relation，只是 provenance 标记不同。
-
-    terms 是当前生效的封闭词表，两侧标准名必须在其中，见
-    StandardNameNotInTermsError 的说明。
 
     confirmed_relation_types/allowed_combinations 是调用方预先查好的该
     租户 status="confirmed" 范围，与 normalize_and_write_relations() 要求
@@ -330,22 +339,21 @@ async def approve_review(
     方便审核员改对后重新提交，而不是必须先驳回再重新走一遍抽取流程。
     """
     row = await _fetch_pending_row(conn, review_id, tenant_id=tenant_id)
-    valid_standard_names = {term.standard_name for term in terms}
-    if subject_standard_name not in valid_standard_names:
+    subject_term = find_term_by_type_hint(terms, subject_standard_name, subject_term_type_hint)
+    if subject_term is None:
         raise StandardNameNotInTermsError(
             f"subject_standard_name 不在术语表中: {subject_standard_name!r}"
         )
-    if object_standard_name not in valid_standard_names:
+    object_term = find_term_by_type_hint(terms, object_standard_name, object_term_type_hint)
+    if object_term is None:
         raise StandardNameNotInTermsError(
             f"object_standard_name 不在术语表中: {object_standard_name!r}"
         )
     # merge_relation 现在按 {tenant_id, node_key} MERGE 端点节点（node_key
     # 是创建时固定的身份键，改名后不变——ADR-0003），不能直接传人工确认的
     # 展示名 subject_standard_name/object_standard_name（改名后就不等于
-    # node_key 了）。从上面已校验过的 terms 列表按 standard_name 反查对应
-    # 的 node_key，与 app/agent/tools.py::graph_query_tool 的做法一致。
-    subject_term = next(t for t in terms if t.standard_name == subject_standard_name)
-    object_term = next(t for t in terms if t.standard_name == object_standard_name)
+    # node_key 了）。find_term_by_type_hint 已经返回了完整的 Term，直接
+    # 取 node_key，与 app/graphrag/normalization.py 的做法一致。
     subject_node_key = subject_term.node_key
     object_node_key = object_term.node_key
     combo = (subject_term.term_type, row["relation_type"], object_term.term_type)

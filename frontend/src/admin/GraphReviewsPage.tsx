@@ -272,6 +272,7 @@ export function GraphReviewsPage() {
     if (processingId !== null || batchProcessing) return
     const draft = drafts[reviewId]
     if (!draft?.subject || !draft?.object) return
+    const review = pending.find((r) => r.review_id === reviewId)
     setError(null)
     setProcessingId(reviewId)
     try {
@@ -282,6 +283,8 @@ export function GraphReviewsPage() {
           tenant_id: tenantId,
           subject_standard_name: draft.subject,
           object_standard_name: draft.object,
+          subject_term_type: review?.subject_type_candidate ?? undefined,
+          object_term_type: review?.object_type_candidate ?? undefined,
         }),
       })
       if (!response.ok) {
@@ -346,6 +349,8 @@ export function GraphReviewsPage() {
               tenant_id: tenantId,
               subject_standard_name: draft.subject,
               object_standard_name: draft.object,
+              subject_term_type: review.subject_type_candidate ?? undefined,
+              object_term_type: review.object_type_candidate ?? undefined,
             }),
           },
         )
