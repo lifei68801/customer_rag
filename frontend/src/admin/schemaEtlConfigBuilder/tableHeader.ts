@@ -1,13 +1,12 @@
-import * as XLSX from 'xlsx'
-
 // 只读文件开头一小段就够了——表头只在第一行，不需要把整个文件读进内存。
 // 64KB 远超任何现实场景下单行表头的长度（哪怕几百个中文列名也远远不到这个量级）。
 const HEADER_READ_BYTES = 65536
 
 // 按扩展名分流：CSV/TSV 是纯文本，只读文件开头一小段当文本解析；XLSX/XLS
-// 是二进制容器格式，slice().text() 这种读法完全不适用，必须交给 SheetJS
-// 解析（用 sheetRows: 1 限制只解析表头所在的第一行，同样不需要把整个
-// 工作簿读进内存）。固定读第一个工作表，其余 sheet 忽略——见
+// 是二进制 zip 容器格式，slice().text() 这种读法完全不适用，必须交给
+// SheetJS 解析（file.arrayBuffer() 仍要读入全部字节——二进制容器格式没法
+// 只读开头一段，但用 sheetRows: 1 限制只解析表头所在的第一行，不用把
+// 整个工作簿解析出来）。固定读第一个工作表，其余 sheet 忽略——见
 // docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md 决策 2。
 export async function readTableHeaderColumns(file: File): Promise<string[]> {
   const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
@@ -60,6 +59,12 @@ function parseDelimitedHeaderLine(line: string, delimiter: string): string[] {
 }
 
 async function readExcelHeaderColumns(file: File): Promise<string[]> {
+  // 动态导入而不是顶层 import：SheetJS 压缩后接近 500KB，前台聊天页和
+  // 后台管理页共享同一份打包产物（App.tsx 没有对路由做代码分割），静态
+  // import 会让只访问聊天页的普通用户也下载这个库。动态 import 让 Vite
+  // 把它拆成独立 chunk，只有真正调用到这个函数（后台上传 Excel 时）才
+  // 会触发下载。
+  const XLSX = await import('xlsx')
   const buffer = await file.arrayBuffer()
   const workbook = XLSX.read(buffer, { type: 'array', sheetRows: 1 })
   const firstSheetName = workbook.SheetNames[0]
