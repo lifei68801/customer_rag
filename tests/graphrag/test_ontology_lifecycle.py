@@ -85,6 +85,40 @@ async def test_checkout_draft_after_confirm_copies_confirmed_into_new_draft():
     assert len(draft) == 10
 
 
+async def test_checkout_draft_does_not_reseed_after_user_deletes_all_draft_rows():
+    """回归测试：草稿被用户主动删空后，后续的 checkout_draft 不能把它从已确认
+    版本里悄悄复制回来。真实场景（管理后台"删除约束"无变化的 bug 根因）：每次
+    在本体 schema 管理页增删一条草稿记录，前端都会先调用一次 checkout 再刷新
+    列表；如果删除的正好是当前唯一一条草稿记录、且该租户历史上确认过非空的
+    schema，旧实现把"草稿表当前有没有行"当成"是否需要重新播种"的信号，会把刚
+    删除的记录从已确认版本原样复制回来，用户在界面上完全看不出删除生效过。
+
+    用 ETL 租户（不播种默认关系类型）+ 单条手动创建的关系类型来构造"草稿只有
+    一条记录"的干净场景，避免被 extraction 模式的 10 条默认关系干扰。
+    """
+    from app.graphrag.ontology_relations import delete_relation_type
+    from app.graphrag.tenant_ingestion_config import set_ingestion_mode
+
+    conn = await _conn()
+    await set_ingestion_mode(conn, "t1", "etl")
+    await checkout_draft(conn, "t1")
+    await create_relation_type(conn, "t1", relation_type="HAS_SKU", example_phrase="x")
+    await confirm_ontology(conn, "t1")
+
+    # 重新检出草稿：从已确认版本复制一条过来
+    await checkout_draft(conn, "t1")
+    assert [r.relation_type for r in await list_relation_types(conn, "t1", status="draft")] == ["HAS_SKU"]
+
+    # 用户在管理后台把这条唯一的草稿记录删掉
+    await delete_relation_type(conn, "t1", "HAS_SKU")
+    assert await list_relation_types(conn, "t1", status="draft") == []
+
+    # 前端删除后会紧接着再调用一次 checkout 刷新界面：草稿必须保持为空，
+    # 不能被悄悄从已确认版本里重新播种回来
+    await checkout_draft(conn, "t1")
+    assert await list_relation_types(conn, "t1", status="draft") == []
+
+
 async def test_checkout_draft_is_idempotent_when_draft_already_exists():
     conn = await _conn()
     await checkout_draft(conn, "t1")

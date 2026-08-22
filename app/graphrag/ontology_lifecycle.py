@@ -11,6 +11,17 @@ _TABLES_WITH_TENANT_LIFECYCLE = (
     "tenant_relation_types", "term_type_relation_allowlist", "ontology_term_types",
 )
 
+_CHECKOUT_STATE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS ontology_draft_checkout_state (
+    tenant_id TEXT PRIMARY KEY
+);
+"""
+
+
+async def _ensure_checkout_state_schema(conn: aiosqlite.Connection) -> None:
+    await conn.executescript(_CHECKOUT_STATE_SCHEMA_SQL)
+    await conn.commit()
+
 
 async def ensure_ontology_schema(conn: aiosqlite.Connection) -> None:
     """统一入口：分类（按租户）+ 关系类型/约束（按租户）+ 接入模式配置
@@ -22,6 +33,7 @@ async def ensure_ontology_schema(conn: aiosqlite.Connection) -> None:
     await ensure_relations_schema(conn)
     await ensure_constraints_schema(conn)
     await ensure_ingestion_config_schema(conn)
+    await _ensure_checkout_state_schema(conn)
 
 
 async def _has_any_row(
@@ -34,17 +46,41 @@ async def _has_any_row(
     return await cursor.fetchone() is not None
 
 
+async def _has_checked_out_since_last_confirm(conn: aiosqlite.Connection, tenant_id: str) -> bool:
+    cursor = await conn.execute(
+        "SELECT 1 FROM ontology_draft_checkout_state WHERE tenant_id = ?", (tenant_id,)
+    )
+    return await cursor.fetchone() is not None
+
+
 async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
-    """检出一份可编辑的草稿：如果该租户已经有草稿，什么都不做（幂等，不覆盖正在
-    编辑的内容）；如果没有草稿但有已确认版本，从已确认版本复制一份新草稿；如果
-    两者都没有（全新租户），关系类型草稿的默认值取决于该租户的接入模式
+    """检出一份可编辑的草稿：如果该租户自上次 confirm 以来已经检出过草稿，什么都
+    不做（哪怕当前三张草稿表都是空的——那是用户主动删完了草稿内容的合法终态，
+    不是"还没检出过"，不能拿"草稿是否为空"当检出信号，见下面的踩坑记录）；如果
+    还没检出过但有已确认版本，从已确认版本复制一份新草稿；如果两者都没有（全新
+    租户），关系类型草稿的默认值取决于该租户的接入模式
     （tenant_ingestion_config.ingestion_mode）——extraction 模式播种 10 种
     通用默认关系（面向 LLM 抽取场景设计，见 ontology_relations.py），etl
     模式不播种，从空白草稿开始（这些默认关系对结构化 ETL 租户没有意义，
     见 docs/superpowers/specs/2026-08-15-etl-driven-schema-construction-
     design.md §2）。约束表草稿两种模式都留空（没有分类数据支撑，写不出
     有意义的默认组合）。
+
+    踩坑记录（这个函数曾经的实现方式，以及为什么改掉了）：早期版本没有
+    ontology_draft_checkout_state 这张表，直接用"这张草稿表当前有没有行"
+    当"是否需要从已确认版本重新播种"的信号。这个信号在草稿从有到无是"用户主动
+    删除干净"的场景下会撒谎——管理后台里删除本体管理页面（实体类型/关系类型/
+    约束三个 tab）任何一条草稿记录后，前端都会紧接着调用一次本函数刷新界面，
+    如果删除的正好是该租户当时唯一一条草稿记录、且该租户历史上确认过 schema
+    （已确认版本非空），旧实现会把这条刚删除的记录从已确认版本原样复制回来，
+    用户在界面上完全看不出删除生效过——点删除、页面刷新、数据"原地不动"。现在
+    用一张独立的状态表记录"自上次 confirm 以来是否已经检出过"，检出信号不再
+    跟"当前行数是否为零"绑在一起，删空草稿就是删空草稿，不会被这个函数悄悄
+    撤销。
     """
+    await _ensure_checkout_state_schema(conn)
+    if await _has_checked_out_since_last_confirm(conn, tenant_id):
+        return
     if not await _has_any_row(conn, "tenant_relation_types", tenant_id, "draft"):
         if await _has_any_row(conn, "tenant_relation_types", tenant_id, "confirmed"):
             await conn.execute(
@@ -79,6 +115,9 @@ async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
         # 新租户没有默认实体类型可播种——不同于关系类型有 10 种通用拓扑
         # 关系兜底，实体类型完全依赖业务定义，没有"合理默认值"这回事，
         # 两种接入模式（extraction/etl）在这一点上没有区别。
+    await conn.execute(
+        "INSERT OR IGNORE INTO ontology_draft_checkout_state (tenant_id) VALUES (?)", (tenant_id,)
+    )
     await conn.commit()
 
 
@@ -90,7 +129,14 @@ async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
 
     防护：如果没有任何草稿行，直接返回（不操作已确认的数据），防止重复确认导致
     数据丢失。这使得函数对重复/重试请求自然幂等。
+
+    确认成功后同时清掉 ontology_draft_checkout_state 里这个租户的检出标记——
+    草稿这一轮编辑会话已经结束（内容原地提升成了 confirmed），下一次
+    checkout_draft 应该被当成"还没检出过"，重新从刚确认的版本复制一份新草稿，
+    而不是延续本轮已经过期的检出状态（那样会导致新草稿从一开始就是空的，
+    checkout_draft 却因为标记还在而不去重新播种）。
     """
+    await _ensure_checkout_state_schema(conn)
     # 如果两个表都没有草稿，说明没有新的内容要提升，直接返回以避免删除已确认数据
     has_draft_in_any_table = (
         await _has_any_row(conn, "tenant_relation_types", tenant_id, "draft")
@@ -108,6 +154,9 @@ async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
             f"UPDATE {table} SET status = 'confirmed' WHERE tenant_id = ? AND status = 'draft'",
             (tenant_id,),
         )
+    await conn.execute(
+        "DELETE FROM ontology_draft_checkout_state WHERE tenant_id = ?", (tenant_id,)
+    )
     await conn.commit()
 
 
