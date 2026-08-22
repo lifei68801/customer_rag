@@ -337,6 +337,10 @@ async def test_create_term_then_list_returns_it():
 
 
 async def test_create_term_rejects_duplicate_standard_name():
+    """2026-08-22 起，standard_name 唯一性收窄到"同一 term_type 内"——
+    这里两次 create_term 都用同一个 term_type，验证同类型内仍然拒绝重复。
+    跨类型重名允许共存，见
+    test_create_term_allows_same_standard_name_across_different_types。"""
     conn = await _connect()
     await create_term(
         conn, tenant_id="default", standard_name="错误码E502", aliases=[],
@@ -346,11 +350,13 @@ async def test_create_term_rejects_duplicate_standard_name():
     with pytest.raises(TermNameConflictError):
         await create_term(
             conn, tenant_id="default", standard_name="错误码E502", aliases=[],
-            term_type="other",
+            term_type="error_code",
         )
 
 
 async def test_create_term_rejects_alias_that_collides_with_another_terms_standard_name():
+    """同类型内 alias 与另一术语的 standard_name 冲突仍然被拒绝——两次
+    create_term 用同一个 term_type（module），见上面那条测试的说明。"""
     conn = await _connect()
     await create_term(
         conn, tenant_id="default", standard_name="登录模块", aliases=[],
@@ -360,11 +366,13 @@ async def test_create_term_rejects_alias_that_collides_with_another_terms_standa
     with pytest.raises(TermNameConflictError):
         await create_term(
             conn, tenant_id="default", standard_name="错误码E502", aliases=["登录模块"],
-            term_type="error_code",
+            term_type="module",
         )
 
 
 async def test_create_term_rejects_alias_that_collides_with_another_terms_alias():
+    """同类型内 alias 与另一术语的 alias 冲突仍然被拒绝——两次 create_term
+    用同一个 term_type（error_code），见上面那条测试的说明。"""
     conn = await _connect()
     await create_term(
         conn, tenant_id="default", standard_name="错误码E502", aliases=["网关超时"],
@@ -374,7 +382,7 @@ async def test_create_term_rejects_alias_that_collides_with_another_terms_alias(
     with pytest.raises(TermNameConflictError):
         await create_term(
             conn, tenant_id="default", standard_name="登录模块", aliases=["网关超时"],
-            term_type="module",
+            term_type="error_code",
         )
 
 
@@ -936,3 +944,170 @@ async def test_list_terms_filters_by_source():
     )
     manual_only = await list_terms(conn, "default", source="manual")
     assert [t.standard_name for t in manual_only] == ["m1"]
+
+
+async def test_migrate_standard_name_index_to_type_scoped_widens_old_two_column_index():
+    """模拟一个还是老的两列索引（tenant_id, standard_name）的库，跑
+    ensure_terms_schema 迁移之后，索引应该变成三列（tenant_id, term_type,
+    standard_name），且旧数据不丢、也不需要重新迁移旧数据本身（索引变化
+    不影响已有行的可读性，只影响新写入/新冲突判定的范围）。"""
+    conn = await aiosqlite.connect(":memory:")
+    await conn.executescript(
+        """
+        CREATE TABLE terms (
+            tenant_id         TEXT NOT NULL,
+            node_key          TEXT NOT NULL,
+            standard_name     TEXT NOT NULL,
+            aliases           TEXT NOT NULL,
+            term_type         TEXT NOT NULL,
+            extra_properties  TEXT NOT NULL DEFAULT '{}',
+            source            TEXT NOT NULL DEFAULT 'unknown',
+            PRIMARY KEY (tenant_id, node_key)
+        );
+        CREATE UNIQUE INDEX idx_terms_tenant_standard_name
+            ON terms(tenant_id, standard_name);
+        """
+    )
+    await conn.execute(
+        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
+        "extra_properties, source) VALUES ('t1', '产品:Coffee', 'Coffee', '[]', '产品', '{}', 'etl')"
+    )
+    await conn.commit()
+
+    await ensure_terms_schema(conn)
+
+    cursor = await conn.execute("PRAGMA index_info('idx_terms_tenant_standard_name')")
+    columns = await cursor.fetchall()
+    assert [c[2] for c in columns] == ["tenant_id", "term_type", "standard_name"]
+    terms = await list_terms(conn, tenant_id="t1")
+    assert len(terms) == 1
+    assert terms[0].standard_name == "Coffee"
+
+
+async def test_migrate_standard_name_index_is_idempotent_when_already_type_scoped():
+    """已经是三列索引的库，迁移函数直接跳过，不报错、不重建索引。"""
+    conn = await _connect()
+    await ensure_terms_schema(conn)  # 第一次调用已经建成三列索引
+
+    await ensure_terms_schema(conn)  # 第二次调用应该是无操作的幂等跳过
+
+    cursor = await conn.execute("PRAGMA index_info('idx_terms_tenant_standard_name')")
+    columns = await cursor.fetchall()
+    assert [c[2] for c in columns] == ["tenant_id", "term_type", "standard_name"]
+
+
+async def _connect_t1_with_product_category_types() -> aiosqlite.Connection:
+    """给"跨类型重名"测试组专用的建库辅助：注册 tenant_id='t1' 下的
+    "产品"/"类目" 两个分类并确认，供 create_term/update_term 的分类校验
+    通过（这两个分类字面量是这批测试专用的，不与 _connect() 预置的
+    error_code/module/other/t 重叠）。"""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    await ensure_ontology_schema(conn)
+    await create_term_type(conn, tenant_id="t1", value="产品")
+    await create_term_type(conn, tenant_id="t1", value="类目")
+    await confirm_ontology(conn, "t1")
+    return conn
+
+
+async def test_create_term_allows_same_standard_name_across_different_types():
+    conn = await _connect_t1_with_product_category_types()
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="产品")
+
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="类目")
+
+    terms = await list_terms(conn, tenant_id="t1")
+    assert {t.term_type for t in terms} == {"产品", "类目"}
+    assert all(t.standard_name == "Coffee" for t in terms)
+
+
+async def test_create_term_rejects_same_standard_name_within_same_type():
+    conn = await _connect_t1_with_product_category_types()
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="产品")
+
+    with pytest.raises(TermNameConflictError):
+        await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="产品")
+
+
+async def test_create_term_rejects_alias_matching_another_term_of_same_type():
+    conn = await _connect_t1_with_product_category_types()
+    await create_term(conn, tenant_id="t1", standard_name="拿铁", aliases=["Coffee"], term_type="产品")
+
+    with pytest.raises(TermNameConflictError):
+        await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="产品")
+
+
+async def test_create_term_allows_alias_matching_another_term_of_different_type():
+    conn = await _connect_t1_with_product_category_types()
+    await create_term(conn, tenant_id="t1", standard_name="拿铁", aliases=["Coffee"], term_type="产品")
+
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="类目")
+
+    terms = await list_terms(conn, tenant_id="t1")
+    assert len(terms) == 2
+
+
+async def test_create_term_generates_type_prefixed_node_key():
+    conn = await _connect_t1_with_product_category_types()
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="产品")
+
+    term = await get_term(conn, "t1", "Coffee", "产品")
+    assert term.node_key == "产品:Coffee"
+
+
+async def test_get_term_disambiguates_by_term_type():
+    conn = await _connect_t1_with_product_category_types()
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="产品")
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="类目")
+
+    product = await get_term(conn, "t1", "Coffee", "产品")
+    category = await get_term(conn, "t1", "Coffee", "类目")
+
+    assert product.node_key == "产品:Coffee"
+    assert category.node_key == "类目:Coffee"
+
+
+async def test_delete_term_removes_only_the_matching_type_not_the_other():
+    """回归测试：这是本任务里最关键的一条——delete_term 底层 DELETE 语句
+    以前只按 standard_name 过滤，一旦允许跨类型重名会连另一个同名但不同
+    类型的术语一起删掉。"""
+    conn = await _connect_t1_with_product_category_types()
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="产品")
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="类目")
+
+    await delete_term(conn, "t1", "Coffee", "产品")
+
+    remaining = await list_terms(conn, tenant_id="t1")
+    assert len(remaining) == 1
+    assert remaining[0].term_type == "类目"
+
+
+async def test_update_term_rename_does_not_conflict_with_other_type_same_name():
+    conn = await _connect_t1_with_product_category_types()
+    await create_term(conn, tenant_id="t1", standard_name="拿铁", aliases=[], term_type="产品")
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="类目")
+
+    await update_term(
+        conn, tenant_id="t1", standard_name="拿铁", new_standard_name="Coffee",
+        aliases=[], term_type="产品", current_term_type="产品",
+    )
+
+    product = await get_term(conn, "t1", "Coffee", "产品")
+    category = await get_term(conn, "t1", "Coffee", "类目")
+    # node_key 创建时固定，改名不变（ADR-0003）——创建时 term_type="产品"、
+    # standard_name="拿铁"，所以 node_key 是 "产品:拿铁"（Step 10 的
+    # f"{term_type}:{standard_name}" 前缀规则），不随后续改名变化。
+    assert product.node_key == "产品:拿铁"
+    assert category.standard_name == "Coffee"
+
+
+async def test_update_term_rename_still_rejects_conflict_within_same_type():
+    conn = await _connect_t1_with_product_category_types()
+    await create_term(conn, tenant_id="t1", standard_name="拿铁", aliases=[], term_type="产品")
+    await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="产品")
+
+    with pytest.raises(TermNameConflictError):
+        await update_term(
+            conn, tenant_id="t1", standard_name="拿铁", new_standard_name="Coffee",
+            aliases=[], term_type="产品", current_term_type="产品",
+        )

@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS terms (
     PRIMARY KEY (tenant_id, node_key)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_terms_tenant_standard_name
-    ON terms(tenant_id, standard_name);
+    ON terms(tenant_id, term_type, standard_name);
 """
 
 
@@ -121,6 +121,30 @@ async def _migrate_terms_drop_product_line_column_if_needed(
     await conn.commit()
 
 
+async def _migrate_terms_standard_name_index_to_type_scoped_if_needed(
+    conn: aiosqlite.Connection,
+) -> None:
+    """把 2026-08-22 之前"(tenant_id, standard_name)"这个跨类型全局唯一索引，
+    收窄成"(tenant_id, term_type, standard_name)"——允许不同 term_type 的
+    术语共享同一个 standard_name（真实场景：ETL 导入时"产品"类目下的
+    "Coffee"和"类目"类目下的"Coffee"是两个不同的实体，见 2026-08-22 的
+    bug 调查记录）。用 PRAGMA index_info 探测当前索引的列数，2 列（旧
+    版本）就重建成 3 列，已经是 3 列或索引还不存在（全新库，稍后
+    _SCHEMA_SQL 会按新定义建）都直接跳过——幂等，模式跟
+    _migrate_terms_drop_product_line_column_if_needed 一致。
+    """
+    cursor = await conn.execute("PRAGMA index_info('idx_terms_tenant_standard_name')")
+    columns = await cursor.fetchall()
+    if len(columns) != 2:
+        return
+    await conn.execute("DROP INDEX idx_terms_tenant_standard_name")
+    await conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_terms_tenant_standard_name "
+        "ON terms(tenant_id, term_type, standard_name)"
+    )
+    await conn.commit()
+
+
 async def ensure_terms_schema(
     conn: aiosqlite.Connection, *, seed_yaml_path: Path | None = None
 ) -> None:
@@ -153,6 +177,7 @@ async def ensure_terms_schema(
         )
         await _migrate_terms_table_to_tenant_scoped_if_needed(conn)
         await _migrate_terms_drop_product_line_column_if_needed(conn)
+        await _migrate_terms_standard_name_index_to_type_scoped_if_needed(conn)
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
     if not table_already_existed and seed_yaml_path is not None and seed_yaml_path.exists():
@@ -291,13 +316,33 @@ async def count_terms(
     return row[0]
 
 
-async def get_term(conn: aiosqlite.Connection, tenant_id: str, standard_name: str) -> Term:
+async def get_term(
+    conn: aiosqlite.Connection,
+    tenant_id: str,
+    standard_name: str,
+    term_type: str | None = None,
+) -> Term:
+    """term_type 不传（默认，向后兼容旧调用方）：按 (tenant_id,
+    standard_name) 查，不区分类型——多个同名不同类型的术语存在时返回
+    其中任意一条（哪条由 SQLite 的行序决定，不保证稳定）。传了
+    term_type：精确按 (tenant_id, term_type, standard_name) 定位，同名
+    不同类型也能查到正确的那一条。新的调用方（admin_terms_routes.py
+    的编辑/删除路由）应该总是传这个参数。
+    """
     conn.row_factory = aiosqlite.Row
-    cursor = await conn.execute(
-        "SELECT tenant_id, node_key, standard_name, aliases, term_type, "
-        "extra_properties, source FROM terms WHERE tenant_id = ? AND standard_name = ?",
-        (tenant_id, standard_name),
-    )
+    if term_type is None:
+        cursor = await conn.execute(
+            "SELECT tenant_id, node_key, standard_name, aliases, term_type, "
+            "extra_properties, source FROM terms WHERE tenant_id = ? AND standard_name = ?",
+            (tenant_id, standard_name),
+        )
+    else:
+        cursor = await conn.execute(
+            "SELECT tenant_id, node_key, standard_name, aliases, term_type, "
+            "extra_properties, source FROM terms WHERE tenant_id = ? AND standard_name = ? "
+            "AND term_type = ?",
+            (tenant_id, standard_name, term_type),
+        )
     row = await cursor.fetchone()
     if row is None:
         raise TermNotFoundError(f"术语不存在: {standard_name}")
@@ -308,18 +353,21 @@ async def _check_name_conflict(
     conn: aiosqlite.Connection,
     *,
     tenant_id: str,
+    term_type: str,
     standard_name: str,
     aliases: list[str],
     exclude_standard_name: str | None = None,
 ) -> None:
-    """检查 standard_name 和 aliases 有没有跟同一租户下别的术语（编辑时
-    排除自己）的 standard_name/alias 重叠。按租户扫描，不同租户之间允许
-    使用相同的名字/别名——见 Global Constraints"node_key/standard_name
-    只需租户内唯一"。
+    """检查 standard_name 和 aliases 有没有跟同一租户、同一 term_type 下别的
+    术语（编辑时排除自己）的 standard_name/alias 重叠。按 (租户, 类型)
+    扫描——不同类型之间允许共享同一个名字/别名（2026-08-22 起，见
+    idx_terms_tenant_standard_name 的新定义），不同租户之间也允许，见
+    Global Constraints"标准名同类型内唯一"。
     """
     tenant_terms = await list_terms(conn, tenant_id)
+    same_type_terms = [t for t in tenant_terms if t.term_type == term_type]
     candidate_names = {standard_name, *aliases}
-    for term in tenant_terms:
+    for term in same_type_terms:
         if term.standard_name == exclude_standard_name:
             continue
         existing_names = {term.standard_name, *term.aliases}
@@ -327,7 +375,8 @@ async def _check_name_conflict(
         if overlap:
             conflicting = next(iter(overlap))
             raise TermNameConflictError(
-                f"{conflicting!r} 已经是术语 {term.standard_name!r} 的别名/标准名，不能重复使用"
+                f"{conflicting!r} 已经是同类型（{term_type!r}）术语 "
+                f"{term.standard_name!r} 的别名/标准名，不能重复使用"
             )
 
 
@@ -378,8 +427,11 @@ async def create_term(
     extra_properties: dict[str, object] | None = None,
     source: str = "manual",
 ) -> None:
-    """node_key 创建时直接取 standard_name 的值（Global Constraints 的
-    node_key 生成规则：extraction 模式下没有外部稳定码来源）。
+    """node_key 取 "{term_type}:{standard_name}"（2026-08-22 起，与 ETL
+    引擎 compute_node_key 的格式风格一致——冒号分隔、term_type 打头），
+    保证不同类型即使标准名相同也不会撞主键 (tenant_id, node_key)。
+    历史数据（2026-08-22 之前创建）的 node_key 不回填，仍是不带前缀的
+    纯 standard_name，见 Global Constraints。
 
     source 记录这条术语最初是通过哪个渠道创建的（manual/etl/review），
     默认值 "manual" 只是为了不用逐个改动测试里大量既有的 create_term()
@@ -393,14 +445,18 @@ async def create_term(
         conn, tenant_id=tenant_id, term_type=term_type,
         extra_properties=extra_properties,
     )
-    await _check_name_conflict(conn, tenant_id=tenant_id, standard_name=standard_name, aliases=aliases)
+    await _check_name_conflict(
+        conn, tenant_id=tenant_id, term_type=term_type,
+        standard_name=standard_name, aliases=aliases,
+    )
+    node_key = f"{term_type}:{standard_name}"
     try:
         await conn.execute(
             "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
             "extra_properties, source) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 tenant_id,
-                standard_name,
+                node_key,
                 standard_name,
                 json.dumps(aliases, ensure_ascii=False),
                 term_type,
@@ -409,7 +465,9 @@ async def create_term(
             ),
         )
     except aiosqlite.IntegrityError:
-        raise TermNameConflictError(f"{standard_name!r} 已经是已有术语的标准名，不能重复创建")
+        raise TermNameConflictError(
+            f"{standard_name!r} 已经是同类型（{term_type!r}）术语的标准名，不能重复创建"
+        )
     await conn.commit()
 
 
@@ -422,25 +480,35 @@ async def update_term(
     aliases: list[str],
     term_type: str,
     extra_properties: dict[str, object] | None = None,
+    current_term_type: str | None = None,
 ) -> None:
-    """standard_name 是当前（改名前）的名字，用来定位这条记录；
-    new_standard_name 是提交的新名字，允许和 standard_name 相同（即不改名）。
+    """standard_name 是当前（改名前）的名字，配合 current_term_type
+    （改名前的类型，可选，不传时保持旧的不按类型区分的定位行为——见
+    get_term 的同名参数说明）一起定位这条记录；new_standard_name 是
+    提交的新名字，允许和 standard_name 相同（即不改名）；term_type 是
+    改名后要写入的目标类型（可能与 current_term_type 不同，即这次编辑
+    同时改了类型），用于校验新名字在目标类型下是否冲突。
+
     node_key 不受影响，UPDATE 语句不写这一列——ADR-0003 的核心断言：
-    身份键创建后永不改变，即使术语被改名。
+    身份键创建后永不改变。如果这次编辑同时改了 term_type，这条术语的
+    node_key（如果是 2026-08-22 之后创建、带类型前缀的）里的类型前缀会
+    跟新的 term_type 不一致——这是已知、可接受的行为，node_key 前缀只
+    反映创建时的类型，不是实时准确的。
 
     UPDATE 语句不写 source 列——这是刻意的：source 只记录创建时的渠道，
     人工编辑（无论改名、改别名还是改属性）都不改变它，见
     docs/superpowers/specs/2026-08-19-data-entry-unification-design.md 决策 C.4。
     """
     extra_properties = extra_properties or {}
-    existing_term = await get_term(conn, tenant_id, standard_name)
+    existing_term = await get_term(conn, tenant_id, standard_name, current_term_type)
     await _validate_categories(
         conn, tenant_id=tenant_id, term_type=term_type,
         extra_properties=extra_properties,
         existing_extra_property_keys=frozenset(existing_term.extra_properties),
     )
     await _check_name_conflict(
-        conn, tenant_id=tenant_id, standard_name=new_standard_name, aliases=aliases,
+        conn, tenant_id=tenant_id, term_type=term_type,
+        standard_name=new_standard_name, aliases=aliases,
         exclude_standard_name=standard_name,
     )
     try:
@@ -457,14 +525,27 @@ async def update_term(
             ),
         )
     except aiosqlite.IntegrityError:
-        raise TermNameConflictError(f"{new_standard_name!r} 已经是已有术语的标准名，不能重复使用")
+        raise TermNameConflictError(
+            f"{new_standard_name!r} 已经是同类型（{term_type!r}）术语的标准名，不能重复使用"
+        )
     await conn.commit()
 
 
-async def delete_term(conn: aiosqlite.Connection, tenant_id: str, standard_name: str) -> None:
-    await get_term(conn, tenant_id, standard_name)
+async def delete_term(
+    conn: aiosqlite.Connection,
+    tenant_id: str,
+    standard_name: str,
+    term_type: str | None = None,
+) -> None:
+    """term_type 不传时保持旧的定位方式（见 get_term），但无论是否传
+    term_type，实际的 DELETE 语句都按 get_term 查出来的 node_key 定位，
+    只删这一条记录——不能像 2026-08-22 之前那样直接
+    "DELETE ... WHERE standard_name=?"，一旦两个不同类型的术语共享同一
+    个 standard_name，那样会把两条都删掉（见该 bug 的调查记录）。
+    """
+    term = await get_term(conn, tenant_id, standard_name, term_type)
     await conn.execute(
-        "DELETE FROM terms WHERE tenant_id=? AND standard_name=?", (tenant_id, standard_name)
+        "DELETE FROM terms WHERE tenant_id=? AND node_key=?", (tenant_id, term.node_key)
     )
     await conn.commit()
 
