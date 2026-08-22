@@ -435,11 +435,11 @@ export function SchemaEtlPage() {
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm font-bold text-ink">
-                数据文件（CSV，可多选）
+                数据文件（CSV/TSV/XLSX/XLS，可多选）
                 <input
                   type="file"
                   name="data_files"
-                  accept=".csv"
+                  accept=".csv,.tsv,.xlsx,.xls"
                   multiple
                   disabled={confirmed !== true}
                   className="text-ink"

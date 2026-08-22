@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { adminFetch, extractErrorDetail } from '../adminApi'
 import { CopyButton } from '../CopyButton'
 import { buildConfigYaml } from './buildConfigYaml'
-import { readCsvHeaderColumns } from './csvHeader'
+import { readTableHeaderColumns } from './tableHeader'
 import { EntityMappingEditor } from './EntityMappingEditor'
 import { RelationMappingEditor } from './RelationMappingEditor'
 import type { AddedFile, BuilderEntity, BuilderRelation, ConfirmedCombination, ConfirmedTermType } from './types'
@@ -71,7 +71,7 @@ export function SchemaEtlConfigBuilder({
     try {
       const newFiles: AddedFile[] = []
       for (const file of Array.from(fileList)) {
-        const columns = await readCsvHeaderColumns(file)
+        const columns = await readTableHeaderColumns(file)
         newFiles.push({ id: crypto.randomUUID(), file, columns })
       }
       setFiles((prev) => [...prev, ...newFiles])
@@ -107,7 +107,7 @@ export function SchemaEtlConfigBuilder({
         <span className="text-sm font-bold text-ink">1. 添加数据文件</span>
         <input
           type="file"
-          accept=".csv"
+          accept=".csv,.tsv,.xlsx,.xls"
           multiple
           disabled={disabled}
           onChange={(e) => {

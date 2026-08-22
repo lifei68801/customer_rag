@@ -1,0 +1,71 @@
+import * as XLSX from 'xlsx'
+
+// 只读文件开头一小段就够了——表头只在第一行，不需要把整个文件读进内存。
+// 64KB 远超任何现实场景下单行表头的长度（哪怕几百个中文列名也远远不到这个量级）。
+const HEADER_READ_BYTES = 65536
+
+// 按扩展名分流：CSV/TSV 是纯文本，只读文件开头一小段当文本解析；XLSX/XLS
+// 是二进制容器格式，slice().text() 这种读法完全不适用，必须交给 SheetJS
+// 解析（用 sheetRows: 1 限制只解析表头所在的第一行，同样不需要把整个
+// 工作簿读进内存）。固定读第一个工作表，其余 sheet 忽略——见
+// docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md 决策 2。
+export async function readTableHeaderColumns(file: File): Promise<string[]> {
+  const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
+  if (extension === '.xlsx' || extension === '.xls') {
+    return readExcelHeaderColumns(file)
+  }
+  const delimiter = extension === '.tsv' ? '\t' : ','
+  return readDelimitedHeaderColumns(file, delimiter)
+}
+
+async function readDelimitedHeaderColumns(file: File, delimiter: string): Promise<string[]> {
+  const chunk = await file.slice(0, HEADER_READ_BYTES).text()
+  const firstLineEnd = chunk.search(/\r\n|\r|\n/)
+  const firstLine = firstLineEnd === -1 ? chunk : chunk.slice(0, firstLineEnd)
+  return parseDelimitedHeaderLine(firstLine, delimiter)
+}
+
+// 按标准 CSV 引号规则（RFC 4180）解析一行，跟后端 Python csv 模块的解析规则
+// 对齐——如果表头列名里本身带分隔符，必须用双引号包裹（如 "A,B"），双引号
+// 内部的字面双引号写成两个连续双引号（""）转义，这里同样处理这两种情况。
+// TSV 复用同一套引号规则，只是把逗号换成传入的 delimiter。
+function parseDelimitedHeaderLine(line: string, delimiter: string): string[] {
+  const columns: string[] = []
+  let current = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i]
+    if (inQuotes) {
+      if (char === '"') {
+        if (line[i + 1] === '"') {
+          current += '"'
+          i++
+        } else {
+          inQuotes = false
+        }
+      } else {
+        current += char
+      }
+    } else if (char === '"') {
+      inQuotes = true
+    } else if (char === delimiter) {
+      columns.push(current)
+      current = ''
+    } else {
+      current += char
+    }
+  }
+  columns.push(current)
+  return columns.map((c) => c.trim())
+}
+
+async function readExcelHeaderColumns(file: File): Promise<string[]> {
+  const buffer = await file.arrayBuffer()
+  const workbook = XLSX.read(buffer, { type: 'array', sheetRows: 1 })
+  const firstSheetName = workbook.SheetNames[0]
+  if (!firstSheetName) return []
+  const sheet = workbook.Sheets[firstSheetName]
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 })
+  const headerRow = rows[0] ?? []
+  return headerRow.map((cell) => (cell === undefined || cell === null ? '' : String(cell).trim()))
+}
