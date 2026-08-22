@@ -5,6 +5,7 @@ import aiosqlite
 from app.graphrag.normalization import (
     find_fuzzy_candidate_standard_name,
     normalize_and_write_relations,
+    resolve_to_standard_name,
 )
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
@@ -510,3 +511,74 @@ async def test_downgrades_to_review_when_type_combination_not_allowed():
     pending = await list_pending_reviews(conn, tenant_id="t1")
     assert len(pending) == 1
     assert pending[0]["reason"] == "not_in_confirmed_ontology"
+
+
+_CROSS_TYPE_TERMS = [
+    Term(tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee", aliases=[], term_type="产品"),
+    Term(tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee", aliases=[], term_type="类目"),
+]
+
+
+def test_resolve_to_standard_name_without_hint_behaves_as_before_when_unambiguous():
+    assert resolve_to_standard_name("错误码E502", _TERMS) == "错误码E502"
+    assert resolve_to_standard_name("网关超时", _TERMS) == "错误码E502"
+    assert resolve_to_standard_name("不存在", _TERMS) is None
+
+
+def test_resolve_to_standard_name_with_hint_picks_exact_type_match():
+    result = resolve_to_standard_name("Coffee", _CROSS_TYPE_TERMS, term_type_hint="类目")
+
+    assert result == "Coffee"
+
+
+def test_resolve_to_standard_name_without_hint_returns_none_when_ambiguous():
+    """2026-08-22 之前会静默返回第一个命中的（行为随 terms 列表顺序变化，
+    不可预测）；改动后明确返回 None，交给调用方的模糊匹配/人工审核兜底
+    路径处理，不再悄悄选错实体。"""
+    result = resolve_to_standard_name("Coffee", _CROSS_TYPE_TERMS)
+
+    assert result is None
+
+
+def test_find_fuzzy_candidate_standard_name_with_hint_only_searches_that_type():
+    terms = [
+        Term(tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee", aliases=[], term_type="产品"),
+        Term(tenant_id="t1", node_key="类目:Coffe", standard_name="Coffe", aliases=[], term_type="类目"),
+    ]
+
+    result = find_fuzzy_candidate_standard_name("Coffee", terms, term_type_hint="类目")
+
+    assert result == "Coffe"
+
+
+async def test_normalize_and_write_relations_uses_subject_type_hint_to_disambiguate():
+    """relation 候选里的 subject_type/object_type 字段现在会被用来在归一化
+    阶段就消歧，而不是只在写入前的 combo 校验里用。构造两个同名不同类型的
+    术语，验证 LLM 给出的 subject_type 候选能让归一化精确对齐到正确的
+    那一个（不是被两个同名候选搞得无法解析）。"""
+    terms = [
+        Term(tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee", aliases=[], term_type="产品"),
+        Term(tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee", aliases=[], term_type="类目"),
+        Term(tenant_id="t1", node_key="拿铁", standard_name="拿铁", aliases=[], term_type="产品"),
+    ]
+    relations = [
+        {
+            "subject": "拿铁", "object": "Coffee", "relation_type": "PART_OF",
+            "subject_type": "产品", "object_type": "类目",
+        },
+    ]
+    graph_client = FakeGraphClient()
+
+    written = await normalize_and_write_relations(
+        relations, terms=terms, graph_client=graph_client, source="test", tenant_id="t1",
+        now=_NOW, confirmed_relation_types={"PART_OF"},
+        allowed_combinations={("产品", "PART_OF", "类目")},
+    )
+
+    assert written == 1
+    # FakeGraphClient.merge_relation 记录的字典键是 "object"（见文件顶部
+    # FakeGraphClient.merge_relation 的实现），不是 merge_relation 协议里
+    # 的形参名 "object_standard_name"。brief 原文断言用的是
+    # "object_standard_name"，与 FakeGraphClient 实际记录的字段名不符，
+    # 已按 brief 里的提示（"照着实际记录的字段名调整这条断言"）改成 "object"。
+    assert graph_client.written[0]["object"] == "类目:Coffee"

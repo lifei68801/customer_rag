@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 import aiosqlite
 
-from app.graphrag.ontology import Term
+from app.graphrag.ontology import Term, find_term_by_type_hint
 from app.graphrag.provenance import AUTO_MERGED
 from app.graphrag.review_queue import enqueue_for_review
 
@@ -30,21 +30,40 @@ class GraphWriteClientProtocol(Protocol):
     async def delete_relations_by_source(self, source: str, *, tenant_id: str) -> None: ...
 
 
-def resolve_to_standard_name(name: str, terms: list[Term]) -> str | None:
-    """精确匹配单个候选实体名到术语表标准名，未命中返回 None。
+def resolve_to_standard_name(
+    name: str, terms: list[Term], *, term_type_hint: str | None = None
+) -> str | None:
+    """精确匹配单个候选实体名（可以是标准名或别名）到术语表标准名，未命中
+    返回 None。
 
     这里用精确匹配（等于标准名或某个别名），而非 term_matcher 的子串
     包含匹配——候选名来自 LLM 抽取，通常已经是较短的实体名，用更严格
     的精确匹配降低误对齐风险。
+
+    term_type_hint 传了：优先只在该类型的术语里找精确匹配，命中就直接
+    返回；该类型下没有命中，退回下面"不分类型"的逻辑。
+
+    不分类型的匹配：候选名对应的（标准名或别名意义上的）术语只有一个时
+    才返回，命中 0 个或 2 个以上都返回 None——避免"这个名字本身在多个
+    类型下都存在"时静默选中错误的那一个。这比 2026-08-22 之前"遍历全部、
+    返回第一个命中"的旧行为更严格：旧行为在名字唯一时结果不变，只有在
+    名字确实有歧义时行为才不同（以前静默选一个，现在明确返回 None，
+    交给调用方的模糊匹配/人工审核兜底路径处理），见该 bug 的调查记录。
     """
-    for term in terms:
-        if name == term.standard_name or name in term.aliases:
-            return term.standard_name
+    if term_type_hint:
+        for term in terms:
+            if term.term_type == term_type_hint and (
+                name == term.standard_name or name in term.aliases
+            ):
+                return term.standard_name
+    matches = [t for t in terms if name == t.standard_name or name in t.aliases]
+    if len(matches) == 1:
+        return matches[0].standard_name
     return None
 
 
 def find_fuzzy_candidate_standard_name(
-    name: str, terms: list[Term], *, threshold: float = 0.75
+    name: str, terms: list[Term], *, threshold: float = 0.75, term_type_hint: str | None = None
 ) -> str | None:
     """精确匹配失败后的模糊匹配兜底：找相似度最高的单一标准名建议。
 
@@ -57,11 +76,18 @@ def find_fuzzy_candidate_standard_name(
     threshold 默认 0.75（沿用 TermGuard 的保守取值）——这是参考起点，
     需要结合真实数据调整，不是权威值。返回值只是"建议"，调用方（见
     normalize_and_write_relations）不会拿这个结果自动写入图谱，而是
-    连同建议一起进人工审核队列，由人工最终确认。
+    连同建议一起进人工审核队列，由人工最终确认——正因为最终有人工把关，
+    这里不套用 resolve_to_standard_name 那套"歧义就拒绝"的严格策略，
+    term_type_hint 传了就只在该类型内找，没传就在全部术语里找相似度
+    最高的一个（哪怕有同名不同类型的术语存在，模糊匹配本来就只是排序
+    取最优，不是精确判定"是不是这个"）。
     """
+    candidates = terms if term_type_hint is None else [
+        t for t in terms if t.term_type == term_type_hint
+    ]
     best_name: str | None = None
     best_ratio = 0.0
-    for term in terms:
+    for term in candidates:
         for candidate in [term.standard_name, *term.aliases]:
             if not candidate:
                 continue
@@ -113,18 +139,28 @@ async def normalize_and_write_relations(
     """
     written = 0
     for relation in relations:
-        subject_std = resolve_to_standard_name(relation["subject"], terms)
-        object_std = resolve_to_standard_name(relation["object"], terms)
+        subject_type_hint = relation.get("subject_type") or None
+        object_type_hint = relation.get("object_type") or None
+        subject_std = resolve_to_standard_name(
+            relation["subject"], terms, term_type_hint=subject_type_hint
+        )
+        object_std = resolve_to_standard_name(
+            relation["object"], terms, term_type_hint=object_type_hint
+        )
         if subject_std is None or object_std is None:
             suggested_subject = (
                 None
                 if subject_std is not None
-                else find_fuzzy_candidate_standard_name(relation["subject"], terms)
+                else find_fuzzy_candidate_standard_name(
+                    relation["subject"], terms, term_type_hint=subject_type_hint
+                )
             )
             suggested_object = (
                 None
                 if object_std is not None
-                else find_fuzzy_candidate_standard_name(relation["object"], terms)
+                else find_fuzzy_candidate_standard_name(
+                    relation["object"], terms, term_type_hint=object_type_hint
+                )
             )
             if suggested_subject is not None or suggested_object is not None:
                 logger.info(
@@ -201,15 +237,17 @@ async def normalize_and_write_relations(
             # merge_relation 现在按 {tenant_id, node_key} MERGE 端点节点
             # （node_key 是创建时固定的身份键，改名后不变——ADR-0003），不能
             # 直接传 resolve_to_standard_name 返回的展示名（改名后就不等于
-            # node_key 了）。从已加载的 terms 列表按 standard_name 反查
-            # 对应的 node_key，与 app/agent/tools.py::graph_query_tool 的
-            # 做法一致。
-            subject_node_key = next(
-                t.node_key for t in terms if t.standard_name == subject_std
-            )
-            object_node_key = next(
-                t.node_key for t in terms if t.standard_name == object_std
-            )
+            # node_key 了）。用 find_term_by_type_hint 反查对应的
+            # node_key——这里传的类型提示跟上面 resolve_to_standard_name
+            # 用的是同一个，subject_std/object_std 既然已经被那一步确认
+            # 存在（要么类型内精确命中、要么名字本身没有歧义），这里必然
+            # 能查到唯一对应的 Term，与 app/agent/tools.py::graph_query_tool
+            # 的做法一致。
+            subject_term = find_term_by_type_hint(terms, subject_std, subject_type_hint)
+            object_term = find_term_by_type_hint(terms, object_std, object_type_hint)
+            assert subject_term is not None and object_term is not None
+            subject_node_key = subject_term.node_key
+            object_node_key = object_term.node_key
             await graph_client.merge_relation(
                 subject_standard_name=subject_node_key,
                 object_standard_name=object_node_key,
