@@ -211,9 +211,11 @@ _TERMS = [
 class FakeGraphClient:
     def __init__(self) -> None:
         self.queried_tenant_ids: list[str] = []
+        self.queried_node_keys: list[str] = []
 
     async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
         self.queried_tenant_ids.append(tenant_id)
+        self.queried_node_keys.append(standard_name)
         return [{"related_name": "示例登录模块", "relation_type": "RELATED_TO"}]
 
 
@@ -252,6 +254,59 @@ async def test_run_tool_calls_executes_graph_query_tool():
     assert "示例错误码E502" in tool_message["content"]
     assert "示例登录模块" in tool_message["content"]
     assert graph_client.queried_tenant_ids == ["t1"]
+
+
+async def test_run_tool_calls_passes_entity_type_argument_to_graph_query_tool():
+    """LLM 在 tool_call 的 arguments 里传了 entity_type 时，必须原样透传到
+    graph_query_tool，用来在两个同名不同类型的术语之间精确消歧——不传
+    entity_type，"Coffee" 到底是产品还是类目就没法确定。"""
+    _, vector_store, bm25_index = _build_store_and_index()
+    embedding_registry = _embedding_registry()
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", ScriptedLLMProvider([]))
+
+    terms = [
+        Term(
+            tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee",
+            aliases=[], term_type="产品",
+        ),
+        Term(
+            tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee",
+            aliases=[], term_type="类目",
+        ),
+    ]
+    state = {
+        "tenant_id": "t1",
+        "planner_messages": [],
+        "pending_tool_calls": [
+            {
+                "id": "call_2",
+                "name": "graph_query_tool",
+                "arguments": '{"entity_name": "Coffee", "entity_type": "类目"}',
+            }
+        ],
+    }
+
+    graph_client = FakeGraphClient()
+    update = await run_tool_calls(
+        state,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        terms=terms,
+        graph_client=graph_client,
+    )
+
+    tool_message = update["planner_messages"][-1]
+    parsed = json.loads(tool_message["content"])
+    assert parsed["resolved"] is True
+    assert parsed["standard_name"] == "Coffee"
+    # entity_type="类目" 必须被透传到 graph_query_tool 并用来精确消歧——
+    # 查图谱用的 node_key 必须是"类目:Coffee"而不是"产品:Coffee"。
+    assert graph_client.queried_node_keys == ["类目:Coffee"]
 
 
 class FakeGraphClientWithTwoHopRow:

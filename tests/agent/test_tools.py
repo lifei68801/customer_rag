@@ -77,9 +77,11 @@ _TERMS = [
 class FakeGraphClient:
     def __init__(self) -> None:
         self.queried_tenant_ids: list[str] = []
+        self.queried_node_keys: list[str] = []
 
     async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
         self.queried_tenant_ids.append(tenant_id)
+        self.queried_node_keys.append(standard_name)
         return [{"related_name": "示例登录模块", "relation_type": "RELATED_TO"}]
 
 
@@ -109,6 +111,78 @@ async def test_graph_query_tool_returns_unresolved_without_querying_graph():
     assert result.resolved is False
     assert result.standard_name is None
     assert result.subgraph == []
+
+
+async def test_graph_query_tool_uses_entity_type_to_disambiguate():
+    terms = [
+        Term(tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee", aliases=[], term_type="产品"),
+        Term(tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee", aliases=[], term_type="类目"),
+    ]
+    graph_client = FakeGraphClient()
+
+    result = await graph_query_tool(
+        "Coffee", terms=terms, tenant_id="t1", graph_client=graph_client, entity_type="类目",
+    )
+
+    assert result.resolved is True
+    assert graph_client.queried_node_keys == ["类目:Coffee"]
+
+
+async def test_graph_query_tool_returns_unresolved_when_ambiguous_without_entity_type():
+    """两个同名不同类型的实体存在、又没有类型提示时，明确返回未命中，
+    不能随便选一个回答给客户——这是本次改动要避免的"悄悄选错实体"风险，
+    见该 bug 的调查记录。"""
+    terms = [
+        Term(tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee", aliases=[], term_type="产品"),
+        Term(tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee", aliases=[], term_type="类目"),
+    ]
+    graph_client = FakeGraphClient()
+
+    result = await graph_query_tool(
+        "Coffee", terms=terms, tenant_id="t1", graph_client=graph_client,
+    )
+
+    assert result.resolved is False
+
+
+async def test_graph_query_tool_resolves_alias_even_when_standard_name_collides_with_another_type():
+    """entity_name 是某个类型下唯一匹配的别名，虽然它解析出的 standard_name
+    恰好和另一个不同类型的术语撞名，但按"名字或别名"本身衡量并不存在歧义
+    （全部术语里只有这一条的别名是这个词），应该正常解析成功，并且用的是
+    这条别名真正对应的那个 Term 的 node_key，不能因为撞了 standard_name
+    就随便选中另一个不相关的术语，也不能整个查询失败。
+
+    如果实现照抄"先用 resolve_to_standard_name 拿到 standard_name 字符串，
+    再用 find_term_by_type_hint 反查一次 node_key"这种两次独立查找的写法
+    （两者的去重基准不同：前者按"候选名是否等于某术语的 standard_name 或
+    在其 aliases 里"去重，后者只按"standard_name 字段在全部术语里是否
+    唯一"去重），这里会因为 standard_name 撞名导致第二次查找判定"不唯一"
+    而返回 None，进而让 `assert term is not None` 抛出未处理的异常——这正是
+    app/graphrag/normalization.py `_resolve_term` 文档里记录的 2026-08-22
+    Fix round 1 bug（normalize_and_write_relations 曾经就是这么写的，修复后
+    改成只查一次，同一个 Term 对象同时提供 standard_name 和 node_key）。
+    graph_query_tool 如果照抄同样的两次查找写法就会重新踩到同一个坑，因此
+    改用 `_resolve_term` 只查一次。
+    """
+    terms = [
+        Term(
+            tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee",
+            aliases=["咖啡"], term_type="产品",
+        ),
+        Term(
+            tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee",
+            aliases=[], term_type="类目",
+        ),
+    ]
+    graph_client = FakeGraphClient()
+
+    result = await graph_query_tool(
+        "咖啡", terms=terms, tenant_id="t1", graph_client=graph_client,
+    )
+
+    assert result.resolved is True
+    assert result.standard_name == "Coffee"
+    assert graph_client.queried_node_keys == ["产品:Coffee"]
 
 
 def test_tool_schemas_do_not_expose_tenant_id():

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.graphrag.normalization import resolve_to_standard_name
+from app.graphrag.normalization import _resolve_term
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.structured_filter_query import run_structured_filter_query
@@ -54,6 +54,15 @@ GRAPH_QUERY_TOOL_SCHEMA: dict[str, Any] = {
                 "entity_name": {
                     "type": "string",
                     "description": "待查询的实体名称或别名",
+                },
+                "entity_type": {
+                    "type": "string",
+                    "description": (
+                        "该实体的类型（如果能从对话上下文推断出来，比如用户明确说的是"
+                        "\"这个产品\"还是\"这个类目\"）。不确定就不传，系统会在名字本身"
+                        "不重复时正常解析；如果同名实体有多个类型，不传可能导致查询失败，"
+                        "此时应重新以更明确的表述询问用户后再调用。"
+                    ),
                 },
             },
             "required": ["entity_name"],
@@ -197,6 +206,7 @@ async def graph_query_tool(
     terms: list[Term],
     tenant_id: str,
     graph_client: GraphClientProtocol,
+    entity_type: str | None = None,
 ) -> GraphQueryToolResult:
     """graph_query_tool 的实际执行体：先对齐术语表，命中才查图谱。
 
@@ -204,22 +214,44 @@ async def graph_query_tool(
     normalize_and_write_relations 的"先归一化再写入"是同一个原则：
     没有标准名就没有查询的意义，也避免拿一个不存在的名字去查图谱浪费一次调用。
 
+    entity_type 是可选的类型提示（LLM 从对话上下文推断，见
+    GRAPH_QUERY_TOOL_SCHEMA 的字段说明）：传了且该类型下确实存在这个
+    entity_name（本身或别名），就精确解析到那一条；没传、或者传了但
+    该类型下没有，退回"entity_name 作为标准名或别名在全部术语里是否
+    唯一"——唯一就照样解析成功，不唯一就返回 resolved=False，不会像
+    2026-08-22 之前那样在多个同名不同类型的实体里随便选一个回答给客户
+    （那样可能答非所问，是本次改动要消除的风险）。
+
+    用 `_resolve_term`（normalization.py 内部实际实现消歧的函数，
+    resolve_to_standard_name 只是取它的 `.standard_name`）而不是先调用
+    resolve_to_standard_name 拿字符串、再用 find_term_by_type_hint 反查
+    一次 node_key：后者是两次独立查找，各自的去重基准不同——
+    resolve_to_standard_name 按"候选名是否等于某术语的 standard_name
+    或在其 aliases 里"去重，find_term_by_type_hint 只按"standard_name
+    字段本身在全部术语里是否唯一"去重。2026-08-22 起 standard_name
+    允许跨 term_type 重复后，这两套规则会在"entity_name 通过别名唯一
+    命中某个 Term，但这个 Term 的 standard_name 恰好和另一个不相关、
+    不同类型的 Term 撞名"时给出不同答案，导致后面反查 node_key 失败——
+    这正是 normalization.py `_resolve_term` 文档里记录的 Fix round 1
+    bug（normalize_and_write_relations 曾经就是这么写的，修复后改成
+    只查一次，同一个 Term 对象同时提供 standard_name 和 node_key）。
+    graph_query_tool 的 entity_name 同样可能是别名（不止是标准名，见
+    GRAPH_QUERY_TOOL_SCHEMA 的字段说明），所以这里直接复用同一个已修复
+    的单次查找，不重新踩一遍那个坑。
+
     tenant_id 透传给 query_subgraph，防止返回给 LLM 的子图里混入其它
     租户的关系事实。
     """
-    standard_name = resolve_to_standard_name(entity_name, terms)
-    if standard_name is None:
+    term = _resolve_term(entity_name, terms, term_type_hint=entity_type)
+    if term is None:
         return GraphQueryToolResult(resolved=False, standard_name=None, subgraph=[])
 
-    # resolve_to_standard_name 返回的是展示名，查图谱要用稳定身份键——
-    # 改名后 standard_name 会变但 node_key 不变（ADR-0003），从已加载的
-    # terms 列表里按 standard_name 反查对应的 node_key，不改
-    # resolve_to_standard_name 本身（它是抽取管道 normalization.py 也在
-    # 用的共享函数，签名不在本计划改动范围内）。
-    node_key = next(t.node_key for t in terms if t.standard_name == standard_name)
-    subgraph = await graph_client.query_subgraph(node_key, tenant_id=tenant_id)
+    # term.node_key 和 term.standard_name 来自同一次查找、同一个 Term
+    # 对象——改名后 standard_name 会变但 node_key 不变（ADR-0003），查
+    # 图谱必须用稳定的 node_key，不能用展示名。
+    subgraph = await graph_client.query_subgraph(term.node_key, tenant_id=tenant_id)
     return GraphQueryToolResult(
-        resolved=True, standard_name=standard_name, subgraph=subgraph
+        resolved=True, standard_name=term.standard_name, subgraph=subgraph
     )
 
 
