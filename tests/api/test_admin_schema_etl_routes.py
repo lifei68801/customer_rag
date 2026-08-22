@@ -415,7 +415,7 @@ def test_start_run_accepts_xlsx_data_file(client, review_conn):
 
 def test_sanitize_data_filename_handles_dangerous_single_dot_names():
     """直接单元测试 _sanitize_data_filename 的防御分支：纯 "." 和 ".." 会被
-    转换成 "_." 和 "_."，防止通过 run_dir / "." 或 run_dir / ".." 指向目录
+    转换成 "_." 和 "_.."，防止通过 run_dir / "." 或 run_dir / ".." 指向目录
     本身或其父目录的路径穿越。
 
     这个分支在 HTTP endpoint 的当前检查顺序下不可达（文件名 "." 和 ".."

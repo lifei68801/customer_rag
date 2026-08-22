@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, datetime
+
 import aiosqlite
 import pytest
 
@@ -9,6 +11,7 @@ from app.graphrag.schema_etl_config import AllocatedCodeNodeKeyPart, ColumnNodeK
 from app.graphrag.schema_etl_row_processing import (
     RowProcessingError,
     compute_node_key,
+    convert_excel_cell_to_string,
     convert_field_value,
 )
 
@@ -170,11 +173,6 @@ def test_convert_field_value_raises_on_non_numeric_string_for_number_type():
     specs = {"numeric_value": ExtraFieldSpec(name="numeric_value", value_type="number")}
     with pytest.raises(RowProcessingError):
         convert_field_value(extra_field_specs=specs, field_name="numeric_value", raw_value="不是数字")
-
-
-from datetime import date, datetime
-
-from app.graphrag.schema_etl_row_processing import convert_excel_cell_to_string
 
 
 def test_convert_excel_cell_to_string_int():
