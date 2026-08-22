@@ -31,6 +31,10 @@ function toDraft(term: TermRecord): TermDraft {
   }
 }
 
+function termKey(term: { term_type: string; standard_name: string }): string {
+  return `${term.term_type}::${term.standard_name}`
+}
+
 function draftToRecord(draft: TermDraft): TermRecord {
   return {
     standard_name: draft.standard_name.trim(),
@@ -135,7 +139,7 @@ export function TermsPage() {
 
   const handleStartEdit = (term: TermRecord) => {
     if (editingKey !== null) return
-    setEditingKey(term.standard_name)
+    setEditingKey(termKey(term))
     setEditDraft(toDraft(term))
   }
 
@@ -144,13 +148,17 @@ export function TermsPage() {
     setEditDraft(null)
   }
 
-  const handleSaveEdit = async (originalStandardName: string) => {
+  const handleSaveEdit = async (originalTerm: TermRecord) => {
     if (!sessionToken || !editDraft || savingKey !== null) return
     if (!editDraft.standard_name.trim()) return
     setError(null)
-    setSavingKey(originalStandardName)
+    const key = termKey(originalTerm)
+    setSavingKey(key)
     try {
-      await updateTerm(sessionToken, tenantId, originalStandardName, draftToRecord(editDraft))
+      await updateTerm(
+        sessionToken, tenantId, originalTerm.standard_name, originalTerm.term_type,
+        draftToRecord(editDraft),
+      )
       showToast('已保存')
       setEditingKey(null)
       setEditDraft(null)
@@ -162,13 +170,14 @@ export function TermsPage() {
     }
   }
 
-  const handleDelete = async (standardName: string) => {
+  const handleDelete = async (term: TermRecord) => {
     if (!sessionToken || deletingKey !== null) return
-    if (!(await confirm(`确定要删除术语「${standardName}」吗？此操作不可撤销。`))) return
+    if (!(await confirm(`确定要删除术语「${term.standard_name}」吗？此操作不可撤销。`))) return
     setError(null)
-    setDeletingKey(standardName)
+    const key = termKey(term)
+    setDeletingKey(key)
     try {
-      await deleteTerm(sessionToken, tenantId, standardName)
+      await deleteTerm(sessionToken, tenantId, term.standard_name, term.term_type)
       showToast('已删除实体')
       await refresh()
     } catch (err) {
@@ -212,10 +221,11 @@ export function TermsPage() {
       {!loaded && <Skeleton variant="table-rows" count={5} />}
       {loaded &&
         terms.map((term) => {
-          const isEditing = editingKey === term.standard_name
+          const key = termKey(term)
+          const isEditing = editingKey === key
           return (
             <div
-              key={term.standard_name}
+              key={key}
               className={`flex flex-col gap-3 rounded-card border border-subtle bg-card shadow-soft-sm ${
                 density === 'compact' ? 'p-2.5' : 'p-4'
               }`}
@@ -250,11 +260,11 @@ export function TermsPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleDelete(term.standard_name)}
+                      onClick={() => handleDelete(term)}
                       disabled={editingKey !== null || deletingKey !== null}
                       className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
-                      {deletingKey === term.standard_name ? '删除中…' : '删除'}
+                      {deletingKey === key ? '删除中…' : '删除'}
                     </button>
                   </div>
                 </div>
@@ -304,11 +314,11 @@ export function TermsPage() {
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => handleSaveEdit(term.standard_name)}
+                      onClick={() => handleSaveEdit(term)}
                       disabled={!editDraft.standard_name.trim() || savingKey !== null}
                       className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
-                      {savingKey === term.standard_name ? '保存中…' : '保存'}
+                      {savingKey === key ? '保存中…' : '保存'}
                     </button>
                     <button
                       type="button"

@@ -140,7 +140,7 @@ async def create_new_term(
         raise HTTPException(status_code=400, detail=str(exc))
     term = Term(
         tenant_id=tenant_id,
-        node_key=payload.standard_name,
+        node_key=f"{payload.term_type}:{payload.standard_name}",
         standard_name=payload.standard_name,
         aliases=payload.aliases,
         term_type=payload.term_type,
@@ -164,6 +164,7 @@ async def update_existing_term(
     tenant_id: str,
     standard_name: str,
     payload: TermWriteRequest,
+    term_type: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> TermResponse:
@@ -172,7 +173,7 @@ async def update_existing_term(
     except TenantNotFoundError:
         raise HTTPException(status_code=404, detail="租户不存在或未启用")
     try:
-        existing_before_update = await get_term(review_conn, tenant_id, standard_name)
+        existing_before_update = await get_term(review_conn, tenant_id, standard_name, term_type)
         await update_term(
             review_conn,
             tenant_id=tenant_id,
@@ -181,6 +182,7 @@ async def update_existing_term(
             aliases=payload.aliases,
             term_type=payload.term_type,
             extra_properties=payload.extra_properties,
+            current_term_type=term_type,
         )
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
@@ -233,6 +235,7 @@ async def update_existing_term(
 async def delete_existing_term(
     tenant_id: str,
     standard_name: str,
+    term_type: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> dict[str, bool]:
@@ -247,7 +250,7 @@ async def delete_existing_term(
     # 一致状态——这一步必须在 delete_term() 之前，不能删完 SQLite 记录
     # 才发现图谱不允许删。
     try:
-        term = await get_term(review_conn, tenant_id, standard_name)
+        term = await get_term(review_conn, tenant_id, standard_name, term_type)
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
     edge_count = await graph_client.count_relation_edges_for_term(
@@ -255,7 +258,7 @@ async def delete_existing_term(
     )
     if edge_count > 0:
         raise HTTPException(status_code=409, detail="该术语已在图谱中使用，无法删除")
-    await delete_term(review_conn, tenant_id, standard_name)
+    await delete_term(review_conn, tenant_id, standard_name, term_type)
     try:
         await graph_client.delete_term_node(tenant_id=tenant_id, node_key=term.node_key)
     except Exception:

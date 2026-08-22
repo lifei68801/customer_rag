@@ -70,10 +70,12 @@ export async function updateTerm(
   sessionToken: string,
   tenantId: string,
   currentStandardName: string,
+  currentTermType: string,
   term: TermRecord,
 ): Promise<TermRecord> {
   const response = await adminFetch(
-    `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(currentStandardName)}`,
+    `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(currentStandardName)}` +
+      `?term_type=${encodeURIComponent(currentTermType)}`,
     sessionToken,
     {
       method: 'PUT',
@@ -92,9 +94,11 @@ export async function deleteTerm(
   sessionToken: string,
   tenantId: string,
   standardName: string,
+  termType: string,
 ): Promise<void> {
   const response = await adminFetch(
-    `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(standardName)}`,
+    `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(standardName)}` +
+      `?term_type=${encodeURIComponent(termType)}`,
     sessionToken,
     { method: 'DELETE' },
   )

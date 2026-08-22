@@ -319,7 +319,7 @@ def test_update_term_without_rename_syncs_to_graph_client(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/术语A",
+            "/api/admin/t1/terms/术语A?term_type=t",
             json={
                 "standard_name": "术语A", "aliases": ["新别名"],
                 "term_type": "t2",
@@ -348,7 +348,7 @@ def test_update_term_with_rename_calls_rename_then_sync(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/旧名字",
+            "/api/admin/t1/terms/旧名字?term_type=t",
             json={"standard_name": "新名字", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
@@ -356,7 +356,7 @@ def test_update_term_with_rename_calls_rename_then_sync(terms_conn):
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert graph_client.renamed == [("旧名字", "新名字")]
+    assert graph_client.renamed == [("t:旧名字", "新名字")]
     assert graph_client.synced[0]["standard_name"] == "新名字"
     assert graph_client.call_order == ["rename_term_node", "sync_term"]
 
@@ -372,7 +372,7 @@ def test_update_term_rename_into_existing_name_returns_400(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/A",
+            "/api/admin/t1/terms/A?term_type=t",
             json={"standard_name": "B", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
@@ -391,7 +391,7 @@ def test_update_nonexistent_term_returns_404(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/不存在",
+            "/api/admin/t1/terms/不存在?term_type=t",
             json={"standard_name": "不存在", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
@@ -414,13 +414,13 @@ def test_delete_term_without_graph_edges_succeeds(terms_conn):
     try:
         client = TestClient(app)
         response = client.delete(
-            "/api/admin/t1/terms/待删除", headers=_authed_headers(session_store)
+            "/api/admin/t1/terms/待删除?term_type=t", headers=_authed_headers(session_store)
         )
     finally:
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert graph_client.deleted == ["待删除"]
+    assert graph_client.deleted == ["t:待删除"]
 
 
 def test_delete_nonexistent_term_returns_404_even_when_graph_has_edges(terms_conn):
@@ -437,7 +437,7 @@ def test_delete_nonexistent_term_returns_404_even_when_graph_has_edges(terms_con
     try:
         client = TestClient(app)
         response = client.delete(
-            "/api/admin/t1/terms/不存在", headers=_authed_headers(session_store)
+            "/api/admin/t1/terms/不存在?term_type=t", headers=_authed_headers(session_store)
         )
     finally:
         app.dependency_overrides.clear()
@@ -458,7 +458,7 @@ def test_delete_term_with_graph_edges_returns_409(terms_conn):
     try:
         client = TestClient(app)
         response = client.delete(
-            "/api/admin/t1/terms/使用中", headers=_authed_headers(session_store)
+            "/api/admin/t1/terms/使用中?term_type=t", headers=_authed_headers(session_store)
         )
     finally:
         app.dependency_overrides.clear()
@@ -568,7 +568,7 @@ def test_update_term_drops_blank_aliases(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/术语A",
+            "/api/admin/t1/terms/术语A?term_type=t",
             json={
                 "standard_name": "术语A",
                 "aliases": ["  别名1  ", "", "   "],
@@ -821,7 +821,7 @@ def test_update_term_preserves_source_regardless_of_payload(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/术语B",
+            "/api/admin/t1/terms/术语B?term_type=t",
             json={
                 "standard_name": "术语B", "aliases": [], "term_type": "t",
                 "source": "manual",
@@ -833,6 +833,113 @@ def test_update_term_preserves_source_regardless_of_payload(terms_conn):
 
     assert response.status_code == 200
     assert response.json()["source"] == "etl"
+
+
+def test_update_term_requires_term_type_query_param(terms_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        create_response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "Coffee", "aliases": [], "term_type": "t",
+                "extra_properties": {}, "source": "manual",
+            },
+            headers=_authed_headers(session_store),
+        )
+        assert create_response.status_code == 200
+
+        response = client.put(
+            "/api/admin/t1/terms/Coffee",
+            json={
+                "standard_name": "拿铁", "aliases": [], "term_type": "t",
+                "extra_properties": {}, "source": "manual",
+            },
+            headers=_authed_headers(session_store),
+        )
+
+        assert response.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_delete_term_requires_term_type_query_param(terms_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        create_response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "Coffee", "aliases": [], "term_type": "t",
+                "extra_properties": {}, "source": "manual",
+            },
+            headers=_authed_headers(session_store),
+        )
+        assert create_response.status_code == 200
+
+        response = client.delete(
+            "/api/admin/t1/terms/Coffee", headers=_authed_headers(session_store)
+        )
+
+        assert response.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_update_and_delete_term_disambiguate_by_term_type(terms_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "Coffee", "aliases": [], "term_type": "t",
+                "extra_properties": {}, "source": "manual",
+            },
+            headers=_authed_headers(session_store),
+        )
+        client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "Coffee", "aliases": [], "term_type": "t2",
+                "extra_properties": {}, "source": "manual",
+            },
+            headers=_authed_headers(session_store),
+        )
+
+        update_response = client.put(
+            "/api/admin/t1/terms/Coffee?term_type=t",
+            json={
+                "standard_name": "拿铁", "aliases": [], "term_type": "t",
+                "extra_properties": {}, "source": "manual",
+            },
+            headers=_authed_headers(session_store),
+        )
+        assert update_response.status_code == 200
+        assert update_response.json()["standard_name"] == "拿铁"
+
+        delete_response = client.delete(
+            "/api/admin/t1/terms/Coffee?term_type=t2", headers=_authed_headers(session_store)
+        )
+        assert delete_response.status_code == 200
+
+        list_response = client.get("/api/admin/t1/terms", headers=_authed_headers(session_store))
+        remaining_names = {t["standard_name"] for t in list_response.json()["terms"]}
+        assert remaining_names == {"拿铁"}
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_create_term_rejects_bool_inside_number_array_via_http(terms_conn):
