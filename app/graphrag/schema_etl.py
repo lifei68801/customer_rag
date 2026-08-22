@@ -73,11 +73,18 @@ def _detect_text_encoding(path: Path) -> str:
     真正的行级处理仍然通过 csv.DictReader 用确定的编码重新打开文件、
     流式进行，不会把整份解码后的文本一次性留在内存里。两种编码都解码
     失败时，让 GBK 阶段的 UnicodeDecodeError 原样往上抛，不做进一步猜测。
+
+    UTF-8 分支返回 "utf-8-sig" 而不是 "utf-8"：Excel 的"CSV UTF-8"导出
+    格式会在文件开头写一个 BOM，纯 "utf-8" 编码不会因为这个 BOM 报解码
+    错误，但会把它解码成字面的 U+FEFF 字符粘在第一个字段名前面，导致
+    表头第一列对不上用户看到的列名、整份文件被误判成"缺列"全部跳过。
+    "utf-8-sig" 对没有 BOM 的普通 UTF-8 文件解码结果完全一样，只在文件
+    真的带 BOM 时才会正确剥掉它，是纯粹的超集写法。
     """
     raw = path.read_bytes()
     try:
         raw.decode("utf-8")
-        return "utf-8"
+        return "utf-8-sig"
     except UnicodeDecodeError:
         pass
     raw.decode("gbk")
@@ -85,8 +92,11 @@ def _detect_text_encoding(path: Path) -> str:
 
 
 def _read_delimited_rows(path: Path, *, delimiter: str) -> Iterator[dict[str, str]]:
-    """逐行流式产出 CSV/TSV 源文件的行，不把整个文件读进内存——设计文档第
-    6.4 节给出的真实规模是"MUJI 一张 SKU 表 18 万+ 行"。"""
+    """逐行流式产出 CSV/TSV 源文件的行——设计文档第 6.4 节给出的真实规模
+    是"MUJI 一张 SKU 表 18 万+ 行"。注意：编码探测阶段（见
+    _detect_text_encoding）会把整个文件读一遍原始字节做 decode 测试，
+    这一步不是流式的；探测完成后的逐行处理本身才是流式、不整份文本
+    常驻内存。"""
     encoding = _detect_text_encoding(path)
     with path.open(encoding=encoding, newline="") as handle:
         yield from csv.DictReader(handle, delimiter=delimiter)
@@ -107,10 +117,18 @@ def _read_xlsx_rows(path: Path) -> Iterator[dict[str, str]]:
             return
         header = [str(cell).strip() if cell is not None else "" for cell in header_row]
         for row in rows_iter:
-            yield {
+            values = {
                 header[i]: convert_excel_cell_to_string(row[i] if i < len(row) else None)
                 for i in range(len(header))
             }
+            # openpyxl 的 read_only 迭代会按工作表"已用范围"补齐行数，哪怕
+            # 某一行早就被清空也会产出全空的幽灵行（常见于手工编辑过的
+            # Excel 导出文件）。跳过全空行，避免这些幽灵行被当成"缺列"的
+            # 脏数据行计入 skipped_rows，也让这条路径跟 CSV 侧
+            # csv.DictReader 对空行的处理保持一致。
+            if not any(values.values()):
+                continue
+            yield values
     finally:
         workbook.close()
 
@@ -126,7 +144,12 @@ def _xlrd_cell_to_python_value(cell: "xlrd.sheet.Cell", datemode: int) -> object
         return bool(cell.value)
     if cell.ctype == xlrd.XL_CELL_DATE:
         return xlrd.xldate_as_datetime(cell.value, datemode)
-    return cell.value  # XL_CELL_NUMBER（float）/ XL_CELL_TEXT（str）/ XL_CELL_ERROR
+    if cell.ctype == xlrd.XL_CELL_ERROR:
+        # 公式错误单元格（#DIV/0!、#N/A 等）——cell.value 是一个内部错误码
+        # 整数，直接透传会被字符串化成一个看起来正常、实际语义错误的值。
+        # 当成空值处理，让这一行走"缺列"的正常脏数据路径。
+        return None
+    return cell.value  # XL_CELL_NUMBER（float）/ XL_CELL_TEXT（str）
 
 
 def _read_xls_rows(path: Path) -> Iterator[dict[str, str]]:
@@ -139,12 +162,16 @@ def _read_xls_rows(path: Path) -> Iterator[dict[str, str]]:
         return
     header = [str(worksheet.cell_value(0, col)).strip() for col in range(worksheet.ncols)]
     for row_idx in range(1, worksheet.nrows):
-        yield {
+        values = {
             header[col_idx]: convert_excel_cell_to_string(
                 _xlrd_cell_to_python_value(worksheet.cell(row_idx, col_idx), workbook.datemode)
             )
             for col_idx in range(len(header))
         }
+        # 跟 _read_xlsx_rows 同样的理由：跳过全空行。
+        if not any(values.values()):
+            continue
+        yield values
 
 
 def _read_table_rows(path: Path) -> Iterator[dict[str, str]]:

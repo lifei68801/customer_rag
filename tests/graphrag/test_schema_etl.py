@@ -583,9 +583,8 @@ async def test_run_schema_etl_reads_xlsx_source_file(tmp_path):
     # "Product:1001.0"——验证 convert_excel_cell_to_string 真的被用在了
     # 读取路径上，不是只在 Task 2 的单元测试里孤立存在。
     # 注意：get_term(conn, tenant_id, standard_name) 的真实签名只接受
-    # standard_name，不接受 node_key 参数（Task 3 审查已经发现并修正过
-    # 这处签名笔误，这里直接用修正后的正确调用方式）——按 standard_name
-    # 查询，再断言返回对象的 .node_key 字段。
+    # standard_name，不接受 node_key 参数——按 standard_name 查询，
+    # 再断言返回对象的 .node_key 字段。
 
 
 async def test_run_schema_etl_reads_xls_source_file(tmp_path):
@@ -646,3 +645,79 @@ async def test_run_schema_etl_xlsx_empty_sheet_writes_nothing(tmp_path):
 
     assert report.entities_written == 0
     assert report.entities_skipped == 0
+
+
+async def test_run_schema_etl_xlsx_phantom_trailing_row_is_skipped_not_counted(tmp_path):
+    """openpyxl 的 read_only 迭代会按工作表已用范围补齐行数，哪怕某一行
+    早就被清空也会产出全空的幽灵行（常见于手工编辑过的 Excel 导出文件）。
+    这条用例专门构造一个"先写值、再清空"的行，验证它被安静跳过、不计入
+    entities_skipped，而不是被当成脏数据报出来。"""
+    conn = await _confirmed_conn()
+
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append(["product_group_id", "product_group_name", "md_no"])
+    worksheet.append([1001, "圆角收纳盒", "A123"])
+    # 故意先写一个值再清空，让 openpyxl 的已用范围延伸到这一行——这正是
+    # 幽灵行产生的真实场景，不是凭空构造的极端情况。
+    worksheet.append(["temp", "temp", "temp"])
+    worksheet["A3"] = None
+    worksheet["B3"] = None
+    worksheet["C3"] = None
+    workbook.save(str(tmp_path / "products.xlsx"))
+
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.xlsx",
+                standard_name_column="product_group_name",
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 1
+    assert report.entities_skipped == 0
+    assert report.skipped_rows == []
+
+
+async def test_run_schema_etl_reads_utf8_bom_encoded_csv(tmp_path):
+    """Excel 的"CSV UTF-8"导出格式会在文件开头写一个 BOM——见
+    docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md
+    决策 6 的补充说明。这里直接写带 BOM 的字节，验证读取器能正确剥掉
+    BOM、不会让它粘在表头第一列名字前面导致列名对不上。"""
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_bytes(
+        "﻿product_group_id,product_group_name,md_no\n1001,圆角收纳盒,A123\n".encode("utf-8")
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_column="product_group_name",
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 1
+    assert report.entities_skipped == 0
+    term = await get_term(conn, tenant_id="muji", standard_name="圆角收纳盒")
+    assert term is not None
+    assert term.node_key == "Product:1001"
