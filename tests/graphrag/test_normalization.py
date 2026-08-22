@@ -582,3 +582,75 @@ async def test_normalize_and_write_relations_uses_subject_type_hint_to_disambigu
     # "object_standard_name"，与 FakeGraphClient 实际记录的字段名不符，
     # 已按 brief 里的提示（"照着实际记录的字段名调整这条断言"）改成 "object"。
     assert graph_client.written[0]["object"] == "类目:Coffee"
+
+
+async def test_normalize_and_write_relations_does_not_crash_when_alias_match_owner_collides_with_unrelated_type():
+    """Fix round 1 回归测试（code review 发现的 Important 问题）。
+
+    构造场景：候选名"网关超时"只能通过别名唯一匹配到 term_a（不分类型
+    的 name-or-alias 兜底逻辑，因为 term_type_hint="category" 在两个
+    术语里都没有精确类型命中）；但 term_a 的 standard_name "错误码E502"
+    恰好和另一个完全不相关、不同类型的 term_b 撞名（2026-08-22 起这是
+    合法状态，见 Task 1/2）。
+
+    Fix round 1 之前：normalize_and_write_relations 先用
+    resolve_to_standard_name 算出 subject_std="错误码E502"（唯一，
+    非 None），再用 find_term_by_type_hint(terms, "错误码E502", "category")
+    反查 node_key——但这个函数是按"standard_name 字段在全部术语里只
+    出现一次"判重的，"错误码E502"在 terms 里出现两次（term_a、
+    term_b），判定为歧义返回 None，触发
+    `assert subject_term is not None`，抛出未被任何 except 捕获的
+    AssertionError，整批候选因为一条边直接崩掉。
+
+    Fix round 1 之后：normalize_and_write_relations 只调用一次
+    _resolve_term 就同时拿到 standard_name 和 node_key（不再有第二次、
+    按不同规则的反查），这条候选本身其实并不歧义——它明确、唯一地对应
+    term_a（唯一一个别名是"网关超时"的术语）——所以应该正常解析并写入
+    图谱，写入的 node_key 必须是 term_a 的（不是 term_b 的，也不应该
+    退化成"未能对齐术语表"分支，那样反而是在丢弃一条本可以正确解析的
+    候选）。
+    """
+    term_a = Term(
+        tenant_id="t1",
+        node_key="term_a_node_key",
+        standard_name="错误码E502",
+        aliases=["网关超时"],
+        term_type="error_code",
+    )
+    term_b = Term(
+        tenant_id="t1",
+        # 跟 term_a 的 standard_name 撞名，但类型不同、别名不同、
+        # node_key 也不同——一个完全不相关的术语。
+        node_key="term_b_node_key",
+        standard_name="错误码E502",
+        aliases=[],
+        term_type="module",
+    )
+    # 只带 _TERMS 里的 module 术语（"登录模块"/别名"认证模块"）作对象侧，
+    # 不带 _TERMS[0]（"错误码E502"/别名"网关超时"）——它跟这里新构造的
+    # term_a 别名相同，会制造一个本测试不需要的额外歧义源，掩盖真正要
+    # 测的场景。
+    terms = [term_a, term_b, _TERMS[1]]
+    relations = [
+        {
+            "subject": "网关超时",
+            # 故意传一个两边都不匹配的类型提示（category 不是 term_a 的
+            # error_code，也不是 term_b 的 module），逼 resolve 落进
+            # "不分类型、按 name-or-alias 唯一匹配"的兜底分支。
+            "subject_type": "category",
+            "object": "认证模块",
+            "object_type": "module",
+            "relation_type": "RELATED_TO",
+        }
+    ]
+    graph_client = FakeGraphClient()
+
+    written = await normalize_and_write_relations(
+        relations, terms=terms, graph_client=graph_client, source="a.md", tenant_id="t1",
+        now=_NOW, confirmed_relation_types={"RELATED_TO"},
+        allowed_combinations={("category", "RELATED_TO", "module")},
+    )
+
+    assert written == 1
+    assert graph_client.written[0]["subject"] == "term_a_node_key"
+    assert graph_client.written[0]["object"] == "登录模块"
