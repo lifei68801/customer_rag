@@ -86,7 +86,11 @@ export function GraphReviewsPage() {
   const [historyTotal, setHistoryTotal] = useState(0)
   const [termTypeOptions, setTermTypeOptions] = useState<string[]>([])
   const [createDraft, setCreateDraft] = useState<CreateEntityDraft | null>(null)
-  const [justCreated, setJustCreated] = useState<Record<number, { subject: boolean; object: boolean }>>({})
+  // 值是评审员在内联创建弹窗里实际确认过的 term_type（不是布尔值）——
+  // 批准时要用这个真实类型覆盖 LLM 猜的 subject_type_candidate/
+  // object_type_candidate，见 handleApprove/handleBatchApprove 里
+  // resolveApprovalTermType 的说明。
+  const [justCreated, setJustCreated] = useState<Record<number, { subject?: string; object?: string }>>({})
 
   useEffect(() => {
     document.title = '文档抽取 · 管理后台'
@@ -265,6 +269,27 @@ export function GraphReviewsPage() {
     }
   }, [tab, refreshPending, refreshHistory])
 
+  // 批准请求里 subject_term_type/object_term_type 优先用评审员通过内联
+  // 创建实体流程实际确认过的类型（justCreated[reviewId][field]）——不能
+  // 直接信 LLM 抽取阶段给出的 candidateType（subject_type_candidate/
+  // object_type_candidate）。原因跟 handleOpenCreateEntity 里的注释一样：
+  // candidateType 只是未经校验的猜测值。如果评审员用内联创建给这一侧建了
+  // 一个跟 LLM 猜测不同类型的新实体（比如 LLM 猜"产品"，评审员实际建的是
+  // "类目"），批准时继续传 LLM 的猜测值会让后端按错误的类型消歧，解析到
+  // 一个同名但完全无关的已有术语，而不是评审员刚创建的那一个——这正是
+  // 本次改动要修的 bug（见 2026-08-23 最终评审 Finding I2）。没有走过
+  // 内联创建流程的一侧（justCreated 里没有对应记录）行为不变，继续退回
+  // candidateType。
+  const resolveApprovalTermType = (
+    reviewId: number,
+    field: 'subject' | 'object',
+    candidateType: string | null | undefined,
+  ): string | undefined => {
+    const confirmedType = justCreated[reviewId]?.[field]
+    if (confirmedType) return confirmedType
+    return candidateType ?? undefined
+  }
+
   const handleApprove = async (reviewId: number) => {
     if (!sessionToken) return
     // UI 上按钮已经用 disabled 挡了，这里再查一次 processingId 是双保险：
@@ -283,8 +308,12 @@ export function GraphReviewsPage() {
           tenant_id: tenantId,
           subject_standard_name: draft.subject,
           object_standard_name: draft.object,
-          subject_term_type: review?.subject_type_candidate ?? undefined,
-          object_term_type: review?.object_type_candidate ?? undefined,
+          subject_term_type: resolveApprovalTermType(
+            reviewId, 'subject', review?.subject_type_candidate,
+          ),
+          object_term_type: resolveApprovalTermType(
+            reviewId, 'object', review?.object_type_candidate,
+          ),
         }),
       })
       if (!response.ok) {
@@ -349,8 +378,12 @@ export function GraphReviewsPage() {
               tenant_id: tenantId,
               subject_standard_name: draft.subject,
               object_standard_name: draft.object,
-              subject_term_type: review.subject_type_candidate ?? undefined,
-              object_term_type: review.object_type_candidate ?? undefined,
+              subject_term_type: resolveApprovalTermType(
+                review.review_id, 'subject', review.subject_type_candidate,
+              ),
+              object_term_type: resolveApprovalTermType(
+                review.review_id, 'object', review.object_type_candidate,
+              ),
             }),
           },
         )
@@ -456,7 +489,7 @@ export function GraphReviewsPage() {
       }))
       setJustCreated((prev) => ({
         ...prev,
-        [reviewId]: { ...prev[reviewId], [field]: true },
+        [reviewId]: { ...prev[reviewId], [field]: createDraft.termType },
       }))
       showToast('已创建实体候选')
       setCreateDraft(null)
