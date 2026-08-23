@@ -91,6 +91,11 @@ export function GraphReviewsPage() {
   // object_type_candidate，见 handleApprove/handleBatchApprove 里
   // resolveApprovalTermType 的说明。
   const [justCreated, setJustCreated] = useState<Record<number, { subject?: string; object?: string }>>({})
+  // 审核员在"歧义选择器"（见 candidateTermTypesFor）里显式选中的类型——
+  // 跟 justCreated 是两回事：justCreated 只在走过内联创建实体流程时才
+  // 有值，这里是"标准名已经存在、但同名不同类型有 2 条以上，需要手动
+  // 挑一条"的场景。两者共用同一个 resolveApprovalTermType 优先级链。
+  const [ambiguityPick, setAmbiguityPick] = useState<Record<number, { subject?: string; object?: string }>>({})
 
   useEffect(() => {
     document.title = '文档抽取 · 管理后台'
@@ -201,6 +206,55 @@ export function GraphReviewsPage() {
     setSelectedIds(new Set())
   }, [pending])
 
+  // 批准请求里 subject_term_type/object_term_type 优先用评审员通过内联
+  // 创建实体流程实际确认过的类型（justCreated[reviewId][field]）——不能
+  // 直接信 LLM 抽取阶段给出的 candidateType（subject_type_candidate/
+  // object_type_candidate）。原因跟 handleOpenCreateEntity 里的注释一样：
+  // candidateType 只是未经校验的猜测值。如果评审员用内联创建给这一侧建了
+  // 一个跟 LLM 猜测不同类型的新实体（比如 LLM 猜"产品"，评审员实际建的是
+  // "类目"），批准时继续传 LLM 的猜测值会让后端按错误的类型消歧，解析到
+  // 一个同名但完全无关的已有术语，而不是评审员刚创建的那一个——这正是
+  // 本次改动要修的 bug（见 2026-08-23 最终评审 Finding I2）。没有走过
+  // 内联创建流程的一侧（justCreated 里没有对应记录）行为不变，继续退回
+  // candidateType。
+  //
+  // 注意：这两个函数（以及下面的 candidateTermTypesFor）必须定义在
+  // canBatchApprove 之前——canBatchApprove 是一个 const，赋值表达式里
+  // 立即调用了 selectedReviews.every(...)，而回调里又同步调用这两个
+  // 函数；如果把函数定义放在 canBatchApprove 之后（哪怕只是同一个组件
+  // 函数体里靠后几行），只要有勾选项（selectedReviews.length > 0）触发
+  // 渲染，这里的调用点就会先于函数自身的 const 声明执行，落入 TDZ
+  // （temporal dead zone），直接抛 ReferenceError 把整个页面渲染崩掉。
+  // tsc 不会报这类跨闭包的执行顺序错误，只能在这里用注释提醒：改动这段
+  // 代码时不要把函数定义挪到 canBatchApprove 后面。
+  const resolveApprovalTermType = (
+    reviewId: number,
+    field: 'subject' | 'object',
+    candidateType: string | null | undefined,
+  ): string | undefined => {
+    const confirmedType = justCreated[reviewId]?.[field]
+    if (confirmedType) return confirmedType
+    const pickedType = ambiguityPick[reviewId]?.[field]
+    if (pickedType) return pickedType
+    return candidateType ?? undefined
+  }
+
+  // 给定当前输入框里的候选名，算出它在 graphTerms 里实际匹配到的
+  // term_type 集合（按 standard_name 或任一 alias 匹配，逻辑对应后端
+  // app/graphrag/ontology.py::find_candidate_term_types）。返回 2 个及
+  // 以上说明这个名字有歧义，需要审核员显式选一个类型；返回 0 或 1 个
+  // 不需要选择器——0 个交给既有的"创建为新实体"流程，1 个直接唯一解析。
+  const candidateTermTypesFor = (name: string): string[] => {
+    const trimmed = name.trim()
+    if (!trimmed) return []
+    const types = new Set(
+      graphTerms
+        .filter((term) => term.standard_name === trimmed || term.aliases.includes(trimmed))
+        .map((term) => term.term_type),
+    )
+    return [...types].sort()
+  }
+
   const selectedReviews = pending.filter((review) => selectedIds.has(review.review_id))
   const allOnPageSelected =
     pending.length > 0 && pending.every((review) => selectedIds.has(review.review_id))
@@ -211,7 +265,15 @@ export function GraphReviewsPage() {
         review.reason !== 'invalid_relation_type' &&
         review.reason !== 'not_in_confirmed_ontology' &&
         drafts[review.review_id]?.subject &&
-        drafts[review.review_id]?.object,
+        drafts[review.review_id]?.object &&
+        !(
+          candidateTermTypesFor(drafts[review.review_id]?.subject ?? '').length >= 2 &&
+          !resolveApprovalTermType(review.review_id, 'subject', review.subject_type_candidate)
+        ) &&
+        !(
+          candidateTermTypesFor(drafts[review.review_id]?.object ?? '').length >= 2 &&
+          !resolveApprovalTermType(review.review_id, 'object', review.object_type_candidate)
+        ),
     )
 
   const toggleSelected = (reviewId: number) => {
@@ -268,27 +330,6 @@ export function GraphReviewsPage() {
       })
     }
   }, [tab, refreshPending, refreshHistory])
-
-  // 批准请求里 subject_term_type/object_term_type 优先用评审员通过内联
-  // 创建实体流程实际确认过的类型（justCreated[reviewId][field]）——不能
-  // 直接信 LLM 抽取阶段给出的 candidateType（subject_type_candidate/
-  // object_type_candidate）。原因跟 handleOpenCreateEntity 里的注释一样：
-  // candidateType 只是未经校验的猜测值。如果评审员用内联创建给这一侧建了
-  // 一个跟 LLM 猜测不同类型的新实体（比如 LLM 猜"产品"，评审员实际建的是
-  // "类目"），批准时继续传 LLM 的猜测值会让后端按错误的类型消歧，解析到
-  // 一个同名但完全无关的已有术语，而不是评审员刚创建的那一个——这正是
-  // 本次改动要修的 bug（见 2026-08-23 最终评审 Finding I2）。没有走过
-  // 内联创建流程的一侧（justCreated 里没有对应记录）行为不变，继续退回
-  // candidateType。
-  const resolveApprovalTermType = (
-    reviewId: number,
-    field: 'subject' | 'object',
-    candidateType: string | null | undefined,
-  ): string | undefined => {
-    const confirmedType = justCreated[reviewId]?.[field]
-    if (confirmedType) return confirmedType
-    return candidateType ?? undefined
-  }
 
   const handleApprove = async (reviewId: number) => {
     if (!sessionToken) return
@@ -673,7 +714,14 @@ export function GraphReviewsPage() {
       )}
       {tab === 'pending' &&
         pendingLoaded &&
-        pending.map((review) => (
+        pending.map((review) => {
+          const subjectAmbiguous =
+            candidateTermTypesFor(drafts[review.review_id]?.subject ?? '').length >= 2 &&
+            !resolveApprovalTermType(review.review_id, 'subject', review.subject_type_candidate)
+          const objectAmbiguous =
+            candidateTermTypesFor(drafts[review.review_id]?.object ?? '').length >= 2 &&
+            !resolveApprovalTermType(review.review_id, 'object', review.object_type_candidate)
+          return (
           <div
             key={review.review_id}
             className={`flex flex-col gap-3 rounded-card border border-subtle bg-card shadow-soft ${
@@ -713,7 +761,7 @@ export function GraphReviewsPage() {
               <div className="flex flex-1 items-center gap-2">
                 <StandardNameInput
                   value={drafts[review.review_id]?.subject ?? ''}
-                  onChange={(value) =>
+                  onChange={(value) => {
                     setDrafts((prev) => ({
                       ...prev,
                       [review.review_id]: {
@@ -721,7 +769,15 @@ export function GraphReviewsPage() {
                         subject: value,
                       },
                     }))
-                  }
+                    setAmbiguityPick((prev) => ({
+                      ...prev,
+                      [review.review_id]: { ...prev[review.review_id], subject: undefined },
+                    }))
+                    setJustCreated((prev) => ({
+                      ...prev,
+                      [review.review_id]: { ...prev[review.review_id], subject: undefined },
+                    }))
+                  }}
                   terms={graphTerms}
                   placeholder="subject 标准名"
                   ariaLabel="subject 标准名"
@@ -732,11 +788,35 @@ export function GraphReviewsPage() {
                     新建
                   </span>
                 )}
+                {(() => {
+                  const candidateTypes = candidateTermTypesFor(drafts[review.review_id]?.subject ?? '')
+                  if (candidateTypes.length < 2 || justCreated[review.review_id]?.subject) return null
+                  return (
+                    <select
+                      value={ambiguityPick[review.review_id]?.subject ?? ''}
+                      onChange={(event) =>
+                        setAmbiguityPick((prev) => ({
+                          ...prev,
+                          [review.review_id]: { ...prev[review.review_id], subject: event.target.value },
+                        }))
+                      }
+                      aria-label="subject 类型（有歧义，需选择）"
+                      className={`rounded-control border border-status-error bg-paper px-2 py-1 text-xs text-ink focus:outline-none ${focusRing}`}
+                    >
+                      <option value="">（歧义，请选类型）</option>
+                      {candidateTypes.map((type) => (
+                        <option key={type} value={type}>
+                          {type}
+                        </option>
+                      ))}
+                    </select>
+                  )
+                })()}
               </div>
               <div className="flex flex-1 items-center gap-2">
                 <StandardNameInput
                   value={drafts[review.review_id]?.object ?? ''}
-                  onChange={(value) =>
+                  onChange={(value) => {
                     setDrafts((prev) => ({
                       ...prev,
                       [review.review_id]: {
@@ -744,7 +824,15 @@ export function GraphReviewsPage() {
                         object: value,
                       },
                     }))
-                  }
+                    setAmbiguityPick((prev) => ({
+                      ...prev,
+                      [review.review_id]: { ...prev[review.review_id], object: undefined },
+                    }))
+                    setJustCreated((prev) => ({
+                      ...prev,
+                      [review.review_id]: { ...prev[review.review_id], object: undefined },
+                    }))
+                  }}
                   terms={graphTerms}
                   placeholder="object 标准名"
                   ariaLabel="object 标准名"
@@ -755,6 +843,30 @@ export function GraphReviewsPage() {
                     新建
                   </span>
                 )}
+                {(() => {
+                  const candidateTypes = candidateTermTypesFor(drafts[review.review_id]?.object ?? '')
+                  if (candidateTypes.length < 2 || justCreated[review.review_id]?.object) return null
+                  return (
+                    <select
+                      value={ambiguityPick[review.review_id]?.object ?? ''}
+                      onChange={(event) =>
+                        setAmbiguityPick((prev) => ({
+                          ...prev,
+                          [review.review_id]: { ...prev[review.review_id], object: event.target.value },
+                        }))
+                      }
+                      aria-label="object 类型（有歧义，需选择）"
+                      className={`rounded-control border border-status-error bg-paper px-2 py-1 text-xs text-ink focus:outline-none ${focusRing}`}
+                    >
+                      <option value="">（歧义，请选类型）</option>
+                      {candidateTypes.map((type) => (
+                        <option key={type} value={type}>
+                          {type}
+                        </option>
+                      ))}
+                    </select>
+                  )
+                })()}
               </div>
             </div>
             <textarea
@@ -776,6 +888,8 @@ export function GraphReviewsPage() {
                   !drafts[review.review_id]?.object ||
                   review.reason === 'invalid_relation_type' ||
                   review.reason === 'not_in_confirmed_ontology' ||
+                  subjectAmbiguous ||
+                  objectAmbiguous ||
                   processingId !== null ||
                   batchProcessing
                 }
@@ -793,7 +907,8 @@ export function GraphReviewsPage() {
               </button>
             </div>
           </div>
-        ))}
+          )
+        })}
       {tab === 'pending' && (selectedReviews.length > 0 || batchResult) && (
         <div className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4 shadow-soft">
           {selectedReviews.length > 0 && (
@@ -827,7 +942,7 @@ export function GraphReviewsPage() {
               </div>
               {!canBatchApprove && (
                 <p className="text-xs text-ink-soft">
-                  批量通过要求选中的每一条都已填好 subject/object 标准名。
+                  批量通过要求选中的每一条都已填好 subject/object 标准名，且没有未解决的类型歧义（红框选择器）。
                 </p>
               )}
             </>

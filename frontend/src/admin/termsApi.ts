@@ -3,10 +3,10 @@ import { adminFetch, extractErrorDetail } from './adminApi'
 export interface GraphTerm {
   standard_name: string
   aliases: string[]
+  term_type: string
 }
 
 export interface TermRecord extends GraphTerm {
-  term_type: string
   source: string
 }
 
