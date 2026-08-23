@@ -7,7 +7,7 @@ import aiosqlite
 
 from app.db_migrations import add_column_if_missing
 from app.graphrag.provenance import HUMAN_APPROVED
-from app.graphrag.ontology import Term, resolve_term
+from app.graphrag.ontology import Term, find_candidate_term_types, resolve_term
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS graph_review_queue (
@@ -53,11 +53,14 @@ class ReviewAlreadyResolvedError(Exception):
 
 
 class StandardNameNotInTermsError(Exception):
-    """人工确认的标准名（subject 或 object）不在当前术语表里——阻止绕开
-    封闭词表的强约束、把术语表里没有的任意字符串当成新术语写进图谱。
-    前端自动补全只是体验层面的约束，这里才是真正的安全边界：API 路由和
-    review_cli.py 两个批准入口都调用同一个 approve_review()，校验只需要
-    加在这一处。"""
+    """人工确认的标准名（subject 或 object）没能唯一解析到术语表里的一条
+    术语——阻止绕开封闭词表的强约束、把术语表里没有的任意字符串当成新
+    术语写进图谱。消息文案会区分两种情况：这个名字（或别名）在术语表里
+    根本不存在；或者存在，但同名/同别名分布在多个 term_type 下、没有
+    （或没有匹配上）类型提示时无法确定唯一一条，见
+    _standard_name_not_found_message 的说明。前端自动补全只是体验层面的
+    约束，这里才是真正的安全边界：API 路由和 review_cli.py 两个批准入口
+    都调用同一个 approve_review()，校验只需要加在这一处。"""
 
 
 class RelationNotInConfirmedOntologyError(Exception):
@@ -73,6 +76,21 @@ class RelationNotInConfirmedOntologyError(Exception):
     范围内的关系"这条不变量在人工审核路径上形同虚设。校验失败时不写图谱、
     也不改变 review 状态（仍是 pending），与 StandardNameNotInTermsError
     的行为保持一致，方便审核员改对后重新提交。"""
+
+
+def _standard_name_not_found_message(field_name: str, standard_name: str, terms: list[Term]) -> str:
+    """给 StandardNameNotInTermsError 生成消息：区分"这个名字在术语表里
+    根本不存在"和"存在，但同名/同别名分布在多个类型下、需要更明确的
+    类型提示才能确定唯一一条"这两种情况，不再笼统地都说"不在术语表中"
+    ——后者其实是在的，只是消歧不了，两种情况给审核员的下一步动作完全
+    不同（前者该去创建新术语，后者该补一个 term_type）。"""
+    candidate_types = find_candidate_term_types(standard_name, terms)
+    if not candidate_types:
+        return f"{field_name} 不在术语表中: {standard_name!r}"
+    return (
+        f"{field_name} {standard_name!r} 存在歧义：同名/同别名的术语分布在 "
+        f"{candidate_types} 多个类型下，需要传入对应的 term_type 提示才能确定唯一一条"
+    )
 
 
 async def ensure_review_schema(conn: aiosqlite.Connection) -> None:
@@ -342,12 +360,12 @@ async def approve_review(
     subject_term = resolve_term(subject_standard_name, terms, term_type_hint=subject_term_type_hint)
     if subject_term is None:
         raise StandardNameNotInTermsError(
-            f"subject_standard_name 不在术语表中: {subject_standard_name!r}"
+            _standard_name_not_found_message("subject_standard_name", subject_standard_name, terms)
         )
     object_term = resolve_term(object_standard_name, terms, term_type_hint=object_term_type_hint)
     if object_term is None:
         raise StandardNameNotInTermsError(
-            f"object_standard_name 不在术语表中: {object_standard_name!r}"
+            _standard_name_not_found_message("object_standard_name", object_standard_name, terms)
         )
     # merge_relation 现在按 {tenant_id, node_key} MERGE 端点节点（node_key
     # 是创建时固定的身份键，改名后不变——ADR-0003），不能直接传人工确认的

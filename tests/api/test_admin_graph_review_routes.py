@@ -731,3 +731,45 @@ def test_approve_review_accepts_optional_term_type_hints(review_conn):
     assert len(graph_client.written) == 1
     assert graph_client.written[0]["subject_standard_name"] == "产品:Coffee"
     assert graph_client.written[0]["object_standard_name"] == "类目:Coffee"
+
+
+def test_approve_review_with_ambiguous_standard_name_message_mentions_candidate_types(review_conn):
+    """Task 2：错误消息应该明确提示"存在歧义"和候选类型列表，而不是
+    笼统的"不在术语表中"——见 test_review_queue.py 里对
+    _standard_name_not_found_message 的单元测试。这里在 API 层再验证一次
+    是因为这条消息是直接透传给前端展示的（GraphReviewsPage.tsx 的
+    error 状态），值得确认它没有在 HTTPException 这一层被吞掉或改写。"""
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="Coffee", object_candidate="B",
+            relation_type="RELATED_TO", reason="fuzzy_match_needs_confirmation",
+            source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraphClient()
+    asyncio.run(
+        _seed_terms(
+            review_conn,
+            [
+                Term(tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee", aliases=[], term_type="产品"),
+                Term(tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee", aliases=[], term_type="类目"),
+                Term(tenant_id="t1", node_key="B", standard_name="B", aliases=[], term_type=""),
+            ],
+        )
+    )
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/admin/graph-reviews/{review_id}/approve",
+            json={"tenant_id": "t1", "subject_standard_name": "Coffee", "object_standard_name": "B"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert "存在歧义" in response.json()["detail"]

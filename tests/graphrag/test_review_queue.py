@@ -770,3 +770,51 @@ async def test_approve_review_resolves_via_alias_now_that_it_uses_resolve_term()
     # 写图谱用的是 node_key，不是审核员输入的 alias 字符串本身。
     assert graph_client.written[0]["subject"] == "产品:拿铁"
     assert graph_client.written[0]["object"] == "产品:美式"
+
+
+async def test_approve_review_error_message_says_not_found_when_name_has_zero_matches():
+    conn = await _connect()
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="根本不存在的名字", object_candidate="示例登录模块",
+        relation_type="RELATED_TO", reason="subject_unresolved",
+        source="test", tenant_id="t1",
+    )
+    graph_client = FakeGraphClient()
+
+    with pytest.raises(StandardNameNotInTermsError, match="不在术语表中"):
+        await approve_review(
+            conn, review_id=review_id, subject_standard_name="根本不存在的名字",
+            object_standard_name="示例登录模块", tenant_id="t1", graph_client=graph_client,
+            terms=_terms("示例登录模块"), now=_NOW,
+            confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+            allowed_combinations=_ALLOWED_COMBINATIONS,
+        )
+
+
+async def test_approve_review_error_message_says_ambiguous_when_name_matches_multiple_types():
+    conn = await _connect()
+    terms = [
+        Term(
+            tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee",
+            aliases=[], term_type="产品",
+        ),
+        Term(
+            tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee",
+            aliases=[], term_type="类目",
+        ),
+    ]
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="Coffee", object_candidate="示例登录模块",
+        relation_type="RELATED_TO", reason="fuzzy_match_needs_confirmation",
+        source="test", tenant_id="t1",
+    )
+    graph_client = FakeGraphClient()
+
+    with pytest.raises(StandardNameNotInTermsError, match="存在歧义"):
+        await approve_review(
+            conn, review_id=review_id, subject_standard_name="Coffee",
+            object_standard_name="示例登录模块", tenant_id="t1", graph_client=graph_client,
+            terms=terms + _terms("示例登录模块"), now=_NOW,
+            confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+            allowed_combinations=_ALLOWED_COMBINATIONS,
+        )
