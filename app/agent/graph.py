@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from typing import Any, Awaitable, Callable
@@ -46,6 +47,8 @@ from app.safety.prompt_injection import detect_prompt_injection, wrap_system_pro
 from app.safety.rules import UNSAFE_INPUT_MESSAGE, UNSAFE_OUTPUT_MESSAGE, check_text
 from app.safety.semantic_review import semantic_safety_review
 from app.voice.streaming_responder import stream_sentences
+
+logger = logging.getLogger(__name__)
 
 _PROMPT_TEMPLATE = (
     "根据以下资料回答问题。请使用 markdown 排版（分点用列表、强调用加粗、"
@@ -484,9 +487,22 @@ def build_agent_graph(
         answer = state.get("answer_text", "")
         result = check_text(answer, banned_terms=banned_terms, include_email=False)
         if not result.is_safe:
+            # 只记命中的规则类别（如 "phone_number"/"id_card"），不记原文——
+            # 命中这条规则本身就说明 answer 里含 PII/内部数据，把原文写进日志
+            # 等于把这条规则要拦的东西原样搬进另一个地方，抵消了拦截的意义。
+            logger.warning(
+                "output_safety_node: check_text 判定输出不安全，matched_terms=%s",
+                result.matched_terms,
+            )
             return {"is_output_safe": False, "final_text": UNSAFE_OUTPUT_MESSAGE}
         leakage_result = detect_internal_leakage(answer)
         if leakage_result.is_leaked:
+            # 同上，只记命中的泄露类别，不记原文。
+            logger.warning(
+                "output_safety_node: detect_internal_leakage 判定输出不安全，"
+                "matched_categories=%s",
+                leakage_result.matched_categories,
+            )
             return {"is_output_safe": False, "final_text": UNSAFE_OUTPUT_MESSAGE}
 
         if state.get("fallback_triggered"):
@@ -500,6 +516,17 @@ def build_agent_graph(
             llm_provider_name=llm_provider_name,
         )
         if semantic_result.reviewed and not semantic_result.is_safe:
+            # 语义审查是 LLM 判断，会有假阳性，且这里没有规则命中那种"内容
+            # 本身就是敏感数据"的确定性——记 LLM 给出的 reason 和被拒回答的
+            # 前 300 字预览，运营方才有办法区分"这是真拒对了"还是"模型误判"，
+            # 而不是像这次调查一样，线上真出现过、却完全没有留下任何痕迹。
+            # 只截前 300 字而非全文：reason 本身通常已经说明问题所在，没必要
+            # 把可能确实敏感的完整回答也搬进日志。
+            logger.warning(
+                "output_safety_node: 语义安全审查判定输出不安全，reason=%s answer_preview=%r",
+                semantic_result.reason,
+                answer[:300],
+            )
             return {
                 "is_output_safe": False,
                 "final_text": UNSAFE_OUTPUT_MESSAGE,

@@ -1,3 +1,5 @@
+import logging
+
 from app.agent.graph import _looks_temporal, build_agent_graph
 from app.graphrag.ontology import Term
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
@@ -390,7 +392,7 @@ class ScriptedLLMProvider:
         return ProviderResult(text=self._responses.pop(0))
 
 
-async def test_semantic_review_flags_output_as_unsafe():
+async def test_semantic_review_flags_output_as_unsafe(caplog):
     embedding_registry, vector_store, bm25_index, llm_registry, _ = (
         await _build_dependencies(with_records=True, llm_text="占位")
     )
@@ -410,10 +412,16 @@ async def test_semantic_review_flags_output_as_unsafe():
         query_rewrite_enabled=False,
     )
 
-    result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
+    with caplog.at_level(logging.WARNING):
+        result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
 
     assert result["final_text"] == "抱歉，生成的回答未通过安全审查，已为您转接人工客服。"
     assert result["semantic_review_reviewed"] is True
+    # 回归测试：语义审查拒绝必须留下可诊断的日志（reason + 回答预览），
+    # 而不是像这条不变量被引入之前那样，拒绝发生后完全没有任何痕迹——
+    # 这正是本次新增日志要解决的问题，见 output_safety_node 里的说明。
+    assert "语义安全审查判定输出不安全" in caplog.text
+    assert "测试触发" in caplog.text
 
 
 async def test_unsafe_input_short_circuits_without_calling_llm():
@@ -737,7 +745,7 @@ async def test_term_guard_node_forwards_tenant_id_to_graph_client():
     assert graph_client.queried_tenant_ids == ["t2"]
 
 
-async def test_output_safety_flags_internal_leakage_without_calling_semantic_review():
+async def test_output_safety_flags_internal_leakage_without_calling_semantic_review(caplog):
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(
             with_records=True,
@@ -754,7 +762,8 @@ async def test_output_safety_flags_internal_leakage_without_calling_semantic_rev
         query_rewrite_enabled=False,
     )
 
-    result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
+    with caplog.at_level(logging.WARNING):
+        result = await graph.ainvoke({"question": "网络连不上怎么办？", "tenant_id": "t1"})
 
     assert result["is_output_safe"] is False
     assert result["final_text"] == "抱歉，生成的回答未通过安全审查，已为您转接人工客服。"
@@ -765,6 +774,11 @@ async def test_output_safety_flags_internal_leakage_without_calling_semantic_rev
     # 字典里不应该出现 semantic_review_reviewed 键（短路路径的 return 语句
     # 里没有这个键，只有走到语义审查那一分支才会加上）。
     assert "semantic_review_reviewed" not in result
+    # 回归测试：规则层拦截也要留痕迹，但只记命中的类别名，不记回答原文
+    # （原文本身就是这条规则要拦的敏感内容，写进日志等于没拦），见
+    # output_safety_node 里的说明。
+    assert "detect_internal_leakage 判定输出不安全" in caplog.text
+    assert 'File "app/x.py"' not in caplog.text
 
 
 async def test_output_safety_does_not_flag_email_in_generated_answer():
