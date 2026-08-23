@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.config.settings import Settings
+from app.graphrag.ontology_lifecycle import ensure_ontology_schema
+from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 from app.memory.schema import ensure_schema
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
@@ -82,6 +84,22 @@ def _fake_bm25_index() -> BM25Index:
     return index
 
 
+async def _override_get_review_conn() -> aiosqlite.Connection:
+    # agent_chat_endpoint 现在直接用 review_conn 查术语表/已确认关系类型/
+    # 已确认实体类型（不再经过已删除的 deps.get_terms 等 Depends，见
+    # app/api/deps.py 顶部说明），所有测试都要提供一个空 schema 的
+    # review_conn，语义等价于之前 `dependency_overrides[deps.get_terms] =
+    # lambda: []`——这几个测试都不关心具体的术语/schema 内容，只关心
+    # Planner/静态路径怎么选、SSE 事件怎么推送。跟 _override_get_memory_conn
+    # 一样必须在 FastAPI 实际处理请求的那个事件循环内创建连接。ontology
+    # schema 也要建（tenant_relation_types/term_type_relation_allowlist
+    # 等表），否则 list_relation_types/list_term_types 会报 "no such table"。
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    await ensure_ontology_schema(conn)
+    return conn
+
+
 def test_agent_chat_streams_final_answer_as_sse():
     import asyncio
 
@@ -111,7 +129,7 @@ def test_agent_chat_streams_final_answer_as_sse():
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
     app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
     app.dependency_overrides[deps.get_tts_provider] = lambda: None
@@ -175,7 +193,7 @@ def test_agent_chat_streams_delta_events_before_the_final_event():
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
     app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
     app.dependency_overrides[deps.get_tts_provider] = lambda: None
@@ -227,7 +245,7 @@ def test_agent_chat_streams_audio_events_for_voice_requests_when_provider_stream
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
     app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
     app.dependency_overrides[deps.get_tts_provider] = lambda: FakeTTSProvider()
@@ -299,7 +317,7 @@ def test_agent_chat_synthesizes_voice_when_requested():
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
     app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
     app.dependency_overrides[deps.get_tts_provider] = lambda: FakeTTSProvider()
@@ -349,7 +367,7 @@ def _empty_dependency_overrides(*, llm_provider, settings, voice_response: bool 
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
     app.dependency_overrides[deps.get_bm25_index] = lambda: bm25_index
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     # memory 关闭：这几个测试只关心 Planner/静态路径怎么选，跟记忆无关，
     # 关掉能避免额外的、跟测试意图无关的 LLM 调用（事实抽取）。
@@ -428,7 +446,7 @@ def test_agent_chat_uses_gateway_tenant_id_over_request_body():
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
     app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
     app.dependency_overrides[deps.get_tts_provider] = lambda: None
@@ -470,7 +488,7 @@ def test_agent_chat_rejects_wrong_gateway_secret_when_configured():
     app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     app.dependency_overrides[deps.get_bm25_index] = lambda: BM25Index()
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     app.dependency_overrides[deps.get_memory_conn] = lambda: None
     app.dependency_overrides[deps.get_tts_provider] = lambda: None

@@ -279,8 +279,8 @@ async def list_terms(
     source: str | None = None,
 ) -> list[Term]:
     """limit=None（默认）返回该租户全部术语，保持既有调用方（agent 检索、
-    摄取管线、eval runner、review_cli 等，见
-    app/api/deps.py::get_terms 等处）不传这两个参数时的行为不变；管理后台
+    摄取管线、eval runner、review_cli 等，见 app/api/agent_routes.py 等处
+    直接调用本函数的调用点）不传这两个参数时的行为不变；管理后台
     分页时显式传入具体的 limit/offset。哨兵模式与
     app/graphrag/review_queue.py::list_pending_reviews 一致：SQLite 的
     LIMIT 取负数即表示不限制行数，用 -1 承载 limit=None 这个语义。

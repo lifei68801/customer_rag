@@ -1,12 +1,42 @@
+import json
+
+import aiosqlite
 from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.config.settings import Settings
 from app.graphrag.ontology import Term
+from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 from app.providers.asr import ASRRequest, ASRResult
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.registry import ProviderRegistry
+
+
+async def _override_get_review_conn_with_terms(terms: list[Term]) -> aiosqlite.Connection:
+    # asr_finalize_endpoint 现在直接用 review_conn 查术语表（不再经过已删除
+    # 的 deps.get_terms，见 app/api/deps.py 顶部说明）——这条测试的断言依赖
+    # 具体的术语内容（专有名词校正要真的命中别名），所以直接往 terms 表插
+    # 这条测试自己的术语，绕开 create_term() 的分类校验，跟
+    # test_admin_graph_review_routes.py::_seed_terms 是同一个模式。
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    for term in terms:
+        await conn.execute(
+            "INSERT OR REPLACE INTO terms "
+            "(tenant_id, node_key, standard_name, aliases, term_type, "
+            "extra_properties) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                term.tenant_id,
+                term.node_key,
+                term.standard_name,
+                json.dumps(term.aliases, ensure_ascii=False),
+                term.term_type,
+                json.dumps(term.extra_properties, ensure_ascii=False),
+            ),
+        )
+    await conn.commit()
+    return conn
 
 
 def _settings(**overrides) -> Settings:
@@ -46,7 +76,11 @@ def test_asr_finalize_transcribes_and_corrects_terms():
     )
     terms = [
         Term(
-            tenant_id="default",
+            # 请求走 tenant_id query 参数 "t1"（gateway_shared_secret 未配置，
+            # resolve_tenant_id() 会用这个值查术语表），种子术语的 tenant_id
+            # 必须跟它一致——不再是任意占位的 "default"，见下面 review_conn
+            # 的说明。
+            tenant_id="t1",
             node_key="示例错误码E502",
             standard_name="示例错误码E502",
             aliases=["网关超时示例"],
@@ -54,9 +88,12 @@ def test_asr_finalize_transcribes_and_corrects_terms():
         )
     ]
 
+    async def _review_conn_override() -> aiosqlite.Connection:
+        return await _override_get_review_conn_with_terms(terms)
+
     app.dependency_overrides[deps.get_asr_provider] = lambda: FakeASRProvider()
     app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
-    app.dependency_overrides[deps.get_terms] = lambda: terms
+    app.dependency_overrides[deps.get_review_conn] = _review_conn_override
     # gateway_shared_secret 显式钉死为 None：不 override 的话 get_settings
     # 会读真实环境变量/.env，一旦开发者本机或 .env 配置了
     # CUSTOMER_RAG_GATEWAY_SHARED_SECRET（正是这个安全修复要促使运营者去做

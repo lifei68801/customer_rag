@@ -1,7 +1,9 @@
+import aiosqlite
 from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.config.settings import Settings
+from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
@@ -43,6 +45,16 @@ def _fake_bm25_index() -> BM25Index:
     return index
 
 
+async def _override_get_review_conn() -> aiosqlite.Connection:
+    # qa_endpoint 现在直接用 review_conn 查术语表（不再经过已删除的
+    # deps.get_terms，见 app/api/deps.py 顶部说明）——空 schema 的
+    # review_conn 语义等价于之前 `dependency_overrides[deps.get_terms] =
+    # lambda: []`，这几个测试都不关心具体术语内容。
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    return conn
+
+
 def _settings(**overrides) -> Settings:
     defaults = dict(
         llm_base_url="https://api.deepseek.com/v1",
@@ -78,7 +90,7 @@ def test_qa_endpoint_returns_answer_and_used_sources():
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
     app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     # gateway_shared_secret 显式钉死为 None：不 override 的话 get_settings
     # 会读真实环境变量/.env，一旦开发者本机或 .env 配置了
@@ -119,7 +131,7 @@ def test_qa_endpoint_does_not_leak_another_tenants_sources():
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
     app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     # gateway_shared_secret 显式钉死为 None，理由同上一条测试。
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
@@ -155,7 +167,7 @@ def test_qa_endpoint_uses_gateway_tenant_id_over_request_body():
     app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
     app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     app.dependency_overrides[deps.get_settings] = lambda: _settings(
         gateway_shared_secret="sekret"
@@ -190,7 +202,7 @@ def test_qa_endpoint_rejects_wrong_gateway_secret_when_configured():
     app.dependency_overrides[deps.get_vector_store] = lambda: InMemoryVectorStore()
     app.dependency_overrides[deps.get_bm25_index] = lambda: BM25Index()
     app.dependency_overrides[deps.get_rerank_provider] = lambda: None
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_graph_client] = lambda: None
     app.dependency_overrides[deps.get_settings] = lambda: _settings(
         gateway_shared_secret="sekret"

@@ -1,10 +1,21 @@
+import aiosqlite
 from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.config.settings import Settings
+from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 from app.providers.asr import ASRRequest, ASRResult
 from app.providers.registry import ProviderRegistry
+
+
+async def _override_get_review_conn() -> aiosqlite.Connection:
+    # asr_finalize_endpoint 现在直接用 review_conn 查术语表（不再经过已
+    # 删除的 deps.get_terms，见 app/api/deps.py 顶部说明）——这两条测试
+    # 只关心网关鉴权，跟术语内容无关，空 schema 即可。
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    return conn
 
 
 def _settings(**overrides) -> Settings:
@@ -30,7 +41,7 @@ class FakeASRProvider:
 def test_asr_finalize_rejects_wrong_gateway_secret_when_configured():
     app.dependency_overrides[deps.get_asr_provider] = lambda: FakeASRProvider()
     app.dependency_overrides[deps.get_llm_registry] = lambda: ProviderRegistry()
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_settings] = lambda: _settings(
         gateway_shared_secret="sekret"
     )
@@ -50,7 +61,7 @@ def test_asr_finalize_rejects_wrong_gateway_secret_when_configured():
 def test_asr_finalize_accepts_correct_gateway_secret():
     app.dependency_overrides[deps.get_asr_provider] = lambda: FakeASRProvider()
     app.dependency_overrides[deps.get_llm_registry] = lambda: ProviderRegistry()
-    app.dependency_overrides[deps.get_terms] = lambda: []
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
     app.dependency_overrides[deps.get_settings] = lambda: _settings(
         gateway_shared_secret="sekret"
     )

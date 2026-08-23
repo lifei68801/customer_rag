@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, WebSocket
 from pydantic import BaseModel
 
 from app.api import deps
 from app.config.settings import Settings
-from app.graphrag.ontology import Term
+from app.graphrag.terms_store import list_terms
 from app.providers.asr import ASRProvider, ASRRequest
 from app.providers.registry import ProviderRegistry
 from app.voice.asr_stream_processing import filter_filler_words, merge_chunk_transcript
@@ -25,19 +26,23 @@ async def asr_finalize_endpoint(
     tenant_id: str | None = Query(default=None),
     asr_provider: ASRProvider | None = Depends(deps.get_asr_provider),
     llm_registry: ProviderRegistry = Depends(deps.get_llm_registry),
-    terms: list[Term] = Depends(deps.get_terms),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> ASRFinalizeResponse:
     """对完整录音做一次全量二次识别 + 专有名词校正，输出进入 Agent 流程的最终文本。
 
-    该接口内部逻辑目前不按租户区分行为，这里调用 resolve_tenant_id() 单纯是
-    为了建立与其他入口一致的身份校验边界（网关鉴权失败时拒绝请求），解析
-    出来的 tenant_id 当前不需要在函数体其余部分使用。tenant_id 显式标注为
-    Query(...)：因为该端点同时声明了 UploadFile 参数，请求会被当作
-    multipart/form-data 处理，不显式标注的裸 str 参数在这种情况下会被
-    FastAPI 当成表单字段而不是查询参数，与其他 HTTP 端点（tenant_id 走
-    query/body）的取值方式不一致。
+    tenant_id 显式标注为 Query(...)：因为该端点同时声明了 UploadFile 参数，
+    请求会被当作 multipart/form-data 处理，不显式标注的裸 str 参数在这种
+    情况下会被 FastAPI 当成表单字段而不是查询参数，与其他 HTTP 端点
+    （tenant_id 走 query/body）的取值方式不一致。
+
+    解析出来的 tenant_id 现在会用来查术语表（供下面的专有名词校正用）——
+    不再经过 deps.get_terms 那套独立解析 tenant_id 的 Depends，见
+    app/api/deps.py 顶部说明。
     """
-    deps.resolve_tenant_id(gateway_tenant_id, tenant_id, source="asr_finalize")
+    effective_tenant_id = deps.resolve_tenant_id(
+        gateway_tenant_id, tenant_id, source="asr_finalize"
+    )
+    terms = await list_terms(review_conn, effective_tenant_id)
 
     if asr_provider is None:
         raise HTTPException(status_code=503, detail="ASR provider 未配置")

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import aiosqlite
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.api import deps
 from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
-from app.graphrag.ontology import Term
+from app.graphrag.terms_store import list_terms
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
@@ -41,12 +42,15 @@ async def qa_endpoint(
     llm_registry: ProviderRegistry = Depends(deps.get_llm_registry),
     rerank_provider: RerankProvider | None = Depends(deps.get_rerank_provider),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
-    terms: list[Term] = Depends(deps.get_terms),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     settings: Settings = Depends(deps.get_settings),
 ) -> QAResponse:
     tenant_id = deps.resolve_tenant_id(
         gateway_tenant_id, payload.tenant_id, source="qa"
     )
+    # 直接用上面刚解析出的权威 tenant_id 查术语表，不经过 deps.get_terms
+    # 那套独立解析 tenant_id 的 Depends，见 app/api/deps.py 顶部说明。
+    terms = await list_terms(review_conn, tenant_id)
     result = await answer_question(
         payload.question,
         embedding_registry=embedding_registry,

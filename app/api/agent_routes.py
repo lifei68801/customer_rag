@@ -14,7 +14,9 @@ from app.agent.graph import build_agent_graph
 from app.api import deps
 from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
-from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import list_term_types
+from app.graphrag.ontology_relations import list_relation_types
+from app.graphrag.terms_store import list_terms
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
@@ -50,9 +52,7 @@ async def agent_chat_endpoint(
     llm_registry: ProviderRegistry = Depends(deps.get_llm_registry),
     rerank_provider: RerankProvider | None = Depends(deps.get_rerank_provider),
     graph_client: Neo4jGraphClient | None = Depends(deps.get_graph_client),
-    terms: list[Term] = Depends(deps.get_terms),
-    confirmed_relation_types: set[str] = Depends(deps.get_confirmed_relation_types),
-    term_type_schema: dict = Depends(deps.get_term_type_schema),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     memory_conn: aiosqlite.Connection = Depends(deps.get_memory_conn),
     tts_provider: TTSProvider | None = Depends(deps.get_tts_provider),
     settings: Settings = Depends(deps.get_settings),
@@ -91,6 +91,18 @@ async def agent_chat_endpoint(
     tenant_id = deps.resolve_tenant_id(
         gateway_tenant_id, payload.tenant_id, source="agent_chat"
     )
+    # 直接用上面刚解析出的权威 tenant_id 查术语表/已确认 schema，不经过
+    # deps.get_terms 等独立解析 tenant_id 的 Depends——网关未配置时后者会
+    # 悄悄回退到硬编码的 "default" 租户，跟这里的 tenant_id 不是同一个值，
+    # 见 app/api/deps.py 顶部关于这几个函数已删除的说明。
+    terms = await list_terms(review_conn, tenant_id)
+    confirmed_relation_types = {
+        rt.relation_type
+        for rt in await list_relation_types(review_conn, tenant_id, status="confirmed")
+    }
+    term_type_schema = {
+        c.value: c for c in await list_term_types(review_conn, tenant_id, status="confirmed")
+    }
     enable_autonomous_planning = (
         settings.agent_enable_autonomous_planning and not payload.voice_response
     )

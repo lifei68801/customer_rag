@@ -15,11 +15,9 @@ from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.table_extraction import TableExtractionFunction
 from app.ingestion.table_extraction_factory import build_table_extractor_from_settings
 from app.ingestion.tracking import ensure_tracking_schema
-from app.graphrag.ontology_categories import TermTypeCategory, list_term_types
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
-from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.review_queue import ensure_review_schema
-from app.graphrag.terms_store import ensure_terms_schema, list_terms
+from app.graphrag.terms_store import ensure_terms_schema
 from app.graphrag.etl_runs_store import ensure_etl_runs_schema
 from app.graphrag.tenants_store import ensure_tenants_schema
 from app.providers.embedding import EmbeddingRegistry
@@ -37,7 +35,6 @@ from app.retrieval.factory import build_vector_store_from_settings
 from app.retrieval.vector_store import VectorStore
 from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
-from app.graphrag.ontology import Term
 from app.memory.factory import build_memory_conn_from_settings
 from app.providers.asr import ASRProvider
 from app.providers.tts import TTSProvider
@@ -54,7 +51,6 @@ __all__ = [
     "get_admin_session_store",
     "get_asr_provider",
     "get_bm25_index",
-    "get_confirmed_relation_types",
     "get_embedding_registry",
     "get_gateway_tenant_id",
     "get_graph_client",
@@ -66,8 +62,6 @@ __all__ = [
     "get_review_conn",
     "get_settings",
     "get_table_extractor",
-    "get_term_type_schema",
-    "get_terms",
     "get_tts_provider",
     "get_upload_dir",
     "get_vector_store",
@@ -340,44 +334,16 @@ async def get_review_conn(
     return _review_conn_cache
 
 
-async def get_terms(
-    review_conn: aiosqlite.Connection = Depends(get_review_conn),
-    gateway_tenant_id: str | None = Depends(get_gateway_tenant_id),
-) -> list[Term]:
-    """每次请求都查 terms 表，不再进程级缓存（原因见函数改造前的说明，
-    未变）。tenant_id 优先取网关鉴权声明的租户身份（生产环境应始终配置
-    gateway_shared_secret，见 get_gateway_tenant_id）；网关鉴权未启用
-    （本地开发降级路径）时回退到 "default" 租户——与本计划"存量/未配置
-    数据统一归属 tenant_id='default'"的约定一致。get_terms 是横跨 6 个
-    结构不同路由（admin_document_routes.py/admin_graph_review_routes.py/
-    agent_routes.py/qa_routes.py/voice_routes.py）的共享依赖，各路由自己
-    解析 tenant_id 的方式互不相同（Form 字段/请求体字段/query 兜底/完全
-    不解析），没有统一的"当前路由级 fallback"可读，因此不复用
-    resolve_tenant_id() 的双源合并逻辑，只走网关这一个可信来源 + 固定
-    默认值，不引入 422。
-    """
-    tenant_id = gateway_tenant_id or "default"
-    return await list_terms(review_conn, tenant_id)
-
-
-async def get_confirmed_relation_types(
-    review_conn: aiosqlite.Connection = Depends(get_review_conn),
-    gateway_tenant_id: str | None = Depends(get_gateway_tenant_id),
-) -> set[str]:
-    """结构化过滤查询工具校验 relation_type 用——跟 get_terms 一样，每次请求查一次，
-    不做进程级缓存（租户在管理后台改关系类型是随时可能发生的事，缓存会导致查询
-    工具用旧 schema 拒绝新确认的关系类型）。tenant_id 解析方式与 get_terms 保持
-    完全一致，见该函数的说明。"""
-    tenant_id = gateway_tenant_id or "default"
-    defs = await list_relation_types(review_conn, tenant_id, status="confirmed")
-    return {d.relation_type for d in defs}
-
-
-async def get_term_type_schema(
-    review_conn: aiosqlite.Connection = Depends(get_review_conn),
-    gateway_tenant_id: str | None = Depends(get_gateway_tenant_id),
-) -> dict[str, TermTypeCategory]:
-    """结构化过滤查询工具校验 anchor_term_type/target_term_type/field 用。"""
-    tenant_id = gateway_tenant_id or "default"
-    categories = await list_term_types(review_conn, tenant_id, status="confirmed")
-    return {c.value: c for c in categories}
+# get_terms/get_confirmed_relation_types/get_term_type_schema（曾经横跨
+# admin_document_routes.py/admin_graph_review_routes.py/agent_routes.py/
+# qa_routes.py/voice_routes.py 的共享依赖）已在 2026-08-23 删除：它们各自
+# 独立解析 tenant_id（网关值优先，网关未启用时硬编码回退到 "default"，
+# 完全不看请求体/query 里客户端自报的 tenant_id），跟同一请求里
+# resolve_tenant_id()（网关优先、网关未启用时退回客户端自报值、两者都
+# 没有才报错）是两套不同的策略——网关未配置、请求体传的又不是 "default"
+# 租户时，会悄悄用错误的（几乎为空的）"default" 租户术语表做实体消歧，
+# 而实际的向量/图谱查询早已正确地用了请求体传入的租户。5 个调用方已
+# 全部改为在各自路由体内、拿到 resolve_tenant_id() 算出的权威 tenant_id
+# 之后，直接调用 list_terms()/list_relation_types()/list_term_types()——
+# 这个模式此前已经在 admin_graph_review_routes.py/admin_document_routes.py/
+# app/eval/runner.py 里验证过，见这三处调用点。

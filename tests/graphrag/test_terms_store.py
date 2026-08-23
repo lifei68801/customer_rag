@@ -803,7 +803,8 @@ async def test_count_terms_returns_total_regardless_of_pagination():
 async def test_list_terms_without_limit_offset_returns_full_unpaginated_list():
     """不传 limit/offset 时必须保持改造前的行为：返回该租户全部术语，
     这是既有调用方（agent 检索、摄取管线、eval runner、review_cli 等）
-    赖以不变的默认行为——见 app/api/deps.py::get_terms 等处的调用方式。"""
+    赖以不变的默认行为——见 app/api/agent_routes.py 等处直接调用本函数
+    的调用方式。"""
     conn = await _connect()
     for name in ("A", "B", "C"):
         await create_term(
