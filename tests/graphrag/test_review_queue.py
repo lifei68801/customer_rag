@@ -732,3 +732,41 @@ async def test_approve_review_rejects_ambiguous_standard_name_without_hint():
             terms=terms, now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
             allowed_combinations=_ALLOWED_COMBINATIONS,
         )
+
+
+async def test_approve_review_resolves_via_alias_now_that_it_uses_resolve_term():
+    """Task 1（2026-08-23）之前 approve_review 用 find_term_by_type_hint，
+    只按 standard_name 字段判重，压根不看 aliases——传一个只在 aliases
+    里出现的名字会被判定为"不在术语表中"，即使它其实唯一对应一条术语。
+    改用 resolve_term（name-or-alias 判重）之后，这种情况应该能正常
+    解析成功，跟 normalize_and_write_relations/graph_query_tool 的行为
+    保持一致。"""
+    conn = await _connect()
+    terms = [
+        Term(
+            tenant_id="t1", node_key="产品:拿铁", standard_name="拿铁",
+            aliases=["Latte"], term_type="",
+        ),
+        Term(
+            tenant_id="t1", node_key="产品:美式", standard_name="美式",
+            aliases=[], term_type="",
+        ),
+    ]
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="Latte", object_candidate="美式",
+        relation_type="RELATED_TO", reason="fuzzy_match_needs_confirmation",
+        source="test", tenant_id="t1",
+    )
+    graph_client = FakeGraphClient()
+
+    await approve_review(
+        conn, review_id=review_id, subject_standard_name="Latte",
+        object_standard_name="美式", tenant_id="t1", graph_client=graph_client,
+        terms=terms, now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
+    )
+
+    assert len(graph_client.written) == 1
+    # 写图谱用的是 node_key，不是审核员输入的 alias 字符串本身。
+    assert graph_client.written[0]["subject"] == "产品:拿铁"
+    assert graph_client.written[0]["object"] == "产品:美式"

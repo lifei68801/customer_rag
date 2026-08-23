@@ -108,7 +108,7 @@ Qwen（DashScope 兼容模式）、DeepSeek、智谱 GLM、Kimi 官方文档都�
 | 工具名 | LLM 可控参数 | 系统强制注入（LLM 不可控） | 实现 |
 |---|---|---|---|
 | `vector_search_tool` | `query: str`, `top_k: int`（可选，默认3） | `tenant_id` | 内部调用 `hybrid_search()` |
-| `graph_query_tool` | `entity_name: str`, `entity_type: str`（可选，同名实体存在多个类型时用于消歧） | `tenant_id` | 内部调用 `_resolve_term()`（`app/graphrag/normalization.py`，`resolve_to_standard_name()` 内部也是调用这同一个函数）+ `graph_client.query_subgraph()` |
+| `graph_query_tool` | `entity_name: str`, `entity_type: str`（可选，同名实体存在多个类型时用于消歧） | `tenant_id` | 内部调用 `resolve_term()`（`app/graphrag/ontology.py`）+ `graph_client.query_subgraph()` |
 | `structured_filter_query_tool` | `anchor_term_type: str`, `constraints: list`, `group_by`（可选）, `limit: int`（可选，默认20） | `tenant_id`、该租户已确认的 term_type/relation_type schema | 按属性/关系条件反查实体；内部调用 `run_structured_filter_query()`（解析→按已确认 schema 校验→`graph_client.execute_structured_filter_query()`） |
 
 `create_ticket_tool` **不**开放给 Planner 调用——继续保持架构图里 `Fallback --> CreateTicket`

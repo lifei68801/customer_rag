@@ -7,7 +7,7 @@ import aiosqlite
 
 from app.db_migrations import add_column_if_missing
 from app.graphrag.provenance import HUMAN_APPROVED
-from app.graphrag.ontology import Term, find_term_by_type_hint
+from app.graphrag.ontology import Term, resolve_term
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS graph_review_queue (
@@ -315,12 +315,12 @@ async def approve_review(
     subject_term_type_hint/object_term_type_hint 是可选的类型提示（通常
     来自 LLM 抽取时给出的 subject_type_candidate/object_type_candidate，
     见 app/api/admin_graph_review_routes.py 的调用方）：传了且该类型下
-    确实存在这个 standard_name，就精确解析到那一条；没传、或者传了但
-    那个类型下没有，退回"这个名字在全部术语里是否唯一"——唯一就照样
-    解析成功（2026-08-22 之前的默认行为，标准名当年不可能重复，这个
-    场景下结果不变），不唯一就拒绝（StandardNameNotInTermsError），不
-    会像旧实现那样从多个候选里随便选一个。见
-    app/graphrag/ontology.py::find_term_by_type_hint 的完整说明。
+    确实存在这个 standard_name（本身或某个 alias），就精确解析到那一条；
+    没传、或者传了但那个类型下没有，退回"这个名字（或某个别名）在全部
+    术语里是否唯一"——唯一就照样解析成功（2026-08-22 之前的默认行为，
+    标准名当年不可能重复，这个场景下结果不变），不唯一就拒绝
+    （StandardNameNotInTermsError），不会像旧实现那样从多个候选里随便
+    选一个。见 app/graphrag/ontology.py::resolve_term 的完整说明。
 
     写入的边标记 provenance=HUMAN_APPROVED（见 app/graphrag/provenance.py）
     ——这是这条边第一次、也是唯一一次被写入图谱的时刻（进了审核队列的
@@ -339,12 +339,12 @@ async def approve_review(
     方便审核员改对后重新提交，而不是必须先驳回再重新走一遍抽取流程。
     """
     row = await _fetch_pending_row(conn, review_id, tenant_id=tenant_id)
-    subject_term = find_term_by_type_hint(terms, subject_standard_name, subject_term_type_hint)
+    subject_term = resolve_term(subject_standard_name, terms, term_type_hint=subject_term_type_hint)
     if subject_term is None:
         raise StandardNameNotInTermsError(
             f"subject_standard_name 不在术语表中: {subject_standard_name!r}"
         )
-    object_term = find_term_by_type_hint(terms, object_standard_name, object_term_type_hint)
+    object_term = resolve_term(object_standard_name, terms, term_type_hint=object_term_type_hint)
     if object_term is None:
         raise StandardNameNotInTermsError(
             f"object_standard_name 不在术语表中: {object_standard_name!r}"
@@ -352,7 +352,7 @@ async def approve_review(
     # merge_relation 现在按 {tenant_id, node_key} MERGE 端点节点（node_key
     # 是创建时固定的身份键，改名后不变——ADR-0003），不能直接传人工确认的
     # 展示名 subject_standard_name/object_standard_name（改名后就不等于
-    # node_key 了）。find_term_by_type_hint 已经返回了完整的 Term，直接
+    # node_key 了）。resolve_term 已经返回了完整的 Term，直接
     # 取 node_key，与 app/graphrag/normalization.py 的做法一致。
     subject_node_key = subject_term.node_key
     object_node_key = object_term.node_key

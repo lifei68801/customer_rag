@@ -17,37 +17,63 @@ class Term:
     source: str = "unknown"
 
 
-def find_term_by_type_hint(
-    terms: list[Term], standard_name: str, term_type_hint: str | None = None
+def resolve_term(
+    name: str, terms: list[Term], *, term_type_hint: str | None = None
 ) -> Term | None:
-    """按 standard_name 在 terms 里找唯一对应的 Term，尽量避免"多个同名不同
-    类型的术语存在时静默选错"。
+    """按候选名（可以是某个术语的 standard_name 本身，也可以是它的某个
+    alias）在 terms 里找唯一对应的 Term——是全部"按名字查 Term"调用路径
+    统一使用的消歧逻辑（LLM 抽取归一化 normalization.py、人工审核批准
+    review_queue.py、RAG 检索工具 agent/tools.py）。
 
-    term_type_hint 传了且该类型下存在这个 standard_name：直接返回那一条，
-    不再考虑其它同名术语——即使 hint 本身可能不完全准确（比如上游只是
-    "猜测"的类型候选，不是强校验过的值），只要该类型下确实有这个名字，
-    就认为这是调用方想要的那一条。
+    2026-08-23 之前这三处各自调用两个不同的函数：这个函数的前身
+    find_term_by_type_hint 只按 standard_name 字段去重（忽略 aliases）；
+    normalization.py 内部私有的 _resolve_term 按 name-or-alias 去重。两套
+    判重规则在"候选名通过别名唯一命中某个 Term，但这个 Term 的
+    standard_name 恰好和另一个不相关、不同类型的 Term 撞名"时会给出不同
+    答案——这正是 normalize_and_write_relations 里 2026-08-22 Fix round 1
+    调查记录的那类 bug 的根源，也是 graph_query_tool 当初为了绕开同一个坑、
+    改成直接导入 normalization.py 私有函数（而不是这个模块本来该提供的公开
+    函数）的原因。本函数把三处调用方收敛到同一个实现、同一套判重规则，
+    从根上消除"策略分叉"这件事本身，而不是让每个调用方各自小心。
 
-    没有精确命中该类型（没传 hint，或者传了但该类型下没有这个名字）：
-    退回"这个 standard_name 在全部术语里一共出现几次"——只出现一次就
-    直接返回它（没有歧义的安全情况，覆盖绝大多数"名字本身不重复"的
-    调用），出现零次或两次以上都返回 None，交给调用方走各自已有的
-    "未找到/不明确"错误分支，而不是从多个候选里随便选一个。
+    term_type_hint 传了且该类型下能按 name-or-alias 精确命中：直接返回
+    那一条，不再考虑其它候选——即使 hint 本身可能不完全准确（比如上游
+    只是"猜测"的类型候选，不是强校验过的值），只要该类型下确实有这个
+    名字/别名，就认为这是调用方想要的那一条。
 
-    2026-08-22 起 standard_name 允许跨 term_type 重复（同一租户下不同
-    类型可以共享同一个显示名，见 terms_store.py 里
-    idx_terms_tenant_standard_name 的新定义），这个函数是所有"按名字查
-    Term"调用方（LLM 抽取归一化、人工审核批准、RAG 检索工具）统一使用
-    的消歧逻辑，避免各自重复实现、行为不一致。
+    没有精确命中该类型（没传 hint，或者传了但该类型下没有匹配）：退回
+    "候选名作为 standard_name 或某个 alias，在全部术语里一共匹配几条"
+    ——只匹配一条就直接返回它（没有歧义的安全情况，覆盖绝大多数"名字
+    本身不重复"的调用），匹配零条或两条以上都返回 None，交给调用方走
+    各自已有的"未找到/不明确"错误分支，而不是从多个候选里随便选一个。
+    找不到和有歧义这两种"返回 None"的情况如果需要进一步区分（比如给
+    人看的错误提示），用 find_candidate_term_types 单独判断。
     """
     if term_type_hint:
         for term in terms:
-            if term.term_type == term_type_hint and term.standard_name == standard_name:
+            if term.term_type == term_type_hint and (
+                name == term.standard_name or name in term.aliases
+            ):
                 return term
-    same_name = [t for t in terms if t.standard_name == standard_name]
-    if len(same_name) == 1:
-        return same_name[0]
+    matches = [t for t in terms if name == t.standard_name or name in t.aliases]
+    if len(matches) == 1:
+        return matches[0]
     return None
+
+
+def find_candidate_term_types(name: str, terms: list[Term]) -> list[str]:
+    """候选名（standard_name 或某个 alias）在 terms 里实际匹配到的
+    term_type 集合，按字母序去重排列——不做消歧，只回答"这个名字到底
+    存不存在、如果存在都分布在哪些类型下"。
+
+    供 resolve_term 返回 None 时的调用方区分"根本找不到"（返回空列表）
+    和"找到了但有歧义、需要更明确的类型提示才能确定唯一一条"（返回两个
+    及以上的 term_type）——例如 review_queue.py::approve_review 用这个
+    区分来生成更准确的错误提示，而不是笼统地说"不在术语表中"。
+    """
+    return sorted({
+        t.term_type for t in terms if name == t.standard_name or name in t.aliases
+    })
 
 
 def load_terminology(path: Path) -> list[Term]:

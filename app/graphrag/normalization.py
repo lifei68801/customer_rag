@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 import aiosqlite
 
-from app.graphrag.ontology import Term
+from app.graphrag.ontology import Term, resolve_term
 from app.graphrag.provenance import AUTO_MERGED
 from app.graphrag.review_queue import enqueue_for_review
 
@@ -30,47 +30,6 @@ class GraphWriteClientProtocol(Protocol):
     async def delete_relations_by_source(self, source: str, *, tenant_id: str) -> None: ...
 
 
-def _resolve_term(
-    name: str, terms: list[Term], *, term_type_hint: str | None = None
-) -> Term | None:
-    """`resolve_to_standard_name` 的消歧逻辑本体，返回命中的完整 Term
-    对象而非展示名字符串。
-
-    resolve_to_standard_name 和 normalize_and_write_relations 内部都
-    只调用这一个函数来做"给定候选名，找到唯一对应的 Term"这件事——
-    这是 2026-08-22 Fix round 1 的核心：之前 normalize_and_write_relations
-    在拿到 resolve_to_standard_name 返回的 standard_name 字符串后，还会
-    再调用 find_term_by_type_hint(terms, standard_name, hint) 反查一次
-    node_key，但那个函数是按"standard_name 字段本身在全部术语里只出现
-    一次"来判定唯一性的，跟这里"候选名作为 standard_name 或别名只匹配
-    到一个术语"是两套不同的判重规则（一个按 standard_name 字段去重，
-    一个按 name-or-alias 去重）。2026-08-22 起 standard_name 允许跨
-    term_type 重复后，两套规则会在"候选名通过别名唯一命中某个 Term，
-    但这个 Term 的 standard_name 恰好和另一个不相关、不同类型的 Term
-    撞名"时给出不同答案——第一次判定为"唯一，能解析"，第二次判定为
-    "不唯一，无法解析"——导致后面 `assert ... is not None` 被触发，整批
-    候选因为一条边直接崩掉，而不是像其它"未能对齐"的候选一样被跳过（见
-    该 bug 的调查记录）。
-
-    修法不是让第二次查找变得更宽松/更严格去凑第一次的结果，而是压根
-    不再有"第二次、按不同 key 查找"这回事：只在这里查一次，同一个 Term
-    对象既用来算 standard_name（resolve_to_standard_name 的返回值），
-    也用来算 node_key（normalize_and_write_relations 里 merge_relation
-    真正要用的身份键）——两者不可能对不上，因为它们本来就是同一次查找、
-    同一个对象的两个属性。
-    """
-    if term_type_hint:
-        for term in terms:
-            if term.term_type == term_type_hint and (
-                name == term.standard_name or name in term.aliases
-            ):
-                return term
-    matches = [t for t in terms if name == t.standard_name or name in t.aliases]
-    if len(matches) == 1:
-        return matches[0]
-    return None
-
-
 def resolve_to_standard_name(
     name: str, terms: list[Term], *, term_type_hint: str | None = None
 ) -> str | None:
@@ -91,12 +50,12 @@ def resolve_to_standard_name(
     名字确实有歧义时行为才不同（以前静默选一个，现在明确返回 None，
     交给调用方的模糊匹配/人工审核兜底路径处理），见该 bug 的调查记录。
 
-    实际消歧逻辑在 `_resolve_term`（返回 Term 对象）里；这个函数只是取
-    `.standard_name`。normalize_and_write_relations 直接调用
-    `_resolve_term` 而不是这个函数，为的是同一次查找结果既能拿到
-    standard_name 也能拿到 node_key，见 `_resolve_term` 的说明。
+    实际消歧逻辑在 `app.graphrag.ontology.resolve_term`（返回 Term 对象）
+    里；这个函数只是取 `.standard_name`。normalize_and_write_relations
+    直接调用 `resolve_term` 而不是这个函数，为的是同一次查找结果既能拿到
+    standard_name 也能拿到 node_key，见 `resolve_term` 的说明。
     """
-    term = _resolve_term(name, terms, term_type_hint=term_type_hint)
+    term = resolve_term(name, terms, term_type_hint=term_type_hint)
     return term.standard_name if term is not None else None
 
 
@@ -179,18 +138,19 @@ async def normalize_and_write_relations(
     for relation in relations:
         subject_type_hint = relation.get("subject_type") or None
         object_type_hint = relation.get("object_type") or None
-        # 用 _resolve_term 而不是 resolve_to_standard_name：后面写图谱时
-        # 要用这条候选实际命中的 Term 的 node_key（见下方 try 块），如果
-        # 这里只留下 standard_name 字符串，后面就得按字符串重新查一次
-        # Term——2026-08-22 起 standard_name 允许跨 term_type 重复，"按
-        # 已知 standard_name 反查 Term"和"按候选名 name-or-alias 解析
-        # Term"是两套不同的判重规则，可能对同一条候选给出不同答案（见
-        # Fix round 1 的调查记录）。这里保留 Term 对象本身，全程只查一次，
-        # 避免这种"两次查找互相打架"的可能性。
-        subject_term = _resolve_term(
+        # 用 resolve_term（app/graphrag/ontology.py）而不是
+        # resolve_to_standard_name：后面写图谱时要用这条候选实际命中的
+        # Term 的 node_key（见下方 try 块），如果这里只留下 standard_name
+        # 字符串，后面就得按字符串重新查一次 Term——2026-08-22 起
+        # standard_name 允许跨 term_type 重复，"按已知 standard_name 反查
+        # Term"和"按候选名 name-or-alias 解析 Term"是两套不同的判重规则，
+        # 可能对同一条候选给出不同答案（见 2026-08-22 Fix round 1 的调查
+        # 记录）。这里保留 Term 对象本身，全程只查一次，避免这种"两次
+        # 查找互相打架"的可能性。
+        subject_term = resolve_term(
             relation["subject"], terms, term_type_hint=subject_type_hint
         )
-        object_term = _resolve_term(
+        object_term = resolve_term(
             relation["object"], terms, term_type_hint=object_type_hint
         )
         subject_std = subject_term.standard_name if subject_term is not None else None
@@ -285,14 +245,16 @@ async def normalize_and_write_relations(
             # merge_relation 现在按 {tenant_id, node_key} MERGE 端点节点
             # （node_key 是创建时固定的身份键，改名后不变——ADR-0003），不能
             # 直接传 standard_name 展示名（改名后就不等于 node_key 了）。
-            # subject_term/object_term 就是上面 _resolve_term 解析
+            # subject_term/object_term 就是上面 resolve_term 解析
             # subject_std/object_std 时命中的那个 Term 对象本身（同一次
             # 查找，没有再按 standard_name 反查一遍）——subject_std 不是
             # None 就意味着 subject_term 也不是 None，这里的
             # assert 只是把这个不变量写清楚，不是靠它兜底一次可能失败的
             # 二次查找（2026-08-22 Fix round 1 之前的版本是靠 assert 兜底
             # find_term_by_type_hint 的二次查找，那次查找用的是跟这里不同
-            # 的判重规则，可能查不到人，assert 因此真的会炸——见调查记录）。
+            # 的判重规则，可能查不到人，assert 因此真的会炸——2026-08-23
+            # 起这两次查找已经合并成同一个 resolve_term，不再可能出现
+            # 这种分叉——见调查记录）。
             assert subject_term is not None and object_term is not None
             subject_node_key = subject_term.node_key
             object_node_key = object_term.node_key

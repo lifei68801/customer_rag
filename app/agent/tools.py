@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.graphrag.normalization import _resolve_term
-from app.graphrag.ontology import Term
+from app.graphrag.ontology import Term, resolve_term
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.structured_filter_query import run_structured_filter_query
 from app.graphrag.term_guard import GraphClientProtocol
@@ -222,27 +221,20 @@ async def graph_query_tool(
     2026-08-22 之前那样在多个同名不同类型的实体里随便选一个回答给客户
     （那样可能答非所问，是本次改动要消除的风险）。
 
-    用 `_resolve_term`（normalization.py 内部实际实现消歧的函数，
-    resolve_to_standard_name 只是取它的 `.standard_name`）而不是先调用
-    resolve_to_standard_name 拿字符串、再用 find_term_by_type_hint 反查
-    一次 node_key：后者是两次独立查找，各自的去重基准不同——
-    resolve_to_standard_name 按"候选名是否等于某术语的 standard_name
-    或在其 aliases 里"去重，find_term_by_type_hint 只按"standard_name
-    字段本身在全部术语里是否唯一"去重。2026-08-22 起 standard_name
-    允许跨 term_type 重复后，这两套规则会在"entity_name 通过别名唯一
-    命中某个 Term，但这个 Term 的 standard_name 恰好和另一个不相关、
-    不同类型的 Term 撞名"时给出不同答案，导致后面反查 node_key 失败——
-    这正是 normalization.py `_resolve_term` 文档里记录的 Fix round 1
-    bug（normalize_and_write_relations 曾经就是这么写的，修复后改成
-    只查一次，同一个 Term 对象同时提供 standard_name 和 node_key）。
-    graph_query_tool 的 entity_name 同样可能是别名（不止是标准名，见
-    GRAPH_QUERY_TOOL_SCHEMA 的字段说明），所以这里直接复用同一个已修复
-    的单次查找，不重新踩一遍那个坑。
+    用 `app.graphrag.ontology.resolve_term`——LLM 抽取归一化
+    （normalization.py）、人工审核批准（review_queue.py）、这里三处
+    "按名字查 Term"的调用路径 2026-08-23 起统一复用同一个函数、同一套
+    判重规则（见 resolve_term 的文档），不再各自实现或调用不同的消歧
+    逻辑，也不再需要像之前那样为了避开两套规则互相打架的坑，导入另一个
+    模块的私有函数。graph_query_tool 的 entity_name 可能是别名（不止是
+    标准名，见 GRAPH_QUERY_TOOL_SCHEMA 的字段说明），resolve_term 天然
+    支持按 name-or-alias 解析，一次查找同时拿到 standard_name 和
+    node_key。
 
     tenant_id 透传给 query_subgraph，防止返回给 LLM 的子图里混入其它
     租户的关系事实。
     """
-    term = _resolve_term(entity_name, terms, term_type_hint=entity_type)
+    term = resolve_term(entity_name, terms, term_type_hint=entity_type)
     if term is None:
         return GraphQueryToolResult(resolved=False, standard_name=None, subgraph=[])
 
