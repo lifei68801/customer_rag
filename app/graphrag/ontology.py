@@ -36,25 +36,32 @@ def resolve_term(
     函数）的原因。本函数把三处调用方收敛到同一个实现、同一套判重规则，
     从根上消除"策略分叉"这件事本身，而不是让每个调用方各自小心。
 
-    term_type_hint 传了且该类型下能按 name-or-alias 精确命中：直接返回
-    那一条，不再考虑其它候选——即使 hint 本身可能不完全准确（比如上游
-    只是"猜测"的类型候选，不是强校验过的值），只要该类型下确实有这个
-    名字/别名，就认为这是调用方想要的那一条。
+    term_type_hint 传了且该类型下按 name-or-alias 恰好命中一条：直接返回
+    那一条——即使 hint 本身可能不完全准确（比如上游只是"猜测"的类型
+    候选，不是强校验过的值），只要该类型下确实唯一命中这个名字/别名，
+    就认为这是调用方想要的那一条。该类型下命中两条及以上（比如术语表
+    本身在同一 term_type 内出现了别名冲突——见 terms_store.py 的
+    upsert_term_with_node_key，ETL 写入路径不会像 create_term/update_term
+    那样做别名冲突检查）：同样返回 None，不会因为"传了 hint"就放松
+    "唯一一条才算解析成功"这条策略、从多条里随便选第一条命中的。
 
-    没有精确命中该类型（没传 hint，或者传了但该类型下没有匹配）：退回
-    "候选名作为 standard_name 或某个 alias，在全部术语里一共匹配几条"
-    ——只匹配一条就直接返回它（没有歧义的安全情况，覆盖绝大多数"名字
-    本身不重复"的调用），匹配零条或两条以上都返回 None，交给调用方走
-    各自已有的"未找到/不明确"错误分支，而不是从多个候选里随便选一个。
+    没有精确命中该类型（没传 hint，或者传了但该类型下没有任何匹配）：
+    退回"候选名作为 standard_name 或某个 alias，在全部术语里一共匹配
+    几条"——只匹配一条就直接返回它（没有歧义的安全情况，覆盖绝大多数
+    "名字本身不重复"的调用），匹配零条或两条以上都返回 None，交给调用方
+    走各自已有的"未找到/不明确"错误分支，而不是从多个候选里随便选一个。
     找不到和有歧义这两种"返回 None"的情况如果需要进一步区分（比如给
     人看的错误提示），用 find_candidate_term_types 单独判断。
     """
     if term_type_hint:
-        for term in terms:
-            if term.term_type == term_type_hint and (
-                name == term.standard_name or name in term.aliases
-            ):
-                return term
+        hinted = [
+            t for t in terms
+            if t.term_type == term_type_hint and (name == t.standard_name or name in t.aliases)
+        ]
+        if len(hinted) == 1:
+            return hinted[0]
+        if len(hinted) > 1:
+            return None
     matches = [t for t in terms if name == t.standard_name or name in t.aliases]
     if len(matches) == 1:
         return matches[0]

@@ -162,7 +162,8 @@ async def test_graph_query_tool_resolves_alias_even_when_standard_name_collides_
     Fix round 1 bug（normalize_and_write_relations 曾经就是这么写的，修复后
     改成只查一次，同一个 Term 对象同时提供 standard_name 和 node_key）。
     graph_query_tool 如果照抄同样的两次查找写法就会重新踩到同一个坑，因此
-    改用 `_resolve_term` 只查一次。
+    改用 `resolve_term`（现在是 `app/graphrag/ontology.py` 的公开函数，
+    见该函数文档）只查一次。
     """
     terms = [
         Term(

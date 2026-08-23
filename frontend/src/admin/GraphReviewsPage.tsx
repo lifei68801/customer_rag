@@ -268,11 +268,11 @@ export function GraphReviewsPage() {
         drafts[review.review_id]?.object &&
         !(
           candidateTermTypesFor(drafts[review.review_id]?.subject ?? '').length >= 2 &&
-          !resolveApprovalTermType(review.review_id, 'subject', review.subject_type_candidate)
+          !(justCreated[review.review_id]?.subject ?? ambiguityPick[review.review_id]?.subject)
         ) &&
         !(
           candidateTermTypesFor(drafts[review.review_id]?.object ?? '').length >= 2 &&
-          !resolveApprovalTermType(review.review_id, 'object', review.object_type_candidate)
+          !(justCreated[review.review_id]?.object ?? ambiguityPick[review.review_id]?.object)
         ),
     )
 
@@ -717,10 +717,10 @@ export function GraphReviewsPage() {
         pending.map((review) => {
           const subjectAmbiguous =
             candidateTermTypesFor(drafts[review.review_id]?.subject ?? '').length >= 2 &&
-            !resolveApprovalTermType(review.review_id, 'subject', review.subject_type_candidate)
+            !(justCreated[review.review_id]?.subject ?? ambiguityPick[review.review_id]?.subject)
           const objectAmbiguous =
             candidateTermTypesFor(drafts[review.review_id]?.object ?? '').length >= 2 &&
-            !resolveApprovalTermType(review.review_id, 'object', review.object_type_candidate)
+            !(justCreated[review.review_id]?.object ?? ambiguityPick[review.review_id]?.object)
           return (
           <div
             key={review.review_id}

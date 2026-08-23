@@ -602,13 +602,17 @@ async def test_normalize_and_write_relations_does_not_crash_when_alias_match_own
     `assert subject_term is not None`，抛出未被任何 except 捕获的
     AssertionError，整批候选因为一条边直接崩掉。
 
-    Fix round 1 之后：normalize_and_write_relations 只调用一次
+    Fix round 1 之后（当时）：normalize_and_write_relations 只调用一次
     _resolve_term 就同时拿到 standard_name 和 node_key（不再有第二次、
     按不同规则的反查），这条候选本身其实并不歧义——它明确、唯一地对应
     term_a（唯一一个别名是"网关超时"的术语）——所以应该正常解析并写入
     图谱，写入的 node_key 必须是 term_a 的（不是 term_b 的，也不应该
     退化成"未能对齐术语表"分支，那样反而是在丢弃一条本可以正确解析的
-    候选）。
+    候选）。2026-08-23 起 _resolve_term 这个私有函数本身也已经不存在了：
+    三处调用方（这里、review_queue.py、agent/tools.py）统一收敛到了
+    `app/graphrag/ontology.py` 的公开函数 `resolve_term`，现在
+    normalize_and_write_relations 调用的就是这一个——上面这段仍然是
+    Fix round 1 那次修复当时的准确描述，只是函数名此后又变了一次。
     """
     term_a = Term(
         tenant_id="t1",

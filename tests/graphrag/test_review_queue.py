@@ -818,3 +818,46 @@ async def test_approve_review_error_message_says_ambiguous_when_name_matches_mul
             confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
             allowed_combinations=_ALLOWED_COMBINATIONS,
         )
+
+
+async def test_approve_review_error_message_distinguishes_same_type_duplicate_from_cross_type_ambiguity():
+    """resolve_term 收紧后（见 app/graphrag/ontology.py Finding I2 修复），
+    同一个 term_type 下出现两条同名/同别名的术语（术语表本身的别名冲突，
+    ETL upsert 路径不做冲突检查也可能产生这种脏数据）也会让 resolve_term
+    返回 None——但 find_candidate_term_types 这时只会返回一个 term_type
+    （两条术语都在同一类型下），如果消息文案不区分这种情况，会说出
+    "存在歧义：...分布在 ['产品'] 多个类型下" 这种自相矛盾的话（一个类型
+    却说"多个"），而且"传入 term_type 提示"的建议也没用——两条术语已经
+    是同一个类型了，传 hint 解决不了。这里断言消息改用新的措辞，且不再
+    包含旧的"多个类型"文案。"""
+    conn = await _connect()
+    terms = [
+        Term(
+            tenant_id="t1", node_key="产品:拿铁", standard_name="拿铁",
+            aliases=["Latte"], term_type="产品",
+        ),
+        Term(
+            tenant_id="t1", node_key="产品:Latte", standard_name="Latte",
+            aliases=[], term_type="产品",
+        ),
+    ]
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="Latte", object_candidate="示例登录模块",
+        relation_type="RELATED_TO", reason="fuzzy_match_needs_confirmation",
+        source="test", tenant_id="t1",
+    )
+    graph_client = FakeGraphClient()
+
+    with pytest.raises(
+        StandardNameNotInTermsError,
+        match="在类型 '产品' 下存在多条同名/同别名的术语",
+    ) as exc_info:
+        await approve_review(
+            conn, review_id=review_id, subject_standard_name="Latte",
+            object_standard_name="示例登录模块", tenant_id="t1", graph_client=graph_client,
+            terms=terms + _terms("示例登录模块"), now=_NOW,
+            confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+            allowed_combinations=_ALLOWED_COMBINATIONS,
+            subject_term_type_hint="产品",
+        )
+    assert "多个类型" not in str(exc_info.value)

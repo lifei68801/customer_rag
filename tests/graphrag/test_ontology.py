@@ -61,6 +61,24 @@ def test_resolve_term_falls_back_when_hint_type_has_no_match_but_name_is_unambig
     assert result.term_type == "产品"
 
 
+def test_resolve_term_returns_none_when_hinted_type_has_alias_collision():
+    """同一个 term_type 下出现两条术语共享同一个名字/别名（DB 唯一索引只
+    覆盖 (tenant_id, term_type, standard_name)，不覆盖 aliases——JSON 列，
+    且 ETL upsert 路径 upsert_term_with_node_key 不像 create_term/
+    update_term 那样跑 _check_name_conflict 别名冲突检查，所以这种脏数据
+    是可能出现的）：命中该类型的不是一条而是两条，即使传了 term_type_hint
+    也必须返回 None，不能因为"传了 hint 就直接返回第一条命中的"而随便
+    选中其中一个——这是本次改动收紧的行为。"""
+    terms = [
+        _term("拿铁", "产品", node_key="产品:拿铁", aliases=["Latte"]),
+        _term("Latte", "产品", node_key="产品:Latte"),
+    ]
+
+    result = resolve_term(terms=terms, name="Latte", term_type_hint="产品")
+
+    assert result is None
+
+
 def test_resolve_term_returns_none_when_ambiguous_without_hint():
     terms = [_term("Coffee", "产品"), _term("Coffee", "类目")]
 
