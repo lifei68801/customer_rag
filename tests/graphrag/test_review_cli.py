@@ -201,3 +201,41 @@ async def test_cmd_list_does_not_print_suggestion_section_when_absent(capsys):
 
     captured = capsys.readouterr()
     assert "建议" not in captured.out
+
+
+async def test_cmd_approve_uses_type_hints_to_disambiguate_cross_type_name_collision():
+    """review_cli.py 之前完全没有传类型提示的入口——同名不同类型的术语
+    在 CLI 端只能报错，没法像管理后台那样靠 subject_term_type/
+    object_term_type 消歧。这条测试证明 --subject-type/--object-type
+    对应的 cmd_approve 参数确实透传给了 approve_review，并且解析到了
+    正确类型那一条（写图谱用它的 node_key，不是随便哪个同名术语的）。"""
+    conn = await _connect()
+    review_id = await enqueue_for_review(
+        conn, subject_candidate="Coffee", object_candidate="Coffee",
+        relation_type="PART_OF", reason="fuzzy_match_needs_confirmation",
+        source="s.md", tenant_id="t1",
+    )
+    graph_client = FakeGraphClient()
+    await _seed_confirmed_ontology(
+        conn, tenant_id="t1", relation_type="PART_OF",
+        subject_term_type="产品", object_term_type="类目",
+    )
+
+    await cmd_approve(
+        review_conn=conn,
+        review_id=review_id,
+        subject_standard_name="Coffee",
+        object_standard_name="Coffee",
+        tenant_id="t1",
+        graph_client=graph_client,
+        terms=[
+            Term(tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee", aliases=[], term_type="产品"),
+            Term(tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee", aliases=[], term_type="类目"),
+        ],
+        subject_term_type="产品",
+        object_term_type="类目",
+    )
+
+    assert len(graph_client.written) == 1
+    assert graph_client.written[0]["subject"] == "产品:Coffee"
+    assert graph_client.written[0]["object"] == "类目:Coffee"

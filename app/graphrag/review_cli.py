@@ -53,6 +53,8 @@ async def cmd_approve(
     tenant_id: str,
     graph_client: ReviewGraphClientProtocol,
     terms: list[Term],
+    subject_term_type: str | None = None,
+    object_term_type: str | None = None,
 ) -> None:
     # 与 admin_graph_review_routes.py 的批准路由用同一套"已确认本体范围"
     # 数据源，两个批准入口的校验必须一致，见 approve_review() 的说明。
@@ -75,6 +77,8 @@ async def cmd_approve(
         now=datetime.now(),
         confirmed_relation_types=confirmed_relation_types,
         allowed_combinations=allowed_combinations,
+        subject_term_type_hint=subject_term_type,
+        object_term_type_hint=object_term_type,
     )
     print(
         f"已批准 review_id={review_id}，写入图谱："
@@ -108,6 +112,16 @@ def _parse_args() -> argparse.Namespace:
     approve_parser.add_argument(
         "--object", required=True, help="人工确认的 object 标准名（须已在术语表中）"
     )
+    approve_parser.add_argument(
+        "--subject-type", default=None,
+        help="subject 的类型提示（可选）：--subject 对应的标准名/别名在多个 "
+        "term_type 下都存在时用于消歧，不传就要求这个名字本身全局唯一，"
+        "否则批准会失败并报错说明有歧义",
+    )
+    approve_parser.add_argument(
+        "--object-type", default=None,
+        help="object 的类型提示（可选），语义同 --subject-type",
+    )
 
     reject_parser = subparsers.add_parser("reject", help="驳回一条候选关系（判定为噪声/误抽取）")
     reject_parser.add_argument("review_id", type=int)
@@ -122,6 +136,7 @@ async def _main() -> None:
     用法（--tenant-id 是顶层参数，必须写在子命令前面）：
       python -m app.graphrag.review_cli --tenant-id demo list
       python -m app.graphrag.review_cli --tenant-id demo approve 3 --subject 示例错误码E502 --object 示例登录模块
+      python -m app.graphrag.review_cli --tenant-id demo approve 3 --subject Coffee --object 类目名 --subject-type 产品 --object-type 类目
       python -m app.graphrag.review_cli --tenant-id demo reject 3 --note 确认是噪声
     """
     args = _parse_args()
@@ -142,6 +157,8 @@ async def _main() -> None:
             tenant_id=args.tenant_id,
             graph_client=graph_client,
             terms=terms,
+            subject_term_type=args.subject_type,
+            object_term_type=args.object_type,
         )
     elif args.command == "reject":
         await cmd_reject(
