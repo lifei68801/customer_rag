@@ -602,3 +602,50 @@ async def test_run_structured_filter_query_returns_error_when_graph_execution_ra
     )
 
     assert result == {"error": "图谱查询执行失败：driver error"}
+
+
+_SALES_SCHEMA_NUMBER = TermTypeCategory(
+    value="销量", extra_fields=[], standard_name_value_type="number",
+)
+
+
+def test_validate_accepts_numeric_operator_on_standard_name_when_declared_number():
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "销量",
+        "constraints": [{"kind": "attribute", "field": "standard_name", "operator": "gt", "value": 50}],
+    })
+    validate_structured_filter_query(
+        args, confirmed_relation_types=set(), term_type_schema={"销量": _SALES_SCHEMA_NUMBER},
+    )  # 不抛异常即通过
+
+
+def test_validate_still_rejects_numeric_operator_on_standard_name_when_default_string():
+    """默认 value_type='string' 的 term type，行为不能变——防回归。"""
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "SKU",
+        "constraints": [{"kind": "attribute", "field": "standard_name", "operator": "gt", "value": 50}],
+    })
+    with pytest.raises(StructuredFilterQueryError):
+        validate_structured_filter_query(
+            args, confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+        )
+
+
+def test_validate_relation_target_field_standard_name_respects_declared_type():
+    """target_field=standard_name（relation 约束的最后一跳）也要读同一份声明，
+    不只是 attribute 约束的 anchor 自身。"""
+    args = parse_structured_filter_query_args({
+        "anchor_term_type": "订单号",
+        "constraints": [{
+            "kind": "relation",
+            "hops": [{"relation_type": "BELONG_TO", "direction": "incoming", "target_term_type": "销量"}],
+            "target_field": "standard_name", "target_operator": "gt", "target_value": 50,
+        }],
+    })
+    validate_structured_filter_query(
+        args, confirmed_relation_types={"BELONG_TO"},
+        term_type_schema={
+            "订单号": TermTypeCategory(value="订单号", extra_fields=[]),
+            "销量": _SALES_SCHEMA_NUMBER,
+        },
+    )  # 不抛异常即通过

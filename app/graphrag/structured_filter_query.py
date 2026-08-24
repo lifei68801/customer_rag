@@ -182,14 +182,14 @@ def parse_structured_filter_query_args(raw: dict) -> StructuredFilterQueryArgs:
 def _resolve_field_value_type(
     *, term_type: str, field: str, term_type_schema: dict[str, TermTypeCategory]
 ) -> str:
-    if field == _RESERVED_FIELD_NAME:
-        return "string"
     category = term_type_schema.get(term_type)
     if category is None:
         raise StructuredFilterQueryError(
             f"term_type {term_type!r} 不在已确认 schema 里，"
             f"可用的 term_type: {sorted(term_type_schema.keys())}"
         )
+    if field == _RESERVED_FIELD_NAME:
+        return category.standard_name_value_type
     for spec in category.extra_fields:
         if spec.name == field:
             if not _EXTRA_FIELD_NAME_PATTERN.match(spec.name):
