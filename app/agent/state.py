@@ -33,3 +33,10 @@ class AgentState(TypedDict, total=False):
     pending_tool_calls: list[dict[str, str]]
     tool_results: list[dict[str, Any]]
     planner_gave_up: bool
+    # 本轮对话里 Planner 每一轮已经流式推送给用户的文本，按轮次顺序累积
+    # （包括工具调用轮里那些从未进入 answer_text 的"前置说明文字"）——
+    # output_safety_node 用这个字段做完整安全审查，而不是只审查最后一轮
+    # 的 answer_text，因为更早的轮次也已经通过 on_answer_chunk 实时展示
+    # 给用户看过了，只过了流式阶段的轻量规则检查是不够的。非流式/确定性
+    # 路径不写这个字段。
+    streamed_round_texts: list[str]

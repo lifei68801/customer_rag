@@ -499,7 +499,16 @@ def build_agent_graph(
         if not state.get("is_input_safe", True):
             return {"is_output_safe": True, "final_text": UNSAFE_INPUT_MESSAGE}
         answer = state.get("answer_text", "")
-        result = check_text(answer, banned_terms=banned_terms, include_email=False)
+        # Planner 流式路径每一轮都已经通过 on_answer_chunk 实时展示给用户
+        # （即使前端后续会在下一个 tool_status 到达时把非最终轮的文字清
+        # 空），不能让更早的轮次只过了流式阶段的轻量规则检查就算完事——
+        # 下面三层审查都要覆盖本轮对话里已经展示过的全部文本，而不只是
+        # 最后一轮的 answer_text。streamed_round_texts 由 run_planner_
+        # turn_streaming 累积（见该函数）；非流式/确定性路径不写这个
+        # 字段，这里退回只查 answer_text，行为完全不变。
+        streamed_rounds = state.get("streamed_round_texts")
+        review_text = "\n".join(streamed_rounds) if streamed_rounds else answer
+        result = check_text(review_text, banned_terms=banned_terms, include_email=False)
         if not result.is_safe:
             # 只记命中的规则类别（如 "phone_number"/"id_card"），不记原文——
             # 命中这条规则本身就说明 answer 里含 PII/内部数据，把原文写进日志
@@ -509,7 +518,7 @@ def build_agent_graph(
                 result.matched_terms,
             )
             return {"is_output_safe": False, "final_text": UNSAFE_OUTPUT_MESSAGE}
-        leakage_result = detect_internal_leakage(answer)
+        leakage_result = detect_internal_leakage(review_text)
         if leakage_result.is_leaked:
             # 同上，只记命中的泄露类别，不记原文。
             logger.warning(
@@ -525,7 +534,7 @@ def build_agent_graph(
             return {"is_output_safe": True, "final_text": answer}
 
         semantic_result = await semantic_safety_review(
-            answer,
+            review_text,
             llm_registry=llm_registry,
             llm_provider_name=llm_provider_name,
         )
@@ -632,7 +641,7 @@ def build_agent_graph(
                 max_tool_call_rounds=max_tool_call_rounds,
                 banned_terms=banned_terms,
                 on_answer_chunk=on_answer_chunk,
-                on_tool_status=on_tool_status or (lambda: _noop()),
+                on_tool_status=on_tool_status or _noop,
             )
         return await run_planner_turn(
             state_with_messages,

@@ -679,6 +679,88 @@ async def test_run_planner_turn_streaming_replaces_sentence_matching_banned_term
     assert update["answer_text"] == LITE_SAFETY_FALLBACK_SENTENCE
 
 
+async def test_run_planner_turn_streaming_preserves_embedded_newline_when_no_substitution():
+    """Finding 3 回归测试：markdown 列表这类"句内无终止标点、句间有换行"
+    的文本，经过 stream_sentences 按句切分再拼接会把句子之间的换行丢掉
+    （"- 重启路由器。\\n- 检查网线。" 变成 "- 重启路由器。- 检查网线。"）。
+    没有触发任何安全替换时，answer_text 必须改用原始增量直接拼接，保留
+    大模型输出的原始换行。"""
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedStreamingLLMProvider(
+            [[ProviderStreamChunk(text="第一行。\n第二行。")]]
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "怎么修？"}],
+        "tool_call_round": 0,
+    }
+
+    async def on_answer_chunk(text: str) -> None:
+        pass
+
+    async def on_tool_status() -> None:
+        pass
+
+    update = await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=None,
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+    )
+
+    # 按句子拼接会丢失中间的换行（"第一行。第二行。"），原始增量拼接则
+    # 保留它——这正是本次修复要验证的行为。
+    assert update["answer_text"] == "第一行。\n第二行。"
+    assert update["planner_messages"][-1]["content"] == "第一行。\n第二行。"
+
+
+async def test_run_planner_turn_streaming_uses_joined_sentences_not_raw_text_when_substituted():
+    """当某一句被安全规则替换过时，answer_text 必须使用按句子拼接、已经
+    做过安全替换的版本，而不是原始增量拼接（那样会把被过滤的敏感词原样
+    带回 answer_text/planner_messages，等于没过滤）。"""
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedStreamingLLMProvider(
+            [[ProviderStreamChunk(text="这是安全的第一句。这句话里有敏感词。")]]
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "随便问点什么"}],
+        "tool_call_round": 0,
+    }
+    sent_chunks: list[str] = []
+
+    async def on_answer_chunk(text: str) -> None:
+        sent_chunks.append(text)
+
+    async def on_tool_status() -> None:
+        pass
+
+    update = await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=["敏感词"],
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+    )
+
+    assert sent_chunks == ["这是安全的第一句。", LITE_SAFETY_FALLBACK_SENTENCE]
+    # 原始增量拼接的话会是 "这是安全的第一句。这句话里有敏感词。"，
+    # 原样带回被过滤的敏感词——必须不是这个值。
+    assert update["answer_text"] == "这是安全的第一句。" + LITE_SAFETY_FALLBACK_SENTENCE
+    assert "敏感词" not in update["answer_text"]
+
+
 async def test_run_planner_turn_streaming_gives_up_without_tool_status_when_rounds_exhausted():
     llm_registry = ProviderRegistry()
     llm_registry.register(

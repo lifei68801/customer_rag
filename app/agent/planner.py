@@ -105,14 +105,20 @@ async def run_planner_turn(
 async def _split_stream_text_and_tool_calls(
     raw_stream: AsyncIterator[ProviderStreamChunk],
     tool_calls_box: list[list[ToolCall] | None],
+    raw_text_parts: list[str],
 ) -> AsyncIterator[str]:
     """把 provider 流拆成两路：文本增量原样 yield 出去供 stream_sentences()
     消费；工具调用（如果有）写进 tool_calls_box[0]，供调用方在这个生成器
     耗尽后读取——用长度为 1 的列表当"可写引用"，闭包不能直接对外层局部
-    变量重新赋值。
+    变量重新赋值。raw_text_parts 原样收集每个文本增量（不经过
+    stream_sentences 的按句切分/strip），供调用方在没有发生安全替换时
+    重建保留原始换行/空白的完整文本——stream_sentences 是为了流式切句
+    展示用的，会丢掉句子之间的空白/换行，不适合用来重建 planner_messages
+    里要喂回给模型的原文。
     """
     async for chunk in raw_stream:
         if chunk.text:
+            raw_text_parts.append(chunk.text)
             yield chunk.text
         if chunk.tool_calls is not None:
             tool_calls_box[0] = chunk.tool_calls
@@ -136,6 +142,11 @@ async def run_planner_turn_streaming(
     再推送。见 docs/superpowers/specs/2026-08-23-
     planner-streaming-typewriter-design.md。
 
+    没有触发任何安全替换时，answer_text/回填进 planner_messages 的文本
+    保留大模型输出的原始换行/空白格式（不经过 stream_sentences 的按句
+    strip）；一旦某一句被安全替换过，则退回按句子拼接的版本，避免被
+    过滤内容通过原始拼接重新进入 answer_text。
+
     on_tool_status 只在确认这一轮真的会继续执行工具调用（没有触发
     planner_gave_up）时才调用一次——轮次耗尽直接放弃的场景不应该让
     用户以为"还在查"。
@@ -149,15 +160,35 @@ async def run_planner_turn_streaming(
         provider_name=llm_provider_name,
     )
     tool_calls_box: list[list[ToolCall] | None] = [None]
-    text_stream = _split_stream_text_and_tool_calls(raw_stream, tool_calls_box)
+    raw_text_parts: list[str] = []
+    text_stream = _split_stream_text_and_tool_calls(raw_stream, tool_calls_box, raw_text_parts)
 
     sent_sentences: list[str] = []
+    any_sentence_substituted = False
     async for sentence in stream_sentences(text_stream):
         safety_result = check_text(sentence, banned_terms=banned_terms, include_email=False)
-        safe_sentence = sentence if safety_result.is_safe else LITE_SAFETY_FALLBACK_SENTENCE
+        if safety_result.is_safe:
+            safe_sentence = sentence
+        else:
+            safe_sentence = LITE_SAFETY_FALLBACK_SENTENCE
+            any_sentence_substituted = True
         await on_answer_chunk(safe_sentence)
         sent_sentences.append(safe_sentence)
-    full_text = "".join(sent_sentences)
+
+    if any_sentence_substituted:
+        # 至少一句被安全规则替换过——不能用原始拼接（会把被过滤的内容
+        # 原样带回 answer_text/planner_messages，等于没过滤），退回按
+        # 句子拼接的、已经做过安全替换的版本，跟当前展示给用户的内容
+        # 保持一致。
+        full_text = "".join(sent_sentences)
+    else:
+        # 没有任何一句被替换，用原始增量直接拼接，保留大模型输出的原始
+        # 换行/空白格式（stream_sentences 为了切句会 strip 掉这些）。
+        full_text = "".join(raw_text_parts)
+
+    streamed_round_texts = state.get("streamed_round_texts", [])
+    if full_text:
+        streamed_round_texts = [*streamed_round_texts, full_text]
 
     tool_calls = tool_calls_box[0]
     if tool_calls:
@@ -167,6 +198,7 @@ async def run_planner_turn_streaming(
         )
         if not result.get("planner_gave_up"):
             await on_tool_status()
+            result["streamed_round_texts"] = streamed_round_texts
         return result
 
     messages = [*messages, {"role": "assistant", "content": full_text}]
@@ -174,6 +206,7 @@ async def run_planner_turn_streaming(
         "planner_messages": messages,
         "answer_text": full_text,
         "planner_gave_up": False,
+        "streamed_round_texts": streamed_round_texts,
     }
 
 
