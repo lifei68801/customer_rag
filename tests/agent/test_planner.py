@@ -1,13 +1,25 @@
 import asyncio
 import json
 
-from app.agent.planner import route_after_planner, run_planner_turn, run_tool_calls
+from app.agent.planner import (
+    route_after_planner,
+    run_planner_turn,
+    run_planner_turn_streaming,
+    run_tool_calls,
+)
 from app.graphrag.ontology import Term
-from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult, ToolCall
+from app.providers.base import (
+    ProviderCapability,
+    ProviderRequest,
+    ProviderResult,
+    ProviderStreamChunk,
+    ToolCall,
+)
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
+from app.safety.rules import LITE_SAFETY_FALLBACK_SENTENCE
 
 
 class FakeEmbeddingProvider:
@@ -513,3 +525,199 @@ async def test_dispatch_tool_call_reports_unconfigured_when_schema_data_missing(
 
     assert records == []
     assert "未配置" in content
+
+
+class ScriptedStreamingLLMProvider:
+    """一次注册若干"轮次"的流式响应，每轮是一个 ProviderStreamChunk 列表；
+    stream_complete_with_tools 每次调用弹出下一轮，逐个 yield——跟本文件
+    已有的 ScriptedLLMProvider（非流式，弹出一个 ProviderResult）是同一
+    个"按调用顺序消费预先编排好的脚本"思路，只是这里每轮是一组 chunk
+    而不是一个完整结果。"""
+
+    def __init__(self, rounds: list[list[ProviderStreamChunk]]) -> None:
+        self._rounds = list(rounds)
+        self.requests: list[ProviderRequest] = []
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        raise NotImplementedError("此 Fake 只用于测试流式路径")
+
+    async def stream_complete_with_tools(self, request: ProviderRequest):
+        self.requests.append(request)
+        for chunk in self._rounds.pop(0):
+            yield chunk
+
+
+async def test_run_planner_turn_streaming_forwards_text_deltas_for_direct_answer():
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedStreamingLLMProvider(
+            [
+                [
+                    ProviderStreamChunk(text="重启路由器"),
+                    ProviderStreamChunk(text="即可解决。"),
+                ]
+            ]
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "网络连不上怎么办？"}],
+        "tool_call_round": 0,
+    }
+    sent_chunks: list[str] = []
+    tool_status_calls = 0
+
+    async def on_answer_chunk(text: str) -> None:
+        sent_chunks.append(text)
+
+    async def on_tool_status() -> None:
+        nonlocal tool_status_calls
+        tool_status_calls += 1
+
+    update = await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=None,
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+    )
+
+    assert update["answer_text"] == "重启路由器即可解决。"
+    assert update["planner_gave_up"] is False
+    assert sent_chunks == ["重启路由器即可解决。"]
+    assert tool_status_calls == 0
+
+
+async def test_run_planner_turn_streaming_does_not_forward_text_for_pure_tool_call_round():
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedStreamingLLMProvider(
+            [
+                [
+                    ProviderStreamChunk(
+                        tool_calls=[
+                            ToolCall(
+                                id="call_1",
+                                name="vector_search_tool",
+                                arguments='{"query": "网络连不上怎么办"}',
+                            )
+                        ]
+                    )
+                ]
+            ]
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "网络连不上怎么办？"}],
+        "tool_call_round": 0,
+    }
+    sent_chunks: list[str] = []
+    tool_status_calls = 0
+
+    async def on_answer_chunk(text: str) -> None:
+        sent_chunks.append(text)
+
+    async def on_tool_status() -> None:
+        nonlocal tool_status_calls
+        tool_status_calls += 1
+
+    update = await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=None,
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+    )
+
+    assert sent_chunks == []
+    assert tool_status_calls == 1
+    assert update["pending_tool_calls"] == [
+        {"id": "call_1", "name": "vector_search_tool", "arguments": '{"query": "网络连不上怎么办"}'}
+    ]
+    assert update["planner_messages"][-1]["tool_calls"][0]["function"]["name"] == "vector_search_tool"
+
+
+async def test_run_planner_turn_streaming_replaces_sentence_matching_banned_term():
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedStreamingLLMProvider(
+            [[ProviderStreamChunk(text="这句话里有敏感词。")]]
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "随便问点什么"}],
+        "tool_call_round": 0,
+    }
+    sent_chunks: list[str] = []
+
+    async def on_answer_chunk(text: str) -> None:
+        sent_chunks.append(text)
+
+    async def on_tool_status() -> None:
+        pass
+
+    update = await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=["敏感词"],
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+    )
+
+    assert sent_chunks == [LITE_SAFETY_FALLBACK_SENTENCE]
+    assert update["answer_text"] == LITE_SAFETY_FALLBACK_SENTENCE
+
+
+async def test_run_planner_turn_streaming_gives_up_without_tool_status_when_rounds_exhausted():
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedStreamingLLMProvider(
+            [
+                [
+                    ProviderStreamChunk(
+                        tool_calls=[
+                            ToolCall(id="call_1", name="vector_search_tool", arguments="{}")
+                        ]
+                    )
+                ]
+            ]
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "问题"}],
+        "tool_call_round": 3,
+    }
+    tool_status_calls = 0
+
+    async def on_answer_chunk(text: str) -> None:
+        pass
+
+    async def on_tool_status() -> None:
+        nonlocal tool_status_calls
+        tool_status_calls += 1
+
+    update = await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=None,
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+    )
+
+    assert update == {"planner_gave_up": True}
+    assert tool_status_calls == 0

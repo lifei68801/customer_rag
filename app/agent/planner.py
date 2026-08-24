@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from app.agent.tools import (
     GRAPH_QUERY_TOOL_SCHEMA,
@@ -15,14 +15,55 @@ from app.agent.tools import (
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.term_guard import GraphClientProtocol, describe_association
-from app.providers.base import ProviderCapability, ProviderRequest
+from app.providers.base import ProviderCapability, ProviderRequest, ProviderStreamChunk, ToolCall
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import VectorRecord, VectorStore
+from app.safety.rules import LITE_SAFETY_FALLBACK_SENTENCE, check_text
+from app.voice.streaming_responder import stream_sentences
 
 _TOOL_SCHEMAS = [VECTOR_SEARCH_TOOL_SCHEMA, GRAPH_QUERY_TOOL_SCHEMA, STRUCTURED_FILTER_QUERY_TOOL_SCHEMA]
+
+
+def _build_tool_call_round_result(
+    messages: list[dict[str, Any]],
+    answer_text: str,
+    tool_calls: list[ToolCall],
+    *,
+    round_num: int,
+    max_tool_call_rounds: int,
+) -> dict[str, Any]:
+    """构造"这一轮模型请求了工具调用"场景下的返回值：轮次超限就放弃
+    （不追加消息、不执行工具，转 Fallback）；没超限就把 assistant 消息
+    （带 tool_calls 字段）追加进对话历史，返回待执行的工具调用列表。
+    run_planner_turn（非流式）和 run_planner_turn_streaming（流式）在这
+    一步的逻辑完全一样，抽成这个共用函数，避免两处重复维护。
+    """
+    if round_num >= max_tool_call_rounds:
+        return {"planner_gave_up": True}
+    messages = [
+        *messages,
+        {
+            "role": "assistant",
+            "content": answer_text or None,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.arguments},
+                }
+                for tc in tool_calls
+            ],
+        },
+    ]
+    return {
+        "planner_messages": messages,
+        "pending_tool_calls": [
+            {"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in tool_calls
+        ],
+    }
 
 
 async def run_planner_turn(
@@ -48,35 +89,90 @@ async def run_planner_turn(
     )
 
     if result.tool_calls:
-        if round_num >= max_tool_call_rounds:
-            return {"planner_gave_up": True}
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": result.text or None,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.name, "arguments": tc.arguments},
-                    }
-                    for tc in result.tool_calls
-                ],
-            }
+        return _build_tool_call_round_result(
+            messages, result.text, result.tool_calls,
+            round_num=round_num, max_tool_call_rounds=max_tool_call_rounds,
         )
-        return {
-            "planner_messages": messages,
-            "pending_tool_calls": [
-                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
-                for tc in result.tool_calls
-            ],
-        }
 
     messages.append({"role": "assistant", "content": result.text})
     return {
         "planner_messages": messages,
         "answer_text": result.text,
+        "planner_gave_up": False,
+    }
+
+
+async def _split_stream_text_and_tool_calls(
+    raw_stream: AsyncIterator[ProviderStreamChunk],
+    tool_calls_box: list[list[ToolCall] | None],
+) -> AsyncIterator[str]:
+    """把 provider 流拆成两路：文本增量原样 yield 出去供 stream_sentences()
+    消费；工具调用（如果有）写进 tool_calls_box[0]，供调用方在这个生成器
+    耗尽后读取——用长度为 1 的列表当"可写引用"，闭包不能直接对外层局部
+    变量重新赋值。
+    """
+    async for chunk in raw_stream:
+        if chunk.text:
+            yield chunk.text
+        if chunk.tool_calls is not None:
+            tool_calls_box[0] = chunk.tool_calls
+
+
+async def run_planner_turn_streaming(
+    state: dict[str, Any],
+    *,
+    llm_registry: ProviderRegistry,
+    llm_provider_name: str,
+    max_tool_call_rounds: int,
+    banned_terms: list[str] | None,
+    on_answer_chunk: Callable[[str], Awaitable[None]],
+    on_tool_status: Callable[[], Awaitable[None]],
+) -> dict[str, Any]:
+    """run_planner_turn 的流式版本：语义完全一致（同样的轮次上限检查、
+    同样的 planner_messages 追加规则），区别只是这一轮的文本用
+    stream_complete_with_tools() 边生成边推送，而不是一次性拿到完整
+    文本。每句文本先过 check_text 轻量规则检查（跟确定性路径的
+    responder_node 完全一致），命中就换成 LITE_SAFETY_FALLBACK_SENTENCE
+    再推送。见 docs/superpowers/specs/2026-08-23-
+    planner-streaming-typewriter-design.md。
+
+    on_tool_status 只在确认这一轮真的会继续执行工具调用（没有触发
+    planner_gave_up）时才调用一次——轮次耗尽直接放弃的场景不应该让
+    用户以为"还在查"。
+    """
+    messages = list(state.get("planner_messages", []))
+    round_num = state.get("tool_call_round", 0)
+
+    raw_stream = llm_registry.stream_with_tools(
+        ProviderCapability.LLM,
+        ProviderRequest(messages=messages, tools=_TOOL_SCHEMAS, tool_choice="auto"),
+        provider_name=llm_provider_name,
+    )
+    tool_calls_box: list[list[ToolCall] | None] = [None]
+    text_stream = _split_stream_text_and_tool_calls(raw_stream, tool_calls_box)
+
+    sent_sentences: list[str] = []
+    async for sentence in stream_sentences(text_stream):
+        safety_result = check_text(sentence, banned_terms=banned_terms, include_email=False)
+        safe_sentence = sentence if safety_result.is_safe else LITE_SAFETY_FALLBACK_SENTENCE
+        await on_answer_chunk(safe_sentence)
+        sent_sentences.append(safe_sentence)
+    full_text = "".join(sent_sentences)
+
+    tool_calls = tool_calls_box[0]
+    if tool_calls:
+        result = _build_tool_call_round_result(
+            messages, full_text, tool_calls,
+            round_num=round_num, max_tool_call_rounds=max_tool_call_rounds,
+        )
+        if not result.get("planner_gave_up"):
+            await on_tool_status()
+        return result
+
+    messages = [*messages, {"role": "assistant", "content": full_text}]
+    return {
+        "planner_messages": messages,
+        "answer_text": full_text,
         "planner_gave_up": False,
     }
 
