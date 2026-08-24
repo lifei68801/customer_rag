@@ -17,6 +17,13 @@ _EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 UNSAFE_INPUT_MESSAGE = "您的问题包含无法处理的敏感内容，请修改后重新提问。"
 UNSAFE_OUTPUT_MESSAGE = "抱歉，生成的回答未通过安全审查，已为您转接人工客服。"
 
+# 静态检索路径/Planner 路径流式输出时，单句命中轻量规则检查（check_text）
+# 后的兜底文案——跟 UNSAFE_INPUT_MESSAGE/UNSAFE_OUTPUT_MESSAGE 是同一类
+# "安全网命中时的兜底话术"，放在这个共享位置的理由也一样：原定义在
+# app/agent/graph.py，2026-08-23 起 app/agent/planner.py 的流式变体也
+# 需要同一份文案，两处各自定义会有文案不一致的风险。
+LITE_SAFETY_FALLBACK_SENTENCE = "（该部分内容因安全检查被过滤。）"
+
 
 @dataclass(frozen=True)
 class SafetyCheckResult:

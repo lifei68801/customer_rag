@@ -44,7 +44,12 @@ from app.retrieval.hybrid_search import hybrid_search
 from app.retrieval.vector_store import VectorStore
 from app.safety.leakage_detection import detect_internal_leakage
 from app.safety.prompt_injection import detect_prompt_injection, wrap_system_prompt
-from app.safety.rules import UNSAFE_INPUT_MESSAGE, UNSAFE_OUTPUT_MESSAGE, check_text
+from app.safety.rules import (
+    LITE_SAFETY_FALLBACK_SENTENCE,
+    UNSAFE_INPUT_MESSAGE,
+    UNSAFE_OUTPUT_MESSAGE,
+    check_text,
+)
 from app.safety.semantic_review import semantic_safety_review
 from app.voice.streaming_responder import stream_sentences
 
@@ -63,7 +68,6 @@ _FUTURE_TIME_CLARIFICATION_PROMPT = (
     "您提到的时间似乎是将来的日期，我们暂时没有对应的记录。"
     "请问您想查询的是哪一个具体的历史日期呢？"
 )
-_LITE_SAFETY_FALLBACK_SENTENCE = "（该部分内容因安全检查被过滤。）"
 _PLANNER_SYSTEM_PROMPT = (
     "你是客服问答助手。可以调用 vector_search_tool 检索知识库、"
     "graph_query_tool 查询专有名词的标准名称及关联关系、"
@@ -429,7 +433,7 @@ def build_agent_graph(
                     sentence, banned_terms=banned_terms, include_email=False
                 )
                 safe_sentence = (
-                    sentence if safety_result.is_safe else _LITE_SAFETY_FALLBACK_SENTENCE
+                    sentence if safety_result.is_safe else LITE_SAFETY_FALLBACK_SENTENCE
                 )
                 await on_answer_chunk(safe_sentence)
                 sent_sentences.append(safe_sentence)
