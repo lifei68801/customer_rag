@@ -65,7 +65,6 @@ flowchart TB
 
     subgraph Tools["工具集"]
         VTool[vector_search_tool]
-        GTool[graph_query_tool]
         SFTool[structured_filter_query_tool]
         TTool[create_ticket_tool]
     end
@@ -107,8 +106,8 @@ flowchart TB
     TermGuard -. "命中术语表→强制注入图谱上下文" .-> Neo4jQ
     Planner --> ToolExec
     ToolExec --> VTool --> Hybrid --> Rerank --> Fusion
-    ToolExec --> GTool --> Neo4jQ
-    GTool --> Ontology
+    ToolExec --> SFTool --> Neo4jQ
+    SFTool --> Ontology
     Fusion --> Responder
     Neo4jQ --> Responder
     Planner -. "置信度不足" .-> Fallback
@@ -154,7 +153,7 @@ stateDiagram-v2
 ### 3.2 关键节点职责
 
 - **TermGuard（术语安全网节点）**：这是解决"LLM 自主决策可能漏调图谱工具"这一风险的关键补丁。在 Planner 之前，用轻量级词典匹配（术语表 + 模糊匹配）扫描用户问题，一旦命中专有名词候选项，**强制**将对应的图谱子图查询结果作为上下文注入，不依赖 LLM 自主判断是否需要查图谱。LLM 仍自主决定是否额外调用向量检索工具——两者不冲突。
-- **Planner（推理/工具决策节点）**：LLM 根据当前状态（用户问题 + 已注入上下文 + 历史工具结果）决定下一步：调用 `vector_search_tool`、调用 `graph_query_tool`、直接回答，或判定为无法回答转 Fallback。支持多轮工具调用（ReAct 风格），LangGraph 的图结构保证循环边可控、可加最大迭代次数保护。
+- **Planner（推理/工具决策节点）**：LLM 根据当前状态（用户问题 + 已注入上下文 + 历史工具结果）决定下一步：调用 `vector_search_tool`、调用 `structured_filter_query_tool`（覆盖已知实体查关联、按条件反查一批实体、展开邻居三种图谱查询能力）、直接回答，或判定为无法回答转 Fallback。支持多轮工具调用（ReAct 风格），LangGraph 的图结构保证循环边可控、可加最大迭代次数保护。
 - **Fallback（兜底节点）**：当检索结果置信度分数低于阈值，或达到最大工具调用轮次仍未获得足够信息时触发，生成"未找到确切答案"的明确话术，并调用 `create_ticket_tool` 转人工。**不允许**在此状态下让 LLM 自由发挥回答。
 
 ### 3.3 工具定义
@@ -162,9 +161,10 @@ stateDiagram-v2
 | 工具 | 输入 | 输出 | 说明 |
 |---|---|---|---|
 | `vector_search_tool` | query, tenant_id, top_k | 混合检索+rerank 后的文档片段列表（含来源、置信度分数） | 内部串联 Hybrid Search → Rerank → Fusion |
-| `graph_query_tool` | 实体/关系查询意图 | 子图三元组 + 归一化后的标准名称 | 内部先查术语表做实体链接，再执行 Cypher 查询 |
-| `structured_filter_query_tool` | anchor_term_type, constraints（属性/关系条件）, group_by, limit | 满足条件的实体列表（含已声明属性）或分组统计 | 按属性/关系条件反查实体；字段/关系类型先按租户已确认 schema 校验再拼 Cypher |
+| `structured_filter_query_tool` | `anchor`（`{name, type_hint?}` 或 `{term_type}`）, `constraints: list`, `expand`（可选）, `group_by`（可选）, `limit`（可选，默认20） | 已知实体的关联信息 / 满足条件的实体列表（含已声明属性）/ 分组统计 / 锚点邻居 | 已知实体查关联（`anchor.name`，内部先查术语表做实体链接）、按属性/关系条件反查一批实体、展开锚点邻居三种能力统一入口；字段/关系类型先按租户已确认 schema 校验再拼 Cypher |
 | `create_ticket_tool` | 用户问题, 会话摘要, 已尝试的检索结果 | 工单 ID | 当前为抽象接口 mock 实现，后续可插拔对接具体工单系统 |
+
+`structured_filter_query_tool` 的非 `group_by` 执行路径为了报告准确的 `matched_count`，每次调用都会额外跑一次不带 `LIMIT` 的 COUNT 查询——这是已知、可接受的成本，不是待修的 bug。当命中的过滤条件涉及数值字段的类型转换（`toFloat(anchor.standard_name)` 这类 cast）时，这次 COUNT 查询会因为 cast 而绕开 `(tenant_id, type, standard_name)` 复合索引，退化为该 term_type 下的全表扫描（详见 `app/graphrag/neo4j_client.py::execute_structured_filter_query` 文档字符串里对静态插值 vs 索引命中关系的说明）——负载较高的租户如果观察到这条路径变慢，这是根因，而不是新引入的回归。
 
 ---
 
@@ -190,7 +190,7 @@ flowchart LR
 
 ### 4.2 查询时保障
 
-- `graph_query_tool` 收到候选实体后，第一步始终是"别名→标准名"归一化查询，再基于标准名做子图遍历，确保返回给 LLM 的上下文使用统一、准确的专有名词，避免同一概念因表述不同被误判为不同实体。
+- `structured_filter_query_tool` 在 `anchor.name` 模式下收到候选实体名后，第一步始终是"别名→标准名"归一化查询（`resolve_term()`），再基于标准名做子图遍历，确保返回给 LLM 的上下文使用统一、准确的专有名词，避免同一概念因表述不同被误判为不同实体。
 
 ---
 
