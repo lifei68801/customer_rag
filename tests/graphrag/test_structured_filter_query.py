@@ -5,10 +5,14 @@ import pytest
 from app.graphrag.ontology_categories import ExtraFieldSpec, TermTypeCategory
 from app.graphrag.structured_filter_query import (
     AttributeConstraint,
+    ExpandSpec,
     GroupBy,
     Hop,
+    NameAnchor,
     RelationConstraint,
+    ResolvedAnchor,
     StructuredFilterQueryError,
+    TypeAnchor,
     parse_structured_filter_query_args,
     validate_structured_filter_query,
 )
@@ -16,18 +20,19 @@ from app.graphrag.structured_filter_query import (
 
 def test_parse_attribute_constraint():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
     })
-    assert args.anchor_term_type == "SKU"
+    assert args.anchor == TypeAnchor(term_type="SKU")
     assert args.constraints == [AttributeConstraint(field="numeric_value", operator="gt", value=500)]
+    assert args.expand is None
     assert args.group_by is None
     assert args.limit == 20
 
 
 def test_parse_relation_constraint_with_one_hop():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{
             "kind": "relation",
             "hops": [
@@ -44,7 +49,7 @@ def test_parse_relation_constraint_with_one_hop():
 
 def test_parse_relation_constraint_with_genuine_two_hops():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{
             "kind": "relation",
             "hops": [
@@ -64,13 +69,13 @@ def test_parse_relation_constraint_with_genuine_two_hops():
 
 def test_parse_rejects_empty_constraints():
     with pytest.raises(StructuredFilterQueryError):
-        parse_structured_filter_query_args({"anchor_term_type": "SKU", "constraints": []})
+        parse_structured_filter_query_args({"anchor": {"term_type": "SKU"}, "constraints": []})
 
 
 def test_parse_rejects_more_than_two_hops():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": [{
                 "kind": "relation",
                 "hops": [
@@ -86,7 +91,7 @@ def test_parse_rejects_more_than_two_hops():
 def test_parse_rejects_unknown_operator():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": [{"kind": "attribute", "field": "x", "operator": "contains", "value": "y"}],
         })
 
@@ -94,7 +99,7 @@ def test_parse_rejects_unknown_operator():
 def test_parse_group_by_must_point_to_relation_constraint():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
             "group_by": {"constraint_index": 0},
         })
@@ -102,7 +107,7 @@ def test_parse_group_by_must_point_to_relation_constraint():
 
 def test_parse_uses_default_limit_when_omitted():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
     })
     assert args.limit == 20
@@ -118,50 +123,53 @@ _VARIANT_SCHEMA = TermTypeCategory(
 
 def test_validate_accepts_confirmed_field_and_matching_operator():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
     })
     validate_structured_filter_query(
-        args, confirmed_relation_types=set(),
-        term_type_schema={"SKU": _SKU_SCHEMA},
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+        confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
     )  # 不抛异常即通过
 
 
 def test_validate_rejects_field_not_in_confirmed_schema():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "unknown_field", "operator": "gt", "value": 500}],
     })
     with pytest.raises(StructuredFilterQueryError):
         validate_structured_filter_query(
-            args, confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
         )
 
 
 def test_validate_rejects_operator_not_matching_declared_value_type():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "starts_with", "value": "5"}],
     })
     with pytest.raises(StructuredFilterQueryError):
         validate_structured_filter_query(
-            args, confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
         )
 
 
 def test_validate_accepts_standard_name_as_reserved_field():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "standard_name", "operator": "starts_with", "value": "圆角"}],
     })
     validate_structured_filter_query(
-        args, confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+        confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
     )
 
 
 def test_validate_rejects_relation_type_not_confirmed():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{
             "kind": "relation",
             "hops": [{"relation_type": "HAS_VARIANT", "direction": "outgoing", "target_term_type": "VariantValue"}],
@@ -170,14 +178,15 @@ def test_validate_rejects_relation_type_not_confirmed():
     })
     with pytest.raises(StructuredFilterQueryError):
         validate_structured_filter_query(
-            args, confirmed_relation_types=set(),  # 空集合，HAS_VARIANT 未确认
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types=set(),  # 空集合，HAS_VARIANT 未确认
             term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
         )
 
 
 def test_validate_accepts_confirmed_relation_type_and_target_field():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{
             "kind": "relation",
             "hops": [{"relation_type": "HAS_VARIANT", "direction": "outgoing", "target_term_type": "VariantValue"}],
@@ -185,14 +194,15 @@ def test_validate_accepts_confirmed_relation_type_and_target_field():
         }],
     })
     validate_structured_filter_query(
-        args, confirmed_relation_types={"HAS_VARIANT"},
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+        confirmed_relation_types={"HAS_VARIANT"},
         term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
     )
 
 
 def test_validate_rejects_relation_type_failing_name_pattern():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{
             "kind": "relation",
             "hops": [{"relation_type": "has-variant", "direction": "outgoing", "target_term_type": "VariantValue"}],
@@ -202,7 +212,8 @@ def test_validate_rejects_relation_type_failing_name_pattern():
     with pytest.raises(StructuredFilterQueryError):
         validate_structured_filter_query(
             # 关系类型已经"被确认"，隔离出格式校验这一条失败分支，不是成员校验分支
-            args, confirmed_relation_types={"has-variant"},
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types={"has-variant"},
             term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
         )
 
@@ -219,22 +230,24 @@ _SKU_SCHEMA_WITH_MORE_FIELDS = TermTypeCategory(
 
 def test_validate_accepts_integer_field_with_matching_operator():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "stock_count", "operator": "gte", "value": 10}],
     })
     validate_structured_filter_query(
-        args, confirmed_relation_types=set(),
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+        confirmed_relation_types=set(),
         term_type_schema={"SKU": _SKU_SCHEMA_WITH_MORE_FIELDS},
     )
 
 
 def test_validate_accepts_array_field_with_array_operator():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "capacities", "operator": "all_lte", "value": 500}],
     })
     validate_structured_filter_query(
-        args, confirmed_relation_types=set(),
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+        confirmed_relation_types=set(),
         term_type_schema={"SKU": _SKU_SCHEMA_WITH_MORE_FIELDS},
     )
 
@@ -242,7 +255,7 @@ def test_validate_accepts_array_field_with_array_operator():
 def test_parse_rejects_group_by_constraint_index_out_of_bounds():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": [{
                 "kind": "relation",
                 "hops": [{"relation_type": "HAS_VARIANT", "direction": "outgoing", "target_term_type": "VariantValue"}],
@@ -255,7 +268,7 @@ def test_parse_rejects_group_by_constraint_index_out_of_bounds():
 def test_parse_rejects_group_by_constraint_index_negative():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": [{
                 "kind": "relation",
                 "hops": [{"relation_type": "HAS_VARIANT", "direction": "outgoing", "target_term_type": "VariantValue"}],
@@ -268,7 +281,7 @@ def test_parse_rejects_group_by_constraint_index_negative():
 def test_parse_rejects_non_string_operator():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": ["gt"], "value": 500}],
         })
 
@@ -276,7 +289,7 @@ def test_parse_rejects_non_string_operator():
 def test_parse_rejects_non_int_group_by_constraint_index():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": [{
                 "kind": "relation",
                 "hops": [{"relation_type": "HAS_VARIANT", "direction": "outgoing", "target_term_type": "VariantValue"}],
@@ -288,7 +301,7 @@ def test_parse_rejects_non_int_group_by_constraint_index():
 
 def test_validate_rejects_non_string_relation_type():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{
             "kind": "relation",
             "hops": [{"relation_type": 123, "direction": "outgoing", "target_term_type": "VariantValue"}],
@@ -297,26 +310,33 @@ def test_validate_rejects_non_string_relation_type():
     })
     with pytest.raises(StructuredFilterQueryError):
         validate_structured_filter_query(
-            args, confirmed_relation_types={"HAS_VARIANT"},
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types={"HAS_VARIANT"},
             term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
         )
 
 
 def test_validate_rejects_non_string_anchor_term_type():
+    """resolved.term_type 理论上应该总是字符串（ResolvedAnchor 由 run_structured_
+    filter_query 构造），但 validate 本身不做 isinstance 检查——防御性地确认哪怕
+    混进一个非字符串值，也会因为不在 schema 成员里而被 `not in term_type_schema`
+    挡住（用可哈希的 int 而不是 list，避免触发 dict 成员测试的 TypeError，
+    这条不是本函数要处理的失败模式）。"""
     args = parse_structured_filter_query_args({
-        "anchor_term_type": ["SKU"],
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
     })
     with pytest.raises(StructuredFilterQueryError):
         validate_structured_filter_query(
-            args, confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+            args, resolved=ResolvedAnchor(term_type=123, node_key=None),
+            confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
         )
 
 
 def test_parse_rejects_non_dict_constraint_element():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": ["not-a-dict"],
         })
 
@@ -324,7 +344,7 @@ def test_parse_rejects_non_dict_constraint_element():
 def test_parse_rejects_non_dict_hop_element():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": [{
                 "kind": "relation",
                 "hops": ["not-a-dict"],
@@ -336,7 +356,7 @@ def test_parse_rejects_non_dict_hop_element():
 def test_parse_rejects_non_dict_group_by():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
             "group_by": ["constraint_index", 0],
         })
@@ -350,7 +370,7 @@ def test_parse_rejects_non_dict_top_level_raw():
 def test_parse_rejects_non_list_constraints():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": 5,
         })
 
@@ -358,7 +378,7 @@ def test_parse_rejects_non_list_constraints():
 def test_parse_rejects_non_list_hops():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({
-            "anchor_term_type": "SKU",
+            "anchor": {"term_type": "SKU"},
             "constraints": [{
                 "kind": "relation",
                 "hops": 5,
@@ -384,14 +404,15 @@ def test_validate_rejects_legacy_unsafe_field_name_bypassing_declaration_time_va
     _resolve_field_value_type 必须在返回前对 spec.name 做防御性格式复检，
     否则历史遗留字段（未经 _validate_extra_field_specs 校验）会被当作安全字段放行。"""
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{
             "kind": "attribute", "field": 'bad field"}) DETACH DELETE (n', "operator": "eq", "value": "x",
         }],
     })
     with pytest.raises(StructuredFilterQueryError):
         validate_structured_filter_query(
-            args, confirmed_relation_types=set(),
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types=set(),
             term_type_schema={"SKU": _SKU_SCHEMA_WITH_LEGACY_UNSAFE_FIELD},
         )
 
@@ -400,11 +421,12 @@ def test_validate_still_accepts_normal_field_when_schema_also_has_legacy_unsafe_
     """确认防御性校验不误伤：schema 里混有历史遗留不安全字段时，正常声明的字段
     依然应该照常通过——不能因为加了这层复检就把整个 term_type 判成不可用。"""
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
     })
     validate_structured_filter_query(
-        args, confirmed_relation_types=set(),
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+        confirmed_relation_types=set(),
         term_type_schema={"SKU": _SKU_SCHEMA_WITH_LEGACY_UNSAFE_FIELD},
     )  # 不抛异常即通过
 
@@ -413,12 +435,13 @@ def test_validate_error_on_unknown_field_lists_available_fields():
     """校验失败的消息必须把"什么才是对的"一并告诉 LLM——工具调用轮次通常只有 3 轮
     预算，只说"你写错了"而不说对的是什么，LLM 没有任何信息可以自我纠正。"""
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "unknown_field", "operator": "gt", "value": 500}],
     })
     with pytest.raises(StructuredFilterQueryError) as exc_info:
         validate_structured_filter_query(
-            args, confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
         )
     message = str(exc_info.value)
     assert "可用字段:" in message
@@ -428,12 +451,13 @@ def test_validate_error_on_unknown_field_lists_available_fields():
 
 def test_validate_error_on_unknown_anchor_term_type_lists_available_term_types():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "NotAType",
+        "anchor": {"term_type": "NotAType"},
         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
     })
     with pytest.raises(StructuredFilterQueryError) as exc_info:
         validate_structured_filter_query(
-            args, confirmed_relation_types=set(),
+            args, resolved=ResolvedAnchor(term_type="NotAType", node_key=None),
+            confirmed_relation_types=set(),
             term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
         )
     message = str(exc_info.value)
@@ -444,7 +468,7 @@ def test_validate_error_on_unknown_anchor_term_type_lists_available_term_types()
 
 def test_validate_error_on_unconfirmed_relation_type_lists_available_relation_types():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{
             "kind": "relation",
             "hops": [{"relation_type": "NOT_CONFIRMED", "direction": "outgoing", "target_term_type": "VariantValue"}],
@@ -453,7 +477,8 @@ def test_validate_error_on_unconfirmed_relation_type_lists_available_relation_ty
     })
     with pytest.raises(StructuredFilterQueryError) as exc_info:
         validate_structured_filter_query(
-            args, confirmed_relation_types={"HAS_VARIANT", "BELONGS_TO"},
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types={"HAS_VARIANT", "BELONGS_TO"},
             term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
         )
     message = str(exc_info.value)
@@ -650,23 +675,25 @@ _SALES_SCHEMA_NUMBER = TermTypeCategory(
 
 def test_validate_accepts_numeric_operator_on_standard_name_when_declared_number():
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "销量",
+        "anchor": {"term_type": "销量"},
         "constraints": [{"kind": "attribute", "field": "standard_name", "operator": "gt", "value": 50}],
     })
     validate_structured_filter_query(
-        args, confirmed_relation_types=set(), term_type_schema={"销量": _SALES_SCHEMA_NUMBER},
+        args, resolved=ResolvedAnchor(term_type="销量", node_key=None),
+        confirmed_relation_types=set(), term_type_schema={"销量": _SALES_SCHEMA_NUMBER},
     )  # 不抛异常即通过
 
 
 def test_validate_still_rejects_numeric_operator_on_standard_name_when_default_string():
     """默认 value_type='string' 的 term type，行为不能变——防回归。"""
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "SKU",
+        "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "standard_name", "operator": "gt", "value": 50}],
     })
     with pytest.raises(StructuredFilterQueryError):
         validate_structured_filter_query(
-            args, confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
         )
 
 
@@ -674,7 +701,7 @@ def test_validate_relation_target_field_standard_name_respects_declared_type():
     """target_field=standard_name（relation 约束的最后一跳）也要读同一份声明，
     不只是 attribute 约束的 anchor 自身。"""
     args = parse_structured_filter_query_args({
-        "anchor_term_type": "订单号",
+        "anchor": {"term_type": "订单号"},
         "constraints": [{
             "kind": "relation",
             "hops": [{"relation_type": "BELONG_TO", "direction": "incoming", "target_term_type": "销量"}],
@@ -682,9 +709,147 @@ def test_validate_relation_target_field_standard_name_respects_declared_type():
         }],
     })
     validate_structured_filter_query(
-        args, confirmed_relation_types={"BELONG_TO"},
+        args, resolved=ResolvedAnchor(term_type="订单号", node_key=None),
+        confirmed_relation_types={"BELONG_TO"},
         term_type_schema={
             "订单号": TermTypeCategory(value="订单号", extra_fields=[]),
             "销量": _SALES_SCHEMA_NUMBER,
         },
+    )  # 不抛异常即通过
+
+
+def test_parse_name_anchor():
+    args = parse_structured_filter_query_args({
+        "anchor": {"name": "coke-cola", "type_hint": "公司"},
+        "constraints": [],
+    })
+    assert args.anchor == NameAnchor(name="coke-cola", type_hint="公司")
+
+
+def test_parse_name_anchor_without_type_hint():
+    args = parse_structured_filter_query_args({"anchor": {"name": "coke-cola"}, "constraints": []})
+    assert args.anchor == NameAnchor(name="coke-cola", type_hint=None)
+
+
+def test_parse_rejects_anchor_with_both_name_and_term_type():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor": {"name": "coke-cola", "term_type": "公司"},
+            "constraints": [],
+        })
+
+
+def test_parse_rejects_anchor_with_neither_name_nor_term_type():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({"anchor": {}, "constraints": []})
+
+
+def test_parse_rejects_missing_anchor():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({"constraints": []})
+
+
+def test_parse_name_anchor_allows_empty_constraints():
+    args = parse_structured_filter_query_args({"anchor": {"name": "coke-cola"}})
+    assert args.constraints == []
+
+
+def test_parse_type_anchor_rejects_empty_constraints_without_expand():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({"anchor": {"term_type": "SKU"}, "constraints": []})
+
+
+def test_parse_type_anchor_rejects_empty_constraints_even_with_expand():
+    """expand 不是过滤条件的替代品——TypeAnchor 模式下无约束全量扫描依然禁止，
+    不因为设了 expand 就放行，见设计文档。"""
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor": {"term_type": "SKU"}, "constraints": [],
+            "expand": {"hops": 1},
+        })
+
+
+def test_parse_expand_defaults():
+    args = parse_structured_filter_query_args({
+        "anchor": {"name": "coke-cola"},
+        "expand": {},
+    })
+    assert args.expand == ExpandSpec(hops=1, relation_type=None, direction="both")
+
+
+def test_parse_expand_with_explicit_values():
+    args = parse_structured_filter_query_args({
+        "anchor": {"name": "coke-cola"},
+        "expand": {"hops": 2, "relation_type": "BELONG_TO", "direction": "outgoing"},
+    })
+    assert args.expand == ExpandSpec(hops=2, relation_type="BELONG_TO", direction="outgoing")
+
+
+def test_parse_expand_rejects_invalid_hops():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({"anchor": {"name": "x"}, "expand": {"hops": 3}})
+
+
+def test_parse_expand_rejects_invalid_direction():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({"anchor": {"name": "x"}, "expand": {"direction": "sideways"}})
+
+
+def test_parse_no_expand_defaults_to_none():
+    args = parse_structured_filter_query_args({"anchor": {"name": "x"}})
+    assert args.expand is None
+
+
+def test_validate_name_anchor_does_not_require_term_type_schema_membership_for_type_hint():
+    """type_hint 只是喂给 resolve_term 的消歧提示，不是需要预先确认的 schema 成员——
+    resolved.term_type（解析后的真实类型）仍然要过 schema 校验，但 type_hint 本身不需要。"""
+    args = parse_structured_filter_query_args({"anchor": {"name": "coke-cola", "type_hint": "随便什么"}})
+    validate_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="公司", node_key="公司:Coca-Cola"),
+        confirmed_relation_types=set(), term_type_schema={"公司": TermTypeCategory(value="公司", extra_fields=[])},
+    )  # 不抛异常即通过——type_hint="随便什么" 不校验
+
+
+def test_validate_rejects_resolved_term_type_not_in_schema():
+    """防御性检查：resolve_term 解析出的 term_type 理论上应该在已确认 schema 里，
+    但仍要检查，不能假定术语表和 schema 天然一致。"""
+    args = parse_structured_filter_query_args({"anchor": {"name": "coke-cola"}})
+    with pytest.raises(StructuredFilterQueryError):
+        validate_structured_filter_query(
+            args, resolved=ResolvedAnchor(term_type="不存在的类型", node_key="x"),
+            confirmed_relation_types=set(), term_type_schema={},
+        )
+
+
+def test_validate_expand_relation_type_must_be_confirmed():
+    args = parse_structured_filter_query_args({
+        "anchor": {"name": "coke-cola"},
+        "expand": {"relation_type": "NOT_CONFIRMED"},
+    })
+    with pytest.raises(StructuredFilterQueryError):
+        validate_structured_filter_query(
+            args, resolved=ResolvedAnchor(term_type="公司", node_key="x"),
+            confirmed_relation_types={"BELONG_TO"},
+            term_type_schema={"公司": TermTypeCategory(value="公司", extra_fields=[])},
+        )
+
+
+def test_validate_expand_relation_type_none_skips_confirmed_check():
+    args = parse_structured_filter_query_args({"anchor": {"name": "coke-cola"}, "expand": {}})
+    validate_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="公司", node_key="x"),
+        confirmed_relation_types=set(),
+        term_type_schema={"公司": TermTypeCategory(value="公司", extra_fields=[])},
+    )  # 不抛异常即通过——relation_type=None 不用查白名单
+
+
+def test_validate_expand_relation_type_confirmed_passes():
+    args = parse_structured_filter_query_args({
+        "anchor": {"name": "coke-cola"},
+        "expand": {"relation_type": "BELONG_TO"},
+    })
+    validate_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="公司", node_key="x"),
+        confirmed_relation_types={"BELONG_TO"},
+        term_type_schema={"公司": TermTypeCategory(value="公司", extra_fields=[])},
     )  # 不抛异常即通过

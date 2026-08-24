@@ -28,6 +28,9 @@ _EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
 _MAX_HOPS = 2
 _RESERVED_FIELD_NAME = "standard_name"
 
+_VALID_EXPAND_DIRECTIONS = frozenset({"outgoing", "incoming", "both"})
+_VALID_EXPAND_HOPS = frozenset({1, 2})
+
 _STRING_OPERATORS = frozenset({"eq", "ne", "starts_with"})
 _NUMERIC_OPERATORS = frozenset({"gt", "gte", "lt", "lte", "eq", "ne"})
 _ARRAY_OPERATORS = frozenset({"all_lte", "all_gte", "any_lte", "any_gte"})
@@ -72,14 +75,39 @@ class RelationConstraint:
 
 
 @dataclass(frozen=True)
+class NameAnchor:
+    name: str
+    type_hint: str | None
+
+
+@dataclass(frozen=True)
+class TypeAnchor:
+    term_type: str
+
+
+@dataclass(frozen=True)
+class ExpandSpec:
+    hops: int
+    relation_type: str | None
+    direction: str  # "outgoing" | "incoming" | "both"
+
+
+@dataclass(frozen=True)
+class ResolvedAnchor:
+    term_type: str
+    node_key: str | None
+
+
+@dataclass(frozen=True)
 class GroupBy:
     constraint_index: int
 
 
 @dataclass(frozen=True)
 class StructuredFilterQueryArgs:
-    anchor_term_type: str
+    anchor: NameAnchor | TypeAnchor
     constraints: list[AttributeConstraint | RelationConstraint]
+    expand: ExpandSpec | None
     group_by: GroupBy | None
     limit: int
 
@@ -153,6 +181,37 @@ def _parse_group_by(raw: dict | None, *, constraints: list[AttributeConstraint |
     return GroupBy(constraint_index=constraint_index)
 
 
+def _parse_anchor(raw: dict) -> NameAnchor | TypeAnchor:
+    if not isinstance(raw, dict):
+        raise StructuredFilterQueryError(f"anchor 必须是 dict，收到: {raw!r}")
+    has_name = "name" in raw
+    has_term_type = "term_type" in raw
+    if has_name and has_term_type:
+        raise StructuredFilterQueryError("anchor 不能同时提供 name 和 term_type，二选一")
+    if has_name:
+        return NameAnchor(name=raw["name"], type_hint=raw.get("type_hint"))
+    if has_term_type:
+        return TypeAnchor(term_type=raw["term_type"])
+    raise StructuredFilterQueryError("anchor 必须提供 name 或 term_type 之一")
+
+
+def _parse_expand(raw: dict | None) -> ExpandSpec | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise StructuredFilterQueryError(f"expand 必须是 dict，收到: {raw!r}")
+    hops = raw.get("hops", 1)
+    if hops not in _VALID_EXPAND_HOPS:
+        raise StructuredFilterQueryError(f"expand.hops 必须是 1 或 2，收到: {hops!r}")
+    direction = raw.get("direction", "both")
+    if direction not in _VALID_EXPAND_DIRECTIONS:
+        raise StructuredFilterQueryError(
+            f"expand.direction 必须是 {sorted(_VALID_EXPAND_DIRECTIONS)} 之一，收到: {direction!r}"
+        )
+    relation_type = raw.get("relation_type")
+    return ExpandSpec(hops=hops, relation_type=relation_type, direction=direction)
+
+
 def parse_structured_filter_query_args(raw: dict) -> StructuredFilterQueryArgs:
     """把 LLM 工具调用传来的原始 JSON dict 解析成结构化参数——只做形状校验（必填
     字段是否存在、hops 跳数、operator 是否在协议允许的枚举里），不查 schema 是否
@@ -161,21 +220,27 @@ def parse_structured_filter_query_args(raw: dict) -> StructuredFilterQueryArgs:
     if not isinstance(raw, dict):
         raise StructuredFilterQueryError(f"结构化过滤查询参数必须是 dict，收到: {raw!r}")
     try:
-        anchor_term_type = raw["anchor_term_type"]
-        raw_constraints = raw["constraints"]
+        raw_anchor = raw["anchor"]
     except KeyError as exc:
         raise StructuredFilterQueryError(f"缺少必填字段: {exc}") from exc
+    anchor = _parse_anchor(raw_anchor)
+    expand = _parse_expand(raw.get("expand"))
+
+    raw_constraints = raw.get("constraints", [])
     if not isinstance(raw_constraints, list):
         raise StructuredFilterQueryError(f"constraints 必须是 list，收到: {raw_constraints!r}")
-    if not raw_constraints:
-        raise StructuredFilterQueryError("constraints 不能为空，至少提供一个过滤条件")
+    if isinstance(anchor, TypeAnchor) and not raw_constraints:
+        raise StructuredFilterQueryError(
+            "anchor.term_type 模式下 constraints 不能为空，至少提供一个过滤条件"
+            "（expand 不能替代过滤条件——不做无约束全量扫描）"
+        )
     constraints = [_parse_constraint(c) for c in raw_constraints]
     group_by = _parse_group_by(raw.get("group_by"), constraints=constraints)
     limit = raw.get("limit", 20)
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
         raise StructuredFilterQueryError(f"limit 必须是正整数，收到: {limit!r}")
     return StructuredFilterQueryArgs(
-        anchor_term_type=anchor_term_type, constraints=constraints, group_by=group_by, limit=limit,
+        anchor=anchor, constraints=constraints, expand=expand, group_by=group_by, limit=limit,
     )
 
 
@@ -216,22 +281,23 @@ def _validate_operator_for_value_type(*, field: str, operator: str, value_type: 
 def validate_structured_filter_query(
     args: StructuredFilterQueryArgs,
     *,
+    resolved: ResolvedAnchor,
     confirmed_relation_types: set[str],
     term_type_schema: dict[str, TermTypeCategory],
 ) -> None:
-    """schema 层面的校验——anchor/target 的 term_type、field、relation_type 是否
-    真的在这个租户已确认的 schema 里，operator 是否匹配字段声明的 value_type。
-    形状层面的校验（必填字段、跳数上限等）由 parse_structured_filter_query_args
-    完成，不在这里重复。"""
-    if not isinstance(args.anchor_term_type, str) or args.anchor_term_type not in term_type_schema:
+    """schema 层面的校验。resolved 由调用方（run_structured_filter_query）解析
+    args.anchor 之后传入——NameAnchor 模式先跑 resolve_term()，TypeAnchor 模式
+    直接取 term_type，两种模式统一后这里只关心 resolved.term_type，不再需要
+    区分 args.anchor 原始是哪种形态。"""
+    if resolved.term_type not in term_type_schema:
         raise StructuredFilterQueryError(
-            f"anchor_term_type {args.anchor_term_type!r} 不在已确认 schema 里，"
+            f"term_type {resolved.term_type!r} 不在已确认 schema 里，"
             f"可用的 term_type: {sorted(term_type_schema.keys())}"
         )
     for constraint in args.constraints:
         if isinstance(constraint, AttributeConstraint):
             value_type = _resolve_field_value_type(
-                term_type=args.anchor_term_type, field=constraint.field, term_type_schema=term_type_schema,
+                term_type=resolved.term_type, field=constraint.field, term_type_schema=term_type_schema,
             )
             _validate_operator_for_value_type(field=constraint.field, operator=constraint.operator, value_type=value_type)
             continue
@@ -255,6 +321,14 @@ def validate_structured_filter_query(
         _validate_operator_for_value_type(
             field=constraint.target_field, operator=constraint.target_operator, value_type=value_type,
         )
+    if args.expand is not None and args.expand.relation_type is not None:
+        if not _RELATION_TYPE_NAME_PATTERN.match(args.expand.relation_type):
+            raise StructuredFilterQueryError(f"关系类型名字不合法: {args.expand.relation_type!r}")
+        if args.expand.relation_type not in confirmed_relation_types:
+            raise StructuredFilterQueryError(
+                f"relation_type {args.expand.relation_type!r} 不在已确认 schema 里，"
+                f"可用的 relation_type: {sorted(confirmed_relation_types)}"
+            )
 
 
 _CORE_TERM_FIELDS = frozenset({"tenant_id", "node_key", "standard_name", "type"})
