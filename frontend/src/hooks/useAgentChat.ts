@@ -221,7 +221,12 @@ export function useAgentChat() {
             }))
           } else if (parsed.type === 'tool_status') {
             const status = parsed as AgentToolStatusEvent
-            patchAssistantMessage({ statusText: status.text })
+            // 工具调用轮之前可能出现的前置说明文字（比如"让我查一下。"）
+            // 不是最终答案的一部分——tool_status 事件到达就说明这一轮
+            // 结束、要开始/继续执行工具了，把已经显示的文字清空，重新
+            // 露出"正在查询"指示器，而不是让这段文字停留在气泡里、
+            // 之后又被 final 事件悄悄覆盖掉。
+            patchAssistantMessage({ text: '', statusText: status.text })
           } else if (parsed.type === 'final') {
             const final = parsed as AgentFinalEvent
             patchAssistantMessage({
@@ -240,6 +245,7 @@ export function useAgentChat() {
           text: message.text + (message.text ? '\n\n' : '') + `连接后端失败：${detail}，请确认服务已启动。`,
           isStreaming: false,
           isError: true,
+          statusText: undefined,
         }))
       } finally {
         activeControllersRef.current.delete(controller)
