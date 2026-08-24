@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import ExtraFieldSpec, TermTypeCategory
 from app.graphrag.structured_filter_query import (
     AttributeConstraint,
@@ -14,6 +15,7 @@ from app.graphrag.structured_filter_query import (
     StructuredFilterQueryError,
     TypeAnchor,
     parse_structured_filter_query_args,
+    run_structured_filter_query,
     validate_structured_filter_query,
 )
 
@@ -489,10 +491,12 @@ class _FakeGraphClient:
         self._error = error
         self._total_count = total_count if total_count is not None else len(self._rows)
         self.last_args = None
+        self.last_resolved = None
         self.last_tenant_id = None
 
-    async def execute_structured_filter_query(self, args, *, tenant_id, term_type_schema):
+    async def execute_structured_filter_query(self, args, *, resolved, tenant_id, term_type_schema):
         self.last_args = args
+        self.last_resolved = resolved
         self.last_tenant_id = tenant_id
         if self._error is not None:
             raise self._error
@@ -505,8 +509,8 @@ async def test_run_structured_filter_query_returns_error_on_invalid_args():
     from app.graphrag.structured_filter_query import run_structured_filter_query
 
     result = await run_structured_filter_query(
-        {"anchor_term_type": "SKU", "constraints": []},
-        graph_client=_FakeGraphClient(), tenant_id="muji",
+        {"anchor": {"term_type": "SKU"}, "constraints": []},
+        graph_client=_FakeGraphClient(), tenant_id="muji", terms=[],
         confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
     )
 
@@ -517,9 +521,9 @@ async def test_run_structured_filter_query_returns_error_on_unconfirmed_field():
     from app.graphrag.structured_filter_query import run_structured_filter_query
 
     result = await run_structured_filter_query(
-        {"anchor_term_type": "SKU",
+        {"anchor": {"term_type": "SKU"},
          "constraints": [{"kind": "attribute", "field": "unknown_field", "operator": "gt", "value": 500}]},
-        graph_client=_FakeGraphClient(), tenant_id="muji",
+        graph_client=_FakeGraphClient(), tenant_id="muji", terms=[],
         confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
     )
 
@@ -538,14 +542,14 @@ async def test_run_structured_filter_query_formats_matched_results():
     ])
 
     result = await run_structured_filter_query(
-        {"anchor_term_type": "SKU",
+        {"anchor": {"term_type": "SKU"},
          "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
-        graph_client=graph_client, tenant_id="muji",
+        graph_client=graph_client, tenant_id="muji", terms=[],
         confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
     )
 
     assert result["matched_count"] == 1
-    assert result["results"] == [{
+    assert result["anchors"] == [{
         "standard_name": "圆角收纳盒 500ml", "node_key": "SKU:1",
         "term_type": "SKU",
         "extra_properties": {"numeric_value": 600},
@@ -570,18 +574,18 @@ async def test_run_structured_filter_query_excludes_legacy_product_line_residue_
     ])
 
     result = await run_structured_filter_query(
-        {"anchor_term_type": "SKU",
+        {"anchor": {"term_type": "SKU"},
          "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
-        graph_client=graph_client, tenant_id="muji",
+        graph_client=graph_client, tenant_id="muji", terms=[],
         confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
     )
 
-    assert result["results"] == [{
+    assert result["anchors"] == [{
         "standard_name": "圆角收纳盒 500ml", "node_key": "SKU:1",
         "term_type": "SKU",
         "extra_properties": {"numeric_value": 600},
     }]
-    extra_properties = result["results"][0]["extra_properties"]
+    extra_properties = result["anchors"][0]["extra_properties"]
     assert "product_line" not in extra_properties
     assert extra_properties["numeric_value"] == 600
 
@@ -592,14 +596,14 @@ async def test_run_structured_filter_query_passes_through_group_by_result():
     graph_client = _FakeGraphClient(group_result={"groups": [{"value": "红色", "count": 12}]})
 
     result = await run_structured_filter_query(
-        {"anchor_term_type": "SKU",
+        {"anchor": {"term_type": "SKU"},
          "constraints": [{
              "kind": "relation",
              "hops": [{"relation_type": "HAS_VARIANT", "direction": "outgoing", "target_term_type": "VariantValue"}],
              "target_field": "raw_value", "target_operator": "eq", "target_value": "__group__",
          }],
          "group_by": {"constraint_index": 0}},
-        graph_client=graph_client, tenant_id="muji",
+        graph_client=graph_client, tenant_id="muji", terms=[],
         confirmed_relation_types={"HAS_VARIANT"},
         term_type_schema={"SKU": _SKU_SCHEMA, "VariantValue": _VARIANT_SCHEMA},
     )
@@ -616,9 +620,9 @@ async def test_run_structured_filter_query_returns_error_when_graph_execution_ra
     graph_client = _FakeGraphClient(error=RuntimeError("driver error"))
 
     result = await run_structured_filter_query(
-        {"anchor_term_type": "SKU",
+        {"anchor": {"term_type": "SKU"},
          "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
-        graph_client=graph_client, tenant_id="muji",
+        graph_client=graph_client, tenant_id="muji", terms=[],
         confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
     )
 
@@ -635,9 +639,9 @@ async def test_run_structured_filter_query_marks_truncated_when_total_exceeds_re
     )
 
     result = await run_structured_filter_query(
-        {"anchor_term_type": "SKU",
+        {"anchor": {"term_type": "SKU"},
          "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
-        graph_client=graph_client, tenant_id="muji",
+        graph_client=graph_client, tenant_id="muji", terms=[],
         confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
     )
 
@@ -654,13 +658,68 @@ async def test_run_structured_filter_query_no_truncated_flag_when_total_matches_
     ])
 
     result = await run_structured_filter_query(
-        {"anchor_term_type": "SKU",
+        {"anchor": {"term_type": "SKU"},
          "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
-        graph_client=graph_client, tenant_id="muji",
+        graph_client=graph_client, tenant_id="muji", terms=[],
         confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
     )
 
     assert "truncated" not in result
+
+
+_COKE_TERM = Term(
+    tenant_id="demo", node_key="公司:Coca-Cola", standard_name="Coca-Cola",
+    aliases=["coke-cola", "可口可乐"], term_type="公司",
+)
+
+
+async def test_run_structured_filter_query_resolves_name_anchor_and_uses_node_key():
+    graph_client = _FakeGraphClient(rows=[
+        {"standard_name": "Coca-Cola", "node_key": "公司:Coca-Cola", "term_type": "公司", "all_properties": {}},
+    ])
+
+    result = await run_structured_filter_query(
+        {"anchor": {"name": "coke-cola"}},
+        graph_client=graph_client, tenant_id="demo", terms=[_COKE_TERM],
+        confirmed_relation_types=set(), term_type_schema={"公司": TermTypeCategory(value="公司", extra_fields=[])},
+    )
+
+    assert result["matched_count"] == 1
+    assert result["anchors"][0]["standard_name"] == "Coca-Cola"
+    # 锚点用解析出的 node_key 精确定位，不是按 type 扫描——通过 _FakeGraphClient
+    # 记录的 last_resolved 断言 resolve_term() 解析出的 node_key 被正确传下去。
+    assert graph_client.last_resolved.node_key == "公司:Coca-Cola"
+
+
+async def test_run_structured_filter_query_name_anchor_not_resolved_returns_zero_without_querying_graph():
+    class _ExplodingGraphClient:
+        async def execute_structured_filter_query(self, args, *, resolved, tenant_id, term_type_schema):
+            raise AssertionError("未命中术语表时不应该查图谱")
+
+    result = await run_structured_filter_query(
+        {"anchor": {"name": "完全不认识的名字"}},
+        graph_client=_ExplodingGraphClient(), tenant_id="demo", terms=[_COKE_TERM],
+        confirmed_relation_types=set(), term_type_schema={},
+    )
+
+    assert result == {"matched_count": 0, "truncated": False, "anchors": []}
+
+
+async def test_run_structured_filter_query_name_anchor_uses_type_hint_to_disambiguate():
+    terms = [
+        Term(tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee", aliases=[], term_type="产品"),
+        Term(tenant_id="t1", node_key="类目:Coffee", standard_name="Coffee", aliases=[], term_type="类目"),
+    ]
+    graph_client = _FakeGraphClient(rows=[])
+
+    await run_structured_filter_query(
+        {"anchor": {"name": "Coffee", "type_hint": "类目"}},
+        graph_client=graph_client, tenant_id="t1", terms=terms,
+        confirmed_relation_types=set(),
+        term_type_schema={"类目": TermTypeCategory(value="类目", extra_fields=[])},
+    )
+
+    assert graph_client.last_resolved.node_key == "类目:Coffee"
 
 
 _SALES_SCHEMA_NUMBER = TermTypeCategory(

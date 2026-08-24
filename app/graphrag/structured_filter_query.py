@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.graphrag.ontology import Term, resolve_term
 from app.graphrag.ontology_categories import TermTypeCategory
 
 if TYPE_CHECKING:
@@ -346,16 +347,29 @@ async def run_structured_filter_query(
     *,
     graph_client: "Neo4jGraphClient",
     tenant_id: str,
+    terms: list[Term],
     confirmed_relation_types: set[str],
     term_type_schema: dict[str, TermTypeCategory],
 ) -> dict[str, Any]:
-    """structured_filter_query_tool 的执行体调用的编排入口：解析→校验→执行→格式化，
-    四步都在这一个函数里完成，调用方（app/agent/tools.py）不需要知道 Task 3/4 拆出
-    的中间函数名字。"""
+    """structured_filter_query_tool 的执行体调用的编排入口：解析→（NameAnchor 时）
+    消歧解析→校验→执行→格式化。"""
     try:
         args = parse_structured_filter_query_args(raw_args)
+    except StructuredFilterQueryError as exc:
+        return {"error": str(exc)}
+
+    if isinstance(args.anchor, NameAnchor):
+        term = resolve_term(args.anchor.name, terms, term_type_hint=args.anchor.type_hint)
+        if term is None:
+            return {"matched_count": 0, "truncated": False, "anchors": []}
+        resolved = ResolvedAnchor(term_type=term.term_type, node_key=term.node_key)
+    else:
+        resolved = ResolvedAnchor(term_type=args.anchor.term_type, node_key=None)
+
+    try:
         validate_structured_filter_query(
-            args, confirmed_relation_types=confirmed_relation_types, term_type_schema=term_type_schema,
+            args, resolved=resolved,
+            confirmed_relation_types=confirmed_relation_types, term_type_schema=term_type_schema,
         )
     except StructuredFilterQueryError as exc:
         return {"error": str(exc)}
@@ -368,7 +382,7 @@ async def run_structured_filter_query(
     # 抛出、把整个 SSE 回合打挂。
     try:
         result = await graph_client.execute_structured_filter_query(
-            args, tenant_id=tenant_id, term_type_schema=term_type_schema,
+            args, resolved=resolved, tenant_id=tenant_id, term_type_schema=term_type_schema,
         )
     except Exception as exc:
         return {"error": f"图谱查询执行失败：{exc}"}
@@ -380,7 +394,7 @@ async def run_structured_filter_query(
     total_count = result["total_count"]
     payload: dict[str, Any] = {
         "matched_count": total_count,
-        "results": [
+        "anchors": [
             {
                 "standard_name": row["standard_name"],
                 "node_key": row["node_key"],
@@ -390,6 +404,7 @@ async def run_structured_filter_query(
                     for k, v in row["all_properties"].items()
                     if k not in _CORE_TERM_FIELDS and k not in _LEGACY_RESIDUAL_NODE_PROPERTIES
                 },
+                **({"neighbors": row["neighbors"]} if "neighbors" in row else {}),
             }
             for row in rows
         ],
