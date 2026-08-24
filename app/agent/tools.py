@@ -85,7 +85,9 @@ STRUCTURED_FILTER_QUERY_TOOL_SCHEMA: dict[str, Any] = {
                 },
                 "constraints": {
                     "type": "array",
-                    "description": "过滤条件列表，条件之间是 AND 关系，可以为空（anchor.name 模式下留空表示不额外过滤，直接用解析出的锚点）",
+                    "description": "过滤条件列表，条件之间是 AND 关系，可以为空（anchor.name 模式下留空表示不额外过滤，"
+                                   "直接用解析出的锚点）。standard_name 字段的 eq/ne 比较值支持别名/模糊匹配，"
+                                   "不要求填精确的标准名称——比如用户说的口语化名字可以直接填进来，系统会自动解析。",
                     "items": {
                         "type": "object",
                         "properties": {
