@@ -601,3 +601,81 @@ async def test_create_term_type_accepts_extra_field_with_underscore_name():
     )
     result = await list_term_types(conn, "t1", status="draft")
     assert result[0].extra_fields[0].name == "numeric_value"
+
+
+async def test_create_term_type_with_standard_name_value_type():
+    conn = await _conn()
+    await create_term_type(
+        conn, tenant_id="default", value="销量", standard_name_value_type="number",
+    )
+
+    result = await list_term_types(conn, tenant_id="default", status="draft")
+
+    assert result == [TermTypeCategory(value="销量", extra_fields=[], standard_name_value_type="number")]
+
+
+async def test_create_term_type_without_standard_name_value_type_defaults_to_string():
+    conn = await _conn()
+    await create_term_type(conn, tenant_id="default", value="产品")
+
+    result = await list_term_types(conn, tenant_id="default", status="draft")
+
+    assert result[0].standard_name_value_type == "string"
+
+
+async def test_create_term_type_rejects_invalid_standard_name_value_type():
+    conn = await _conn()
+    with pytest.raises(InvalidExtraFieldTypeError):
+        await create_term_type(
+            conn, tenant_id="default", value="销量", standard_name_value_type="number[]",
+        )
+
+
+async def test_update_term_type_changes_standard_name_value_type():
+    conn = await _conn()
+    await create_term_type(conn, tenant_id="default", value="销量")
+
+    await update_term_type(
+        conn, tenant_id="default", value="销量", new_value="销量",
+        extra_fields=[], standard_name_value_type="number",
+    )
+
+    result = await list_term_types(conn, tenant_id="default", status="draft")
+    assert result[0].standard_name_value_type == "number"
+
+
+async def test_ensure_categories_schema_migrates_legacy_table_without_standard_name_value_type_column():
+    """模拟本次改动之前的旧表（没有 standard_name_value_type 列），断言
+    ensure_categories_schema 就地加列、老数据全部落默认值 'string'、不影响
+    已有字段的读取。"""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_ontology_schema(conn)
+    # 手写建一张"旧形态"的表（没有 standard_name_value_type 列），模拟迁移前状态
+    await conn.executescript(
+        """
+        DROP TABLE ontology_term_types;
+        CREATE TABLE ontology_term_types (
+            tenant_id         TEXT NOT NULL,
+            value             TEXT NOT NULL,
+            extra_fields      TEXT NOT NULL DEFAULT '[]',
+            node_key_template TEXT NOT NULL DEFAULT '',
+            status            TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, value, status)
+        );
+        """
+    )
+    await conn.execute(
+        "INSERT INTO ontology_term_types (tenant_id, value, status) VALUES ('default', '产品', 'confirmed')"
+    )
+    await conn.commit()
+
+    await ensure_categories_schema(conn)
+
+    result = await list_term_types(conn, tenant_id="default", status="confirmed")
+    assert result == [TermTypeCategory(value="产品", extra_fields=[], standard_name_value_type="string")]
+
+
+async def test_ensure_categories_schema_add_standard_name_value_type_column_is_idempotent():
+    conn = await _conn()
+    await ensure_categories_schema(conn)
+    await ensure_categories_schema(conn)  # 跑两次不报错

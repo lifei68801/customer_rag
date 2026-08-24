@@ -8,16 +8,18 @@ import aiosqlite
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS ontology_term_types (
-    tenant_id         TEXT NOT NULL,
-    value             TEXT NOT NULL,
-    extra_fields      TEXT NOT NULL DEFAULT '[]',
-    node_key_template TEXT NOT NULL DEFAULT '',
-    status            TEXT NOT NULL,
+    tenant_id                 TEXT NOT NULL,
+    value                     TEXT NOT NULL,
+    extra_fields              TEXT NOT NULL DEFAULT '[]',
+    node_key_template         TEXT NOT NULL DEFAULT '',
+    standard_name_value_type  TEXT NOT NULL DEFAULT 'string',
+    status                    TEXT NOT NULL,
     PRIMARY KEY (tenant_id, value, status)
 );
 """
 
 _VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]"})
+_VALID_STANDARD_NAME_VALUE_TYPES = frozenset({"string", "number", "integer"})
 
 _EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
 
@@ -52,6 +54,7 @@ class ExtraFieldSpec:
 class TermTypeCategory:
     value: str
     extra_fields: list[ExtraFieldSpec]
+    standard_name_value_type: str = "string"
 
 
 def _validate_extra_field_specs(extra_fields: list[ExtraFieldSpec]) -> None:
@@ -66,6 +69,14 @@ def _validate_extra_field_specs(extra_fields: list[ExtraFieldSpec]) -> None:
                 f"字段 {spec.name!r} 声明的类型 {spec.value_type!r} 不合法，"
                 f"仅支持: {sorted(_VALID_EXTRA_FIELD_VALUE_TYPES)}"
             )
+
+
+def _validate_standard_name_value_type(value_type: str) -> None:
+    if value_type not in _VALID_STANDARD_NAME_VALUE_TYPES:
+        raise InvalidExtraFieldTypeError(
+            f"term type 自身取值类型 {value_type!r} 不合法，"
+            f"仅支持: {sorted(_VALID_STANDARD_NAME_VALUE_TYPES)}"
+        )
 
 
 def _extra_fields_to_json(extra_fields: list[ExtraFieldSpec]) -> str:
@@ -197,6 +208,25 @@ async def _migrate_extra_fields_value_shape_if_needed(conn: aiosqlite.Connection
     await conn.commit()
 
 
+async def _migrate_term_types_add_standard_name_value_type_if_needed(
+    conn: aiosqlite.Connection,
+) -> None:
+    cursor = await conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='ontology_term_types'"
+    )
+    if await cursor.fetchone() is None:
+        return
+    cursor = await conn.execute("PRAGMA table_info(ontology_term_types)")
+    existing_columns = {row[1] for row in await cursor.fetchall()}
+    if "standard_name_value_type" in existing_columns:
+        return
+    await conn.execute(
+        "ALTER TABLE ontology_term_types "
+        "ADD COLUMN standard_name_value_type TEXT NOT NULL DEFAULT 'string'"
+    )
+    await conn.commit()
+
+
 async def ensure_categories_schema(conn: aiosqlite.Connection) -> None:
     await conn.execute("DROP TABLE IF EXISTS ontology_product_lines")
     await _migrate_term_types_table_if_needed(conn)
@@ -204,12 +234,14 @@ async def ensure_categories_schema(conn: aiosqlite.Connection) -> None:
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
     await _migrate_extra_fields_value_shape_if_needed(conn)
+    await _migrate_term_types_add_standard_name_value_type_if_needed(conn)
 
 
 def _row_to_term_type(row: aiosqlite.Row) -> TermTypeCategory:
     return TermTypeCategory(
         value=row["value"],
         extra_fields=_extra_fields_from_json(row["extra_fields"]),
+        standard_name_value_type=row["standard_name_value_type"],
     )
 
 
@@ -218,7 +250,7 @@ async def list_term_types(
 ) -> list[TermTypeCategory]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT value, extra_fields FROM ontology_term_types "
+        "SELECT value, extra_fields, standard_name_value_type FROM ontology_term_types "
         "WHERE tenant_id = ? AND status = ? ORDER BY value",
         (tenant_id, status),
     )
@@ -232,14 +264,17 @@ async def create_term_type(
     *,
     value: str,
     extra_fields: list[ExtraFieldSpec] | None = None,
+    standard_name_value_type: str = "string",
 ) -> None:
     extra_fields = extra_fields or []
     _validate_extra_field_specs(extra_fields)
+    _validate_standard_name_value_type(standard_name_value_type)
     try:
         await conn.execute(
-            "INSERT INTO ontology_term_types (tenant_id, value, extra_fields, status) "
-            "VALUES (?, ?, ?, 'draft')",
-            (tenant_id, value, _extra_fields_to_json(extra_fields)),
+            "INSERT INTO ontology_term_types "
+            "(tenant_id, value, extra_fields, standard_name_value_type, status) "
+            "VALUES (?, ?, ?, ?, 'draft')",
+            (tenant_id, value, _extra_fields_to_json(extra_fields), standard_name_value_type),
         )
     except aiosqlite.IntegrityError:
         raise CategoryNameConflictError(f"{value!r} 已经是该租户草稿里的分类，不能重复创建")
@@ -253,6 +288,7 @@ async def update_term_type(
     value: str,
     new_value: str,
     extra_fields: list[ExtraFieldSpec],
+    standard_name_value_type: str = "string",
 ) -> None:
     """value 是草稿里的当前名字，new_value 是提交的新名字，允许相同（即不
     改名）。改名只级联更新该租户草稿约束表（term_type_relation_allowlist）
@@ -261,6 +297,7 @@ async def update_term_type(
     "迁移实体类型"工具手动触发，见 terms_store.py::migrate_term_type）。
     """
     _validate_extra_field_specs(extra_fields)
+    _validate_standard_name_value_type(standard_name_value_type)
     cursor = await conn.execute(
         "SELECT 1 FROM ontology_term_types WHERE tenant_id = ? AND value = ? AND status = 'draft'",
         (tenant_id, value),
@@ -269,9 +306,9 @@ async def update_term_type(
         raise CategoryNotFoundError(f"草稿里不存在分类: {value}")
     try:
         await conn.execute(
-            "UPDATE ontology_term_types SET value = ?, extra_fields = ? "
+            "UPDATE ontology_term_types SET value = ?, extra_fields = ?, standard_name_value_type = ? "
             "WHERE tenant_id = ? AND value = ? AND status = 'draft'",
-            (new_value, _extra_fields_to_json(extra_fields), tenant_id, value),
+            (new_value, _extra_fields_to_json(extra_fields), standard_name_value_type, tenant_id, value),
         )
     except aiosqlite.IntegrityError:
         raise CategoryNameConflictError(f"{new_value!r} 已经是该租户草稿里的分类，不能重复使用")
