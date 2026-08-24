@@ -1,6 +1,6 @@
 import httpx
 
-from app.providers.base import ProviderRequest
+from app.providers.base import ProviderRequest, ProviderStreamChunk, ToolCall
 from app.providers.openai_compatible import OpenAICompatibleChatProvider
 
 
@@ -85,11 +85,6 @@ async def test_stream_complete_skips_chunks_with_no_content_delta():
     assert deltas == ["第一句", "第二句"]
 
 
-import json as _json
-
-from app.providers.base import ProviderStreamChunk, ToolCall
-
-
 def _sse_body_with_tool_calls(deltas: list[dict]) -> bytes:
     """deltas 里每个元素是一个原始 choices[0].delta 字典（跳过 chunk 外层
     包装），照抄 OpenAI 流式协议的 tool_calls 分片格式：
@@ -97,10 +92,12 @@ def _sse_body_with_tool_calls(deltas: list[dict]) -> bytes:
     {"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
                       "function": {"name": "x", "arguments": "..."}}]}
     """
+    import json
+
     lines = []
     for delta in deltas:
         chunk = {"choices": [{"delta": delta}]}
-        lines.append(f"data: {_json.dumps(chunk, ensure_ascii=False)}\n\n")
+        lines.append(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n")
     lines.append("data: [DONE]\n\n")
     return "".join(lines).encode("utf-8")
 

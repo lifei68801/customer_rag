@@ -84,9 +84,17 @@ async def agent_chat_endpoint(
     settings.agent_enable_autonomous_planning 总控，但语音请求
     （voice_response=True）无论这个开关怎么配置都强制走确定性路径——
     Planner 多轮 LLM 往返和语音首包延迟的硬性要求直接冲突，不能让
-    Planner 自己判断该不该省时间。Planner 路径的最终答案本身也不逐句
-    流式推送/合成（只有静态 Responder 路径会调用 on_answer_chunk），
-    和文字流式生成同一个既定范围。
+    Planner 自己判断该不该省时间。
+
+    Planner 路径（enable_autonomous_planning=True 且非语音请求）现在
+    也会流式输出：LLM provider 支持 stream_complete_with_tools() 时，
+    每一轮推理产生的文本会跟静态路径一样按句子边界逐句推送
+    `{"type": "delta", ...}` 事件；provider 不支持这个能力时透明退化
+    为一次性拿到完整答案（Planner 原有行为不变）。多轮工具调用（查
+    知识图谱/向量库等）期间会额外推送一次
+    `{"type": "tool_status", "text": "正在查询相关信息..."}` 事件，
+    给前端一个"正在查询"的状态反馈，不是最终答案的一部分。见
+    docs/superpowers/specs/2026-08-23-planner-streaming-typewriter-design.md。
     """
     tenant_id = deps.resolve_tenant_id(
         gateway_tenant_id, payload.tenant_id, source="agent_chat"

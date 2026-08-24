@@ -184,7 +184,7 @@ class OpenAICompatibleChatProvider(_OpenAICompatibleClient):
                     yield ProviderStreamChunk(text=text)
 
                 for tc_delta in delta.get("tool_calls") or []:
-                    index = tc_delta["index"]
+                    index = tc_delta.get("index", 0)
                     entry = pending_tool_calls.setdefault(
                         index, {"id": "", "name": "", "arguments": ""}
                     )
