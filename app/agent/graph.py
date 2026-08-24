@@ -10,7 +10,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agent.create_ticket_tool import create_ticket
-from app.agent.planner import route_after_planner, run_planner_turn, run_tool_calls
+from app.agent.planner import (
+    route_after_planner,
+    run_planner_turn,
+    run_planner_turn_streaming,
+    run_tool_calls,
+)
 from app.agent.state import AgentState
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
@@ -119,6 +124,7 @@ def build_agent_graph(
     enable_autonomous_planning: bool = False,
     max_tool_call_rounds: int = 3,
     on_answer_chunk: Callable[[str], Awaitable[None]] | None = None,
+    on_tool_status: Callable[[], Awaitable[None]] | None = None,
     session_window_store: SessionWindowStore | None = None,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     """构建 Agent 推理状态图。
@@ -197,6 +203,10 @@ def build_agent_graph(
     防御纵深，不是用轻量检查取代它。这一权衡（先播出部分内容、完整审查
     在后）已与产品方确认，如果 provider 不支持流式，自动退化为一次性
     生成+审查，不会强行流式。
+
+    on_tool_status 是 Planner 路径专用的可选回调：某一轮工具调用确认要
+    继续执行（没有因为轮次耗尽而放弃）时调用一次，用于给前端展示"正在
+    查询"状态；确定性路径和不支持流式的 provider 都不会触发这个回调。
 
     memory_recall_use_embedding 默认 True（行为不变，长期记忆召回融合
     BM25+embedding 两路语义/关键词排名）；置 False 时 memory_recall_node
@@ -597,6 +607,9 @@ def build_agent_graph(
         )
         return {}
 
+    async def _noop() -> None:
+        return None
+
     async def planner_node(state: AgentState) -> dict[str, Any]:
         messages = state.get("planner_messages")
         if not messages:
@@ -608,8 +621,21 @@ def build_agent_graph(
                 messages.append({"role": "system", "content": term_guard_context})
             messages.extend(state.get("memory_context_messages", []))
             messages.append({"role": "user", "content": state["question"]})
+        state_with_messages = {**state, "planner_messages": messages}
+        if on_answer_chunk is not None and llm_registry.supports_tool_streaming(
+            ProviderCapability.LLM, llm_provider_name
+        ):
+            return await run_planner_turn_streaming(
+                state_with_messages,
+                llm_registry=llm_registry,
+                llm_provider_name=llm_provider_name,
+                max_tool_call_rounds=max_tool_call_rounds,
+                banned_terms=banned_terms,
+                on_answer_chunk=on_answer_chunk,
+                on_tool_status=on_tool_status or (lambda: _noop()),
+            )
         return await run_planner_turn(
-            {**state, "planner_messages": messages},
+            state_with_messages,
             llm_registry=llm_registry,
             llm_provider_name=llm_provider_name,
             max_tool_call_rounds=max_tool_call_rounds,
