@@ -392,6 +392,35 @@ def _maybe_resolve_relation_constraint(
     return replace(constraint, target_value=resolved_value)
 
 
+def _resolve_fuzzy_constraint_values(
+    constraints: list[AttributeConstraint | RelationConstraint],
+    *,
+    anchor_term_type: str,
+    terms: list[Term],
+    term_type_schema: dict[str, TermTypeCategory],
+) -> list[AttributeConstraint | RelationConstraint]:
+    """在 validate_structured_filter_query 通过之后调用：把 constraints 里针对
+    standard_name 字段的 eq/ne 比较值，从 LLM 猜测的原始字符串解析成术语表里的
+    标准名——跟 anchor.name 走的是同一套 resolve_term()，只是作用对象从"锚点
+    自己的名字"扩展到"约束条件里引用的名字"，让"先消歧、再用消歧出的标准名
+    发起第二次调用"这个两步流程能在一次调用里完成，见
+    docs/superpowers/specs/2026-08-24-fuzzy-constraint-value-resolution-design.md。
+    """
+    resolved: list[AttributeConstraint | RelationConstraint] = []
+    for constraint in constraints:
+        if isinstance(constraint, AttributeConstraint):
+            resolved.append(
+                _maybe_resolve_attribute_constraint(
+                    constraint, term_type=anchor_term_type, terms=terms, term_type_schema=term_type_schema,
+                )
+            )
+            continue
+        resolved.append(
+            _maybe_resolve_relation_constraint(constraint, terms=terms, term_type_schema=term_type_schema)
+        )
+    return resolved
+
+
 _CORE_TERM_FIELDS = frozenset({"tenant_id", "node_key", "standard_name", "type"})
 
 # Neo4j 历史 :Term 节点上残留的 product_line 属性不清理（这是本次移除 product_line
@@ -433,6 +462,15 @@ async def run_structured_filter_query(
         )
     except StructuredFilterQueryError as exc:
         return {"error": str(exc)}
+
+    try:
+        resolved_constraints = _resolve_fuzzy_constraint_values(
+            args.constraints, anchor_term_type=resolved.term_type,
+            terms=terms, term_type_schema=term_type_schema,
+        )
+    except StructuredFilterQueryError as exc:
+        return {"error": str(exc)}
+    args = replace(args, constraints=resolved_constraints)
 
     # 执行阶段单独兜一层 except Exception（比 StructuredFilterQueryError 宽）——这层
     # 边界要防的是"图谱后端挂了/Cypher 运行时报错"（Neo4j 驱动异常、数组谓词碰到

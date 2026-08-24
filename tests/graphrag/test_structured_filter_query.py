@@ -1095,3 +1095,124 @@ def test_maybe_resolve_relation_constraint_uses_last_hop_type_for_two_hop_chain(
         constraint, terms=[_COKE_TERM], term_type_schema={"公司": _COMPANY_SCHEMA_STRING},
     )
     assert result.target_value == "Coca-Cola"
+
+
+async def test_run_structured_filter_query_resolves_fuzzy_relation_constraint_value():
+    """核心场景：anchor.term_type + constraints 里用口语化别名（"coke-cola"），
+    第一次调用就应该能查出正确结果——不需要先用 anchor.name 消歧再发第二次调用。"""
+    graph_client = _FakeGraphClient(rows=[
+        {"standard_name": "0-7380-9438-2", "node_key": "订单号:0-7380-9438-2",
+         "term_type": "订单号", "all_properties": {}},
+    ])
+
+    result = await run_structured_filter_query(
+        {
+            "anchor": {"term_type": "订单号"},
+            "constraints": [{
+                "kind": "relation",
+                "hops": [{"relation_type": "BELONG_TO", "direction": "outgoing", "target_term_type": "公司"}],
+                "target_field": "standard_name", "target_operator": "eq", "target_value": "coke-cola",
+            }],
+        },
+        graph_client=graph_client, tenant_id="demo", terms=[_COKE_TERM],
+        confirmed_relation_types={"BELONG_TO"},
+        term_type_schema={
+            "订单号": TermTypeCategory(value="订单号", extra_fields=[]),
+            "公司": TermTypeCategory(value="公司", extra_fields=[]),
+        },
+    )
+
+    assert result["matched_count"] == 1
+    # 断言真正传给图数据库执行层的约束值，已经是解析后的标准名"Coca-Cola"，
+    # 不是 LLM 原始猜测的"coke-cola"——这是本次改动要验证的核心行为。
+    resolved_constraint = graph_client.last_args.constraints[0]
+    assert resolved_constraint.target_value == "Coca-Cola"
+
+
+async def test_run_structured_filter_query_resolves_fuzzy_attribute_constraint_value():
+    graph_client = _FakeGraphClient(rows=[
+        {"standard_name": "Coca-Cola", "node_key": "公司:Coca-Cola", "term_type": "公司", "all_properties": {}},
+    ])
+
+    result = await run_structured_filter_query(
+        {
+            "anchor": {"term_type": "公司"},
+            "constraints": [{"kind": "attribute", "field": "standard_name", "operator": "eq", "value": "coke-cola"}],
+        },
+        graph_client=graph_client, tenant_id="demo", terms=[_COKE_TERM],
+        confirmed_relation_types=set(),
+        term_type_schema={"公司": TermTypeCategory(value="公司", extra_fields=[])},
+    )
+
+    assert result["matched_count"] == 1
+    assert graph_client.last_args.constraints[0].value == "Coca-Cola"
+
+
+async def test_run_structured_filter_query_returns_error_and_skips_execution_when_constraint_value_unresolvable():
+    class _ExplodingGraphClient:
+        async def execute_structured_filter_query(self, args, *, resolved, tenant_id, term_type_schema):
+            raise AssertionError("约束值解析失败时不应该查图谱")
+
+    result = await run_structured_filter_query(
+        {
+            "anchor": {"term_type": "订单号"},
+            "constraints": [{
+                "kind": "relation",
+                "hops": [{"relation_type": "BELONG_TO", "direction": "outgoing", "target_term_type": "公司"}],
+                "target_field": "standard_name", "target_operator": "eq", "target_value": "完全不认识的名字",
+            }],
+        },
+        graph_client=_ExplodingGraphClient(), tenant_id="demo", terms=[_COKE_TERM],
+        confirmed_relation_types={"BELONG_TO"},
+        term_type_schema={
+            "订单号": TermTypeCategory(value="订单号", extra_fields=[]),
+            "公司": TermTypeCategory(value="公司", extra_fields=[]),
+        },
+    )
+
+    assert "error" in result
+    assert "完全不认识的名字" in result["error"]
+
+
+async def test_run_structured_filter_query_numeric_standard_name_eq_unaffected_by_fuzzy_resolution():
+    """销量这类 value-as-node 类型的 standard_name 是数值——eq 比较数字时，
+    完全不应该触发模糊解析，行为要跟本次改动之前一模一样（防回归）。"""
+    graph_client = _FakeGraphClient(rows=[
+        {"standard_name": "100", "node_key": "销量:100", "term_type": "销量", "all_properties": {}},
+    ])
+
+    result = await run_structured_filter_query(
+        {
+            "anchor": {"term_type": "销量"},
+            "constraints": [{"kind": "attribute", "field": "standard_name", "operator": "eq", "value": 100}],
+        },
+        graph_client=graph_client, tenant_id="demo", terms=[],
+        confirmed_relation_types=set(),
+        term_type_schema={"销量": TermTypeCategory(
+            value="销量", extra_fields=[], standard_name_value_type="number",
+        )},
+    )
+
+    assert result["matched_count"] == 1
+    # 数值 100 原样透传，不经过 _resolve_or_raise（terms=[] 也证明了这一点——
+    # 如果误触发了模糊解析，空 terms 列表会导致解析失败报错，而不是正常返回结果）。
+    assert graph_client.last_args.constraints[0].value == 100
+
+
+async def test_run_structured_filter_query_name_anchor_constraints_also_resolve_fuzzy_values():
+    """NameAnchor 模式下 constraints 里的模糊解析也要生效，不只是 TypeAnchor 模式。"""
+    graph_client = _FakeGraphClient(rows=[
+        {"standard_name": "Coca-Cola", "node_key": "公司:Coca-Cola", "term_type": "公司", "all_properties": {}},
+    ])
+
+    await run_structured_filter_query(
+        {
+            "anchor": {"name": "coke-cola"},
+            "constraints": [{"kind": "attribute", "field": "standard_name", "operator": "eq", "value": "coke-cola"}],
+        },
+        graph_client=graph_client, tenant_id="demo", terms=[_COKE_TERM],
+        confirmed_relation_types=set(),
+        term_type_schema={"公司": TermTypeCategory(value="公司", extra_fields=[])},
+    )
+
+    assert graph_client.last_args.constraints[0].value == "Coca-Cola"
