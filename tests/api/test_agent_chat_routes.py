@@ -524,3 +524,74 @@ def test_agent_chat_uses_static_path_when_planner_disabled_by_default():
 
     payload = _final_event(body)
     assert "人工" in payload["text"] or "转" in payload["text"]
+
+
+def test_agent_chat_emits_tool_status_event_when_planner_calls_a_tool():
+    from app.providers.base import ProviderStreamChunk, ToolCall
+
+    class ScriptedStreamingLLMProvider:
+        def __init__(self, rounds):
+            self._rounds = list(rounds)
+
+        async def complete(self, request):
+            raise NotImplementedError("此 Fake 只用于测试流式路径")
+
+        async def stream_complete_with_tools(self, request):
+            for chunk in self._rounds.pop(0):
+                yield chunk
+
+    import asyncio
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        deps.DEFAULT_LLM_PROVIDER_NAME,
+        ScriptedStreamingLLMProvider(
+            [
+                [
+                    ProviderStreamChunk(
+                        tool_calls=[
+                            ToolCall(id="call_1", name="vector_search_tool", arguments='{"query": "网络连不上怎么办"}')
+                        ]
+                    )
+                ],
+                [ProviderStreamChunk(text="重启路由器即可解决。")],
+            ]
+        ),
+    )
+    vector_store = asyncio.run(_fake_vector_store())
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_review_conn] = _override_get_review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
+    app.dependency_overrides[deps.get_memory_conn] = lambda: None
+    app.dependency_overrides[deps.get_tts_provider] = lambda: None
+    app.dependency_overrides[deps.get_settings] = lambda: _settings(
+        agent_enable_autonomous_planning=True
+    )
+    try:
+        client = TestClient(app)
+        with client.stream(
+            "POST",
+            "/agent/chat",
+            json={"question": "网络连不上怎么办？", "tenant_id": "t1"},
+        ) as response:
+            body = "".join(response.iter_text())
+    finally:
+        app.dependency_overrides.clear()
+
+    events = _parse_sse_events(body)
+    event_types = [e["type"] for e in events]
+    assert "tool_status" in event_types
+    tool_status_event = next(e for e in events if e["type"] == "tool_status")
+    assert tool_status_event["text"] == "正在查询相关信息..."
+    assert event_types.index("tool_status") < len(event_types) - 1  # 不是最后一个事件
+    assert event_types[-1] == "final"

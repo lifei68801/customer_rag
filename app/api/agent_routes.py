@@ -115,6 +115,12 @@ async def agent_chat_endpoint(
             body = json.dumps({"type": "delta", "text": sentence}, ensure_ascii=False)
             await queue.put(body)
 
+        async def on_tool_status() -> None:
+            body = json.dumps(
+                {"type": "tool_status", "text": "正在查询相关信息..."}, ensure_ascii=False
+            )
+            await queue.put(body)
+
         async def on_audio_chunk(sentence: str) -> None:
             # sentence 已经在 graph.py 的 responder_node 里过了一次分句轻量
             # 安全检查（命中风险词会被替换成安全兜底话术），这里直接合成，
@@ -151,6 +157,7 @@ async def agent_chat_endpoint(
             enable_autonomous_planning=enable_autonomous_planning,
             max_tool_call_rounds=settings.agent_max_tool_call_rounds,
             on_answer_chunk=on_answer_chunk,
+            on_tool_status=on_tool_status if not payload.voice_response else None,
             banned_terms=deps.parse_banned_terms(settings.banned_terms),
         )
 
