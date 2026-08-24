@@ -6,7 +6,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from app.providers.base import ProviderRequest, ProviderResult, ToolCall
+from app.providers.base import ProviderRequest, ProviderResult, ProviderStreamChunk, ToolCall
 from app.providers.embedding import EmbeddingRequest, EmbeddingResult
 
 
@@ -136,6 +136,72 @@ class OpenAICompatibleChatProvider(_OpenAICompatibleClient):
                 delta = chunk["choices"][0]["delta"].get("content")
                 if delta:
                     yield delta
+
+    async def stream_complete_with_tools(
+        self, request: ProviderRequest
+    ) -> AsyncIterator[ProviderStreamChunk]:
+        """流式生成 + 支持工具调用：跟 stream_complete() 共用同一套 SSE
+        循环，额外处理 delta.tool_calls 的增量拼接。
+
+        OpenAI 协议里流式场景下的工具调用按 index 分片到达：第一个携带
+        该 index 的分片通常带 id/type/function.name，此后同一个 index
+        的分片只携带 function.arguments 的字符串片段，要按到达顺序
+        拼接。id/name 只要出现过就不会再变，用字典按 index 累积即可。
+
+        yield 的是「文本增量」和「工具调用（只在最后一个 chunk 上，且是
+        完整重建好的）」这两种事件的合流：调用方按 chunk.text 是否非空
+        处理文本，按 chunk.tool_calls 是否为 None 判断这一轮到底有没有
+        工具调用，不需要关心分片拼接的细节。
+        """
+        payload = self._base_payload(request)
+        payload["stream"] = True
+        if request.tools:
+            payload["tools"] = request.tools
+        if request.tool_choice:
+            payload["tool_choice"] = request.tool_choice
+
+        # index -> {"id": str, "name": str, "arguments": str}（arguments 增量拼接）
+        pending_tool_calls: dict[int, dict[str, str]] = {}
+
+        async with self._client.stream(
+            "POST",
+            f"{self._base_url}/chat/completions",
+            headers=self._headers(),
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[len("data: ") :]
+                if data.strip() == "[DONE]":
+                    break
+                chunk = json.loads(data)
+                delta = chunk["choices"][0]["delta"]
+
+                text = delta.get("content")
+                if text:
+                    yield ProviderStreamChunk(text=text)
+
+                for tc_delta in delta.get("tool_calls") or []:
+                    index = tc_delta["index"]
+                    entry = pending_tool_calls.setdefault(
+                        index, {"id": "", "name": "", "arguments": ""}
+                    )
+                    if tc_delta.get("id"):
+                        entry["id"] = tc_delta["id"]
+                    function_delta = tc_delta.get("function") or {}
+                    if function_delta.get("name"):
+                        entry["name"] = function_delta["name"]
+                    if function_delta.get("arguments"):
+                        entry["arguments"] += function_delta["arguments"]
+
+        if pending_tool_calls:
+            tool_calls = [
+                ToolCall(id=entry["id"], name=entry["name"], arguments=entry["arguments"])
+                for _, entry in sorted(pending_tool_calls.items())
+            ]
+            yield ProviderStreamChunk(tool_calls=tool_calls)
 
 
 class OpenAICompatibleEmbeddingProvider(_OpenAICompatibleClient):

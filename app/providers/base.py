@@ -33,5 +33,16 @@ class ProviderResult:
     tool_calls: list[ToolCall] | None = None
 
 
+@dataclass(frozen=True)
+class ProviderStreamChunk:
+    """stream_complete_with_tools() 的单个 yield 项。text 是本次增量文本，
+    可能为空字符串（不代表流结束）；tool_calls 只会出现在流的最后一个
+    chunk 上、且是完整重建好的列表——调用方不需要关心工具调用在协议里
+    是按 index 分片到达、要拼接这类细节，只需要判断
+    chunk.tool_calls is not None 来知道这一轮是否请求了工具调用。"""
+    text: str = ""
+    tool_calls: list[ToolCall] | None = None
+
+
 class Provider(Protocol):
     async def complete(self, request: ProviderRequest) -> ProviderResult: ...

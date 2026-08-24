@@ -81,3 +81,64 @@ async def test_stream_yields_chunks_from_the_named_provider():
     ]
 
     assert chunks == ["你好", "，世界"]
+
+
+class ToolStreamingFakeProvider:
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        return ProviderResult(text="不应该被用到")
+
+    async def stream_complete_with_tools(self, request: ProviderRequest):
+        from app.providers.base import ProviderStreamChunk
+
+        for chunk in [ProviderStreamChunk(text="你好"), ProviderStreamChunk(text="，世界")]:
+            yield chunk
+
+
+def test_supports_tool_streaming_true_for_provider_with_stream_complete_with_tools():
+    registry = ProviderRegistry()
+    registry.register(ProviderCapability.LLM, "tool-streaming", ToolStreamingFakeProvider())
+
+    assert registry.supports_tool_streaming(ProviderCapability.LLM, "tool-streaming") is True
+
+
+def test_supports_tool_streaming_false_for_provider_without_it():
+    registry = ProviderRegistry()
+    registry.register(ProviderCapability.LLM, "streaming", StreamingFakeProvider())
+
+    assert registry.supports_tool_streaming(ProviderCapability.LLM, "streaming") is False
+
+
+def test_supports_tool_streaming_false_for_unregistered_provider_name():
+    registry = ProviderRegistry()
+
+    assert registry.supports_tool_streaming(ProviderCapability.LLM, "missing") is False
+
+
+async def test_stream_with_tools_yields_chunks_from_the_named_provider():
+    from app.providers.base import ProviderStreamChunk
+
+    registry = ProviderRegistry()
+    registry.register(ProviderCapability.LLM, "tool-streaming", ToolStreamingFakeProvider())
+
+    chunks = [
+        chunk
+        async for chunk in registry.stream_with_tools(
+            ProviderCapability.LLM,
+            ProviderRequest(messages=[{"role": "user", "content": "hi"}]),
+            provider_name="tool-streaming",
+        )
+    ]
+
+    assert chunks == [ProviderStreamChunk(text="你好"), ProviderStreamChunk(text="，世界")]
+
+
+async def test_stream_with_tools_raises_for_unregistered_provider_name():
+    registry = ProviderRegistry()
+
+    with pytest.raises(KeyError):
+        async for _ in registry.stream_with_tools(
+            ProviderCapability.LLM,
+            ProviderRequest(messages=[{"role": "user", "content": "hi"}]),
+            provider_name="missing",
+        ):
+            pass
