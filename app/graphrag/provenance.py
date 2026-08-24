@@ -9,8 +9,10 @@ from __future__ import annotations
 # 这是 2026-08-12 补的可观测性字段：在此之前，一条关系边一旦写入 Neo4j，
 # 就无法区分它是摄取时术语表精确对齐后自动写入的，还是未对齐候选经人工
 # 审核批准后写入的——两条路径调用的是同一个 merge_relation，边上只有
-# source/tenant_id 两个属性，检索侧（term_guard/graph_query_tool）也确实
-# 不区分来源、一视同仁地返回。加这两个值不改变检索行为（仍然不做来源
+# source/tenant_id 两个属性，检索侧（term_guard/graph_query_tool——后者
+# 已在 2026-08-24 并入 structured_filter_query_tool，见
+# docs/AGENT_PLANNER_DESIGN.md §4.1）也确实不区分来源、一视同仁地返回。
+# 加这两个值不改变检索行为（仍然不做来源
 # 过滤），只是让"这条边有没有被人看过"这件事变得可查——为后续的质量
 # 审计/问题排查提供依据。
 #

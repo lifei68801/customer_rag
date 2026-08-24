@@ -33,7 +33,10 @@ def resolve_term(
     答案——这正是 normalize_and_write_relations 里 2026-08-22 Fix round 1
     调查记录的那类 bug 的根源，也是 graph_query_tool 当初为了绕开同一个坑、
     改成直接导入 normalization.py 私有函数（而不是这个模块本来该提供的公开
-    函数）的原因。本函数把三处调用方收敛到同一个实现、同一套判重规则，
+    函数）的原因（`graph_query_tool` 已在 2026-08-24 的收尾任务中并入
+    `structured_filter_query_tool`，历史脉络见 docs/AGENT_PLANNER_DESIGN.md
+    §4.1，此处仅保留发现问题时的原始上下文）。本函数把三处调用方收敛到
+    同一个实现、同一套判重规则，
     从根上消除"策略分叉"这件事本身，而不是让每个调用方各自小心。
 
     term_type_hint 传了且该类型下按 name-or-alias 恰好命中一条：直接返回
