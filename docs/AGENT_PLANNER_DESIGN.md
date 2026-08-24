@@ -24,8 +24,10 @@
 可能变差），没有退路。因此采用分阶段、显式开关的路线：
 
 1. **Provider 层**：新增 tool-calling 支持，纯增量字段（默认值兼容），零现有测试受影响。
-2. **工具实现层**：把 `vector_search_tool`/`graph_query_tool`/`structured_filter_query_tool`
-   包装成独立可测试函数，
+2. **工具实现层**：把 `vector_search_tool`/`structured_filter_query_tool`
+   包装成独立可测试函数（图谱查询相关能力——已知实体查关联、按条件反查实体、展开邻居——
+   统一收敛到 `structured_filter_query_tool` 一个工具下，不再拆成单独的
+   `graph_query_tool`，见 §4.1），
    此时还没接入图，同样零现有测试受影响。
 3. **新 Planner 子图**：`build_agent_graph()` 新增 `enable_autonomous_planning: bool = False`
    参数。`False`（默认）时完全复用现有确定性流程，保证已有 160 个测试和生产行为不变；
@@ -108,8 +110,7 @@ Qwen（DashScope 兼容模式）、DeepSeek、智谱 GLM、Kimi 官方文档都�
 | 工具名 | LLM 可控参数 | 系统强制注入（LLM 不可控） | 实现 |
 |---|---|---|---|
 | `vector_search_tool` | `query: str`, `top_k: int`（可选，默认3） | `tenant_id` | 内部调用 `hybrid_search()` |
-| `graph_query_tool` | `entity_name: str`, `entity_type: str`（可选，同名实体存在多个类型时用于消歧） | `tenant_id` | 内部调用 `resolve_term()`（`app/graphrag/ontology.py`）+ `graph_client.query_subgraph()` |
-| `structured_filter_query_tool` | `anchor_term_type: str`, `constraints: list`, `group_by`（可选）, `limit: int`（可选，默认20） | `tenant_id`、该租户已确认的 term_type/relation_type schema | 按属性/关系条件反查实体；内部调用 `run_structured_filter_query()`（解析→按已确认 schema 校验→`graph_client.execute_structured_filter_query()`） |
+| `structured_filter_query_tool` | `anchor`（`{name, type_hint?}` 或 `{term_type}`）, `constraints: list`, `expand`（可选，`{hops, relation_type?, direction}`）, `group_by`（可选）, `limit: int`（可选，默认20） | `tenant_id`、该租户已确认的 term_type/relation_type schema、`terms`（`anchor.name` 消歧用） | 已知实体查关联信息 / 按属性关系条件反查一批实体 / 展开锚点邻居，三种能力统一入口；内部调用 `run_structured_filter_query()`（解析→resolve_term 消歧（`anchor.name` 时）→按已确认 schema 校验→`graph_client.execute_structured_filter_query()`） |
 
 `create_ticket_tool` **不**开放给 Planner 调用——继续保持架构图里 `Fallback --> CreateTicket`
 的确定性路径，工单转人工是安全兜底动作，不能让 LLM 自主决定"要不要转人工"。
@@ -200,7 +201,8 @@ stateDiagram-v2
   `ProviderResult(text="最终答案")`，从而在完全不依赖真实网络调用的前提下，确定性地
   测试 Planner 的每一种分支：
   - 调用 1 次工具后得到足够信息直接回答；
-  - 连续调用 2 种不同工具（先 `graph_query_tool` 再 `vector_search_tool`）；
+  - 连续调用 2 种不同工具（先 `structured_filter_query_tool` 查图谱定位/筛选实体，
+    再 `vector_search_tool` 补充相关文档片段）；
   - 达到 `max_tool_call_rounds` 仍要求调用工具 → 强制 Fallback，且**不应该**执行第
     `max_tool_call_rounds+1` 次工具调用（用一个会在被调用时抛异常的假工具函数来断言
     "确实没有被多调一次"）；
@@ -230,6 +232,9 @@ stateDiagram-v2
 2. ✅ `OpenAICompatibleChatProvider.complete()` 支持 `tools`/`tool_choice` 请求 + 解析
    `tool_calls` 响应（含修掉 `content` 可能为 `None` 的隐藏 bug）。
 3. ✅ `vector_search_tool`/`graph_query_tool` 独立函数 + 各自的工具 JSON Schema 常量。
+   （`graph_query_tool` 后续在 2026-08-24 的收尾任务中与
+   `structured_filter_query_tool` 统一合并，见 §4.1；`graph_query_tool` 这个
+   名字/独立实现已不存在。）
 4. ✅ `AgentState` 新增字段。
 5. ✅ `planner_node`/`tool_call_node`/`route_after_planner` 三个新节点/路由函数，先在
    独立测试里验证（不接入 `build_agent_graph`）。
@@ -246,7 +251,9 @@ stateDiagram-v2
 
 用 `deepseek-chat` 跑了三个场景（脚本未入库，属一次性验证）：
 1. 明确需要检索的问题——模型正确选择调用工具，**且一次性并行请求了两个工具**
-   （`vector_search_tool` + `graph_query_tool`），证明 DeepSeek 支持 parallel
+   （`vector_search_tool` + `graph_query_tool`，`graph_query_tool` 是当时的图谱
+   查询工具名，2026-08-24 收尾任务里已并入 `structured_filter_query_tool`），
+   证明 DeepSeek 支持 parallel
    function calling。本实现已经能正确处理（`run_planner_turn` 本就是把
    `result.tool_calls` 整个列表存进 `pending_tool_calls`，`run_tool_calls`
    逐个执行），不用额外改动，但有个参数含义要注意：`max_tool_call_rounds`

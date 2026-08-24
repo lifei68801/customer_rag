@@ -143,7 +143,7 @@ def build_agent_graph(
     ClarificationCheck -> TermGuard -> MemoryRecall} 并行 -> 汇合 -> Planner
     -> ToolCall（循环回 Planner，最多 max_tool_call_rounds 轮）->
     Responder/Fallback -> OutputSafety -> MemorySave。LLM 自主决定调用
-    vector_search_tool/graph_query_tool 还是直接回答，真正的 ReAct 风格
+    vector_search_tool/structured_filter_query_tool 还是直接回答，真正的 ReAct 风格
     多轮工具决策，对应架构文档 §3.2 的完整设计。详见
     docs/AGENT_PLANNER_DESIGN.md。
 

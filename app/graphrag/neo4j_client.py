@@ -432,7 +432,7 @@ class Neo4jGraphClient:
         node_key（创建时固定的身份键，改名后不变——ADR-0003），不是当前
         的展示名 standard_name：两者只在术语刚创建、尚未被改名时恰好
         相等，改名之后就会不同。调用方（app/graphrag/normalization.py、
-        review_queue.py、app/agent/tools.py::graph_query_tool）必须先
+        review_queue.py、app/agent/tools.py::structured_filter_query_tool）必须先
         用 resolve_to_standard_name() 等方式解析出 standard_name，再从
         已加载的 terms 列表里按 standard_name 反查对应的 node_key，把
         node_key 传进来——绝不能假定"展示名等于 node_key"，否则改名后

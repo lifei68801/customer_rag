@@ -1,5 +1,6 @@
 from app.agent.graph import build_agent_graph
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import TermTypeCategory
 from app.providers.base import (
     ProviderCapability,
     ProviderRequest,
@@ -183,7 +184,7 @@ async def test_planner_does_not_surface_another_tenants_records():
     assert result["used_sources"] == []
 
 
-async def test_planner_graph_uses_graph_query_tool_with_term_guard_context():
+async def test_planner_graph_uses_structured_filter_query_tool_with_term_guard_context():
     records, vector_store, bm25_index, embedding_registry = _dependencies()
     await _seed(records, vector_store, bm25_index)
 
@@ -198,8 +199,8 @@ async def test_planner_graph_uses_graph_query_tool_with_term_guard_context():
                     tool_calls=[
                         ToolCall(
                             id="call_1",
-                            name="graph_query_tool",
-                            arguments='{"entity_name": "网关超时示例"}',
+                            name="structured_filter_query_tool",
+                            arguments='{"anchor": {"name": "网关超时示例"}}',
                         )
                     ],
                 ),
@@ -221,6 +222,17 @@ async def test_planner_graph_uses_graph_query_tool_with_term_guard_context():
         async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
             return [{"related_name": "示例登录模块", "relation_type": "RELATED_TO"}]
 
+        async def execute_structured_filter_query(self, args, *, resolved, tenant_id, term_type_schema):
+            return {
+                "rows": [{
+                    "standard_name": "示例错误码E502",
+                    "node_key": "示例错误码E502",
+                    "term_type": "error_code",
+                    "all_properties": {},
+                }],
+                "total_count": 1,
+            }
+
     graph = build_agent_graph(
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
@@ -232,6 +244,8 @@ async def test_planner_graph_uses_graph_query_tool_with_term_guard_context():
         enable_autonomous_planning=True,
         terms=terms,
         graph_client=FakeGraphClient(),
+        confirmed_relation_types=set(),
+        term_type_schema={"error_code": TermTypeCategory(value="error_code", extra_fields=[])},
     )
 
     result = await graph.ainvoke(
