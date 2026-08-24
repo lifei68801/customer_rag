@@ -202,7 +202,7 @@ def _parse_expand(raw: dict | None) -> ExpandSpec | None:
     if not isinstance(raw, dict):
         raise StructuredFilterQueryError(f"expand 必须是 dict，收到: {raw!r}")
     hops = raw.get("hops", 1)
-    if hops not in _VALID_EXPAND_HOPS:
+    if not isinstance(hops, int) or isinstance(hops, bool) or hops not in _VALID_EXPAND_HOPS:
         raise StructuredFilterQueryError(f"expand.hops 必须是 1 或 2，收到: {hops!r}")
     direction = raw.get("direction", "both")
     if direction not in _VALID_EXPAND_DIRECTIONS:
@@ -240,6 +240,10 @@ def parse_structured_filter_query_args(raw: dict) -> StructuredFilterQueryArgs:
     limit = raw.get("limit", 20)
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
         raise StructuredFilterQueryError(f"limit 必须是正整数，收到: {limit!r}")
+    if expand is not None and group_by is not None:
+        raise StructuredFilterQueryError(
+            "expand 和 group_by 不能同时使用——group_by 返回的是聚合统计结果，不是具体实体列表，展开邻居没有意义"
+        )
     return StructuredFilterQueryArgs(
         anchor=anchor, constraints=constraints, expand=expand, group_by=group_by, limit=limit,
     )
@@ -361,7 +365,7 @@ async def run_structured_filter_query(
     if isinstance(args.anchor, NameAnchor):
         term = resolve_term(args.anchor.name, terms, term_type_hint=args.anchor.type_hint)
         if term is None:
-            return {"matched_count": 0, "truncated": False, "anchors": []}
+            return {"matched_count": 0, "anchors": []}
         resolved = ResolvedAnchor(term_type=term.term_type, node_key=term.node_key)
     else:
         resolved = ResolvedAnchor(term_type=args.anchor.term_type, node_key=None)

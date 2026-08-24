@@ -359,6 +359,48 @@ def test_parse_rejects_non_dict_group_by():
         })
 
 
+def test_parse_rejects_expand_combined_with_group_by():
+    """expand 和 group_by 不能同时使用：group_by 走聚合分支，会在 neo4j_client.py 里
+    直接返回聚合结果、根本不构建 expand 子句——同时传两者时旧行为是 group_by 静默
+    获胜、expand 被无声丢弃，这里改成在解析层就直接报错，让 LLM 看到明确的拒绝原因。"""
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor": {"term_type": "SKU"},
+            "constraints": [{
+                "kind": "relation",
+                "hops": [{"relation_type": "HAS_VARIANT", "direction": "outgoing", "target_term_type": "VariantValue"}],
+                "target_field": "raw_value", "target_operator": "eq", "target_value": "红",
+            }],
+            "group_by": {"constraint_index": 0},
+            "expand": {"hops": 1},
+        })
+
+
+def test_parse_expand_alone_still_works_without_group_by():
+    """确认 expand 单独使用不受上面那条新校验影响。"""
+    args = parse_structured_filter_query_args({
+        "anchor": {"name": "coke-cola"},
+        "expand": {"hops": 1},
+    })
+    assert args.expand == ExpandSpec(hops=1, relation_type=None, direction="both")
+    assert args.group_by is None
+
+
+def test_parse_group_by_alone_still_works_without_expand():
+    """确认 group_by 单独使用不受上面那条新校验影响。"""
+    args = parse_structured_filter_query_args({
+        "anchor": {"term_type": "SKU"},
+        "constraints": [{
+            "kind": "relation",
+            "hops": [{"relation_type": "HAS_VARIANT", "direction": "outgoing", "target_term_type": "VariantValue"}],
+            "target_field": "raw_value", "target_operator": "eq", "target_value": "红",
+        }],
+        "group_by": {"constraint_index": 0},
+    })
+    assert args.group_by == GroupBy(constraint_index=0)
+    assert args.expand is None
+
+
 def test_parse_rejects_non_dict_top_level_raw():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args("not-a-dict")
@@ -702,7 +744,7 @@ async def test_run_structured_filter_query_name_anchor_not_resolved_returns_zero
         confirmed_relation_types=set(), term_type_schema={},
     )
 
-    assert result == {"matched_count": 0, "truncated": False, "anchors": []}
+    assert result == {"matched_count": 0, "anchors": []}
 
 
 async def test_run_structured_filter_query_name_anchor_uses_type_hint_to_disambiguate():
@@ -842,6 +884,15 @@ def test_parse_expand_with_explicit_values():
 def test_parse_expand_rejects_invalid_hops():
     with pytest.raises(StructuredFilterQueryError):
         parse_structured_filter_query_args({"anchor": {"name": "x"}, "expand": {"hops": 3}})
+
+
+def test_parse_expand_rejects_bool_hops():
+    """bool 是 int 的子类，True == 1、False == 0——不加 isinstance(..., bool) 排除的话，
+    {"hops": True} 会静默通过 `hops not in _VALID_EXPAND_HOPS` 检查，之后被拼进 Cypher
+    的 *1..True 模式段，产生非法 Cypher（被下游更宽的 except Exception 兜住，退化成一个
+    不清楚的通用错误，而不是这里这条清晰的校验信息）。"""
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({"anchor": {"name": "x"}, "expand": {"hops": True}})
 
 
 def test_parse_expand_rejects_invalid_direction():
