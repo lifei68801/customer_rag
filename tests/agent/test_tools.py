@@ -197,8 +197,8 @@ async def test_structured_filter_query_tool_delegates_to_run_structured_filter_q
     from app.graphrag.ontology_categories import ExtraFieldSpec, TermTypeCategory
 
     class _FakeGraphClient:
-        async def execute_structured_filter_query(self, args, *, tenant_id):
-            return []
+        async def execute_structured_filter_query(self, args, *, tenant_id, term_type_schema):
+            return {"rows": [], "total_count": 0}
 
     result = await structured_filter_query_tool(
         {"anchor_term_type": "SKU",

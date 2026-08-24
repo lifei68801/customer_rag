@@ -4,6 +4,7 @@ import pytest
 
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import TermTypeCategory
 
 _NOW = datetime(2026, 8, 12, 12, 0, 0)
 
@@ -17,8 +18,13 @@ class FakeResult:
 
 
 class FakeSession:
-    def __init__(self, rows: list[dict]) -> None:
-        self._rows = rows
+    def __init__(self, rows: list[dict] | None = None, *, call_results: list | None = None) -> None:
+        """rows：不管调几次 .run()，每次都返回这同一份数据（绝大多数现有测试的用法，
+        不用改）。call_results：按 .run() 调用顺序消费的结果列表，每个元素是
+        list[dict]（多行）或 dict（单行，会被包成 [dict]）——两个参数二选一。"""
+        self._rows = rows if rows is not None else []
+        self._call_results = call_results
+        self._call_index = 0
         self.last_query: str | None = None
         self.last_parameters: dict | None = None
         self.calls: list[tuple[str, dict]] = []
@@ -27,6 +33,10 @@ class FakeSession:
         self.last_query = query
         self.last_parameters = parameters
         self.calls.append((query, parameters))
+        if self._call_results is not None:
+            result = self._call_results[self._call_index]
+            self._call_index += 1
+            return FakeResult(result if isinstance(result, list) else [result])
         return FakeResult(self._rows)
 
     async def __aenter__(self) -> "FakeSession":
@@ -554,9 +564,12 @@ async def test_execute_structured_filter_query_builds_attribute_where_clause():
         group_by=None, limit=20,
     )
 
-    result = await client.execute_structured_filter_query(args, tenant_id="muji")
+    result = await client.execute_structured_filter_query(
+        args, tenant_id="muji",
+        term_type_schema={"SKU": TermTypeCategory(value="SKU", extra_fields=[])},
+    )
 
-    assert result == [
+    assert result["rows"] == [
         {"standard_name": "SKU A", "node_key": "SKU:1", "term_type": "SKU",
          "all_properties": {"numeric_value": 600}},
     ]
@@ -583,7 +596,13 @@ async def test_execute_structured_filter_query_builds_relation_exists_subquery()
         group_by=None, limit=20,
     )
 
-    await client.execute_structured_filter_query(args, tenant_id="muji")
+    await client.execute_structured_filter_query(
+        args, tenant_id="muji",
+        term_type_schema={
+            "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
+            "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
+        },
+    )
 
     assert "EXISTS {" in session.last_query
     assert "-[:HAS_VARIANT]->" in session.last_query
@@ -606,7 +625,13 @@ async def test_execute_structured_filter_query_incoming_direction_reverses_arrow
         group_by=None, limit=20,
     )
 
-    await client.execute_structured_filter_query(args, tenant_id="muji")
+    await client.execute_structured_filter_query(
+        args, tenant_id="muji",
+        term_type_schema={
+            "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
+            "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
+        },
+    )
 
     assert "<-[:HAS_VARIANT]-" in session.last_query
 
@@ -625,7 +650,13 @@ async def test_execute_structured_filter_query_group_by_returns_aggregated_group
         group_by=GroupBy(constraint_index=0), limit=20,
     )
 
-    result = await client.execute_structured_filter_query(args, tenant_id="muji")
+    result = await client.execute_structured_filter_query(
+        args, tenant_id="muji",
+        term_type_schema={
+            "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
+            "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
+        },
+    )
 
     assert result == {"groups": [{"value": "红色", "count": 12}, {"value": "白色", "count": 8}]}
     assert "count(DISTINCT anchor)" in session.last_query
@@ -644,7 +675,10 @@ async def test_execute_structured_filter_query_array_operator_uses_list_predicat
         group_by=None, limit=20,
     )
 
-    await client.execute_structured_filter_query(args, tenant_id="muji")
+    await client.execute_structured_filter_query(
+        args, tenant_id="muji",
+        term_type_schema={"SKU": TermTypeCategory(value="SKU", extra_fields=[])},
+    )
 
     assert "all(x IN anchor.dims WHERE x <= $value_0)" in session.last_query
 
@@ -672,7 +706,14 @@ async def test_execute_structured_filter_query_two_relation_constraints_build_in
         group_by=None, limit=20,
     )
 
-    await client.execute_structured_filter_query(args, tenant_id="muji")
+    await client.execute_structured_filter_query(
+        args, tenant_id="muji",
+        term_type_schema={
+            "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
+            "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
+            "Category": TermTypeCategory(value="Category", extra_fields=[]),
+        },
+    )
 
     assert session.last_query.count("EXISTS {") == 2
     assert "MATCH (anchor)-[:HAS_VARIANT]->(c0_hop0:Term {tenant_id: $tenant_id, type: $c0_type0})" in session.last_query
@@ -704,7 +745,14 @@ async def test_execute_structured_filter_query_two_hop_chain_targets_last_hop_va
         group_by=None, limit=20,
     )
 
-    await client.execute_structured_filter_query(args, tenant_id="muji")
+    await client.execute_structured_filter_query(
+        args, tenant_id="muji",
+        term_type_schema={
+            "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
+            "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
+            "Category": TermTypeCategory(value="Category", extra_fields=[]),
+        },
+    )
 
     assert (
         "MATCH (anchor)-[:HAS_VARIANT]->(c0_hop0:Term {tenant_id: $tenant_id, type: $c0_type0})"
@@ -714,3 +762,92 @@ async def test_execute_structured_filter_query_two_hop_chain_targets_last_hop_va
     assert "c0_hop0.numeric_value" not in session.last_query
     assert session.last_parameters["c0_type0"] == "VariantValue"
     assert session.last_parameters["c0_type1"] == "Category"
+
+
+async def test_execute_structured_filter_query_casts_numeric_standard_name_comparison():
+    from app.graphrag.structured_filter_query import AttributeConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor_term_type="销量",
+        constraints=[AttributeConstraint(field="standard_name", operator="gt", value=50)],
+        group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(
+        args, tenant_id="demo",
+        term_type_schema={"销量": TermTypeCategory(value="销量", extra_fields=[], standard_name_value_type="number")},
+    )
+
+    assert "toFloat(anchor.standard_name)" in session.last_query
+
+
+async def test_execute_structured_filter_query_does_not_cast_string_standard_name_comparison():
+    from app.graphrag.structured_filter_query import AttributeConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor_term_type="SKU",
+        constraints=[AttributeConstraint(field="standard_name", operator="starts_with", value="圆角")],
+        group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(
+        args, tenant_id="demo",
+        term_type_schema={"SKU": TermTypeCategory(value="SKU", extra_fields=[])},
+    )
+
+    assert "toFloat(" not in session.last_query
+    assert "toInteger(" not in session.last_query
+
+
+async def test_execute_structured_filter_query_does_not_cast_extra_field_comparison():
+    """extra_fields 数值属性在 Neo4j 里本来就是按声明类型写入的，不需要运行时转换——
+    只有 standard_name（节点自身的名字/取值，物理上恒为字符串）才需要。"""
+    from app.graphrag.ontology_categories import ExtraFieldSpec
+    from app.graphrag.structured_filter_query import AttributeConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor_term_type="SKU",
+        constraints=[AttributeConstraint(field="numeric_value", operator="gt", value=500)],
+        group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(
+        args, tenant_id="demo",
+        term_type_schema={"SKU": TermTypeCategory(
+            value="SKU", extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
+        )},
+    )
+
+    assert "toFloat(" not in session.last_query
+
+
+async def test_execute_structured_filter_query_returns_real_total_count_beyond_limit():
+    from app.graphrag.structured_filter_query import AttributeConstraint, StructuredFilterQueryArgs
+
+    # FakeSession 现在需要按调用顺序返回不同结果——第一次调用（计数查询）返回
+    # total，第二次调用（取行查询）返回受 limit 截断的行。见上面对 FakeSession 的改动
+    # （call_results 是新增的可选参数，按调用顺序消费，跟现有大多数测试用的
+    # rows= 参数是两种独立的构造方式，不是同一个参数改了名字）。
+    session = FakeSession(call_results=[{"total": 42}, [
+        {"standard_name": f"SKU {i}", "node_key": f"SKU:{i}", "term_type": "SKU", "all_properties": {}}
+        for i in range(2)
+    ]])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor_term_type="SKU",
+        constraints=[AttributeConstraint(field="numeric_value", operator="gt", value=500)],
+        group_by=None, limit=2,
+    )
+
+    result = await client.execute_structured_filter_query(
+        args, tenant_id="demo", term_type_schema={"SKU": TermTypeCategory(value="SKU", extra_fields=[])},
+    )
+
+    assert result["total_count"] == 42
+    assert len(result["rows"]) == 2

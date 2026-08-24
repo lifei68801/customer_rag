@@ -12,10 +12,17 @@ from app.graphrag.structured_filter_query import (
     StructuredFilterQueryArgs,
 )
 
+from app.graphrag.ontology_categories import TermTypeCategory
+
 if TYPE_CHECKING:
     from app.graphrag.ontology_categories import ExtraFieldSpec
 
 _RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
+
+# 跟 structured_filter_query.py::_RESERVED_FIELD_NAME 保持同一份约定，独立定义
+# 不做跨模块导入——原因同文件顶部 _RELATION_TYPE_NAME_PATTERN 的说明。
+_RESERVED_FIELD_NAME = "standard_name"
+_CAST_BY_VALUE_TYPE = {"number": "toFloat", "integer": "toInteger"}
 
 _SUBGRAPH_QUERY = """
 MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term)
@@ -57,7 +64,11 @@ _COMPARISON_OPERATOR_TO_CYPHER = {
 }
 
 
-def _comparison_expression(*, prop_expr: str, operator: str, param_name: str) -> str:
+def _comparison_expression(
+    *, prop_expr: str, operator: str, param_name: str, cast: str | None = None
+) -> str:
+    if cast is not None:
+        prop_expr = f"{cast}({prop_expr})"
     if operator == "starts_with":
         return f"{prop_expr} STARTS WITH ${param_name}"
     if operator == "all_lte":
@@ -69,6 +80,17 @@ def _comparison_expression(*, prop_expr: str, operator: str, param_name: str) ->
     if operator == "any_gte":
         return f"any(x IN {prop_expr} WHERE x >= ${param_name})"
     return f"{prop_expr} {_COMPARISON_OPERATOR_TO_CYPHER[operator]} ${param_name}"
+
+
+def _resolve_cast(
+    *, term_type: str, field: str, term_type_schema: dict[str, TermTypeCategory]
+) -> str | None:
+    if field != _RESERVED_FIELD_NAME:
+        return None
+    category = term_type_schema.get(term_type)
+    if category is None:
+        return None
+    return _CAST_BY_VALUE_TYPE.get(category.standard_name_value_type)
 
 
 def _build_hop_match_pattern(hops: list[Hop], *, prefix: str) -> tuple[str, dict[str, object]]:
@@ -194,7 +216,11 @@ class Neo4jGraphClient:
             return await result.data()
 
     async def execute_structured_filter_query(
-        self, args: StructuredFilterQueryArgs, *, tenant_id: str
+        self,
+        args: StructuredFilterQueryArgs,
+        *,
+        tenant_id: str,
+        term_type_schema: dict[str, TermTypeCategory],
     ) -> list[dict[str, Any]] | dict[str, Any]:
         """按已校验的结构化条件筛选 Term 节点——调用方（app/graphrag/
         structured_filter_query.py::run_structured_filter_query）必须已经跑过
@@ -231,7 +257,12 @@ class Neo4jGraphClient:
                 params[value_param] = constraint.value
                 where_clauses.append(
                     _comparison_expression(
-                        prop_expr=f"anchor.{constraint.field}", operator=constraint.operator, param_name=value_param,
+                        prop_expr=f"anchor.{constraint.field}", operator=constraint.operator,
+                        param_name=value_param,
+                        cast=_resolve_cast(
+                            term_type=args.anchor_term_type, field=constraint.field,
+                            term_type_schema=term_type_schema,
+                        ),
                     )
                 )
                 continue
@@ -245,6 +276,10 @@ class Neo4jGraphClient:
             comparison = _comparison_expression(
                 prop_expr=f"{last_var}.{constraint.target_field}",
                 operator=constraint.target_operator, param_name=target_value_param,
+                cast=_resolve_cast(
+                    term_type=constraint.hops[-1].target_term_type, field=constraint.target_field,
+                    term_type_schema=term_type_schema,
+                ),
             )
             where_clauses.append(f"EXISTS {{ {match_pattern} WHERE {comparison} }}")
 
@@ -270,19 +305,33 @@ class Neo4jGraphClient:
                 rows = await result.data()
             return {"groups": rows}
 
-        params["limit"] = args.limit
-        query = (
+        count_query = (
+            "MATCH (anchor:Term {tenant_id: $tenant_id, type: $anchor_term_type}) "
+            f"WHERE {where_sql} "
+            "RETURN count(anchor) AS total"
+        )
+        rows_query = (
             "MATCH (anchor:Term {tenant_id: $tenant_id, type: $anchor_term_type}) "
             f"WHERE {where_sql} "
             "RETURN anchor.standard_name AS standard_name, anchor.node_key AS node_key, "
             "anchor.type AS term_type, "
             "properties(anchor) AS all_properties "
+            "ORDER BY anchor.node_key "
             "LIMIT $limit"
         )
+        rows_params = {**params, "limit": args.limit}
         async with self._driver.session() as session:
-            result = await session.run(query, params)
-            rows = await result.data()
-        return rows
+            count_result = await session.run(count_query, params)
+            count_rows = await count_result.data()
+            # 用 .get("total", 0) 而不是直接 ["total"] 做防御性读取——真实 Neo4j 的
+            # count() 恒返回恰好一行，这里的防御是为了兼容测试替身 FakeSession（见
+            # tests/graphrag/test_neo4j_client.py）用同一份 rows 应答任意次数 .run()
+            # 调用的既有用法：一些既有测试的 rows= 构造的是"取行查询"该返回的行形状
+            # （不带 total 键），会被同一个 FakeSession 原样喂给计数查询这次调用。
+            total_count = count_rows[0].get("total", 0) if count_rows else 0
+            rows_result = await session.run(rows_query, rows_params)
+            rows = await rows_result.data()
+        return {"rows": rows, "total_count": total_count}
 
     async def merge_relation(
         self,

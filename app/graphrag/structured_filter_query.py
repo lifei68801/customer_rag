@@ -293,15 +293,19 @@ async def run_structured_filter_query(
     # planner.py::run_tool_calls 的 asyncio.gather(return_exceptions=True) 被重新
     # 抛出、把整个 SSE 回合打挂。
     try:
-        result = await graph_client.execute_structured_filter_query(args, tenant_id=tenant_id)
+        result = await graph_client.execute_structured_filter_query(
+            args, tenant_id=tenant_id, term_type_schema=term_type_schema,
+        )
     except Exception as exc:
         return {"error": f"图谱查询执行失败：{exc}"}
 
-    if isinstance(result, dict):
-        return result  # group_by 分支已经是 {"groups": [...]}
+    if "groups" in result:
+        return result  # group_by 分支：{"groups": [...]}
 
-    return {
-        "matched_count": len(result),
+    rows = result["rows"]
+    total_count = result["total_count"]
+    payload: dict[str, Any] = {
+        "matched_count": total_count,
         "results": [
             {
                 "standard_name": row["standard_name"],
@@ -313,6 +317,9 @@ async def run_structured_filter_query(
                     if k not in _CORE_TERM_FIELDS and k not in _LEGACY_RESIDUAL_NODE_PROPERTIES
                 },
             }
-            for row in result
+            for row in rows
         ],
     }
+    if total_count > len(rows):
+        payload["truncated"] = True
+    return payload

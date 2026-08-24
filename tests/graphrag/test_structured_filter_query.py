@@ -463,21 +463,22 @@ def test_validate_error_on_unconfirmed_relation_type_lists_available_relation_ty
 
 
 class _FakeGraphClient:
-    def __init__(self, *, rows=None, group_result=None, error=None) -> None:
+    def __init__(self, *, rows=None, group_result=None, error=None, total_count=None) -> None:
         self._rows = rows if rows is not None else []
         self._group_result = group_result
         self._error = error
+        self._total_count = total_count if total_count is not None else len(self._rows)
         self.last_args = None
         self.last_tenant_id = None
 
-    async def execute_structured_filter_query(self, args, *, tenant_id):
+    async def execute_structured_filter_query(self, args, *, tenant_id, term_type_schema):
         self.last_args = args
         self.last_tenant_id = tenant_id
         if self._error is not None:
             raise self._error
         if self._group_result is not None:
             return self._group_result
-        return self._rows
+        return {"rows": self._rows, "total_count": self._total_count}
 
 
 async def test_run_structured_filter_query_returns_error_on_invalid_args():
@@ -602,6 +603,44 @@ async def test_run_structured_filter_query_returns_error_when_graph_execution_ra
     )
 
     assert result == {"error": "图谱查询执行失败：driver error"}
+
+
+async def test_run_structured_filter_query_marks_truncated_when_total_exceeds_returned_rows():
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    graph_client = _FakeGraphClient(
+        rows=[{"standard_name": "圆角收纳盒 500ml", "node_key": "SKU:1", "term_type": "SKU",
+               "all_properties": {"numeric_value": 600}}],
+        total_count=42,
+    )
+
+    result = await run_structured_filter_query(
+        {"anchor_term_type": "SKU",
+         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
+        graph_client=graph_client, tenant_id="muji",
+        confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+    )
+
+    assert result["matched_count"] == 42
+    assert result["truncated"] is True
+
+
+async def test_run_structured_filter_query_no_truncated_flag_when_total_matches_returned_rows():
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    graph_client = _FakeGraphClient(rows=[
+        {"standard_name": "圆角收纳盒 500ml", "node_key": "SKU:1", "term_type": "SKU",
+         "all_properties": {"numeric_value": 600}},
+    ])
+
+    result = await run_structured_filter_query(
+        {"anchor_term_type": "SKU",
+         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
+        graph_client=graph_client, tenant_id="muji",
+        confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+    )
+
+    assert "truncated" not in result
 
 
 _SALES_SCHEMA_NUMBER = TermTypeCategory(
