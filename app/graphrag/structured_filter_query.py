@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from app.graphrag.ontology import Term, resolve_term
@@ -334,6 +334,62 @@ def validate_structured_filter_query(
                 f"relation_type {args.expand.relation_type!r} 不在已确认 schema 里，"
                 f"可用的 relation_type: {sorted(confirmed_relation_types)}"
             )
+
+
+_FUZZY_RESOLVABLE_OPERATORS = frozenset({"eq", "ne"})
+
+
+def _should_fuzzy_resolve(
+    *, field: str, operator: str, term_type: str, term_type_schema: dict[str, TermTypeCategory]
+) -> bool:
+    if field != _RESERVED_FIELD_NAME or operator not in _FUZZY_RESOLVABLE_OPERATORS:
+        return False
+    category = term_type_schema.get(term_type)
+    # term_type 此时已经过 validate_structured_filter_query 校验，category 必然存在；
+    # 防御性写法不假设，None 时视为不满足模糊解析条件（走原有字面比较路径）。
+    return category is not None and category.standard_name_value_type == "string"
+
+
+def _resolve_or_raise(value: object, *, term_type: str, terms: list[Term]) -> str:
+    if isinstance(value, str):
+        term = resolve_term(value, terms, term_type_hint=term_type)
+        if term is not None:
+            return term.standard_name
+    raise StructuredFilterQueryError(
+        f"约束值 {value!r} 无法在术语表里解析成已确认的 {term_type!r} 类型实体，"
+        f"请检查拼写，或先用 anchor.name 消歧确认准确的标准名称"
+    )
+
+
+def _maybe_resolve_attribute_constraint(
+    constraint: AttributeConstraint,
+    *,
+    term_type: str,
+    terms: list[Term],
+    term_type_schema: dict[str, TermTypeCategory],
+) -> AttributeConstraint:
+    if not _should_fuzzy_resolve(
+        field=constraint.field, operator=constraint.operator, term_type=term_type, term_type_schema=term_type_schema,
+    ):
+        return constraint
+    resolved_value = _resolve_or_raise(constraint.value, term_type=term_type, terms=terms)
+    return replace(constraint, value=resolved_value)
+
+
+def _maybe_resolve_relation_constraint(
+    constraint: RelationConstraint,
+    *,
+    terms: list[Term],
+    term_type_schema: dict[str, TermTypeCategory],
+) -> RelationConstraint:
+    last_hop_type = constraint.hops[-1].target_term_type
+    if not _should_fuzzy_resolve(
+        field=constraint.target_field, operator=constraint.target_operator,
+        term_type=last_hop_type, term_type_schema=term_type_schema,
+    ):
+        return constraint
+    resolved_value = _resolve_or_raise(constraint.target_value, term_type=last_hop_type, terms=terms)
+    return replace(constraint, target_value=resolved_value)
 
 
 _CORE_TERM_FIELDS = frozenset({"tenant_id", "node_key", "standard_name", "type"})

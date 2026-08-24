@@ -958,3 +958,140 @@ def test_validate_expand_relation_type_confirmed_passes():
         confirmed_relation_types={"BELONG_TO"},
         term_type_schema={"公司": TermTypeCategory(value="公司", extra_fields=[])},
     )  # 不抛异常即通过
+
+
+from app.graphrag.structured_filter_query import (
+    _maybe_resolve_attribute_constraint,
+    _maybe_resolve_relation_constraint,
+    _resolve_or_raise,
+    _should_fuzzy_resolve,
+)
+
+_COMPANY_SCHEMA_STRING = TermTypeCategory(value="公司", extra_fields=[])
+_SALES_SCHEMA_NUMBER_FOR_FUZZY_TEST = TermTypeCategory(
+    value="销量", extra_fields=[], standard_name_value_type="number",
+)
+
+
+def test_should_fuzzy_resolve_true_for_standard_name_eq_string_type():
+    assert _should_fuzzy_resolve(
+        field="standard_name", operator="eq", term_type="公司",
+        term_type_schema={"公司": _COMPANY_SCHEMA_STRING},
+    ) is True
+
+
+def test_should_fuzzy_resolve_true_for_standard_name_ne():
+    assert _should_fuzzy_resolve(
+        field="standard_name", operator="ne", term_type="公司",
+        term_type_schema={"公司": _COMPANY_SCHEMA_STRING},
+    ) is True
+
+
+def test_should_fuzzy_resolve_false_for_non_standard_name_field():
+    assert _should_fuzzy_resolve(
+        field="numeric_value", operator="eq", term_type="SKU",
+        term_type_schema={"SKU": _SKU_SCHEMA},
+    ) is False
+
+
+def test_should_fuzzy_resolve_false_for_starts_with():
+    assert _should_fuzzy_resolve(
+        field="standard_name", operator="starts_with", term_type="公司",
+        term_type_schema={"公司": _COMPANY_SCHEMA_STRING},
+    ) is False
+
+
+def test_should_fuzzy_resolve_false_when_standard_name_declared_number():
+    """销量这类 value-as-node 类型的 standard_name 是数值类型，eq 比较的是真实
+    数字，不能被误当成实体名解析——这是本次改动最容易踩的回归点。"""
+    assert _should_fuzzy_resolve(
+        field="standard_name", operator="eq", term_type="销量",
+        term_type_schema={"销量": _SALES_SCHEMA_NUMBER_FOR_FUZZY_TEST},
+    ) is False
+
+
+def test_should_fuzzy_resolve_false_for_unknown_term_type():
+    assert _should_fuzzy_resolve(
+        field="standard_name", operator="eq", term_type="不存在的类型",
+        term_type_schema={},
+    ) is False
+
+
+def test_resolve_or_raise_returns_standard_name_on_match():
+    result = _resolve_or_raise("coke-cola", term_type="公司", terms=[_COKE_TERM])
+    assert result == "Coca-Cola"
+
+
+def test_resolve_or_raise_raises_when_not_found():
+    with pytest.raises(StructuredFilterQueryError) as exc_info:
+        _resolve_or_raise("完全不认识的名字", term_type="公司", terms=[_COKE_TERM])
+    message = str(exc_info.value)
+    assert "完全不认识的名字" in message
+    assert "公司" in message
+
+
+def test_resolve_or_raise_raises_when_value_not_a_string():
+    with pytest.raises(StructuredFilterQueryError):
+        _resolve_or_raise(123, term_type="公司", terms=[_COKE_TERM])
+
+
+def test_maybe_resolve_attribute_constraint_replaces_value_when_applicable():
+    constraint = AttributeConstraint(field="standard_name", operator="eq", value="coke-cola")
+    result = _maybe_resolve_attribute_constraint(
+        constraint, term_type="公司", terms=[_COKE_TERM], term_type_schema={"公司": _COMPANY_SCHEMA_STRING},
+    )
+    assert result == AttributeConstraint(field="standard_name", operator="eq", value="Coca-Cola")
+
+
+def test_maybe_resolve_attribute_constraint_passes_through_when_not_applicable():
+    constraint = AttributeConstraint(field="numeric_value", operator="gt", value=500)
+    result = _maybe_resolve_attribute_constraint(
+        constraint, term_type="SKU", terms=[], term_type_schema={"SKU": _SKU_SCHEMA},
+    )
+    assert result is constraint  # 原样透传，不是重新构造的等价对象
+
+
+def test_maybe_resolve_attribute_constraint_raises_on_unresolvable_value():
+    constraint = AttributeConstraint(field="standard_name", operator="eq", value="完全不认识的名字")
+    with pytest.raises(StructuredFilterQueryError):
+        _maybe_resolve_attribute_constraint(
+            constraint, term_type="公司", terms=[_COKE_TERM], term_type_schema={"公司": _COMPANY_SCHEMA_STRING},
+        )
+
+
+def test_maybe_resolve_relation_constraint_replaces_target_value_when_applicable():
+    constraint = RelationConstraint(
+        hops=[Hop(relation_type="BELONG_TO", direction="outgoing", target_term_type="公司")],
+        target_field="standard_name", target_operator="eq", target_value="coke-cola",
+    )
+    result = _maybe_resolve_relation_constraint(
+        constraint, terms=[_COKE_TERM], term_type_schema={"公司": _COMPANY_SCHEMA_STRING},
+    )
+    assert result.target_value == "Coca-Cola"
+    assert result.hops == constraint.hops  # 其余字段不变
+
+
+def test_maybe_resolve_relation_constraint_passes_through_when_not_applicable():
+    constraint = RelationConstraint(
+        hops=[Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue")],
+        target_field="raw_value", target_operator="starts_with", target_value="红",
+    )
+    result = _maybe_resolve_relation_constraint(
+        constraint, terms=[], term_type_schema={"VariantValue": _VARIANT_SCHEMA},
+    )
+    assert result is constraint
+
+
+def test_maybe_resolve_relation_constraint_uses_last_hop_type_for_two_hop_chain():
+    """两跳约束要用最后一跳的 target_term_type 做解析类型提示，不是第一跳的。"""
+    constraint = RelationConstraint(
+        hops=[
+            Hop(relation_type="BELONG_TO", direction="outgoing", target_term_type="产品"),
+            Hop(relation_type="BELONG_TO", direction="outgoing", target_term_type="公司"),
+        ],
+        target_field="standard_name", target_operator="eq", target_value="coke-cola",
+    )
+    result = _maybe_resolve_relation_constraint(
+        constraint, terms=[_COKE_TERM], term_type_schema={"公司": _COMPANY_SCHEMA_STRING},
+    )
+    assert result.target_value == "Coca-Cola"
