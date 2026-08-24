@@ -111,6 +111,7 @@ def test_create_and_list_term_types(client):
             {
                 "value": "错误码",
                 "extra_fields": [{"name": "severity_level", "value_type": "string"}],
+                "standard_name_value_type": "string",
             }
         ]
     }
@@ -139,6 +140,7 @@ def test_create_term_type_with_typed_extra_fields(client):
                     {"name": "numeric_value", "value_type": "number"},
                     {"name": "dims", "value_type": "number[]"},
                 ],
+                "standard_name_value_type": "string",
             }
         ]
     }
@@ -612,3 +614,39 @@ def test_tenant_ontology_status_flips_after_confirm(client):
 
     resp = client.get("/api/admin/ontology/t1/status", headers={"Authorization": "Bearer x"})
     assert resp.json() == {"confirmed": True}
+
+
+def test_create_term_type_accepts_standard_name_value_type(client):
+    resp = client.post(
+        "/api/admin/ontology/t1/term-types",
+        json={"value": "销量", "extra_fields": [], "standard_name_value_type": "number"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["standard_name_value_type"] == "number"
+
+    listing = client.get("/api/admin/ontology/t1/term-types", headers={"Authorization": "Bearer x"})
+    assert listing.json()["term_types"][0]["standard_name_value_type"] == "number"
+
+
+def test_create_term_type_without_standard_name_value_type_defaults_to_string(client):
+    resp = client.post(
+        "/api/admin/ontology/t1/term-types",
+        json={"value": "产品", "extra_fields": []},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.json()["standard_name_value_type"] == "string"
+
+
+def test_update_term_type_rejects_invalid_standard_name_value_type(client):
+    client.post(
+        "/api/admin/ontology/t1/term-types",
+        json={"value": "销量", "extra_fields": []},
+        headers={"Authorization": "Bearer x"},
+    )
+    resp = client.put(
+        "/api/admin/ontology/t1/term-types/销量",
+        json={"value": "销量", "extra_fields": [], "standard_name_value_type": "not-a-type"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 400

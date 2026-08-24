@@ -53,6 +53,7 @@ class ExtraFieldSpecRequest(BaseModel):
 class TermTypeWriteRequest(BaseModel):
     value: str
     extra_fields: list[ExtraFieldSpecRequest] = []
+    standard_name_value_type: str = "string"
 
 
 def _to_extra_field_specs(items: list[ExtraFieldSpecRequest]) -> list[ExtraFieldSpec]:
@@ -75,6 +76,7 @@ async def list_term_type_categories(
             {
                 "value": t.value,
                 "extra_fields": [_extra_field_spec_to_dict(f) for f in t.extra_fields],
+                "standard_name_value_type": t.standard_name_value_type,
             }
             for t in result
         ]
@@ -97,6 +99,7 @@ async def create_term_type_category(
         await create_term_type(
             review_conn, tenant_id, value=payload.value,
             extra_fields=extra_field_specs,
+            standard_name_value_type=payload.standard_name_value_type,
         )
     except CategoryNameConflictError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -136,6 +139,7 @@ async def update_term_type_category(
         await update_term_type(
             review_conn, tenant_id, value=value, new_value=payload.value,
             extra_fields=extra_field_specs,
+            standard_name_value_type=payload.standard_name_value_type,
         )
     except CategoryNotFoundError:
         raise HTTPException(status_code=404, detail="分类不存在")
