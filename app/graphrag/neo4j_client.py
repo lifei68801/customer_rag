@@ -7,9 +7,13 @@ from typing import TYPE_CHECKING, Any, Protocol
 from app.graphrag.ontology import Term
 from app.graphrag.structured_filter_query import (
     AttributeConstraint,
+    ExpandSpec,
     Hop,
+    NameAnchor,
     RelationConstraint,
+    ResolvedAnchor,
     StructuredFilterQueryArgs,
+    TypeAnchor,
 )
 
 from app.graphrag.ontology_categories import TermTypeCategory
@@ -103,6 +107,44 @@ def _build_hop_match_pattern(hops: list[Hop], *, prefix: str) -> tuple[str, dict
         arrow = f"-[:{hop.relation_type}]->" if hop.direction == "outgoing" else f"<-[:{hop.relation_type}]-"
         pattern += f"{arrow}({var}:Term {{tenant_id: $tenant_id, type: ${type_param}}})"
     return pattern, params
+
+
+def _build_expand_clause(expand: ExpandSpec) -> str:
+    # relation_type 为 None（任意关系类型）时 rel_pattern 必须是空字符串，不能拼出
+    # 一个空的 `:` 类型段——这段 Cypher 模式串直接由字符串插值拼出（Neo4j 的关系
+    # 类型语法本身不能参数化），relation_type 非空时它已经过 validate_structured_
+    # filter_query 的正则格式 + 已确认 relation_type 白名单双重校验（Task 6），插值
+    # 才是安全的；为 None 时干脆不让 `:` 出现在查询文本里，不留任何可以被污染的
+    # 位置。
+    rel_pattern = f":{expand.relation_type}" if expand.relation_type else ""
+    # 关系模式两端都必须有一个 "-"（Cypher 语法本身要求），箭头只是在其中一端
+    # 额外加的方向标记——outgoing 是右端箭头 "->"，incoming 是左端箭头 "<-"，
+    # both 两端都不带箭头但两端的 "-" 依然要有，写成 arrow_in="" 会拼出
+    # "(anchor)[r...]" 这种缺一半基础语法的非法 Cypher 模式串。
+    if expand.direction == "outgoing":
+        arrow_in, arrow_out = "-", "->"
+    elif expand.direction == "incoming":
+        arrow_in, arrow_out = "<-", "-"
+    else:
+        arrow_in, arrow_out = "-", "-"
+    return (
+        f"OPTIONAL MATCH p = (anchor){arrow_in}[r{rel_pattern}*1..{expand.hops}]{arrow_out}"
+        "(neighbor:Term {tenant_id: $tenant_id}) "
+        "WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id) AND neighbor <> anchor"
+    )
+
+
+_EXPAND_RETURN_FRAGMENT = (
+    "collect(DISTINCT CASE WHEN neighbor IS NULL THEN NULL "
+    "ELSE {related_name: neighbor.standard_name, "
+    "relation_type: [rel IN r | type(rel)][-1], hops: length(p)} END) AS neighbors"
+)
+# CASE WHEN neighbor IS NULL THEN NULL ELSE {...} END 里的 NULL 分支是关键：
+# OPTIONAL MATCH 在锚点没有邻居时仍然产出一行、neighbor 绑定为 null，如果直接
+# collect(DISTINCT {related_name: neighbor.standard_name, ...}) 会把这一行也
+# 收进列表变成 [{related_name: null, ...}]——CASE 判空后整行折叠成 NULL，
+# collect() 会自动丢弃 NULL 元素，让"没有邻居"的锚点拿到 neighbors: []
+# 而不是 [{related_name: null, ...}] 这种看起来像邻居实际是噪声的假邻居。
 
 # 关系边有向（MERGE (a)-[:TYPE]->(b)），按有向模式匹配删除保证每条边只
 # 命中一次；r.source 只有 merge_relation 写入的抽取关系才有，sync_term/
@@ -219,6 +261,7 @@ class Neo4jGraphClient:
         self,
         args: StructuredFilterQueryArgs,
         *,
+        resolved: ResolvedAnchor,
         tenant_id: str,
         term_type_schema: dict[str, TermTypeCategory],
     ) -> list[dict[str, Any]] | dict[str, Any]:
@@ -247,8 +290,22 @@ class Neo4jGraphClient:
         资格"，插值才是安全的。见
         docs/superpowers/specs/2026-08-17-structured-filter-query-tool-design.md
         第5节。
+
+        resolved 由调用方（run_structured_filter_query）解析 args.anchor 之后
+        传入，本方法按 resolved.node_key 是否为空二选一决定锚点怎么定位，不再
+        自己判断 args.anchor 是哪种模式：node_key 有值时（NameAnchor 消歧命中
+        一个具体实体）按 tenant_id + node_key 精确定位单个锚点；node_key 为
+        None 时（TypeAnchor，一开始就要在某个 term_type 下扫描满足条件的一批
+        实体）按 tenant_id + type 定位这一整个 term_type 下的候选集合。
         """
-        params: dict[str, Any] = {"tenant_id": tenant_id, "anchor_term_type": args.anchor_term_type}
+        params: dict[str, Any] = {"tenant_id": tenant_id}
+        if resolved.node_key is not None:
+            anchor_match = "MATCH (anchor:Term {tenant_id: $tenant_id, node_key: $anchor_node_key})"
+            params["anchor_node_key"] = resolved.node_key
+        else:
+            anchor_match = "MATCH (anchor:Term {tenant_id: $tenant_id, type: $anchor_term_type})"
+            params["anchor_term_type"] = resolved.term_type
+
         where_clauses: list[str] = []
 
         for i, constraint in enumerate(args.constraints):
@@ -260,7 +317,7 @@ class Neo4jGraphClient:
                         prop_expr=f"anchor.{constraint.field}", operator=constraint.operator,
                         param_name=value_param,
                         cast=_resolve_cast(
-                            term_type=args.anchor_term_type, field=constraint.field,
+                            term_type=resolved.term_type, field=constraint.field,
                             term_type_schema=term_type_schema,
                         ),
                     )
@@ -294,7 +351,7 @@ class Neo4jGraphClient:
             params.update(hop_params)
             last_var = f"g{args.group_by.constraint_index}_hop{len(group_constraint.hops) - 1}"
             query = (
-                "MATCH (anchor:Term {tenant_id: $tenant_id, type: $anchor_term_type}) "
+                f"{anchor_match} "
                 f"{match_pattern} "
                 f"WHERE {where_sql} "
                 f"RETURN {last_var}.{group_constraint.target_field} AS value, count(DISTINCT anchor) AS count "
@@ -305,20 +362,33 @@ class Neo4jGraphClient:
                 rows = await result.data()
             return {"groups": rows}
 
-        count_query = (
-            "MATCH (anchor:Term {tenant_id: $tenant_id, type: $anchor_term_type}) "
-            f"WHERE {where_sql} "
-            "RETURN count(anchor) AS total"
+        count_query = f"{anchor_match} WHERE {where_sql} RETURN count(anchor) AS total"
+        return_fields = (
+            "anchor.standard_name AS standard_name, anchor.node_key AS node_key, "
+            "anchor.type AS term_type, properties(anchor) AS all_properties"
         )
-        rows_query = (
-            "MATCH (anchor:Term {tenant_id: $tenant_id, type: $anchor_term_type}) "
-            f"WHERE {where_sql} "
-            "RETURN anchor.standard_name AS standard_name, anchor.node_key AS node_key, "
-            "anchor.type AS term_type, "
-            "properties(anchor) AS all_properties "
-            "ORDER BY anchor.node_key "
-            "LIMIT $limit"
-        )
+        if args.expand is not None:
+            # WITH anchor ORDER BY anchor.node_key LIMIT $limit 必须出现在
+            # OPTIONAL MATCH 展开邻居之前——LIMIT 约束的是锚点数量，不是展开后
+            # 的 (锚点, 邻居) 行对数量。如果反过来把 LIMIT 放在 OPTIONAL MATCH
+            # 之后的 RETURN 上，一个有很多邻居的锚点会在展开阶段先炸出一大批
+            # 行，LIMIT 截断的就是这些行而不是锚点本身——同样 limit=5，返回的
+            # 锚点数会随每个锚点的邻居数量变化而不可预测地变少，且顺序错误
+            # （ORDER BY 也必须在这个 WITH 里跟 LIMIT 配对，锚点排序完成后再展开，
+            # 不能让展开插在排序和截断中间）。
+            expand_clause = _build_expand_clause(args.expand)
+            rows_query = (
+                f"{anchor_match} WHERE {where_sql} "
+                "WITH anchor ORDER BY anchor.node_key LIMIT $limit "
+                f"{expand_clause} "
+                f"RETURN {return_fields}, {_EXPAND_RETURN_FRAGMENT}"
+            )
+        else:
+            rows_query = (
+                f"{anchor_match} WHERE {where_sql} "
+                f"RETURN {return_fields} "
+                "ORDER BY anchor.node_key LIMIT $limit"
+            )
         rows_params = {**params, "limit": args.limit}
         async with self._driver.session() as session:
             count_result = await session.run(count_query, params)

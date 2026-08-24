@@ -5,6 +5,7 @@ import pytest
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
+from app.graphrag.structured_filter_query import AttributeConstraint, ExpandSpec, ResolvedAnchor, TypeAnchor
 
 _NOW = datetime(2026, 8, 12, 12, 0, 0)
 
@@ -559,13 +560,13 @@ async def test_execute_structured_filter_query_builds_attribute_where_clause():
     ])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     args = StructuredFilterQueryArgs(
-        anchor_term_type="SKU",
+        anchor=TypeAnchor(term_type="SKU"),
         constraints=[AttributeConstraint(field="numeric_value", operator="gt", value=500)],
-        group_by=None, limit=20,
+        expand=None, group_by=None, limit=20,
     )
 
     result = await client.execute_structured_filter_query(
-        args, tenant_id="muji",
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None), tenant_id="muji",
         term_type_schema={"SKU": TermTypeCategory(value="SKU", extra_fields=[])},
     )
 
@@ -588,16 +589,16 @@ async def test_execute_structured_filter_query_builds_relation_exists_subquery()
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     args = StructuredFilterQueryArgs(
-        anchor_term_type="SKU",
+        anchor=TypeAnchor(term_type="SKU"),
         constraints=[RelationConstraint(
             hops=[Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue")],
             target_field="raw_value", target_operator="eq", target_value="红",
         )],
-        group_by=None, limit=20,
+        expand=None, group_by=None, limit=20,
     )
 
     await client.execute_structured_filter_query(
-        args, tenant_id="muji",
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None), tenant_id="muji",
         term_type_schema={
             "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
             "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
@@ -617,16 +618,16 @@ async def test_execute_structured_filter_query_incoming_direction_reverses_arrow
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     args = StructuredFilterQueryArgs(
-        anchor_term_type="VariantValue",
+        anchor=TypeAnchor(term_type="VariantValue"),
         constraints=[RelationConstraint(
             hops=[Hop(relation_type="HAS_VARIANT", direction="incoming", target_term_type="SKU")],
             target_field="price", target_operator="gt", target_value=0,
         )],
-        group_by=None, limit=20,
+        expand=None, group_by=None, limit=20,
     )
 
     await client.execute_structured_filter_query(
-        args, tenant_id="muji",
+        args, resolved=ResolvedAnchor(term_type="VariantValue", node_key=None), tenant_id="muji",
         term_type_schema={
             "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
             "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
@@ -642,16 +643,16 @@ async def test_execute_structured_filter_query_group_by_returns_aggregated_group
     session = FakeSession(rows=[{"value": "红色", "count": 12}, {"value": "白色", "count": 8}])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     args = StructuredFilterQueryArgs(
-        anchor_term_type="SKU",
+        anchor=TypeAnchor(term_type="SKU"),
         constraints=[RelationConstraint(
             hops=[Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue")],
             target_field="raw_value", target_operator="eq", target_value="__group__",
         )],
-        group_by=GroupBy(constraint_index=0), limit=20,
+        expand=None, group_by=GroupBy(constraint_index=0), limit=20,
     )
 
     result = await client.execute_structured_filter_query(
-        args, tenant_id="muji",
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None), tenant_id="muji",
         term_type_schema={
             "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
             "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
@@ -670,13 +671,13 @@ async def test_execute_structured_filter_query_array_operator_uses_list_predicat
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     args = StructuredFilterQueryArgs(
-        anchor_term_type="SKU",
+        anchor=TypeAnchor(term_type="SKU"),
         constraints=[AttributeConstraint(field="dims", operator="all_lte", value=80)],
-        group_by=None, limit=20,
+        expand=None, group_by=None, limit=20,
     )
 
     await client.execute_structured_filter_query(
-        args, tenant_id="muji",
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None), tenant_id="muji",
         term_type_schema={"SKU": TermTypeCategory(value="SKU", extra_fields=[])},
     )
 
@@ -692,7 +693,7 @@ async def test_execute_structured_filter_query_two_relation_constraints_build_in
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     args = StructuredFilterQueryArgs(
-        anchor_term_type="SKU",
+        anchor=TypeAnchor(term_type="SKU"),
         constraints=[
             RelationConstraint(
                 hops=[Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue")],
@@ -703,11 +704,11 @@ async def test_execute_structured_filter_query_two_relation_constraints_build_in
                 target_field="numeric_value", target_operator="gt", target_value=500,
             ),
         ],
-        group_by=None, limit=20,
+        expand=None, group_by=None, limit=20,
     )
 
     await client.execute_structured_filter_query(
-        args, tenant_id="muji",
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None), tenant_id="muji",
         term_type_schema={
             "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
             "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
@@ -734,7 +735,7 @@ async def test_execute_structured_filter_query_two_hop_chain_targets_last_hop_va
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     args = StructuredFilterQueryArgs(
-        anchor_term_type="SKU",
+        anchor=TypeAnchor(term_type="SKU"),
         constraints=[RelationConstraint(
             hops=[
                 Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue"),
@@ -742,11 +743,11 @@ async def test_execute_structured_filter_query_two_hop_chain_targets_last_hop_va
             ],
             target_field="numeric_value", target_operator="gte", target_value=500,
         )],
-        group_by=None, limit=20,
+        expand=None, group_by=None, limit=20,
     )
 
     await client.execute_structured_filter_query(
-        args, tenant_id="muji",
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None), tenant_id="muji",
         term_type_schema={
             "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
             "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
@@ -770,13 +771,13 @@ async def test_execute_structured_filter_query_casts_numeric_standard_name_compa
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     args = StructuredFilterQueryArgs(
-        anchor_term_type="销量",
+        anchor=TypeAnchor(term_type="销量"),
         constraints=[AttributeConstraint(field="standard_name", operator="gt", value=50)],
-        group_by=None, limit=20,
+        expand=None, group_by=None, limit=20,
     )
 
     await client.execute_structured_filter_query(
-        args, tenant_id="demo",
+        args, resolved=ResolvedAnchor(term_type="销量", node_key=None), tenant_id="demo",
         term_type_schema={"销量": TermTypeCategory(value="销量", extra_fields=[], standard_name_value_type="number")},
     )
 
@@ -789,13 +790,13 @@ async def test_execute_structured_filter_query_does_not_cast_string_standard_nam
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     args = StructuredFilterQueryArgs(
-        anchor_term_type="SKU",
+        anchor=TypeAnchor(term_type="SKU"),
         constraints=[AttributeConstraint(field="standard_name", operator="starts_with", value="圆角")],
-        group_by=None, limit=20,
+        expand=None, group_by=None, limit=20,
     )
 
     await client.execute_structured_filter_query(
-        args, tenant_id="demo",
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None), tenant_id="demo",
         term_type_schema={"SKU": TermTypeCategory(value="SKU", extra_fields=[])},
     )
 
@@ -812,13 +813,13 @@ async def test_execute_structured_filter_query_does_not_cast_extra_field_compari
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     args = StructuredFilterQueryArgs(
-        anchor_term_type="SKU",
+        anchor=TypeAnchor(term_type="SKU"),
         constraints=[AttributeConstraint(field="numeric_value", operator="gt", value=500)],
-        group_by=None, limit=20,
+        expand=None, group_by=None, limit=20,
     )
 
     await client.execute_structured_filter_query(
-        args, tenant_id="demo",
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None), tenant_id="demo",
         term_type_schema={"SKU": TermTypeCategory(
             value="SKU", extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
         )},
@@ -840,14 +841,191 @@ async def test_execute_structured_filter_query_returns_real_total_count_beyond_l
     ]])
     client = Neo4jGraphClient(driver=FakeDriver(session))
     args = StructuredFilterQueryArgs(
-        anchor_term_type="SKU",
+        anchor=TypeAnchor(term_type="SKU"),
         constraints=[AttributeConstraint(field="numeric_value", operator="gt", value=500)],
-        group_by=None, limit=2,
+        expand=None, group_by=None, limit=2,
     )
 
     result = await client.execute_structured_filter_query(
-        args, tenant_id="demo", term_type_schema={"SKU": TermTypeCategory(value="SKU", extra_fields=[])},
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None), tenant_id="demo",
+        term_type_schema={"SKU": TermTypeCategory(value="SKU", extra_fields=[])},
     )
 
     assert result["total_count"] == 42
     assert len(result["rows"]) == 2
+
+
+async def test_execute_structured_filter_query_name_anchor_matches_by_node_key():
+    from app.graphrag.structured_filter_query import StructuredFilterQueryArgs
+
+    session = FakeSession(call_results=[{"total": 1}, [
+        {"standard_name": "Coca-Cola", "node_key": "公司:Coca-Cola", "term_type": "公司", "all_properties": {}},
+    ]])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="公司"),  # 这一步 anchor 字段本身不再被 execute_structured_filter_query 使用
+        constraints=[], expand=None, group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="公司", node_key="公司:Coca-Cola"),
+        tenant_id="demo", term_type_schema={},
+    )
+
+    assert "node_key: $anchor_node_key" in session.calls[-1][0]
+    assert session.calls[-1][1]["anchor_node_key"] == "公司:Coca-Cola"
+
+
+async def test_execute_structured_filter_query_type_anchor_matches_by_type():
+    from app.graphrag.structured_filter_query import AttributeConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(call_results=[{"total": 0}, []])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="SKU"),
+        constraints=[AttributeConstraint(field="numeric_value", operator="gt", value=500)],
+        expand=None, group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+        tenant_id="demo", term_type_schema={"SKU": TermTypeCategory(value="SKU", extra_fields=[])},
+    )
+
+    assert "type: $anchor_term_type" in session.calls[-1][0]
+
+
+async def test_execute_structured_filter_query_expand_any_relation_type_omits_type_segment():
+    from app.graphrag.structured_filter_query import StructuredFilterQueryArgs
+
+    session = FakeSession(call_results=[{"total": 1}, [
+        {"standard_name": "x", "node_key": "k", "term_type": "T", "all_properties": {}, "neighbors": []},
+    ]])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="T"),
+        constraints=[AttributeConstraint(field="standard_name", operator="eq", value="x")],
+        expand=ExpandSpec(hops=1, relation_type=None, direction="both"),
+        group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="T", node_key=None),
+        tenant_id="demo", term_type_schema={"T": TermTypeCategory(value="T", extra_fields=[])},
+    )
+
+    query = session.calls[-1][0]
+    assert "OPTIONAL MATCH" in query
+    assert "[r*1..1]" in query
+    assert ":" not in query.split("[r")[1].split("*")[0]  # 关系类型段为空
+
+
+async def test_execute_structured_filter_query_expand_specific_relation_type_includes_type_segment():
+    from app.graphrag.structured_filter_query import StructuredFilterQueryArgs
+
+    session = FakeSession(call_results=[{"total": 1}, [
+        {"standard_name": "x", "node_key": "k", "term_type": "T", "all_properties": {}, "neighbors": []},
+    ]])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="T"),
+        constraints=[AttributeConstraint(field="standard_name", operator="eq", value="x")],
+        expand=ExpandSpec(hops=1, relation_type="BELONG_TO", direction="outgoing"),
+        group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="T", node_key=None),
+        tenant_id="demo", term_type_schema={"T": TermTypeCategory(value="T", extra_fields=[])},
+    )
+
+    query = session.calls[-1][0]
+    assert "[r:BELONG_TO*1..1]->" in query
+
+
+async def test_execute_structured_filter_query_expand_direction_incoming_uses_left_arrow():
+    from app.graphrag.structured_filter_query import StructuredFilterQueryArgs
+
+    session = FakeSession(call_results=[{"total": 1}, [
+        {"standard_name": "x", "node_key": "k", "term_type": "T", "all_properties": {}, "neighbors": []},
+    ]])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="T"),
+        constraints=[AttributeConstraint(field="standard_name", operator="eq", value="x")],
+        expand=ExpandSpec(hops=1, relation_type=None, direction="incoming"),
+        group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="T", node_key=None),
+        tenant_id="demo", term_type_schema={"T": TermTypeCategory(value="T", extra_fields=[])},
+    )
+
+    assert "<-[r*1..1]-" in session.calls[-1][0]
+
+
+async def test_execute_structured_filter_query_expand_limit_applies_before_optional_match():
+    """LIMIT 必须约束的是锚点数，不是展开后的行数——WITH...LIMIT 必须出现在
+    OPTIONAL MATCH 之前。"""
+    from app.graphrag.structured_filter_query import StructuredFilterQueryArgs
+
+    session = FakeSession(call_results=[{"total": 1}, []])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="T"),
+        constraints=[AttributeConstraint(field="standard_name", operator="eq", value="x")],
+        expand=ExpandSpec(hops=1, relation_type=None, direction="both"),
+        group_by=None, limit=5,
+    )
+
+    await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="T", node_key=None),
+        tenant_id="demo", term_type_schema={"T": TermTypeCategory(value="T", extra_fields=[])},
+    )
+
+    query = session.calls[-1][0]
+    assert query.index("LIMIT $limit") < query.index("OPTIONAL MATCH")
+
+
+async def test_execute_structured_filter_query_expand_returns_empty_list_when_no_neighbors():
+    from app.graphrag.structured_filter_query import StructuredFilterQueryArgs
+
+    session = FakeSession(call_results=[{"total": 1}, [
+        {"standard_name": "x", "node_key": "k", "term_type": "T", "all_properties": {}, "neighbors": []},
+    ]])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="T"),
+        constraints=[AttributeConstraint(field="standard_name", operator="eq", value="x")],
+        expand=ExpandSpec(hops=1, relation_type=None, direction="both"),
+        group_by=None, limit=20,
+    )
+
+    result = await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="T", node_key=None),
+        tenant_id="demo", term_type_schema={"T": TermTypeCategory(value="T", extra_fields=[])},
+    )
+
+    assert result["rows"][0]["neighbors"] == []
+
+
+async def test_execute_structured_filter_query_no_expand_rows_have_no_neighbors_key():
+    from app.graphrag.structured_filter_query import StructuredFilterQueryArgs
+
+    session = FakeSession(call_results=[{"total": 1}, [
+        {"standard_name": "x", "node_key": "k", "term_type": "T", "all_properties": {}},
+    ]])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="T"),
+        constraints=[AttributeConstraint(field="standard_name", operator="eq", value="x")],
+        expand=None, group_by=None, limit=20,
+    )
+
+    result = await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="T", node_key=None),
+        tenant_id="demo", term_type_schema={"T": TermTypeCategory(value="T", extra_fields=[])},
+    )
+
+    assert "neighbors" not in result["rows"][0]
