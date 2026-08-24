@@ -5,10 +5,8 @@ import json
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from app.agent.tools import (
-    GRAPH_QUERY_TOOL_SCHEMA,
     STRUCTURED_FILTER_QUERY_TOOL_SCHEMA,
     VECTOR_SEARCH_TOOL_SCHEMA,
-    graph_query_tool,
     structured_filter_query_tool,
     vector_search_tool,
 )
@@ -24,7 +22,7 @@ from app.retrieval.vector_store import VectorRecord, VectorStore
 from app.safety.rules import LITE_SAFETY_FALLBACK_SENTENCE, check_text
 from app.voice.streaming_responder import stream_sentences
 
-_TOOL_SCHEMAS = [VECTOR_SEARCH_TOOL_SCHEMA, GRAPH_QUERY_TOOL_SCHEMA, STRUCTURED_FILTER_QUERY_TOOL_SCHEMA]
+_TOOL_SCHEMAS = [VECTOR_SEARCH_TOOL_SCHEMA, STRUCTURED_FILTER_QUERY_TOOL_SCHEMA]
 
 
 def _build_tool_call_round_result(
@@ -252,32 +250,16 @@ async def _dispatch_tool_call(
         }
         return json.dumps(observation, ensure_ascii=False), records
 
-    if name == "graph_query_tool":
-        if not (terms and graph_client is not None):
-            return json.dumps({"error": "graph_query_tool 未配置"}, ensure_ascii=False), []
-        entity_name = str(arguments.get("entity_name", ""))
-        entity_type = arguments.get("entity_type") or None
-        result = await graph_query_tool(
-            entity_name, terms=terms, tenant_id=tenant_id, graph_client=graph_client,
-            entity_type=entity_type,
-        )
-        observation = {
-            "resolved": result.resolved,
-            "standard_name": result.standard_name,
-            "subgraph": [
-                {**row, "association": describe_association(row.get("hops", 1))}
-                for row in result.subgraph
-            ],
-        }
-        return json.dumps(observation, ensure_ascii=False), []
-
     if name == "structured_filter_query_tool":
-        if graph_client is None or confirmed_relation_types is None or term_type_schema is None:
+        if graph_client is None or confirmed_relation_types is None or term_type_schema is None or not terms:
             return json.dumps({"error": "structured_filter_query_tool 未配置"}, ensure_ascii=False), []
         observation = await structured_filter_query_tool(
-            arguments, tenant_id=tenant_id, graph_client=graph_client,
+            arguments, tenant_id=tenant_id, terms=terms, graph_client=graph_client,
             confirmed_relation_types=confirmed_relation_types, term_type_schema=term_type_schema,
         )
+        for anchor in observation.get("anchors", []):
+            for neighbor in anchor.get("neighbors", []):
+                neighbor["association"] = describe_association(neighbor.get("hops", 1))
         return json.dumps(observation, ensure_ascii=False), []
 
     return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False), []
@@ -343,7 +325,7 @@ async def run_tool_calls(
         )
 
     # 同一轮 LLM 可能同时请求多个工具（比如 vector_search_tool +
-    # graph_query_tool），彼此没有数据依赖——2026-08-10 起改成
+    # structured_filter_query_tool），彼此没有数据依赖——2026-08-10 起改成
     # asyncio.gather 并发执行，不再是 for 循环顺序 await。结果顺序按
     # pending_calls 原始顺序组装（asyncio.gather 保证返回顺序和传入协程
     # 顺序一致，不按完成先后），不因为改成并发就打乱 tool_call_id 对应
