@@ -317,18 +317,13 @@ def test_validate_rejects_non_string_relation_type():
 
 
 def test_validate_rejects_non_string_anchor_term_type():
-    """resolved.term_type 理论上应该总是字符串（ResolvedAnchor 由 run_structured_
-    filter_query 构造），但 validate 本身不做 isinstance 检查——防御性地确认哪怕
-    混进一个非字符串值，也会因为不在 schema 成员里而被 `not in term_type_schema`
-    挡住（用可哈希的 int 而不是 list，避免触发 dict 成员测试的 TypeError，
-    这条不是本函数要处理的失败模式）。"""
     args = parse_structured_filter_query_args({
         "anchor": {"term_type": "SKU"},
         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
     })
     with pytest.raises(StructuredFilterQueryError):
         validate_structured_filter_query(
-            args, resolved=ResolvedAnchor(term_type=123, node_key=None),
+            args, resolved=ResolvedAnchor(term_type=["SKU"], node_key=None),
             confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
         )
 

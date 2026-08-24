@@ -289,7 +289,7 @@ def validate_structured_filter_query(
     args.anchor 之后传入——NameAnchor 模式先跑 resolve_term()，TypeAnchor 模式
     直接取 term_type，两种模式统一后这里只关心 resolved.term_type，不再需要
     区分 args.anchor 原始是哪种形态。"""
-    if resolved.term_type not in term_type_schema:
+    if not isinstance(resolved.term_type, str) or resolved.term_type not in term_type_schema:
         raise StructuredFilterQueryError(
             f"term_type {resolved.term_type!r} 不在已确认 schema 里，"
             f"可用的 term_type: {sorted(term_type_schema.keys())}"
