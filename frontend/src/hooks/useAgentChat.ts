@@ -19,6 +19,7 @@ export interface ChatMessage {
   usedSources: string[]
   isStreaming: boolean
   isError?: boolean
+  statusText?: string
 }
 
 interface SessionChatState {
@@ -38,7 +39,12 @@ interface AgentFinalEvent {
   audio_segments_base64: string[] | null
 }
 
-type AgentEvent = AgentDeltaEvent | AgentFinalEvent | { type: string }
+interface AgentToolStatusEvent {
+  type: 'tool_status'
+  text: string
+}
+
+type AgentEvent = AgentDeltaEvent | AgentFinalEvent | AgentToolStatusEvent | { type: string }
 
 function createId(): string {
   return crypto.randomUUID()
@@ -208,13 +214,21 @@ export function useAgentChat() {
 
           if (parsed.type === 'delta') {
             const delta = parsed as AgentDeltaEvent
-            patchAssistantMessage((message) => ({ ...message, text: message.text + delta.text }))
+            patchAssistantMessage((message) => ({
+              ...message,
+              text: message.text + delta.text,
+              statusText: undefined,
+            }))
+          } else if (parsed.type === 'tool_status') {
+            const status = parsed as AgentToolStatusEvent
+            patchAssistantMessage({ statusText: status.text })
           } else if (parsed.type === 'final') {
             const final = parsed as AgentFinalEvent
             patchAssistantMessage({
               text: final.text,
               usedSources: final.used_sources ?? [],
               isStreaming: false,
+              statusText: undefined,
             })
           }
         }

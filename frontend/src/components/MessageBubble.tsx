@@ -27,7 +27,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             <MarkdownContent text={message.text} />
           )
         ) : message.isStreaming ? (
-          <ThinkingIndicator />
+          <ThinkingIndicator statusText={message.statusText} />
         ) : null}
         {!isUser && !message.isStreaming && message.usedSources.length > 0 && (
           <SourceCitations sources={message.usedSources} />
@@ -37,12 +37,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   )
 }
 
-function ThinkingIndicator() {
+function ThinkingIndicator({ statusText }: { statusText?: string }) {
   return (
-    <div className="flex items-center gap-1 py-1">
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft motion-reduce:animate-none [animation-delay:-0.3s]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft motion-reduce:animate-none [animation-delay:-0.15s]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft motion-reduce:animate-none" />
+    <div className="flex items-center gap-2 py-1">
+      {statusText && <span className="text-sm text-ink-soft">{statusText}</span>}
+      <div className="flex items-center gap-1">
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft motion-reduce:animate-none [animation-delay:-0.3s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft motion-reduce:animate-none [animation-delay:-0.15s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft motion-reduce:animate-none" />
+      </div>
     </div>
   )
 }
