@@ -251,10 +251,10 @@ async def _dispatch_tool_call(
         return json.dumps(observation, ensure_ascii=False), records
 
     if name == "structured_filter_query_tool":
-        if graph_client is None or confirmed_relation_types is None or term_type_schema is None or not terms:
+        if graph_client is None or confirmed_relation_types is None or term_type_schema is None:
             return json.dumps({"error": "structured_filter_query_tool 未配置"}, ensure_ascii=False), []
         observation = await structured_filter_query_tool(
-            arguments, tenant_id=tenant_id, terms=terms, graph_client=graph_client,
+            arguments, tenant_id=tenant_id, terms=terms or [], graph_client=graph_client,
             confirmed_relation_types=confirmed_relation_types, term_type_schema=term_type_schema,
         )
         for anchor in observation.get("anchors", []):

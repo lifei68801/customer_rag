@@ -452,23 +452,27 @@ async def test_dispatch_tool_call_routes_structured_filter_query_tool():
     from app.agent.planner import _dispatch_tool_call
 
     class _FakeGraphClient:
-        async def execute_structured_filter_query(self, args, *, tenant_id):
-            return []
+        async def execute_structured_filter_query(self, args, *, resolved, tenant_id, term_type_schema):
+            raise AssertionError("should not be called")
 
     content, records = await _dispatch_tool_call(
         "structured_filter_query_tool",
-        {"anchor_term_type": "SKU",
-         "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
+        {"anchor": {"term_type": "SKU"},
+         "constraints": [{"kind": "attribute", "field": "standard_name", "operator": "eq", "value": "x"}]},
         tenant_id="muji",
         embedding_registry=None, embedding_provider_name="", vector_store=None, bm25_index=None,
         llm_registry=None, llm_provider_name="", rerank_provider=None, query_rewrite_enabled=False,
-        terms=None, graph_client=_FakeGraphClient(),
+        terms=[], graph_client=_FakeGraphClient(),
         confirmed_relation_types=set(),
         term_type_schema={},
     )
 
     assert records == []
-    assert "error" in content  # SKU 不在空的 term_type_schema 里，预期走结构化错误分支
+    # SKU 不在空的 term_type_schema 里，validate_structured_filter_query 应拒绝，
+    # 走结构化错误分支（而不是命中未配置守卫，也不会真的执行图谱查询）。
+    parsed = json.loads(content)
+    assert "error" in parsed
+    assert "term_type" in parsed["error"]
 
 
 async def test_dispatch_tool_call_reports_unconfigured_when_schema_data_missing():
