@@ -4,6 +4,8 @@ import asyncio
 from typing import Any, Protocol
 
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import TermTypeCategory
+from app.graphrag.structured_filter_query import ResolvedAnchor, StructuredFilterQueryArgs
 from app.graphrag.term_matcher import match_terms
 
 
@@ -13,8 +15,13 @@ class GraphClientProtocol(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     async def execute_structured_filter_query(
-        self, args: Any, *, tenant_id: str
-    ) -> list[dict[str, Any]] | dict[str, Any]: ...
+        self,
+        args: StructuredFilterQueryArgs,
+        *,
+        resolved: ResolvedAnchor,
+        tenant_id: str,
+        term_type_schema: dict[str, TermTypeCategory],
+    ) -> dict[str, Any]: ...
 
 
 def describe_association(hops: int) -> str:

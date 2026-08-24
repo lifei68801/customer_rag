@@ -9,11 +9,9 @@ from app.graphrag.structured_filter_query import (
     AttributeConstraint,
     ExpandSpec,
     Hop,
-    NameAnchor,
     RelationConstraint,
     ResolvedAnchor,
     StructuredFilterQueryArgs,
-    TypeAnchor,
 )
 
 from app.graphrag.ontology_categories import TermTypeCategory
@@ -264,7 +262,7 @@ class Neo4jGraphClient:
         resolved: ResolvedAnchor,
         tenant_id: str,
         term_type_schema: dict[str, TermTypeCategory],
-    ) -> list[dict[str, Any]] | dict[str, Any]:
+    ) -> dict[str, Any]:
         """按已校验的结构化条件筛选 Term 节点——调用方（app/graphrag/
         structured_filter_query.py::run_structured_filter_query）必须已经跑过
         validate_structured_filter_query，本方法不重复校验 field/relation_type
