@@ -1124,7 +1124,11 @@ git commit -m "feat(admin): add standard_name_value_type dropdown to term type f
 
 - [ ] **Step 1: 写失败测试**
 
-**先删除**这些现在直接构造 `StructuredFilterQueryArgs(anchor_term_type=...)` 或调用 `parse_structured_filter_query_args({"anchor_term_type": ...})` 的既有测试的写法——不是删测试本身，是把 `"anchor_term_type": "SKU"` 全部改写成 `"anchor": {"term_type": "SKU"}`，`validate_structured_filter_query` 调用处新增 `resolved=ResolvedAnchor(term_type="SKU", node_key=None)` 参数。`tests/graphrag/test_structured_filter_query.py` 里**所有**用到 `"anchor_term_type"` 或 `args.anchor_term_type` 的测试（包括 Task 3/4 新加的那几个）都要做这个改写，逐一过一遍文件，不要漏。改写示例（其余测试照此模式类推）：
+**改写范围有一个重要边界，先读清楚再动手**：这一步只改写**直接调用** `parse_structured_filter_query_args`/`validate_structured_filter_query` 这两个纯函数的测试（把 `"anchor_term_type": "SKU"` 改写成 `"anchor": {"term_type": "SKU"}`，`validate_structured_filter_query` 调用处新增 `resolved=ResolvedAnchor(term_type="SKU", node_key=None)` 参数）。**不要碰**任何调用 `run_structured_filter_query`（编排入口函数）的测试——那些测试要等 Task 7 重写 `run_structured_filter_query` 本身之后才能配套改写并通过；这一步就算把它们的输入 dict 形状改成新的 `anchor` 结构，`run_structured_filter_query` 内部还是 Task 4 遗留的旧代码（`validate_structured_filter_query` 调用处没传新增的 `resolved` 参数），会在这一步产生一个未被捕获的 `TypeError`（不是测试断言失败，是测试直接报错崩溃）——这不是"预期的失败"，是不该在这一步引入的额外噪声，所以幅度上明确不做，留给 Task 7 一次性处理（Task 7 Step 1 会把这些 `run_structured_filter_query` 相关测试从 Task 4 遗留的旧形状直接重写成最终形状，中间不需要经过这一步的过渡态）。
+
+具体范围：`test_run_structured_filter_query_returns_error_on_invalid_args`、`test_run_structured_filter_query_returns_error_on_unconfirmed_field`、`test_run_structured_filter_query_formats_matched_results`、`test_run_structured_filter_query_excludes_legacy_product_line_residue_from_extra_properties`、`test_run_structured_filter_query_passes_through_group_by_result`、`test_run_structured_filter_query_returns_error_when_graph_execution_raises`、以及 Task 4 新加的 `test_run_structured_filter_query_marks_truncated_when_total_exceeds_returned_rows`、`test_run_structured_filter_query_no_truncated_flag_when_total_matches_returned_rows`——这几个函数名本次不改动，原样保留（还是 Task 4 提交时的旧 `"anchor_term_type"` 形状），跳过不动。
+
+其余**所有**用到 `"anchor_term_type"` 或 `args.anchor_term_type`、且只涉及 `parse_structured_filter_query_args`/`validate_structured_filter_query` 这两个函数（不经过 `run_structured_filter_query`）的测试（包括 Task 3 新加的那几个），都要做这个改写，逐一过一遍文件，不要漏。改写示例（其余测试照此模式类推）：
 
 ```python
 def test_parse_attribute_constraint():
@@ -1472,8 +1476,10 @@ def validate_structured_filter_query(
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/graphrag/test_structured_filter_query.py -v`
-Expected: 全部 PASS（改写过的旧测试 + 新增测试）。这一步之后 `run_structured_filter_query`/`neo4j_client.py` 会因为 `args.anchor_term_type` 不再存在而报错——这是预期的，Task 7/8 负责修，Task 6 提交前不需要跑通全量测试，只需要 `test_structured_filter_query.py` 本身全绿。
+Run: `.venv/Scripts/python.exe -m pytest tests/graphrag/test_structured_filter_query.py -v -k "not run_structured_filter_query"`
+Expected: 全部 PASS（改写过的旧测试 + 新增测试，不含上面列出的、本任务明确跳过不动的 `run_structured_filter_query` 相关测试）。
+
+不要额外去跑不带 `-k` 过滤的全量 `test_structured_filter_query.py`——那 8 个跳过不动的 `run_structured_filter_query` 测试此刻还是 Task 4 提交时的旧代码，`run_structured_filter_query` 内部调用 `validate_structured_filter_query` 的地方还没传新增的 `resolved` 参数，会抛 `TypeError`（不是预期要看到的输出，是本任务明确不处理、留给 Task 7 的已知空洞，不需要跑出来确认）。`neo4j_client.py` 同理，Task 8 之前不需要能跑通，这一步不用管它。
 
 - [ ] **Step 5: 提交**
 
