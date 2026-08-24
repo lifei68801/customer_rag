@@ -917,6 +917,9 @@ async def test_execute_structured_filter_query_expand_any_relation_type_omits_ty
     query = session.calls[-1][0]
     assert "OPTIONAL MATCH" in query
     assert "[r*1..1]" in query
+    # 两侧都要有基础横杠、且都不能带箭头——同时证明没有方向箭头，也证明基础横杠没丢
+    # （方向映射漏掉横杠的那个 bug，正好是这个断言要防的）
+    assert "-[r*1..1]-(" in query
     assert ":" not in query.split("[r")[1].split("*")[0]  # 关系类型段为空
 
 
@@ -940,7 +943,9 @@ async def test_execute_structured_filter_query_expand_specific_relation_type_inc
     )
 
     query = session.calls[-1][0]
-    assert "[r:BELONG_TO*1..1]->" in query
+    # 带基础横杠的完整箭头写法——不带横杠的 "[r:BELONG_TO*1..1]->" 也会被旧 bug
+    # （方向映射漏掉基础横杠）满足，所以断言必须包含前导 "-"
+    assert "-[r:BELONG_TO*1..1]->" in query
 
 
 async def test_execute_structured_filter_query_expand_direction_incoming_uses_left_arrow():
