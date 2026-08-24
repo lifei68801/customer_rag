@@ -18,6 +18,7 @@ interface ExtraFieldSpec {
 interface TermType {
   value: string
   extra_fields: ExtraFieldSpec[]
+  standard_name_value_type: string
 }
 
 interface RelationType {
@@ -34,6 +35,8 @@ interface Constraint {
 }
 
 const VALUE_TYPES = ['string', 'number', 'integer', 'number[]'] as const
+
+const STANDARD_NAME_VALUE_TYPES = ['string', 'number', 'integer'] as const
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -54,7 +57,7 @@ const viewSegmentClass = (active: boolean) =>
     active ? 'bg-ink text-paper' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
-const emptyTermTypeDraft = (): TermType => ({ value: '', extra_fields: [] })
+const emptyTermTypeDraft = (): TermType => ({ value: '', extra_fields: [], standard_name_value_type: 'string' })
 const emptyRelationTypeDraft = (): RelationType => ({
   relation_type: '',
   example_phrase: '',
@@ -570,6 +573,7 @@ function TermTypesTab({
               <tr className="border-b border-subtle bg-paper text-ink">
                 <th className={cellPadding}>类型名</th>
                 <th className={cellPadding}>属性字段数</th>
+                <th className={cellPadding}>自身取值类型</th>
                 {view === 'draft' && <th className={cellPadding}>操作</th>}
               </tr>
             </thead>
@@ -578,6 +582,7 @@ function TermTypesTab({
                 <tr key={item.value} className="border-b border-subtle text-ink last:border-b-0">
                   <td className={cellPadding}>{item.value}</td>
                   <td className={cellPadding}>{item.extra_fields.length}</td>
+                  <td className={cellPadding}>{item.standard_name_value_type}</td>
                   {view === 'draft' && (
                     <td className={cellPadding}>
                       <button
@@ -644,6 +649,23 @@ function TermTypesTab({
               onChange={(e) => setDraft((prev) => ({ ...prev, value: e.target.value }))}
               className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
             />
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm font-bold text-ink">
+            自身取值类型
+            <select
+              value={draft.standard_name_value_type}
+              onChange={(e) => setDraft((prev) => ({ ...prev, standard_name_value_type: e.target.value }))}
+              className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
+            >
+              {STANDARD_NAME_VALUE_TYPES.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+            <span className="text-xs font-normal text-ink-soft">
+              这个类型的实例本身代表什么类型的值（比如"销量""收入"这类每个取值都是独立节点的类型，
+              应该声明成 number，才能用"大于/小于"做区间查询；大多数类型（产品名、公司名…）保持默认的 string 即可）
+            </span>
           </label>
 
           <div className="flex flex-col gap-2">
