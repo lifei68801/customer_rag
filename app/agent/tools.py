@@ -50,8 +50,12 @@ STRUCTURED_FILTER_QUERY_TOOL_SCHEMA: dict[str, Any] = {
             "「xx有多少个/数量是多少」这类问题：anchor.term_type + constraints。\n"
             "3. 上述两种可以叠加 expand，展开命中锚点的邻居关系。\n"
             "「xx类目/公司下有多少个yy」这类需要先确定xx是什么、再数yy数量的问题，"
-            "通常需要 anchor.name 消歧 + constraints 筛选组合两次调用，"
-            "或者一次调用里 anchor.term_type 直接按关系条件筛选（见 constraints.kind=relation）。"
+            "优先一次调用解决：anchor.term_type 定位 yy 的类型，"
+            "配合 constraints.kind=relation（target_field=standard_name，target_value 直接填 xx 的口语化/别名名称，"
+            "会自动模糊解析成标准名，无需提前消歧）。"
+            "只有当 xx 本身名字有歧义（同名实体分属多个不相关类型，"
+            "term_type + 关系约束也无法区分），或需要先看清 xx 究竟解析到了哪个实体再决定筛选条件时，"
+            "才用 anchor.name 消歧 + constraints 筛选组合两次调用。"
         ),
         "parameters": {
             "type": "object",

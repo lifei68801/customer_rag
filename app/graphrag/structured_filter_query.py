@@ -353,7 +353,7 @@ def _should_fuzzy_resolve(
 def _resolve_or_raise(value: object, *, term_type: str, terms: list[Term]) -> str:
     if isinstance(value, str):
         term = resolve_term(value, terms, term_type_hint=term_type)
-        if term is not None:
+        if term is not None and term.term_type == term_type:
             return term.standard_name
     raise StructuredFilterQueryError(
         f"约束值 {value!r} 无法在术语表里解析成已确认的 {term_type!r} 类型实体，"

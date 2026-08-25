@@ -1035,6 +1035,13 @@ def test_resolve_or_raise_raises_when_value_not_a_string():
         _resolve_or_raise(123, term_type="公司", terms=[_COKE_TERM])
 
 
+def test_resolve_or_raise_raises_when_match_is_wrong_term_type():
+    """resolve_term 在 hint 类型下零命中时会退回全局匹配——_resolve_or_raise 必须
+    拒绝跨类型命中的结果，不能把不同类型的术语当成解析成功。"""
+    with pytest.raises(StructuredFilterQueryError):
+        _resolve_or_raise("coke-cola", term_type="订单号", terms=[_COKE_TERM])
+
+
 def test_maybe_resolve_attribute_constraint_replaces_value_when_applicable():
     constraint = AttributeConstraint(field="standard_name", operator="eq", value="coke-cola")
     result = _maybe_resolve_attribute_constraint(
