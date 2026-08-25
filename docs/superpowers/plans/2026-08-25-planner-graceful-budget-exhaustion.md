@@ -630,7 +630,7 @@ async def _run_final_answer_attempt_streaming(
     }
 ```
 
-然后把 `run_planner_turn_streaming` 函数体最后一段（第 191-208 行，`tool_calls = tool_calls_box[0]` 开始到函数结尾）替换成：
+然后把 `run_planner_turn_streaming` 函数体最后一段——`tool_calls = tool_calls_box[0]` 开始到函数结尾——替换成下面的最终版本。**注意**：Task 1 落地时发现 `_build_tool_call_round_result` 签名变化（去掉了 `round_num`/`max_tool_call_rounds`）会波及这个流式调用点，已经在 Task 1 里把这一段先改成了一个中间态（`if round_num >= max_tool_call_rounds: result = {"planner_gave_up": True} else: result = _build_tool_call_round_result(messages, full_text, tool_calls)`，保持轮次耗尽后的放弃行为跟改动前逐字节一致，只是迁移了函数签名，没有加流式的"最后陈述"）——这一步要替换的就是这个中间态，不是 Task 1 之前的原始版本：
 
 ```python
     tool_calls = tool_calls_box[0]
