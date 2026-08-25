@@ -791,22 +791,17 @@ async def test_run_planner_turn_streaming_uses_joined_sentences_not_raw_text_whe
 
 async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_also_fails():
     llm_registry = ProviderRegistry()
-    llm_registry.register(
-        ProviderCapability.LLM,
-        "fake-llm",
-        ScriptedStreamingLLMProvider(
+    provider = ScriptedStreamingLLMProvider(
+        [
             [
-                [
-                    ProviderStreamChunk(
-                        tool_calls=[
-                            ToolCall(id="call_1", name="vector_search_tool", arguments="{}")
-                        ]
-                    )
-                ],
-                [ProviderStreamChunk(text="")],
-            ]
-        ),
+                ProviderStreamChunk(
+                    tool_calls=[ToolCall(id="call_1", name="vector_search_tool", arguments="{}")]
+                )
+            ],
+            [ProviderStreamChunk(text="")],
+        ]
     )
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
     state = {
         "planner_messages": [{"role": "user", "content": "问题"}],
         "tool_call_round": 3,
@@ -830,6 +825,11 @@ async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_als
         on_tool_status=on_tool_status,
     )
 
+    # 证明"最后陈述"重试真的发生过（第二轮脚本被消费、返回空文本导致放弃），
+    # 而不是轮次耗尽时的旧短路逻辑直接放弃、根本没调用
+    # _run_final_answer_attempt_streaming——旧代码下这个断言会因为
+    # len(provider.requests) == 1 而失败。
+    assert len(provider.requests) == 2
     assert update == {"planner_gave_up": True}
     assert tool_status_calls == 0
 
