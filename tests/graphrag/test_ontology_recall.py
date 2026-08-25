@@ -14,7 +14,7 @@ def test_longest_common_substring_score_exact_match():
 
 def test_longest_common_substring_score_partial_match():
     score = longest_common_substring_score("coke-cola", "Coca-Cola")
-    assert abs(score - 4 / 9) < 1e-9
+    assert abs(score - 5 / 9) < 1e-9
 
 
 def test_longest_common_substring_score_case_insensitive():
@@ -94,7 +94,7 @@ def test_recall_ontology_candidates_relation_matches_on_any_component():
 
 def test_recall_ontology_candidates_finds_field_names():
     candidates = recall_ontology_candidates(
-        "价格大于100的产品",
+        "price大于100的产品",
         terms=[],
         term_type_schema=_TERM_TYPE_SCHEMA,
         allowed_combinations=[],

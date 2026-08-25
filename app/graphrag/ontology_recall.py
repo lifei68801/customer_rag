@@ -38,14 +38,11 @@ def _tokenize_ngrams(text: str, *, max_len: int = _NGRAM_MAX_LEN) -> list[str]:
 
 def _longest_common_substring_length(a: str, b: str) -> int:
     a, b = a.lower(), b.lower()
-    # Normalize: keep only alphanumeric and Chinese characters (matching _TOKEN_PATTERN)
-    a_norm = "".join(c for c in a if re.match(r"[a-z0-9_一-鿿]", c))
-    b_norm = "".join(c for c in b if re.match(r"[a-z0-9_一-鿿]", c))
     best = 0
-    for i in range(len(a_norm)):
-        for j in range(len(b_norm)):
+    for i in range(len(a)):
+        for j in range(len(b)):
             k = 0
-            while i + k < len(a_norm) and j + k < len(b_norm) and a_norm[i + k] == b_norm[j + k]:
+            while i + k < len(a) and j + k < len(b) and a[i + k] == b[j + k]:
                 k += 1
             best = max(best, k)
     return best
@@ -119,7 +116,7 @@ def recall_ontology_candidates(
     )
     fields = _rank(
         [
-            (_best_score(ngrams, term_type, field.name), (term_type, field.name))
+            (_best_score(ngrams, field.name), (term_type, field.name))
             for term_type, category in term_type_schema.items()
             for field in category.extra_fields
         ],
