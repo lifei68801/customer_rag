@@ -537,6 +537,12 @@ async def test_resolve_arguments_triggers_recall_augmented_call():
 
     assert resolved == {"anchor": {"term_type": "订单号"}}
     assert provider.requests[0].tools is None
+    # 钉住"xx类目/公司下有多少个yy"复合查询策略段落——计划2 Task 2 曾经在
+    # 从旧 tool description 搬迁到 STRUCTURED_FILTER_QUERY_USAGE_GUIDE 时
+    # 意外丢过这段内容，这里从 planner.py 搬到 _USAGE_GUIDE 时同一类风险
+    # 再次存在，用断言长期把关，不依赖人工每次检查。
+    prompt_content = provider.requests[0].messages[0]["content"]
+    assert "constraints.kind=relation" in prompt_content
 
 
 async def test_execute_delegates_to_run_structured_filter_query():
@@ -723,7 +729,13 @@ _USAGE_GUIDE = (
     "matched_count 为准给出确定数字（anchor.name 模式的 matched_count 只表示"
     "「是否找到了这个实体」，是 0 或 1，不是数量答案）——不能仅凭检索到的文档片段或邻居关系"
     "列表猜测。constraints 里 standard_name 字段的 eq/ne 比较值支持别名/模糊匹配，"
-    "不要求填精确的标准名称。"
+    "不要求填精确的标准名称。\n"
+    "「xx类目/公司下有多少个yy」这类需要先确定xx是什么、再数yy数量的问题，"
+    "优先用 anchor.term_type 定位 yy 的类型，配合 constraints.kind=relation"
+    "（target_field=standard_name，target_value 直接填 xx 的口语化/别名名称，"
+    "会自动模糊解析成标准名，不需要先把 xx 解析成具体实体再回填）——这是解决这类问题"
+    "最直接的写法。只有当查询意图本身是在问「xx是什么/xx关联着什么」这类需要先明确xx"
+    "具体所指的问题（而不是要数yy的数量）时，才用 anchor.name。"
 )
 
 _PARAMETERS_SCHEMA: dict[str, Any] = {
@@ -1097,7 +1109,9 @@ from app.agent.tool_registry import ToolContext, ToolRegistry
 
 ```python
 _PLANNER_BASE_PROMPT = (
-    "你是客服问答助手。有足够信息时直接给出最终答案，不要编造资料中没有的内容；"
+    "你是客服问答助手。可以调用 vector_search_tool 检索知识库、"
+    "structured_filter_query_tool 查询知识图谱里的实体数量/满足条件的实体列表。"
+    "有足够信息时直接给出最终答案，不要编造资料中没有的内容；"
     "信息不足以回答时也不要编造。"
 )
 
@@ -1108,6 +1122,8 @@ def _build_planner_system_prompt(tool_registry: "ToolRegistry") -> str:
         return _PLANNER_BASE_PROMPT
     return _PLANNER_BASE_PROMPT + "".join(cues)
 ```
+
+（`_PLANNER_BASE_PROMPT` 的内容是今天 `app/agent/graph.py` 里 `_PLANNER_SYSTEM_PROMPT` 常量去掉 trigger_cue 那句之后剩下的原文——这是这份计划文档自己在 pre-flight 阶段核对时发现并修正过的一处：草稿曾经意外漏掉"可以调用 vector_search_tool 检索知识库、structured_filter_query_tool 查询知识图谱里的实体数量/满足条件的实体列表。"这句，已经在当前版本里补回来。实现这一步时，先读一遍 `app/agent/graph.py` 当前的 `_PLANNER_SYSTEM_PROMPT` 完整内容，逐字确认这份计划文档里的 `_PLANNER_BASE_PROMPT` + `structured_filter_query/manifest.yaml` 的 `trigger_cue` 拼起来，跟原始内容完全一致，不是凭这份文档的记忆推测——这份计划自己已经犯过一次这类内容遗漏，值得多一道核对。）
 
 `build_agent_graph` 新增 `tool_registry: ToolRegistry` 参数（必填，不给默认值——跟 `llm_registry` 这类核心依赖同等地位，不应该允许静默缺失），`planner_node` 里构造首条 system 消息的地方从 `wrap_system_prompt(_PLANNER_SYSTEM_PROMPT)` 改成 `wrap_system_prompt(_build_planner_system_prompt(tool_registry))`；`tool_call_node` 改成 `run_tool_calls(state, tool_registry=tool_registry, context=ToolContext(...))`（`ToolContext` 的字段从今天分散传给 `build_agent_graph` 的那些参数——`terms`/`confirmed_relation_types`/`term_type_schema`/`allowed_combinations`/`embedding_registry` 等——组装，`tenant_id`/`question` 从 `state` 读)。
 
