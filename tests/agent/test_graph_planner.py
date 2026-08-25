@@ -101,7 +101,8 @@ async def test_planner_exceeding_max_rounds_falls_back_and_creates_ticket():
     records, vector_store, bm25_index, embedding_registry = _dependencies()
     await _seed(records, vector_store, bm25_index)
 
-    # 每一轮都要求调用工具，永远不给出最终答案——用来验证轮次上限生效。
+    # 每一轮都要求调用工具；轮次耗尽后还有一次"最后陈述"尝试，这里让它
+    # 也返回空文本，验证两层都失败时仍然走静态兜底+创建工单。
     llm_registry = ProviderRegistry()
     llm_registry.register(
         ProviderCapability.LLM,
@@ -116,6 +117,7 @@ async def test_planner_exceeding_max_rounds_falls_back_and_creates_ticket():
                 )
                 for i in range(1, 3)
             ]
+            + [ProviderResult(text="")]
         ),
     )
 
@@ -139,6 +141,50 @@ async def test_planner_exceeding_max_rounds_falls_back_and_creates_ticket():
     assert result["fallback_triggered"] is True
     assert result["ticket_id"]
     assert "转" in result["final_text"] or "人工" in result["final_text"]
+
+
+async def test_planner_final_answer_attempt_succeeds_avoids_ticket():
+    records, vector_store, bm25_index, embedding_registry = _dependencies()
+    await _seed(records, vector_store, bm25_index)
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedLLMProvider(
+            [
+                ProviderResult(
+                    text="",
+                    tool_calls=[
+                        ToolCall(id=f"call_{i}", name="vector_search_tool", arguments='{"query": "x"}')
+                    ],
+                )
+                for i in range(1, 3)
+            ]
+            + [ProviderResult(text="根据已经查到的信息，建议重启路由器。")]
+        ),
+    )
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        enable_autonomous_planning=True,
+        max_tool_call_rounds=1,
+    )
+
+    result = await graph.ainvoke(
+        {"question": "网络连不上怎么办？", "tenant_id": "t1"},
+        config={"recursion_limit": 50},
+    )
+
+    assert result["fallback_triggered"] is False
+    assert result.get("ticket_id") is None
+    assert result["final_text"] == "根据已经查到的信息，建议重启路由器。"
 
 
 async def test_planner_does_not_surface_another_tenants_records():

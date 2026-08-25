@@ -24,23 +24,30 @@ from app.voice.streaming_responder import stream_sentences
 
 _TOOL_SCHEMAS = [VECTOR_SEARCH_TOOL_SCHEMA, STRUCTURED_FILTER_QUERY_TOOL_SCHEMA]
 
+_FINAL_ANSWER_INSTRUCTION = (
+    "你已经达到本轮对话可用的工具调用次数上限，不能再调用任何工具了。"
+    "请基于你目前已经查询到的全部信息，尽力给用户一个有帮助的回答：如果已经有"
+    "明确的结论或数字，直接给出；如果现有信息不足以给出确定结论，清楚说明你"
+    "目前掌握的情况、以及为什么无法进一步确认（比如某个维度在当前数据里没有"
+    "区分度、或者查询本身没有找到匹配结果），不要用套话搪塞，也绝不能编造"
+    "没有查到的数据。"
+)
+
 
 def _build_tool_call_round_result(
     messages: list[dict[str, Any]],
     answer_text: str,
     tool_calls: list[ToolCall],
-    *,
-    round_num: int,
-    max_tool_call_rounds: int,
 ) -> dict[str, Any]:
-    """构造"这一轮模型请求了工具调用"场景下的返回值：轮次超限就放弃
-    （不追加消息、不执行工具，转 Fallback）；没超限就把 assistant 消息
-    （带 tool_calls 字段）追加进对话历史，返回待执行的工具调用列表。
-    run_planner_turn（非流式）和 run_planner_turn_streaming（流式）在这
-    一步的逻辑完全一样，抽成这个共用函数，避免两处重复维护。
+    """构造"这一轮模型请求了工具调用、且轮次预算还没耗尽"场景下的返回值：
+    把 assistant 消息（带 tool_calls 字段）追加进对话历史，返回待执行的
+    工具调用列表。run_planner_turn（非流式）和 run_planner_turn_streaming
+    （流式）在这一步的逻辑完全一样，抽成这个共用函数，避免两处重复维护。
+
+    轮次是否耗尽由调用方在调用这个函数之前就判断好——耗尽时调用方会转去
+    调 _run_final_answer_attempt（或它的流式版本），根本不会走到这个
+    函数，所以这个函数不再需要知道 round_num/max_tool_call_rounds。
     """
-    if round_num >= max_tool_call_rounds:
-        return {"planner_gave_up": True}
     messages = [
         *messages,
         {
@@ -64,6 +71,48 @@ def _build_tool_call_round_result(
     }
 
 
+async def _run_final_answer_attempt(
+    messages: list[dict[str, Any]],
+    *,
+    llm_registry: ProviderRegistry,
+    llm_provider_name: str,
+) -> dict[str, Any]:
+    """轮次预算耗尽、且这一轮 LLM 仍要求调用工具时的兜底：不带 tools 参数
+    再调用一次 LLM，要求它基于已有信息给出最后的总结性回答，而不是直接
+    放弃（今天的行为）。
+
+    messages 是这一轮开始前的历史（不包含这次被拒绝的 tool_calls 请求，
+    跟轮次未耗尽时"不能把申请了工具调用但没执行的 assistant 消息留在
+    历史里"这条原则一致）。
+
+    成功（拿到非空文本）：按跟"LLM 主动决定不再调工具、直接给出最终答案"
+    完全一样的返回形状处理——调用方（route_after_planner）会把这当成
+    正常完成一轮处理，流转到 planner_responder_node -> output_safety_node
+    做完整的规则+语义安全审查，不会创建人工工单。
+
+    失败（调用异常或返回空文本）：退回 {"planner_gave_up": True}，走今天
+    完全一样的路径（fallback_node 静态文案 + create_ticket_node 创建
+    工单）——这是这个函数"下限不比今天差"的保证。
+    """
+    final_messages = [*messages, {"role": "system", "content": _FINAL_ANSWER_INSTRUCTION}]
+    try:
+        result = await llm_registry.run(
+            ProviderCapability.LLM,
+            ProviderRequest(messages=final_messages),
+            provider_name=llm_provider_name,
+        )
+    except Exception:
+        return {"planner_gave_up": True}
+    if not result.text:
+        return {"planner_gave_up": True}
+    messages = [*messages, {"role": "assistant", "content": result.text}]
+    return {
+        "planner_messages": messages,
+        "answer_text": result.text,
+        "planner_gave_up": False,
+    }
+
+
 async def run_planner_turn(
     state: dict[str, Any],
     *,
@@ -74,8 +123,9 @@ async def run_planner_turn(
     """执行一轮 Planner 推理：调用 LLM，决定"再调工具"还是"给出最终答案"。
 
     round_num 语义是"已经完成的工具调用轮次"；只有当 LLM 在 round_num 已经
-    达到上限时仍要求调用工具，才强制放弃（planner_gave_up=True），转 Fallback——
-    绝不在放弃后仍然执行它请求的工具，那样等于绕过了轮次上限。
+    达到上限时仍要求调用工具，才会转去 _run_final_answer_attempt 做最后
+    一次总结性回答的尝试（成功就当正常完成，失败才真正放弃）——绝不在
+    轮次耗尽后仍然执行它请求的工具，那样等于绕过了轮次上限。
     """
     messages = list(state.get("planner_messages", []))
     round_num = state.get("tool_call_round", 0)
@@ -87,10 +137,11 @@ async def run_planner_turn(
     )
 
     if result.tool_calls:
-        return _build_tool_call_round_result(
-            messages, result.text, result.tool_calls,
-            round_num=round_num, max_tool_call_rounds=max_tool_call_rounds,
-        )
+        if round_num >= max_tool_call_rounds:
+            return await _run_final_answer_attempt(
+                messages, llm_registry=llm_registry, llm_provider_name=llm_provider_name,
+            )
+        return _build_tool_call_round_result(messages, result.text, result.tool_calls)
 
     messages.append({"role": "assistant", "content": result.text})
     return {
@@ -190,10 +241,14 @@ async def run_planner_turn_streaming(
 
     tool_calls = tool_calls_box[0]
     if tool_calls:
-        result = _build_tool_call_round_result(
-            messages, full_text, tool_calls,
-            round_num=round_num, max_tool_call_rounds=max_tool_call_rounds,
-        )
+        # 轮次是否耗尽的判断现在由调用方在调用 _build_tool_call_round_result
+        # 之前做（跟非流式的 run_planner_turn 一致）。流式版本的"最后陈述"
+        # 兜底是 Task 2 的范围，这里先保持跟耗尽前完全一样的放弃行为，只是
+        # 迁移到新的函数签名，不在这个任务里改流式的耗尽后行为。
+        if round_num >= max_tool_call_rounds:
+            result = {"planner_gave_up": True}
+        else:
+            result = _build_tool_call_round_result(messages, full_text, tool_calls)
         if not result.get("planner_gave_up"):
             await on_tool_status()
             result["streamed_round_texts"] = streamed_round_texts

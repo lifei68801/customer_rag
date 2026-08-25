@@ -136,7 +136,7 @@ async def test_run_planner_turn_returns_answer_when_llm_stops_calling_tools():
     assert "pending_tool_calls" not in update
 
 
-async def test_run_planner_turn_gives_up_when_max_rounds_exceeded():
+async def test_run_planner_turn_gives_up_when_final_answer_attempt_also_returns_empty_text():
     llm_registry = ProviderRegistry()
     llm_registry.register(
         ProviderCapability.LLM,
@@ -148,7 +148,8 @@ async def test_run_planner_turn_gives_up_when_max_rounds_exceeded():
                     tool_calls=[
                         ToolCall(id="call_x", name="vector_search_tool", arguments="{}")
                     ],
-                )
+                ),
+                ProviderResult(text=""),
             ]
         ),
     )
@@ -164,8 +165,72 @@ async def test_run_planner_turn_gives_up_when_max_rounds_exceeded():
         max_tool_call_rounds=3,
     )
 
-    assert update["planner_gave_up"] is True
+    assert update == {"planner_gave_up": True}
+
+
+async def test_run_planner_turn_final_answer_attempt_succeeds_when_rounds_exhausted():
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedLLMProvider(
+            [
+                ProviderResult(
+                    text="",
+                    tool_calls=[
+                        ToolCall(id="call_x", name="vector_search_tool", arguments="{}")
+                    ],
+                ),
+                ProviderResult(text="根据目前查到的信息，Cola 有 992 个订单。"),
+            ]
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "问题"}],
+        "tool_call_round": 3,
+    }
+
+    update = await run_planner_turn(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+    )
+
+    assert update["planner_gave_up"] is False
+    assert update["answer_text"] == "根据目前查到的信息，Cola 有 992 个订单。"
     assert "pending_tool_calls" not in update
+    assert update["planner_messages"][-1] == {
+        "role": "assistant",
+        "content": "根据目前查到的信息，Cola 有 992 个订单。",
+    }
+
+
+async def test_run_planner_turn_final_answer_attempt_does_not_pass_tools():
+    llm_registry = ProviderRegistry()
+    provider = ScriptedLLMProvider(
+        [
+            ProviderResult(
+                text="",
+                tool_calls=[ToolCall(id="call_x", name="vector_search_tool", arguments="{}")],
+            ),
+            ProviderResult(text="总结性回答。"),
+        ]
+    )
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+    state = {
+        "planner_messages": [{"role": "user", "content": "问题"}],
+        "tool_call_round": 3,
+    }
+
+    await run_planner_turn(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+    )
+
+    assert provider.requests[1].tools is None
 
 
 async def test_run_tool_calls_executes_vector_search_and_scopes_to_state_tenant():
