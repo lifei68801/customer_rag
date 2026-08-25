@@ -370,6 +370,14 @@ async def run_tool_calls(
             resolved_arguments = await tool.resolve_arguments(arguments, context=context)
             observation, new_records = await tool.execute(resolved_arguments, context=context)
         except Exception as exc:
+            # 优雅降级只对用户/LLM 可见的这一层负责——异常本身仍然要
+            # 记日志，否则一个真实的代码 bug（不是预期内的域错误）会被
+            # 悄悄吞成一句 LLM 看得懂但开发者永远不会注意到的 {"error": ...}，
+            # 排查时无迹可寻。
+            logger.warning(
+                "run_tool_calls: 工具 %r 执行失败，降级为 error 观察结果",
+                call["name"], exc_info=True,
+            )
             content = json.dumps({"error": str(exc)}, ensure_ascii=False)
             return (
                 {"tool_call_id": call["id"], "name": call["name"], "content": content},

@@ -526,8 +526,10 @@ async def test_run_tool_calls_reports_error_when_structured_filter_query_unconfi
     行为有一处刻意的差异：迁移前 run_tool_calls 会在触发独立参数生成
     调用（resolve_arguments）之前就用工具专属的知识短路，省下一次注定
     会被拒绝的付费 LLM 调用；迁移后这个优化不再存在于通用分发层，
-    resolve_arguments 总是会真的执行一次——这是 Task 3 pre-flight 阶段
-    与协调者确认过的、插件化架构的可接受代价。"""
+    resolve_arguments 总是会真的执行一次——实现者在报告里主动披露了
+    这个代价，协调者审阅 Task 3 diff 时确认接受：只影响未配置 graph_client
+    的场景（如 app/eval/runner.py 的评测脚本），不影响真实生产聊天流量，
+    换来插件化架构的通用性（分发层不需要认识任何具体工具的配置细节）。"""
     _, vector_store, bm25_index = _build_store_and_index()
     embedding_registry = _embedding_registry()
     llm_registry = ProviderRegistry()
@@ -713,9 +715,13 @@ async def test_run_tool_calls_downgrades_tool_execution_failure_to_error_observa
     Planner 轮次崩溃；新架构把 resolve_arguments/execute 两个阶段统一包
     在同一个 try/except 里（见 app/agent/planner.py::run_tool_calls 的
     _execute_one），任何单个工具的失败都不应该拖垮同一轮里其它工具调用
-    的结果，也不应该让整条 Agent 推理链路崩溃——这是 Task 3 pre-flight
-    阶段与协调者确认过的、优先保证"单个工具失败可优雅降级"的设计取舍。
-    """
+    的结果，也不应该让整条 Agent 推理链路崩溃——实现者在报告里主动披露
+    了这处行为收紧，协调者审阅 Task 3 diff 时确认接受：这跟本次会话贯穿
+    始终的"优雅降级优先于崩溃"主题一致（Plan 1 的轮次耗尽兜底、独立参数
+    生成调用失败时的 {"error": ...} 降级都是同一原则），但要求
+    _execute_one 的这个 except 块必须记日志（exc_info=True）——降级只对
+    用户/LLM 这一层负责，不能让真实的代码 bug 因为被吞成一句"error"消息
+    就从开发者的可观测范围里消失。"""
 
     class _MaybeFailingTool:
         async def resolve_arguments(self, raw_arguments, *, context):
