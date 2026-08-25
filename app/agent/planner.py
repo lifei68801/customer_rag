@@ -173,6 +173,68 @@ async def _split_stream_text_and_tool_calls(
             tool_calls_box[0] = chunk.tool_calls
 
 
+async def _run_final_answer_attempt_streaming(
+    messages: list[dict[str, Any]],
+    *,
+    llm_registry: ProviderRegistry,
+    llm_provider_name: str,
+    banned_terms: list[str] | None,
+    on_answer_chunk: Callable[[str], Awaitable[None]],
+    streamed_round_texts: list[str],
+) -> dict[str, Any]:
+    """run_planner_turn_streaming 版本的轮次耗尽兜底：跟 _run_final_answer_
+    attempt（非流式版本）语义一致，区别是这次调用同样走 stream_with_tools()
+    （不传 tools，模型结构上不可能再请求工具调用）边生成边推送，跟主循环
+    共用同一套逐句 check_text 安全替换逻辑，让用户看到的体验是从"查询
+    过程"无缝过渡到"总结陈述"，而不是先看到一段查询叙述、中间断一下、
+    再冒出一句不相关的静态兜底文案。
+
+    不调用 on_tool_status()——这次不是"还在查"，是"在总结"，延续
+    run_planner_turn_streaming 里同一条原则（见该函数文档字符串）。
+
+    streamed_round_texts 是这一轮开始前已经流式展示过的所有轮次文本
+    （含这一轮被拒绝前那句"让我查一下xxx"式的叙述，即使它没有被持久化
+    进 planner_messages）——成功时把这次的总结文本也并进去，交给
+    output_safety_node 做完整安全审查，跟正常轮次的处理方式完全一致。
+    """
+    final_messages = [*messages, {"role": "system", "content": _FINAL_ANSWER_INSTRUCTION}]
+    try:
+        raw_stream = llm_registry.stream_with_tools(
+            ProviderCapability.LLM,
+            ProviderRequest(messages=final_messages),
+            provider_name=llm_provider_name,
+        )
+        tool_calls_box: list[list[ToolCall] | None] = [None]
+        raw_text_parts: list[str] = []
+        text_stream = _split_stream_text_and_tool_calls(raw_stream, tool_calls_box, raw_text_parts)
+
+        sent_sentences: list[str] = []
+        any_sentence_substituted = False
+        async for sentence in stream_sentences(text_stream):
+            safety_result = check_text(sentence, banned_terms=banned_terms, include_email=False)
+            if safety_result.is_safe:
+                safe_sentence = sentence
+            else:
+                safe_sentence = LITE_SAFETY_FALLBACK_SENTENCE
+                any_sentence_substituted = True
+            await on_answer_chunk(safe_sentence)
+            sent_sentences.append(safe_sentence)
+    except Exception:
+        return {"planner_gave_up": True}
+
+    full_text = "".join(sent_sentences) if any_sentence_substituted else "".join(raw_text_parts)
+    if not full_text:
+        return {"planner_gave_up": True}
+
+    messages = [*messages, {"role": "assistant", "content": full_text}]
+    return {
+        "planner_messages": messages,
+        "answer_text": full_text,
+        "planner_gave_up": False,
+        "streamed_round_texts": [*streamed_round_texts, full_text],
+    }
+
+
 async def run_planner_turn_streaming(
     state: dict[str, Any],
     *,
@@ -241,17 +303,18 @@ async def run_planner_turn_streaming(
 
     tool_calls = tool_calls_box[0]
     if tool_calls:
-        # 轮次是否耗尽的判断现在由调用方在调用 _build_tool_call_round_result
-        # 之前做（跟非流式的 run_planner_turn 一致）。流式版本的"最后陈述"
-        # 兜底是 Task 2 的范围，这里先保持跟耗尽前完全一样的放弃行为，只是
-        # 迁移到新的函数签名，不在这个任务里改流式的耗尽后行为。
         if round_num >= max_tool_call_rounds:
-            result = {"planner_gave_up": True}
-        else:
-            result = _build_tool_call_round_result(messages, full_text, tool_calls)
-        if not result.get("planner_gave_up"):
-            await on_tool_status()
-            result["streamed_round_texts"] = streamed_round_texts
+            return await _run_final_answer_attempt_streaming(
+                messages,
+                llm_registry=llm_registry,
+                llm_provider_name=llm_provider_name,
+                banned_terms=banned_terms,
+                on_answer_chunk=on_answer_chunk,
+                streamed_round_texts=streamed_round_texts,
+            )
+        result = _build_tool_call_round_result(messages, full_text, tool_calls)
+        await on_tool_status()
+        result["streamed_round_texts"] = streamed_round_texts
         return result
 
     messages = [*messages, {"role": "assistant", "content": full_text}]

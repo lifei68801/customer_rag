@@ -789,7 +789,7 @@ async def test_run_planner_turn_streaming_uses_joined_sentences_not_raw_text_whe
     assert "敏感词" not in update["answer_text"]
 
 
-async def test_run_planner_turn_streaming_gives_up_without_tool_status_when_rounds_exhausted():
+async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_also_fails():
     llm_registry = ProviderRegistry()
     llm_registry.register(
         ProviderCapability.LLM,
@@ -802,7 +802,8 @@ async def test_run_planner_turn_streaming_gives_up_without_tool_status_when_roun
                             ToolCall(id="call_1", name="vector_search_tool", arguments="{}")
                         ]
                     )
-                ]
+                ],
+                [ProviderStreamChunk(text="")],
             ]
         ),
     )
@@ -831,3 +832,92 @@ async def test_run_planner_turn_streaming_gives_up_without_tool_status_when_roun
 
     assert update == {"planner_gave_up": True}
     assert tool_status_calls == 0
+
+
+async def test_run_planner_turn_streaming_final_answer_attempt_succeeds_when_rounds_exhausted():
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedStreamingLLMProvider(
+            [
+                [
+                    ProviderStreamChunk(
+                        text="让我查一下。",
+                        tool_calls=[
+                            ToolCall(id="call_1", name="vector_search_tool", arguments="{}")
+                        ],
+                    )
+                ],
+                [ProviderStreamChunk(text="根据已有信息，答案是992。")],
+            ]
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "问题"}],
+        "tool_call_round": 3,
+    }
+    sent_chunks: list[str] = []
+    tool_status_calls = 0
+
+    async def on_answer_chunk(text: str) -> None:
+        sent_chunks.append(text)
+
+    async def on_tool_status() -> None:
+        nonlocal tool_status_calls
+        tool_status_calls += 1
+
+    update = await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=None,
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+    )
+
+    assert update["planner_gave_up"] is False
+    assert update["answer_text"] == "根据已有信息，答案是992。"
+    assert tool_status_calls == 0
+    # 这一轮被拒绝前的叙述文字（"让我查一下。"）没有触发 tool_status，
+    # 用户会看到它跟这次总结文字连在一起、无缝过渡，而不是中间被清空。
+    assert sent_chunks == ["让我查一下。", "根据已有信息，答案是992。"]
+    assert update["streamed_round_texts"] == ["让我查一下。", "根据已有信息，答案是992。"]
+
+
+async def test_run_planner_turn_streaming_final_answer_attempt_does_not_pass_tools():
+    llm_registry = ProviderRegistry()
+    provider = ScriptedStreamingLLMProvider(
+        [
+            [
+                ProviderStreamChunk(
+                    tool_calls=[ToolCall(id="call_1", name="vector_search_tool", arguments="{}")]
+                )
+            ],
+            [ProviderStreamChunk(text="总结性回答。")],
+        ]
+    )
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+    state = {
+        "planner_messages": [{"role": "user", "content": "问题"}],
+        "tool_call_round": 3,
+    }
+
+    async def on_answer_chunk(text: str) -> None:
+        pass
+
+    async def on_tool_status() -> None:
+        pass
+
+    await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=None,
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+    )
+
+    assert provider.requests[1].tools is None
