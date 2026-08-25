@@ -290,10 +290,115 @@ Expected: 全部 PASS（含没改过的 `test_run_planner_turn_returns_pending_t
 Run: `.venv/Scripts/python.exe -m pytest tests/agent/test_planner.py -v`
 Expected: 全部 PASS（这个文件里还有 `run_tool_calls`/`_dispatch_tool_call`/`route_after_planner` 相关的测试，这一步的改动不涉及它们，应该不受影响）。
 
+- [ ] **Step 5b: 修一个会被这次改动破坏的图级别集成测试**
+
+`tests/agent/test_graph_planner.py` 里的 `test_planner_exceeding_max_rounds_falls_back_and_creates_ticket`（第 100-141 行）用一个只有 2 个响应（都请求工具调用）的 `ScriptedLLMProvider` 验证轮次耗尽后的行为——按这次改动，第 2 轮判定耗尽后会多发起一次 `_run_final_answer_attempt` 调用，但这个 fake provider 已经没有更多响应可弹，会在这一步之前就 `IndexError`，而不是命中这个测试原本想测的"耗尽后转人工"路径。
+
+把这个测试整体替换成：
+
+```python
+async def test_planner_exceeding_max_rounds_falls_back_and_creates_ticket():
+    records, vector_store, bm25_index, embedding_registry = _dependencies()
+    await _seed(records, vector_store, bm25_index)
+
+    # 每一轮都要求调用工具；轮次耗尽后还有一次"最后陈述"尝试，这里让它
+    # 也返回空文本，验证两层都失败时仍然走静态兜底+创建工单。
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedLLMProvider(
+            [
+                ProviderResult(
+                    text="",
+                    tool_calls=[
+                        ToolCall(id=f"call_{i}", name="vector_search_tool", arguments='{"query": "x"}')
+                    ],
+                )
+                for i in range(1, 3)
+            ]
+            + [ProviderResult(text="")]
+        ),
+    )
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        enable_autonomous_planning=True,
+        max_tool_call_rounds=1,
+    )
+
+    result = await graph.ainvoke(
+        {"question": "网络连不上怎么办？", "tenant_id": "t1"},
+        config={"recursion_limit": 50},
+    )
+
+    assert result["fallback_triggered"] is True
+    assert result["ticket_id"]
+    assert "转" in result["final_text"] or "人工" in result["final_text"]
+```
+
+紧接着在它后面新增一个测试，覆盖"最后陈述成功、不创建工单"这个新行为（3 个响应：2 轮工具调用请求 + 1 次成功的总结性回答；不额外加第 4 个响应给 `output_safety_node` 的语义审查——`test_planner_calls_tool_once_then_answers` 这个既有测试同样只给够"轮次+最终答案"这些响应、没有单独为语义审查配响应，也一直正常通过，因为 `semantic_safety_review` 内部对 LLM 调用异常整体 `except Exception` 兜底成"放行但标记未审查"，这里延续同一个约定，不引入不一致的写法）：
+
+```python
+async def test_planner_final_answer_attempt_succeeds_avoids_ticket():
+    records, vector_store, bm25_index, embedding_registry = _dependencies()
+    await _seed(records, vector_store, bm25_index)
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedLLMProvider(
+            [
+                ProviderResult(
+                    text="",
+                    tool_calls=[
+                        ToolCall(id=f"call_{i}", name="vector_search_tool", arguments='{"query": "x"}')
+                    ],
+                )
+                for i in range(1, 3)
+            ]
+            + [ProviderResult(text="根据已经查到的信息，建议重启路由器。")]
+        ),
+    )
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        query_rewrite_enabled=False,
+        enable_autonomous_planning=True,
+        max_tool_call_rounds=1,
+    )
+
+    result = await graph.ainvoke(
+        {"question": "网络连不上怎么办？", "tenant_id": "t1"},
+        config={"recursion_limit": 50},
+    )
+
+    assert result["fallback_triggered"] is False
+    assert result.get("ticket_id") is None
+    assert result["final_text"] == "根据已经查到的信息，建议重启路由器。"
+```
+
+- [ ] **Step 5c: 运行 `test_graph_planner.py` 确认这两个测试符合预期**
+
+Run: `.venv/Scripts/python.exe -m pytest tests/agent/test_graph_planner.py -v`
+Expected: 全部 PASS（含这一步改动的两个测试，以及文件里其它没动过的测试——`test_planner_calls_tool_once_then_answers`/`test_planner_does_not_surface_another_tenants_records`/`test_planner_graph_uses_structured_filter_query_tool_with_term_guard_context`/`test_planner_streams_final_answer_and_emits_tool_status`/`test_output_safety_reviews_leading_commentary_text_from_earlier_planner_round`/`test_planner_falls_back_to_non_streaming_when_provider_lacks_tool_streaming`）。
+
 - [ ] **Step 6: Commit**
 
 ```bash
-git add app/agent/planner.py tests/agent/test_planner.py
+git add app/agent/planner.py tests/agent/test_planner.py tests/agent/test_graph_planner.py
 git commit -m "feat(agent): retry with a final summarizing call before giving up on round exhaustion"
 ```
 
