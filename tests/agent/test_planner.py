@@ -129,6 +129,12 @@ async def test_planner_sends_byte_identical_tools_schema_across_rounds():
     await run_planner_turn(
         state, llm_registry=llm_registry, llm_provider_name="fake-llm", max_tool_call_rounds=3,
     )
+    # 每轮结束后立刻拍快照（序列化成字符串），不留到最后才比引用——
+    # ScriptedLLMProvider 存的是 ProviderRequest 对象引用，_TOOL_SCHEMAS
+    # 又是模块级共享的可变列表，如果两轮之间被就地修改，最后才比较引用
+    # 只会看到"同一个（已经被改过的）对象"，测不出这种回归；每轮结束后
+    # 立刻序列化，才是真正对比"这一轮实际发出去的内容"。
+    first_round_tools = json.dumps(provider.requests[0].tools, sort_keys=True)
 
     state2 = {
         "planner_messages": [
@@ -140,11 +146,10 @@ async def test_planner_sends_byte_identical_tools_schema_across_rounds():
     await run_planner_turn(
         state2, llm_registry=llm_registry, llm_provider_name="fake-llm", max_tool_call_rounds=3,
     )
+    second_round_tools = json.dumps(provider.requests[1].tools, sort_keys=True)
 
     assert len(provider.requests) == 2
-    assert json.dumps(provider.requests[0].tools, sort_keys=True) == json.dumps(
-        provider.requests[1].tools, sort_keys=True
-    )
+    assert first_round_tools == second_round_tools
 
 
 async def test_run_planner_turn_returns_answer_when_llm_stops_calling_tools():
