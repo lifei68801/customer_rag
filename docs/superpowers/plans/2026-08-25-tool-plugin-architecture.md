@@ -71,7 +71,7 @@ def _write_tool(tools_dir, name: str, *, trigger_cue: str | None = None) -> None
         "        return raw_arguments\n"
         "\n"
         "    async def execute(self, arguments, *, context):\n"
-        "        return {'ok': True, 'name': %r}\n"
+        "        return ({'ok': True, 'name': %r}, [])\n"
         "\n"
         "TOOL = _FakeTool()\n" % name,
         encoding="utf-8",
@@ -97,8 +97,9 @@ async def test_discover_tools_registered_tool_resolve_and_execute_work(tmp_path)
     assert manifest.name == "echo_tool"
     resolved = await tool.resolve_arguments({"query": "x"}, context=None)
     assert resolved == {"query": "x"}
-    result = await tool.execute(resolved, context=None)
+    result, records = await tool.execute(resolved, context=None)
     assert result == {"ok": True, "name": "echo_tool"}
+    assert records == []
 
 
 def test_discover_tools_schemas_shape():
@@ -118,7 +119,7 @@ def test_discover_tools_raises_on_duplicate_name(tmp_path):
         "    async def resolve_arguments(self, raw_arguments, *, context):\n"
         "        return raw_arguments\n"
         "    async def execute(self, arguments, *, context):\n"
-        "        return {}\n"
+        "        return ({}, [])\n"
         "TOOL = _T()\n",
         encoding="utf-8",
     )
@@ -209,7 +210,7 @@ from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
 from app.retrieval.bm25 import BM25Index
-from app.retrieval.vector_store import VectorStore
+from app.retrieval.vector_store import VectorRecord, VectorStore
 
 
 class ToolManifestError(Exception):
@@ -257,8 +258,14 @@ class Tool(Protocol):
 
     async def execute(
         self, arguments: dict[str, Any], *, context: ToolContext
-    ) -> dict[str, Any]:
-        """真正执行，返回喂给 LLM 的观察结果（可序列化的 dict）。"""
+    ) -> tuple[dict[str, Any], list[VectorRecord]]:
+        """真正执行，返回 (喂给 LLM 的观察结果, 这次调用附带产生的检索记录)。
+
+        第二个元素是为 vector_search_tool 这类需要把命中的 VectorRecord
+        原样带出去（供 run_tool_calls 更新 retrieved_records/used_sources，
+        这两者后续会被 responder/term_guard 等节点用到，不只是这次工具
+        调用的展示内容）而存在的通道——没有原始检索记录可带的工具（比如
+        structured_filter_query_tool）返回空列表。"""
         ...
 
 
@@ -461,9 +468,10 @@ async def test_execute_returns_records_scoped_to_tenant():
     )
 
     resolved = await TOOL.resolve_arguments({"query": "网络连不上怎么办？"}, context=context)
-    observation = await TOOL.execute(resolved, context=context)
+    observation, records = await TOOL.execute(resolved, context=context)
 
     assert [r["id"] for r in observation["results"]] == ["faq/network.md"]
+    assert [r.id for r in records] == ["faq/network.md"]
 ```
 
 创建 `tests/agent/tools/test_structured_filter_query.py`（照搬今天 `tests/agent/test_tools.py` 里 `test_structured_filter_query_tool_delegates_to_run_structured_filter_query`/`test_structured_filter_query_tool_resolves_name_anchor`/`test_structured_filter_query_tool_schema_only_exposes_query_intent`——最后这个是计划2 Task 2 已经改过的版本——三个测试，改成通过 `TOOL`/`manifest` 调用，`resolve_arguments` 部分额外加一个验证召回增强调用被正确触发的测试）：
@@ -543,13 +551,14 @@ async def test_execute_delegates_to_run_structured_filter_query():
         )},
     )
 
-    result = await TOOL.execute(
+    result, records = await TOOL.execute(
         {"anchor": {"term_type": "SKU"},
          "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}]},
         context=context,
     )
 
     assert result == {"matched_count": 0, "anchors": []}
+    assert records == []
 
 
 async def test_execute_resolves_name_anchor():
@@ -571,10 +580,11 @@ async def test_execute_resolves_name_anchor():
         term_type_schema={"error_code": TermTypeCategory(value="error_code", extra_fields=[])},
     )
 
-    result = await TOOL.execute({"anchor": {"name": "网关超时示例"}}, context=context)
+    result, records = await TOOL.execute({"anchor": {"name": "网关超时示例"}}, context=context)
 
     assert result["matched_count"] == 1
     assert result["anchors"][0]["standard_name"] == "示例错误码E502"
+    assert records == []
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -624,6 +634,7 @@ from typing import Any
 
 from app.agent.tool_registry import ToolContext
 from app.retrieval.hybrid_search import hybrid_search
+from app.retrieval.vector_store import VectorRecord
 
 
 class VectorSearchTool:
@@ -634,11 +645,12 @@ class VectorSearchTool:
 
     async def execute(
         self, arguments: dict[str, Any], *, context: ToolContext
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], list[VectorRecord]]:
         """薄封装 hybrid_search，跟今天 app/agent/tools.py::vector_search_tool()
         逻辑一致——tenant_id 只能来自 context（由 tool_call_node 从
         AgentState 注入），不出现在 manifest.yaml 的 parameters_schema
-        里，LLM 无法控制。"""
+        里，LLM 无法控制。原始 VectorRecord 列表随观察结果一起返回，供
+        run_tool_calls 更新 retrieved_records/used_sources。"""
         query = str(arguments.get("query", ""))
         records = await hybrid_search(
             query,
@@ -653,7 +665,8 @@ class VectorSearchTool:
             query_rewrite_enabled=context.query_rewrite_enabled,
             final_top_k=3,
         )
-        return {"results": [{"id": r.id, "text": r.text} for r in records]}
+        observation = {"results": [{"id": r.id, "text": r.text} for r in records]}
+        return observation, records
 
 
 TOOL = VectorSearchTool()
@@ -697,6 +710,7 @@ from app.agent.tool_registry import ToolContext
 from app.graphrag.ontology_recall import format_recall_candidates, recall_ontology_candidates
 from app.graphrag.structured_filter_query import run_structured_filter_query
 from app.providers.base import ProviderCapability, ProviderRequest
+from app.retrieval.vector_store import VectorRecord
 
 _USAGE_GUIDE = (
     "在知识图谱里查询实体——支持三种用法，可以组合使用：\n"
@@ -892,15 +906,16 @@ class StructuredFilterQueryTool:
 
     async def execute(
         self, arguments: dict[str, Any], *, context: ToolContext
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], list[VectorRecord]]:
         if context.graph_client is None:
-            return {"error": "structured_filter_query_tool 未配置"}
-        return await run_structured_filter_query(
+            return {"error": "structured_filter_query_tool 未配置"}, []
+        observation = await run_structured_filter_query(
             arguments, terms=context.terms, graph_client=context.graph_client,
             tenant_id=context.tenant_id,
             confirmed_relation_types=context.confirmed_relation_types,
             term_type_schema=context.term_type_schema,
         )
+        return observation, []
 
 
 TOOL = StructuredFilterQueryTool()
@@ -1024,14 +1039,13 @@ async def run_tool_calls(
             )
         try:
             resolved_arguments = await tool.resolve_arguments(arguments, context=context)
-            observation = await tool.execute(resolved_arguments, context=context)
+            observation, new_records = await tool.execute(resolved_arguments, context=context)
         except Exception as exc:
             content = json.dumps({"error": str(exc)}, ensure_ascii=False)
             return (
                 {"tool_call_id": call["id"], "name": call["name"], "content": content},
                 [],
             )
-        new_records = observation.pop("_vector_records", []) if isinstance(observation, dict) else []
         if call["name"] == "structured_filter_query_tool":
             for anchor in observation.get("anchors", []):
                 for neighbor in anchor.get("neighbors", []):
@@ -1065,7 +1079,7 @@ async def run_tool_calls(
     }
 ```
 
-**这里有一个需要拍板的实现细节**：`vector_search_tool` 的 `execute` 返回的是 `{"results": [...]}`（纯 JSON 友好的字典，不含原始 `VectorRecord` 对象），但今天的 `_dispatch_tool_call`/`run_tool_calls` 需要拿到原始 `VectorRecord` 列表去更新 `retrieved_records`/`used_sources`（`used_sources` 要的是 `VectorRecord.id`，`retrieved_records` 后续会被 `responder`/`term_guard` 等节点用到，不只是这次工具调用的展示内容）。`Tool.execute` 协议目前的返回类型是 `dict[str, Any]`（纯观察结果），没有"顺带带出原始检索记录"这个通道。上面的实现示例里用 `observation.pop("_vector_records", [])` 这种"塞一个私有键、上层再弹出来"的方式过渡，**这是一个丑陋的临时方案，不是最终设计**——实现这一步时，先检查 Task 1 定义的 `Tool` 协议要不要改成返回 `tuple[dict[str, Any], list[VectorRecord]]`（观察结果 + 附带记录，`vector_search_tool` 返回真实记录、`structured_filter_query_tool` 返回空列表），如果改，需要回到 Task 1 同步改 `Tool` 协议定义和它的测试，两处保持一致；不改的话就把上面 `_vector_records` 这个方案实现完整、并在 `app/agent/tools/vector_search/tool.py` 的 `execute()` 返回值里真的加上这个键。两种做法二选一，不能两边都不做导致 `used_sources`/`retrieved_records` 静默丢失来源信息。
+**关于 `VectorRecord` 透传的设计决定（pre-flight 阶段已拍板，不再是 Task 3 实现时才决定的开放问题）**：`vector_search_tool` 需要把命中的原始 `VectorRecord` 列表带出来，供 `run_tool_calls` 更新 `retrieved_records`/`used_sources`（这两者后续会被 `responder`/`term_guard` 等节点用到，不只是这次工具调用的展示内容），而 `structured_filter_query_tool` 没有这个需要。`Tool.execute` 协议（Task 1 定义）已经改成返回 `tuple[dict[str, Any], list[VectorRecord]]`（观察结果 + 附带记录，没有可带的工具返回空列表）而不是丑陋的"塞一个私有键、上层再弹出来"方案——Task 1/2 的协议定义、两个工具的 `execute()` 实现、以及它们各自的测试，都已经统一成这个形状，上面 `_execute_one` 的 `await tool.execute(...)` 直接解包成 `observation, new_records` 两个值即可，不需要再额外处理。
 
 `run_planner_turn`/`run_planner_turn_streaming` 里所有 `tools=_TOOL_SCHEMAS` 的地方，改成 `tools=tool_registry.schemas()`——两个函数各自新增一个 `tool_registry: ToolRegistry` 关键字参数。
 
@@ -1147,5 +1161,5 @@ git commit -m "refactor(agent): dispatch tool calls through the discovered ToolR
 ## Self-Review Notes（写完计划后的自查记录）
 
 - **Spec coverage**：spec 的"目录结构"/"manifest.yaml"/"Tool 协议"→ Task 1；"迁移现有两个工具"→ Task 2；"发现与注册时机"→ Task 1（`discover_tools`）+ Task 3（`deps.py` 单例接入）；"错误处理"三类失败场景→ Task 1 测试覆盖。
-- **Placeholder scan**：Task 3 Step 3 里关于 `VectorRecord` 透传的"这是一个丑陋的临时方案，不是最终设计"是刻意保留的一个**待实现阶段拍板的真实设计缺口**，不是偷懒的占位符——这份计划在写作阶段发现 `Tool.execute` 协议（Task 1 定义）跟"`vector_search_tool` 需要透传原始检索记录供别的节点使用"这个既有需求之间有一个没有事先想清楚的接口缺口，比起在这里编一个没有真正推演过的假方案，明确写出两个可行选项、要求实现者在动手前先选一个并回头保持 Task 1/2 一致，是更诚实的处理方式。
+- **Placeholder scan**：Task 3 Step 3 原本关于 `VectorRecord` 透传的开放问题（`Tool.execute` 协议跟"`vector_search_tool` 需要透传原始检索记录供别的节点使用"这个既有需求之间没有事先想清楚的接口缺口）已经在 SDD 执行前的 pre-flight conflict scan 阶段拍板——`Tool.execute` 统一改成返回 `tuple[dict[str, Any], list[VectorRecord]]`，Task 1/2/3 三处的协议定义、两个工具实现、测试断言已经全部同步改一致，不再是留给 Task 3 实现时才决定的开放问题。
 - **Type consistency**：`ToolContext`/`Tool`/`ToolManifest`/`ToolRegistry` 在 Task 1 定义，Task 2/3 的所有引用字段名一致（`tenant_id`/`question`/`terms`/`graph_client`/`allowed_combinations` 等）；`discover_tools(tools_dir: Path) -> ToolRegistry` 签名在 Task 1 定义、Task 3 `deps.py` 调用处一致。
