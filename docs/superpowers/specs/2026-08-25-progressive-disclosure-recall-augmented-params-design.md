@@ -29,7 +29,11 @@ STRUCTURED_FILTER_QUERY_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "structured_filter_query_tool",
-        "description": "在知识图谱里查询/筛选实体——具体能力和使用方式见对话上文的说明。",
+        "description": (
+            "在知识图谱里查询实体数量/满足条件的实体列表——用自然语言描述"
+            "你想查什么就行，不需要给出结构化参数，后续步骤会引导你把它"
+            "转成实际能执行的查询。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -50,7 +54,9 @@ STRUCTURED_FILTER_QUERY_TOOL_SCHEMA = {
 }
 ```
 
-今天 `STRUCTURED_FILTER_QUERY_TOOL_SCHEMA` 里那一整套"anchor.name 怎么用、anchor.term_type+constraints 怎么组合、constraints.hops 最多几跳、matched_count 语义"的详细能力说明，从工具自己的 `description`/`parameters` 里搬出来，作为**稳定、每轮都在的纯文本**并入 `_PLANNER_SYSTEM_PROMPT`（`app/agent/graph.py:76-90`）——这样模型在决定要不要调用、以及写 `query_intent` 的时候，依然能看到完整能力说明，可以尽量写得精确（比如已经知道要查两跳关系，可以在 `query_intent` 里直接说清楚"通过订单号-产品-公司两跳关系筛选"），只是不需要在这次生成里同时产出结构化 JSON 字段。
+**这份工具描述必须真正精简，不能变相把详细机制塞回来**——`description`/`query_intent.description` 都只说"用自然语言描述想查什么"，不出现 `anchor`/`hops`/`constraints`/`matched_count` 这些结构化概念。今天 `_PLANNER_SYSTEM_PROMPT` 里"看到「多少个/数量」等计数意图应该用这个工具、不能瞎猜"这类**触发线索**（帮模型判断"这种问题该不该用这个工具"）可以保留在常驻提示词里——这跟 Skill 列表里"一句话描述"起的作用是一回事，本身很轻，每轮都留着不算浪费。但 anchor.name 怎么用、anchor.term_type+constraints 怎么组合、constraints.hops 最多几跳、matched_count 在哪种模式下是什么语义——这一整套**深层机制说明，只在下面"独立参数生成调用"里出现，不重复放进 `_PLANNER_SYSTEM_PROMPT`**。
+
+这一点是这份设计跟 Skill 原则真正对齐的关键：模型在第一次 ReAct 推理调用里完全不需要理解"query_intent 最终会被翻译成两跳 BELONG_TO 关系"这种结构化机制——它只需要知道"想查什么"，怎么把自然语言意图转成合法的结构化参数，是第二次独立调用的职责，不该占用每一轮推理调用的 prompt 体积/注意力。（这个设计早先有一版把详细机制说明也搬进了 `_PLANNER_SYSTEM_PROMPT`"常驻"，这是不对的——常驻等于"每轮都展示"，跟渐进式披露"只在用到时才展开"的核心省钱逻辑正好相反，只是把内容从工具描述挪了个地方存放，没有真正做到披露上的渐进。）
 
 `vector_search_tool` 的 schema **不变**（它本来就只有一个 `query` 字符串，没有需要简化的复杂度）。
 
@@ -127,7 +133,7 @@ async def _resolve_tool_arguments(
 
 "coke-cola公司有多少个订单"：
 
-1. ReAct 推理调用（`tools` 是今天简化后的固定版本，system prompt 已包含完整能力说明）：LLM 决定调用 `structured_filter_query_tool`，产出 `{"query_intent": "查询公司标准名为Coca-Cola的订单数量，需要通过订单号-产品-公司两跳BELONG_TO关系筛选"}`——这次调用（含这段文字，会流式展示给用户/进入 reasoningTrail）正常追加进 `planner_messages`。
+1. ReAct 推理调用（`tools` 是今天简化后的固定版本，system prompt 只有"看到计数意图要用这个工具"这类触发线索，不含深层机制说明）：LLM 决定调用 `structured_filter_query_tool`，产出 `{"query_intent": "查询Coca-Cola这家公司名下有多少个订单"}`——不需要知道"这会被翻译成两跳关系"，只需要说清楚想查什么；这次调用（含这段文字，会流式展示给用户/进入 reasoningTrail）正常追加进 `planner_messages`。
 2. 分发：`_resolve_tool_arguments("structured_filter_query_tool", {"query_intent": "..."}, ...)` 命中独立参数生成分支。
 3. 召回：query = 上面那句 `query_intent`，切出 n-gram，跟四类候选比对：
    - term_type 候选命中"公司"（精确匹配）、"订单号"（"订单"是最长公共子串）
@@ -165,7 +171,8 @@ async def _resolve_tool_arguments(
 
 ## Global Constraints
 
-- **`STRUCTURED_FILTER_QUERY_TOOL_SCHEMA` 的 `parameters` 永久只有 `query_intent` 一个字段，从会话第一次调用起就是这个形态**——不允许存在任何"运行时根据阶段切换 schema"的代码路径。今天那份详细能力说明搬进 `_PLANNER_SYSTEM_PROMPT`（常驻、稳定），不再放在工具自己的 `description`/`parameters` 里。
+- **`STRUCTURED_FILTER_QUERY_TOOL_SCHEMA` 的 `parameters` 永久只有 `query_intent` 一个字段，从会话第一次调用起就是这个形态**——不允许存在任何"运行时根据阶段切换 schema"的代码路径。
+- **今天那份详细能力说明（anchor.name/anchor.term_type+constraints/hops/matched_count 语义）只能出现在"独立参数生成调用"的 prompt 里，不能重复放进 `_PLANNER_SYSTEM_PROMPT`**——`_PLANNER_SYSTEM_PROMPT` 最多保留一句"看到计数意图应该用这个工具"级别的触发线索，不能携带深层机制说明。这是这份设计能真正对齐 Skill 渐进式披露原则（"只在用到时才展开细节"，不是"把内容从一个地方搬到另一个常驻的地方"）的硬约束。
 - `vector_search_tool` 的 schema 不变。
 - `tools` 请求参数在整个会话生命周期内、每一次 ReAct 推理调用里必须逐字节保持一致——这是这份设计能兼容 KV cache 的硬约束。
 - 独立参数生成调用**不使用 function-calling 协议**（不带 `tools`/`tool_choice`），**不携带本轮之前的对话历史**（只有 schema 说明+召回候选+`query_intent`）。
