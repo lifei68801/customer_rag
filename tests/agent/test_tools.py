@@ -149,6 +149,7 @@ def test_structured_filter_query_usage_guide_and_full_schema_preserve_detail():
     # 还在，只是不再暴露在对外的工具 schema 里。
     assert "anchor" in STRUCTURED_FILTER_QUERY_USAGE_GUIDE
     assert "constraints" in STRUCTURED_FILTER_QUERY_USAGE_GUIDE
+    assert "constraints.kind=relation" in STRUCTURED_FILTER_QUERY_USAGE_GUIDE
     properties = STRUCTURED_FILTER_QUERY_PARAMETERS_SCHEMA["properties"]
     assert "anchor" in properties
     assert "constraints" in properties
