@@ -29,6 +29,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         ) : message.isStreaming ? (
           <ThinkingIndicator statusText={message.statusText} />
         ) : null}
+        {!isUser && message.reasoningTrail.length > 0 && (
+          <ReasoningTrail steps={message.reasoningTrail} />
+        )}
         {!isUser && !message.isStreaming && message.usedSources.length > 0 && (
           <SourceCitations sources={message.usedSources} />
         )}
@@ -47,5 +50,22 @@ function ThinkingIndicator({ statusText }: { statusText?: string }) {
         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft motion-reduce:animate-none" />
       </div>
     </div>
+  )
+}
+
+function ReasoningTrail({ steps }: { steps: string[] }) {
+  return (
+    <details className="mt-2 border-t border-subtle pt-2">
+      <summary className="cursor-pointer text-xs text-ink-soft select-none">
+        查看推理过程（{steps.length}步）
+      </summary>
+      <ol className="mt-1 space-y-1 text-xs text-ink-soft">
+        {steps.map((step, index) => (
+          <li key={index} className="whitespace-pre-wrap">
+            {index + 1}. {step}
+          </li>
+        ))}
+      </ol>
+    </details>
   )
 }

@@ -20,6 +20,7 @@ export interface ChatMessage {
   isStreaming: boolean
   isError?: boolean
   statusText?: string
+  reasoningTrail: string[]
 }
 
 interface SessionChatState {
@@ -108,6 +109,7 @@ export function useAgentChat() {
               text: turn.content,
               usedSources: [],
               isStreaming: false,
+              reasoningTrail: [],
             })),
             isSending: false,
           },
@@ -147,6 +149,7 @@ export function useAgentChat() {
         text: question,
         usedSources: [],
         isStreaming: false,
+        reasoningTrail: [],
       }
       const assistantMessageId = createId()
       const assistantMessage: ChatMessage = {
@@ -155,6 +158,7 @@ export function useAgentChat() {
         text: '',
         usedSources: [],
         isStreaming: true,
+        reasoningTrail: [],
       }
 
       setSessionsData((prev) => {
@@ -223,10 +227,18 @@ export function useAgentChat() {
             const status = parsed as AgentToolStatusEvent
             // 工具调用轮之前可能出现的前置说明文字（比如"让我查一下。"）
             // 不是最终答案的一部分——tool_status 事件到达就说明这一轮
-            // 结束、要开始/继续执行工具了，把已经显示的文字清空，重新
+            // 结束、要开始/继续执行工具了，把已经显示的文字挪进
+            // reasoningTrail（供用户按需展开查看推理过程），再清空、
             // 露出"正在查询"指示器，而不是让这段文字停留在气泡里、
-            // 之后又被 final 事件悄悄覆盖掉。
-            patchAssistantMessage({ text: '', statusText: status.text })
+            // 之后又被 final 事件悄悄覆盖掉，或者直接永久丢失。
+            patchAssistantMessage((message) => ({
+              ...message,
+              text: '',
+              statusText: status.text,
+              reasoningTrail: message.text
+                ? [...message.reasoningTrail, message.text]
+                : message.reasoningTrail,
+            }))
           } else if (parsed.type === 'final') {
             const final = parsed as AgentFinalEvent
             patchAssistantMessage({
