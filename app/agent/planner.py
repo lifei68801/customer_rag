@@ -403,8 +403,16 @@ async def run_tool_calls(
     # 重新抛出，而不是用 gather 默认行为——默认行为下一个工具调用失败会让
     # gather 立刻返回，其它还在执行的工具调用变成没人处理的后台任务，可能
     # 引发不该发生的副作用，也可能在稍后失败时报一个不会被任何人处理的
-    # "未获取异常"。这里等两边都落地再决定要不要抛，语义上仍然和串行版本
-    # 一致：任一工具调用失败都让整个 run_tool_calls() 失败。
+    # "未获取异常"。
+    #
+    # 注意：_execute_one 自己已经把 resolve_arguments/execute 阶段的绝大多数
+    # 异常都捕获并降级成 {"error": ...} 观察结果正常返回（见上面的
+    # try/except Exception），不会作为 BaseException 出现在 outcomes 里——
+    # 这跟插件化改造之前"任一工具调用失败都让整个 run_tool_calls() 失败"的
+    # 语义不再一致，那是旧版本的行为。下面这个 raise outcome 现在是兜底的
+    # 安全网，只处理逃出三层 try/except 之外的意外情况（比如序列化
+    # observation 本身抛错、asyncio.CancelledError 之类），不再是主要的
+    # 失败传播机制。
     outcomes = await asyncio.gather(
         *(_execute_one(call) for call in pending_calls), return_exceptions=True
     )
