@@ -618,9 +618,7 @@ git rm app/agent/tools.py
 
 ```yaml
 name: vector_search_tool
-description: >
-  在企业知识库中做混合检索（向量+关键词），返回相关文档片段。
-  当需要补充事实性资料来回答用户问题时调用。
+description: "在企业知识库中做混合检索（向量+关键词），返回相关文档片段。当需要补充事实性资料来回答用户问题时调用。"
 parameters_schema:
   type: object
   properties:
@@ -684,25 +682,19 @@ TOOL = VectorSearchTool()
 
 ```yaml
 name: structured_filter_query_tool
-description: >
-  在知识图谱里查询实体数量/满足条件的实体列表——用自然语言描述你想查什么就行，
-  不需要给出结构化参数，后续步骤会引导你把它转成实际能执行的查询。
-trigger_cue: >
-  看到「多少个」「数量」等计数意图时，应该用 structured_filter_query_tool 给出确定数字，
-  不能仅凭检索到的文档片段猜测，也不能因为一次调用没查到就直接放弃。
+description: "在知识图谱里查询实体数量/满足条件的实体列表——用自然语言描述你想查什么就行，不需要给出结构化参数，后续步骤会引导你把它转成实际能执行的查询。"
+trigger_cue: "看到「多少个」「数量」等计数意图时，应该用 structured_filter_query_tool 给出确定数字，不能仅凭检索到的文档片段猜测，也不能因为一次调用没查到就直接放弃。"
 parameters_schema:
   type: object
   properties:
     query_intent:
       type: string
-      description: >
-        用自然语言描述这次想查询/筛选的内容：想找什么类型的实体、有什么筛选条件、
-        涉及哪些已知的名字。写得越具体、越自包含（把'它''这个'之类的指代词换成
-        前面已经了解到的具体名字）越好——这句话会被用来检索本体里相关的术语和
-        关系作为参考，帮你把接下来的实际查询参数填对。
+      description: "用自然语言描述这次想查询/筛选的内容：想找什么类型的实体、有什么筛选条件、涉及哪些已知的名字。写得越具体、越自包含（把'它''这个'之类的指代词换成前面已经了解到的具体名字）越好——这句话会被用来检索本体里相关的术语和关系作为参考，帮你把接下来的实际查询参数填对。"
   required:
     - query_intent
 ```
+
+（这里用单行双引号 YAML 标量，不用折叠标量 `>`——折叠标量会把跨行处折成一个空格、末尾还带一个多余换行符，这跟原始 Python 字符串字面量拼接不是一回事，中文本来就不需要词间空格。这份计划文档最初的草稿在这四处都用了 `>`，在 Task 2 审阅阶段被发现并改正——如果要给 manifest.yaml 加新字段或改动这些内容，沿用单行引号写法，不要改回折叠标量。）
 
 创建 `app/agent/tools/structured_filter_query/tool.py`（`resolve_arguments` 内容照搬计划2的 `_resolve_tool_arguments`/`_resolve_structured_filter_query_arguments`/`_build_structured_filter_query_prompt`/`_strip_json_code_fence`/`ToolArgumentResolutionError`，`execute` 内容照搬今天 `app/agent/tools.py` 里 `structured_filter_query_tool()` 函数体；`STRUCTURED_FILTER_QUERY_USAGE_GUIDE`/`STRUCTURED_FILTER_QUERY_PARAMETERS_SCHEMA` 这两个计划2引入的模块级常量，内容原样搬进这个文件当模块级私有常量）：
 
