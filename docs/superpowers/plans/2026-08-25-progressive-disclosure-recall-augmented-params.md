@@ -435,7 +435,13 @@ STRUCTURED_FILTER_QUERY_USAGE_GUIDE = (
     "matched_count 为准给出确定数字（anchor.name 模式的 matched_count 只表示"
     "「是否找到了这个实体」，是 0 或 1，不是数量答案）——不能仅凭检索到的文档片段或邻居关系"
     "列表猜测。constraints 里 standard_name 字段的 eq/ne 比较值支持别名/模糊匹配，"
-    "不要求填精确的标准名称。"
+    "不要求填精确的标准名称。\n"
+    "「xx类目/公司下有多少个yy」这类需要先确定xx是什么、再数yy数量的问题，"
+    "优先用 anchor.term_type 定位 yy 的类型，配合 constraints.kind=relation"
+    "（target_field=standard_name，target_value 直接填 xx 的口语化/别名名称，"
+    "会自动模糊解析成标准名，不需要先把 xx 解析成具体实体再回填）——这是解决这类问题"
+    "最直接的写法。只有当查询意图本身是在问「xx是什么/xx关联着什么」这类需要先明确xx"
+    "具体所指的问题（而不是要数yy的数量）时，才用 anchor.name。"
 )
 
 STRUCTURED_FILTER_QUERY_PARAMETERS_SCHEMA: dict[str, Any] = {
