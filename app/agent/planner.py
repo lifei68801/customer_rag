@@ -545,6 +545,17 @@ async def run_tool_calls(
                 {"tool_call_id": call["id"], "name": call["name"], "content": content},
                 [],
             )
+        if call["name"] == "structured_filter_query_tool" and (
+            graph_client is None or confirmed_relation_types is None or term_type_schema is None
+        ):
+            # 跟 _dispatch_tool_call 里同一个检查提前到这里——不配置的话，
+            # 走到 _resolve_tool_arguments 只会白白多打一次付费 LLM 调用，
+            # 结果早就能确定不需要执行。
+            content = json.dumps({"error": "structured_filter_query_tool 未配置"}, ensure_ascii=False)
+            return (
+                {"tool_call_id": call["id"], "name": call["name"], "content": content},
+                [],
+            )
         try:
             resolved_arguments = await _resolve_tool_arguments(
                 call["name"], arguments,

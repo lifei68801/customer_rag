@@ -113,6 +113,40 @@ async def test_run_planner_turn_returns_pending_tool_calls_when_llm_requests_a_t
     assert update["planner_messages"][-1]["tool_calls"][0]["id"] == "call_1"
 
 
+async def test_planner_sends_byte_identical_tools_schema_across_rounds():
+    """tools 参数必须逐字节保持一致——这是这份设计能兼容 KV cache 的硬约束，
+    不能只在某次改动时人工检查一遍，需要一个能长期把关的回归测试。"""
+    llm_registry = ProviderRegistry()
+    provider = ScriptedLLMProvider([
+        ProviderResult(text="", tool_calls=[
+            ToolCall(id="call_1", name="vector_search_tool", arguments='{"query": "x"}'),
+        ]),
+        ProviderResult(text="最终答案"),
+    ])
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+
+    state = {"planner_messages": [{"role": "user", "content": "随便问点什么"}], "tool_call_round": 0}
+    await run_planner_turn(
+        state, llm_registry=llm_registry, llm_provider_name="fake-llm", max_tool_call_rounds=3,
+    )
+
+    state2 = {
+        "planner_messages": [
+            {"role": "user", "content": "随便问点什么"},
+            {"role": "tool", "tool_call_id": "call_1", "content": '{"results": []}'},
+        ],
+        "tool_call_round": 1,
+    }
+    await run_planner_turn(
+        state2, llm_registry=llm_registry, llm_provider_name="fake-llm", max_tool_call_rounds=3,
+    )
+
+    assert len(provider.requests) == 2
+    assert json.dumps(provider.requests[0].tools, sort_keys=True) == json.dumps(
+        provider.requests[1].tools, sort_keys=True
+    )
+
+
 async def test_run_planner_turn_returns_answer_when_llm_stops_calling_tools():
     llm_registry = ProviderRegistry()
     llm_registry.register(
@@ -536,6 +570,90 @@ async def test_run_tool_calls_executes_structured_filter_query_tool_with_name_an
     assert graph_client.queried_tenant_ids == ["t1"]
 
 
+async def test_run_tool_calls_degrades_gracefully_when_structured_filter_query_resolution_fails():
+    """独立参数生成调用返回非法 JSON 时，run_tool_calls 应该把这次工具调用
+    降级成 {"error": ...} 观察结果正常返回，而不是让整个 run_tool_calls 崩溃。"""
+    _, vector_store, bm25_index = _build_store_and_index()
+    embedding_registry = _embedding_registry()
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, "fake-llm",
+        ScriptedLLMProvider([ProviderResult(text="这不是合法的 JSON")]),
+    )
+
+    state = {
+        "tenant_id": "t1",
+        "question": "随便问点什么",
+        "planner_messages": [],
+        "pending_tool_calls": [
+            {
+                "id": "call_1",
+                "name": "structured_filter_query_tool",
+                "arguments": '{"query_intent": "随便问点什么"}',
+            }
+        ],
+    }
+
+    update = await run_tool_calls(
+        state,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        terms=_TERMS,
+        graph_client=FakeGraphClientForStructuredQuery(rows=[]),
+        confirmed_relation_types=set(),
+        term_type_schema={},
+    )
+
+    tool_message = update["planner_messages"][-1]
+    assert tool_message["role"] == "tool"
+    parsed = json.loads(tool_message["content"])
+    assert "error" in parsed
+
+
+async def test_run_tool_calls_skips_independent_call_when_structured_filter_query_unconfigured():
+    """graph_client/confirmed_relation_types/term_type_schema 缺任何一个时，
+    应该在触发独立参数生成调用之前就短路返回错误——不能为一个已知会被
+    拒绝的调用白白多打一次付费 LLM 调用。"""
+    _, vector_store, bm25_index = _build_store_and_index()
+    embedding_registry = _embedding_registry()
+    llm_registry = ProviderRegistry()
+    provider = ScriptedLLMProvider([])  # 一次调用都不该发生，脚本留空
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+
+    state = {
+        "tenant_id": "t1",
+        "question": "随便问点什么",
+        "planner_messages": [],
+        "pending_tool_calls": [
+            {
+                "id": "call_1",
+                "name": "structured_filter_query_tool",
+                "arguments": '{"query_intent": "随便问点什么"}',
+            }
+        ],
+    }
+
+    update = await run_tool_calls(
+        state,
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        # graph_client/confirmed_relation_types/term_type_schema 全部留默认 None
+    )
+
+    tool_message = update["planner_messages"][-1]
+    parsed = json.loads(tool_message["content"])
+    assert parsed == {"error": "structured_filter_query_tool 未配置"}
+    assert provider.requests == []  # 独立参数生成调用一次都没发起
+
+
 async def test_run_tool_calls_annotates_expand_neighbors_with_association():
     """expand 返回的 neighbors 要按 hops 标注 association 文案——原
     graph_query_tool 分支的既有行为，迁移到 structured_filter_query_tool。"""
@@ -650,18 +768,23 @@ async def test_run_tool_calls_executes_multiple_tools_concurrently(monkeypatch):
         await asyncio.wait_for(started[other].wait(), timeout=5)
         return f'{{"ok": "{call_id}"}}', []
 
+    async def fake_resolve_tool_arguments(tool_name, raw_arguments, **kwargs):
+        return raw_arguments
+
     monkeypatch.setattr(planner_module, "_dispatch_tool_call", fake_dispatch_tool_call)
+    monkeypatch.setattr(planner_module, "_resolve_tool_arguments", fake_resolve_tool_arguments)
 
     state = {
         "tenant_id": "t1",
         "planner_messages": [],
         "pending_tool_calls": [
             {"id": "call_1", "name": "vector_search_tool", "arguments": '{"call_id": "call_1"}'},
-            # 用 vector_search_tool 而不是 structured_filter_query_tool——这个测试验证的是
-            # run_tool_calls 本身的并发调度，跟具体工具名无关；structured_filter_query_tool
-            # 会先触发 _resolve_tool_arguments 的独立参数生成调用，绕开这里 monkeypatch 的
-            # _dispatch_tool_call，破坏两个 asyncio.Event 互等的前提。
-            {"id": "call_2", "name": "vector_search_tool", "arguments": '{"call_id": "call_2"}'},
+            # 两个不同的工具名，恢复原本要验证的"同一轮混合请求多个工具"场景——
+            # structured_filter_query_tool 会先触发 _resolve_tool_arguments 的独立
+            # 参数生成调用，这里同时 monkeypatch 掉它（透传 raw_arguments），让它
+            # 也能走到下面被 monkeypatch 的 _dispatch_tool_call，不破坏两个
+            # asyncio.Event 互等的前提。
+            {"id": "call_2", "name": "structured_filter_query_tool", "arguments": '{"call_id": "call_2"}'},
         ],
     }
 
@@ -674,6 +797,13 @@ async def test_run_tool_calls_executes_multiple_tools_concurrently(monkeypatch):
         llm_registry=ProviderRegistry(),
         llm_provider_name="fake-llm",
         query_rewrite_enabled=False,
+        # 三个都必须给非 None 值——否则 structured_filter_query_tool 会在
+        # 走到 monkeypatch 的 _dispatch_tool_call 之前，先被 _execute_one 里
+        # "未配置" 短路检查拦下（具体值不重要，_dispatch_tool_call 本身已被
+        # monkeypatch，不会真的用到它们）。
+        graph_client=object(),
+        confirmed_relation_types=set(),
+        term_type_schema={},
     )
 
     contents_by_call_id = {r["tool_call_id"]: r["content"] for r in update["tool_results"]}
@@ -693,18 +823,22 @@ async def test_run_tool_calls_propagates_exception_from_tool_dispatch(monkeypatc
             raise ValueError("模拟工具调用失败")
         return '{"ok": "success"}', []
 
+    async def fake_resolve_tool_arguments(tool_name, raw_arguments, **kwargs):
+        return raw_arguments
+
     monkeypatch.setattr(planner_module, "_dispatch_tool_call", fake_dispatch_tool_call)
+    monkeypatch.setattr(planner_module, "_resolve_tool_arguments", fake_resolve_tool_arguments)
 
     state = {
         "tenant_id": "t1",
         "planner_messages": [],
         "pending_tool_calls": [
             {"id": "call_1", "name": "vector_search_tool", "arguments": '{}'},
-            # 用 vector_search_tool 而不是 structured_filter_query_tool——同上一个测试的
-            # 理由：这里验证的是异常传播，不是具体工具路由，structured_filter_query_tool
-            # 会先经过 _resolve_tool_arguments 的独立参数生成调用，绕开这里 monkeypatch
-            # 的 _dispatch_tool_call，让下面这次调用永远不会抛出 ValueError。
-            {"id": "call_2", "name": "vector_search_tool", "arguments": '{"fail": true}'},
+            # 两个不同的工具名，恢复原本要验证的"同一轮混合请求多个工具"场景——
+            # structured_filter_query_tool 会先经过 _resolve_tool_arguments 的独立
+            # 参数生成调用，这里同时 monkeypatch 掉它（透传 raw_arguments），让它也
+            # 能走到下面被 monkeypatch 的 _dispatch_tool_call 并抛出 ValueError。
+            {"id": "call_2", "name": "structured_filter_query_tool", "arguments": '{"fail": true}'},
         ],
     }
 
@@ -717,6 +851,10 @@ async def test_run_tool_calls_propagates_exception_from_tool_dispatch(monkeypatc
             bm25_index=BM25Index(),
             llm_registry=ProviderRegistry(),
             llm_provider_name="fake-llm",
+            # 三个都必须给非 None 值，理由同上一个测试。
+            graph_client=object(),
+            confirmed_relation_types=set(),
+            term_type_schema={},
         )
         assert False, "应该抛异常"
     except ValueError as e:

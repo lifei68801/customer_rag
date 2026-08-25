@@ -147,3 +147,47 @@ def test_format_recall_candidates_empty_returns_placeholder_text():
     text = format_recall_candidates(RecallCandidates(term_types=[], relations=[], fields=[], entities=[]))
     assert text
     assert "候选" in text or "谨慎" in text
+
+
+def test_recall_ontology_candidates_recalls_long_verbatim_entity_name():
+    # 15个汉字，n-gram 打分法（受限于 n-gram 最长4个 token）在这个修复前
+    # 永远算不出及格分数（4/15 < 0.3），即使这个名字原样出现在 query 里。
+    long_name_term = Term(
+        tenant_id="demo", node_key="公司:上海可口可乐饮料有限公司分公司",
+        standard_name="上海可口可乐饮料有限公司分公司", aliases=[], term_type="公司",
+    )
+    candidates = recall_ontology_candidates(
+        "上海可口可乐饮料有限公司分公司有多少个订单",
+        terms=[long_name_term], term_type_schema={}, allowed_combinations=[],
+    )
+
+    assert long_name_term in candidates.entities
+
+
+def test_recall_ontology_candidates_handles_large_entity_pool_quickly():
+    # 5000个候选名字跟 query 没有任何字符重叠（纯 ASCII/数字 SKU 编号 vs
+    # 纯中文 query），是 bigram 预过滤真正要处理的场景：绝大多数候选
+    # 应该被 O(1) 的 isdisjoint 检查直接跳过，不进入昂贵的双重循环。
+    # （如果候选名字反而都是 query 的近似子串——比如全部共享同一个
+    # 中文前缀——bigram 预过滤反而一个都过滤不掉，测的是最坏情形，
+    # 不是这个优化真正要解决的"大池子里大多数候选无关"场景。）
+    import time
+
+    target_term = Term(
+        tenant_id="demo", node_key="公司:上海分公司",
+        standard_name="上海分公司", aliases=[], term_type="公司",
+    )
+    unrelated_terms = [
+        Term(tenant_id="demo", node_key=f"SKU:SKU{i:06d}", standard_name=f"SKU{i:06d}",
+             aliases=[], term_type="SKU")
+        for i in range(5000)
+    ]
+    start = time.perf_counter()
+    candidates = recall_ontology_candidates(
+        "上海分公司的可乐订单一共有多少条",
+        terms=[target_term, *unrelated_terms], term_type_schema={}, allowed_combinations=[],
+    )
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 2.0, f"recall took {elapsed:.2f}s over 5000 unrelated terms, expected well under 2s"
+    assert target_term in candidates.entities
