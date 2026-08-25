@@ -17,6 +17,7 @@ from app.agent.planner import (
     run_tool_calls,
 )
 from app.agent.state import AgentState
+from app.agent.tool_registry import ToolContext, ToolRegistry
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
@@ -74,21 +75,37 @@ _FUTURE_TIME_CLARIFICATION_PROMPT = (
     "您提到的时间似乎是将来的日期，我们暂时没有对应的记录。"
     "请问您想查询的是哪一个具体的历史日期呢？"
 )
-_PLANNER_SYSTEM_PROMPT = (
+_PLANNER_BASE_PROMPT = (
     "你是客服问答助手。可以调用 vector_search_tool 检索知识库、"
     "structured_filter_query_tool 查询知识图谱里的实体数量/满足条件的实体列表。"
-    "看到「多少个」「数量」等计数意图时，应该用 structured_filter_query_tool 给出确定数字，"
-    "不能仅凭检索到的文档片段猜测，也不能因为一次调用没查到就直接放弃。"
     "有足够信息时直接给出最终答案，不要编造资料中没有的内容；"
     "信息不足以回答时也不要编造。"
     # anchor/constraints/hops/matched_count 这套结构化机制的详细说明不放在这里——
     # structured_filter_query_tool 现在只暴露 query_intent 一个自然语言字段
-    # （见 app/agent/tools.py），深层机制只在独立参数生成调用（app/agent/planner.py
-    # 的 _resolve_structured_filter_query_arguments）的 prompt 里出现，见
+    # （见 app/agent/tools/structured_filter_query/），深层机制只在独立参数生成
+    # 调用（app/agent/tools/structured_filter_query/tool.py 的
+    # StructuredFilterQueryTool.resolve_arguments）的 prompt 里出现，见
     # docs/superpowers/specs/2026-08-25-progressive-disclosure-recall-augmented-
     # params-design.md。这里常驻的这段提示词每一轮 ReAct 推理调用都会被完整看到，
     # 必须保持轻量——这正是这次改动要对齐的渐进式披露原则。
+    #
+    # 各工具的触发线索（比如"看到「多少个」「数量」等计数意图时应该用
+    # structured_filter_query_tool"这句）不再硬编码在这个常量里，改由
+    # ToolRegistry.trigger_cues() 从每个工具目录的 manifest.yaml 里动态拼接
+    # （见 _build_planner_system_prompt）——这是插件化架构要求的：新增/删除
+    # 一个工具目录时，系统提示词要不需要改这份文件就自动跟着变化。这也意味着
+    # 拼接后的完整提示词跟接入插件化之前的原文相比，各触发线索句子的相对
+    # 位置从"穿插在描述中间"变成了"统一追加在末尾"——2026-08-25 pre-flight
+    # 阶段确认过，这个顺序调整是插件化设计的直接后果，不影响提示词传达的
+    # 语义信息，不是需要另外修复的内容丢失。
 )
+
+
+def _build_planner_system_prompt(tool_registry: "ToolRegistry") -> str:
+    cues = tool_registry.trigger_cues()
+    if not cues:
+        return _PLANNER_BASE_PROMPT
+    return _PLANNER_BASE_PROMPT + "".join(cues)
 
 # resolve_time_window 是一次 LLM 调用，之前对每条消息（不管有没有时间
 # 表达）都无条件触发——2026-08-10 真实压测发现这是问答链路里"能跳过就
@@ -117,6 +134,7 @@ def build_agent_graph(
     bm25_index: BM25Index,
     llm_registry: ProviderRegistry,
     llm_provider_name: str,
+    tool_registry: ToolRegistry,
     rerank_provider: RerankProvider | None = None,
     query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
@@ -154,6 +172,15 @@ def build_agent_graph(
 
     两种模式下 TermGuard 强制注入都不受影响——TermGuard 是独立于 Planner
     的安全网，不因为换了推理路径就失效。
+
+    tool_registry 为必填参数（没有默认值，跟 llm_registry 这类核心依赖
+    同等地位，不允许静默缺失）：Planner 路径调用哪些工具、系统提示词里
+    拼接哪些触发线索，完全由这个注册表决定，调用方负责用
+    app.agent.tool_registry.discover_tools() 扫描 app/agent/tools/ 目录
+    构建（见 app/api/deps.py::get_tool_registry 的单例接入方式）。
+    enable_autonomous_planning=False 的确定性路径不使用这个参数，但仍然
+    必须传入——两条路径共用同一个函数签名，不因为某条路径用不到就允许
+    调用方省略。
 
     CorrectionCheck 与 {ClarificationCheck, TermGuard, MemoryRecall} 这条链路
     并行发起（2026-08-12 排查"响应到第一个字之前等太久"时改的）：两者数据
@@ -632,7 +659,7 @@ def build_agent_graph(
         messages = state.get("planner_messages")
         if not messages:
             messages = [
-                {"role": "system", "content": wrap_system_prompt(_PLANNER_SYSTEM_PROMPT)}
+                {"role": "system", "content": wrap_system_prompt(_build_planner_system_prompt(tool_registry))}
             ]
             term_guard_context = state.get("term_guard_context")
             if term_guard_context:
@@ -651,17 +678,20 @@ def build_agent_graph(
                 banned_terms=banned_terms,
                 on_answer_chunk=on_answer_chunk,
                 on_tool_status=on_tool_status or _noop,
+                tool_registry=tool_registry,
             )
         return await run_planner_turn(
             state_with_messages,
             llm_registry=llm_registry,
             llm_provider_name=llm_provider_name,
             max_tool_call_rounds=max_tool_call_rounds,
+            tool_registry=tool_registry,
         )
 
     async def tool_call_node(state: AgentState) -> dict[str, Any]:
-        return await run_tool_calls(
-            state,
+        context = ToolContext(
+            tenant_id=state["tenant_id"],
+            question=state["question"],
             embedding_registry=embedding_registry,
             embedding_provider_name=embedding_provider_name,
             vector_store=vector_store,
@@ -670,12 +700,13 @@ def build_agent_graph(
             llm_provider_name=llm_provider_name,
             rerank_provider=rerank_provider,
             query_rewrite_enabled=query_rewrite_enabled,
-            terms=terms,
+            terms=terms or [],
             graph_client=graph_client,
-            confirmed_relation_types=confirmed_relation_types,
-            term_type_schema=term_type_schema,
-            allowed_combinations=allowed_combinations,
+            confirmed_relation_types=confirmed_relation_types or set(),
+            term_type_schema=term_type_schema or {},
+            allowed_combinations=allowed_combinations or [],
         )
+        return await run_tool_calls(state, tool_registry=tool_registry, context=context)
 
     async def planner_responder_node(state: AgentState) -> dict[str, Any]:
         # Planner 最后一轮返回的文本已经是基于全部工具结果生成的答案，这里

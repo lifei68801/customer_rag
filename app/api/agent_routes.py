@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
 from app.agent.graph import build_agent_graph
+from app.agent.tool_registry import ToolRegistry
 from app.api import deps
 from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
@@ -57,6 +58,7 @@ async def agent_chat_endpoint(
     memory_conn: aiosqlite.Connection = Depends(deps.get_memory_conn),
     tts_provider: TTSProvider | None = Depends(deps.get_tts_provider),
     settings: Settings = Depends(deps.get_settings),
+    tool_registry: ToolRegistry = Depends(deps.get_tool_registry),
 ) -> StreamingResponse:
     """Agent 推理入口，SSE 传输。
 
@@ -170,6 +172,7 @@ async def agent_chat_endpoint(
             on_answer_chunk=on_answer_chunk,
             on_tool_status=on_tool_status if not payload.voice_response else None,
             banned_terms=deps.parse_banned_terms(settings.banned_terms),
+            tool_registry=tool_registry,
         )
 
         async def run_graph() -> dict[str, Any]:

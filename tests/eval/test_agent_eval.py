@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from app.agent.graph import build_agent_graph
+from app.agent.tool_registry import discover_tools
 from app.eval.dataset import EvalCase
 from app.eval.runner import run_eval_suite_via_agent_graph
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
@@ -6,6 +9,11 @@ from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, Embeddi
 from app.providers.registry import ProviderRegistry
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
+
+# build_agent_graph 的 tool_registry 现在是必填项（不给默认值），本文件
+# 测试都走确定性路径，从不实际使用 tool_registry，这里统一构造一次真实
+# 注册表传给每个调用点。
+_TOOL_REGISTRY = discover_tools(Path(__file__).resolve().parents[2] / "app" / "agent" / "tools")
 
 
 class FakeEmbeddingProvider:
@@ -68,6 +76,7 @@ async def test_run_eval_suite_via_agent_graph_scores_static_path():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
     )
 
@@ -109,6 +118,7 @@ async def test_run_eval_suite_via_agent_graph_scores_zero_recall_on_fallback():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
     )
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agent.graph import build_agent_graph
+from app.agent.tool_registry import discover_tools
 from app.config.settings import Settings
 from app.eval.dataset import EvalCase, load_eval_cases
 from app.eval.llm_judged_metrics import score_answer_relevancy, score_faithfulness
@@ -265,7 +266,14 @@ async def compare_planner_modes(
     Settings.agent_enable_autonomous_planning 默认值翻转为 True"的落地
     入口——两个 graph 除了这一个开关，其余构建参数完全一致，保证对比
     的唯一变量就是 Planner 开关本身。
+
+    build_agent_graph 的 tool_registry 现在是必填参数（见
+    app/agent/graph.py 的说明），这里用 discover_tools 扫描
+    app/agent/tools/ 目录构建一次，两个 graph 共用同一份注册表——跟
+    app/api/deps.py::get_tool_registry 的单例接入方式是同一套发现逻辑，
+    只是评测脚本没有跨请求复用的必要，直接每次调用扫描一次即可。
     """
+    tool_registry = discover_tools(Path(__file__).resolve().parent.parent / "agent" / "tools")
     common_kwargs = dict(
         embedding_registry=embedding_registry,
         embedding_provider_name=embedding_provider_name,
@@ -273,6 +281,7 @@ async def compare_planner_modes(
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name=llm_provider_name,
+        tool_registry=tool_registry,
         rerank_provider=rerank_provider,
         query_rewrite_enabled=query_rewrite_enabled,
         terms=terms,

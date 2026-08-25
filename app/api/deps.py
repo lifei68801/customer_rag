@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import Depends, Header, HTTPException
 
+from app.agent.tool_registry import ToolRegistry, discover_tools
 from app.api.admin_session import AdminSessionStore
 from app.config.settings import Settings
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
@@ -62,6 +63,7 @@ __all__ = [
     "get_review_conn",
     "get_settings",
     "get_table_extractor",
+    "get_tool_registry",
     "get_tts_provider",
     "get_upload_dir",
     "get_vector_store",
@@ -76,6 +78,8 @@ _graph_client_cache: Neo4jGraphClient | None = None
 _graph_client_lock = asyncio.Lock()
 _memory_conn_cache: aiosqlite.Connection | None = None
 _memory_conn_lock = asyncio.Lock()
+_tool_registry_cache: ToolRegistry | None = None
+_tool_registry_lock = asyncio.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +227,21 @@ async def get_memory_conn(
             if _memory_conn_cache is None:
                 _memory_conn_cache = await build_memory_conn_from_settings(settings)
     return _memory_conn_cache
+
+
+async def get_tool_registry() -> ToolRegistry:
+    """进程内单例：启动时扫描 app/agent/tools/*/manifest.yaml 构建一次，
+    此后复用——跟 get_bm25_index/get_graph_client 同一个双重检查锁定
+    单例模式。这意味着新增/修改一个工具目录后，运行中的 API 进程不会
+    实时感知到，需要重启服务才能生效，这跟 get_bm25_index 已经接受的
+    折衷一致。"""
+    global _tool_registry_cache
+    if _tool_registry_cache is None:
+        async with _tool_registry_lock:
+            if _tool_registry_cache is None:
+                tools_dir = Path(__file__).resolve().parent.parent / "agent" / "tools"
+                _tool_registry_cache = discover_tools(tools_dir)
+    return _tool_registry_cache
 
 
 def get_asr_provider(

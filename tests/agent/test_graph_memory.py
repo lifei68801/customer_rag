@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import aiosqlite
 
 from app.agent.graph import build_agent_graph
+from app.agent.tool_registry import discover_tools
 from app.memory.consolidation_queue import list_pending_jobs, process_pending_jobs
 from app.memory.memory_store import list_active_memory_items, upsert_memory_item
 from app.memory.schema import ensure_schema
@@ -12,6 +14,11 @@ from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, Embeddi
 from app.providers.registry import ProviderRegistry
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
+
+# build_agent_graph 的 tool_registry 现在是必填项（不给默认值），本文件
+# 测试都走 memory_conn 打开时的确定性路径，从不实际使用 tool_registry，
+# 这里统一构造一次真实注册表传给每个调用点。
+_TOOL_REGISTRY = discover_tools(Path(__file__).resolve().parents[2] / "app" / "agent" / "tools")
 
 
 class FakeEmbeddingProvider:
@@ -122,6 +129,7 @@ async def test_memory_disabled_by_default_matches_stage4_behavior():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
     )
 
@@ -169,6 +177,7 @@ async def test_query_rewrite_receives_recent_conversation_turns_as_context():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=True,
         memory_conn=conn,
     )
@@ -218,6 +227,7 @@ async def test_memory_enabled_saves_turn_and_injects_context():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         memory_conn=conn,
     )
@@ -271,6 +281,7 @@ async def test_memory_enabled_enqueues_consolidation_job_without_blocking_respon
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         memory_conn=conn,
     )
@@ -326,6 +337,7 @@ async def test_memory_enabled_stores_embedding_for_newly_added_facts_after_worke
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         memory_conn=conn,
     )
@@ -402,6 +414,7 @@ async def test_memory_recall_injects_structured_history_for_time_bearing_questio
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         memory_conn=conn,
     )
@@ -452,6 +465,7 @@ async def test_memory_recall_stays_noop_when_question_has_no_time_expression():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         memory_conn=conn,
     )
@@ -505,6 +519,7 @@ async def test_uses_injected_session_window_store_instead_of_direct_sql():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         memory_conn=conn,
         session_window_store=session_window_store,

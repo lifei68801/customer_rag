@@ -5,31 +5,15 @@ import json
 import logging
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from app.agent.tools import (
-    STRUCTURED_FILTER_QUERY_PARAMETERS_SCHEMA,
-    STRUCTURED_FILTER_QUERY_TOOL_SCHEMA,
-    STRUCTURED_FILTER_QUERY_USAGE_GUIDE,
-    VECTOR_SEARCH_TOOL_SCHEMA,
-    structured_filter_query_tool,
-    vector_search_tool,
-)
-from app.graphrag.ontology import Term
-from app.graphrag.ontology_categories import TermTypeCategory
-from app.graphrag.ontology_constraints import AllowedCombination
-from app.graphrag.ontology_recall import format_recall_candidates, recall_ontology_candidates
-from app.graphrag.term_guard import GraphClientProtocol, describe_association
+from app.agent.tool_registry import ToolContext, ToolRegistry
+from app.graphrag.term_guard import describe_association
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderStreamChunk, ToolCall
-from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
-from app.providers.rerank import RerankProvider
-from app.retrieval.bm25 import BM25Index
-from app.retrieval.vector_store import VectorRecord, VectorStore
+from app.retrieval.vector_store import VectorRecord
 from app.safety.rules import LITE_SAFETY_FALLBACK_SENTENCE, check_text
 from app.voice.streaming_responder import stream_sentences
 
 logger = logging.getLogger(__name__)
-
-_TOOL_SCHEMAS = [VECTOR_SEARCH_TOOL_SCHEMA, STRUCTURED_FILTER_QUERY_TOOL_SCHEMA]
 
 _FINAL_ANSWER_INSTRUCTION = (
     "你已经达到本轮对话可用的工具调用次数上限，不能再调用任何工具了。"
@@ -128,6 +112,7 @@ async def run_planner_turn(
     llm_registry: ProviderRegistry,
     llm_provider_name: str,
     max_tool_call_rounds: int,
+    tool_registry: ToolRegistry,
 ) -> dict[str, Any]:
     """执行一轮 Planner 推理：调用 LLM，决定"再调工具"还是"给出最终答案"。
 
@@ -141,7 +126,7 @@ async def run_planner_turn(
 
     result = await llm_registry.run(
         ProviderCapability.LLM,
-        ProviderRequest(messages=messages, tools=_TOOL_SCHEMAS, tool_choice="auto"),
+        ProviderRequest(messages=messages, tools=tool_registry.schemas(), tool_choice="auto"),
         provider_name=llm_provider_name,
     )
 
@@ -263,6 +248,7 @@ async def run_planner_turn_streaming(
     banned_terms: list[str] | None,
     on_answer_chunk: Callable[[str], Awaitable[None]],
     on_tool_status: Callable[[], Awaitable[None]],
+    tool_registry: ToolRegistry,
 ) -> dict[str, Any]:
     """run_planner_turn 的流式版本：语义完全一致（同样的轮次上限检查、
     同样的 planner_messages 追加规则），区别只是这一轮的文本用
@@ -286,7 +272,7 @@ async def run_planner_turn_streaming(
 
     raw_stream = llm_registry.stream_with_tools(
         ProviderCapability.LLM,
-        ProviderRequest(messages=messages, tools=_TOOL_SCHEMAS, tool_choice="auto"),
+        ProviderRequest(messages=messages, tools=tool_registry.schemas(), tool_choice="auto"),
         provider_name=llm_provider_name,
     )
     tool_calls_box: list[list[ToolCall] | None] = [None]
@@ -345,192 +331,19 @@ async def run_planner_turn_streaming(
     }
 
 
-class ToolArgumentResolutionError(Exception):
-    """_resolve_tool_arguments 失败时抛出——调用方（run_tool_calls）捕获后
-    降级成这次工具调用的 {"error": ...} 观察结果，不会让整个 Planner 轮次
-    崩溃。"""
-
-
-def _strip_json_code_fence(text: str) -> str:
-    """独立参数生成调用不走 function-calling 协议，纯靠指令要求模型直接
-    输出 JSON——即便提示词明确要求不要用代码块包裹，个别时候模型还是会
-    习惯性地包一层 ```json ... ``` 或 ``` ... ```，这里做一次防御性剥离，
-    不影响本身就没有代码块的正常情况。"""
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = stripped[3:]
-        if stripped.startswith("json"):
-            stripped = stripped[4:]
-        if stripped.endswith("```"):
-            stripped = stripped[:-3]
-        stripped = stripped.strip()
-    return stripped
-
-
-def _build_structured_filter_query_prompt(query_intent: str, candidates) -> str:
-    schema_text = json.dumps(STRUCTURED_FILTER_QUERY_PARAMETERS_SCHEMA, ensure_ascii=False, indent=2)
-    return (
-        "你是一个把自然语言查询意图转成结构化查询参数的助手。给定下面的查询意图、"
-        "使用说明、JSON Schema、以及召回到的本体候选参考，输出一段严格匹配这个 "
-        "JSON Schema 的 JSON 对象作为你的完整回复——不要输出任何 JSON 之外的文字，"
-        "也不要用 markdown 代码块包裹。\n\n"
-        f"使用说明：\n{STRUCTURED_FILTER_QUERY_USAGE_GUIDE}\n\n"
-        f"JSON Schema：\n{schema_text}\n\n"
-        "constraints.hops 里的 relation_type/target_term_type、constraints 里的 "
-        "field/target_field，以及 anchor.term_type，都应该优先使用下面候选参考里"
-        "出现过的名字，不要凭空发明没见过的名字。\n\n"
-        f"候选参考：\n{format_recall_candidates(candidates)}\n\n"
-        f"查询意图：{query_intent}"
-    )
-
-
-async def _resolve_structured_filter_query_arguments(
-    query_intent: str,
-    *,
-    terms: list[Term],
-    term_type_schema: dict[str, TermTypeCategory],
-    allowed_combinations: list[AllowedCombination],
-    llm_registry: ProviderRegistry,
-    llm_provider_name: str,
-) -> dict[str, Any]:
-    """structured_filter_query_tool 的独立参数生成调用：召回本体候选 +
-    完整 schema 说明 + query_intent，不走 function-calling 协议、不带
-    历史，要求模型直接输出匹配 schema 的 JSON。"""
-    candidates = recall_ontology_candidates(
-        query_intent, terms=terms, term_type_schema=term_type_schema,
-        allowed_combinations=allowed_combinations,
-    )
-    prompt = _build_structured_filter_query_prompt(query_intent, candidates)
-    try:
-        result = await llm_registry.run(
-            ProviderCapability.LLM,
-            ProviderRequest(messages=[{"role": "user", "content": prompt}]),
-            provider_name=llm_provider_name,
-        )
-    except Exception as exc:
-        raise ToolArgumentResolutionError(f"参数生成调用失败：{exc}") from exc
-    try:
-        return json.loads(_strip_json_code_fence(result.text))
-    except json.JSONDecodeError as exc:
-        raise ToolArgumentResolutionError(
-            f"参数生成调用返回的内容不是合法 JSON：{result.text[:200]!r}"
-        ) from exc
-
-
-async def _resolve_tool_arguments(
-    tool_name: str,
-    raw_arguments: dict[str, Any],
-    *,
-    fallback_query: str,
-    terms: list[Term],
-    term_type_schema: dict[str, TermTypeCategory],
-    allowed_combinations: list[AllowedCombination],
-    llm_registry: ProviderRegistry,
-    llm_provider_name: str,
-) -> dict[str, Any]:
-    """按工具名分发到对应的参数解析方法，返回这个工具调用最终会被执行
-    使用的参数字典。跟 _dispatch_tool_call（按工具名分发执行）是平行
-    关系，发生在它之前。
-
-    fallback_query 是本轮用户原始问题——vector_search_tool 直接复用
-    raw_arguments 里的 query；structured_filter_query_tool 的
-    query_intent 理论上是必填字段，但防御性地在它为空/空白时回退用
-    fallback_query 作为召回 query。
-    """
-    if tool_name == "vector_search_tool":
-        return raw_arguments
-    if tool_name == "structured_filter_query_tool":
-        query_intent = str(raw_arguments.get("query_intent") or "").strip() or fallback_query
-        return await _resolve_structured_filter_query_arguments(
-            query_intent,
-            terms=terms, term_type_schema=term_type_schema,
-            allowed_combinations=allowed_combinations,
-            llm_registry=llm_registry, llm_provider_name=llm_provider_name,
-        )
-    raise ToolArgumentResolutionError(f"未知工具: {tool_name}")
-
-
-async def _dispatch_tool_call(
-    name: str,
-    arguments: dict[str, Any],
-    *,
-    tenant_id: str,
-    embedding_registry: EmbeddingRegistry,
-    embedding_provider_name: str,
-    vector_store: VectorStore,
-    bm25_index: BM25Index,
-    llm_registry: ProviderRegistry,
-    llm_provider_name: str,
-    rerank_provider: RerankProvider | None,
-    query_rewrite_enabled: bool,
-    terms: list[Term] | None,
-    graph_client: GraphClientProtocol | None,
-    confirmed_relation_types: set[str] | None,
-    term_type_schema: dict[str, TermTypeCategory] | None,
-) -> tuple[str, list[VectorRecord]]:
-    """执行单个工具调用，返回 (供 LLM 看的观察结果 JSON 字符串, 新增的检索记录)。
-
-    tenant_id 永远用调用方传入的值（来自 AgentState），完全忽略 arguments 里
-    可能出现的同名字段——不管 LLM 输出了什么，这里都不采信。
-    """
-    if name == "vector_search_tool":
-        query = str(arguments.get("query", ""))
-        records = await vector_search_tool(
-            query,
-            tenant_id=tenant_id,
-            embedding_registry=embedding_registry,
-            embedding_provider_name=embedding_provider_name,
-            vector_store=vector_store,
-            bm25_index=bm25_index,
-            llm_registry=llm_registry,
-            llm_provider_name=llm_provider_name,
-            rerank_provider=rerank_provider,
-            query_rewrite_enabled=query_rewrite_enabled,
-        )
-        observation = {
-            "results": [{"id": r.id, "text": r.text} for r in records]
-        }
-        return json.dumps(observation, ensure_ascii=False), records
-
-    if name == "structured_filter_query_tool":
-        if graph_client is None or confirmed_relation_types is None or term_type_schema is None:
-            return json.dumps({"error": "structured_filter_query_tool 未配置"}, ensure_ascii=False), []
-        observation = await structured_filter_query_tool(
-            arguments, tenant_id=tenant_id, terms=terms or [], graph_client=graph_client,
-            confirmed_relation_types=confirmed_relation_types, term_type_schema=term_type_schema,
-        )
-        for anchor in observation.get("anchors", []):
-            for neighbor in anchor.get("neighbors", []):
-                neighbor["association"] = describe_association(neighbor.get("hops", 1))
-        return json.dumps(observation, ensure_ascii=False), []
-
-    return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False), []
-
-
 async def run_tool_calls(
     state: dict[str, Any],
     *,
-    embedding_registry: EmbeddingRegistry,
-    embedding_provider_name: str,
-    vector_store: VectorStore,
-    bm25_index: BM25Index,
-    llm_registry: ProviderRegistry,
-    llm_provider_name: str,
-    rerank_provider: RerankProvider | None = None,
-    query_rewrite_enabled: bool = True,
-    terms: list[Term] | None = None,
-    graph_client: GraphClientProtocol | None = None,
-    confirmed_relation_types: set[str] | None = None,
-    term_type_schema: dict[str, TermTypeCategory] | None = None,
-    allowed_combinations: list[AllowedCombination] | None = None,
+    tool_registry: ToolRegistry,
+    context: ToolContext,
 ) -> dict[str, Any]:
     """执行 state["pending_tool_calls"] 里的每一个工具调用，结果回填对话历史。
 
     每个工具的执行结果都会被追加为一条 role="tool" 消息（OpenAI 协议要求的
-    格式），供下一轮 Planner 推理时看到；解析 arguments 失败时不抛异常，
-    回填一条 {"error": ...} 观察结果，让 Planner 有机会自行调整重试。
+    格式），供下一轮 Planner 推理时看到；解析 arguments 失败、参数解析阶段
+    失败都不抛异常，回填一条 {"error": ...} 观察结果，让 Planner 有机会
+    自行调整重试。
     """
-    tenant_id = state["tenant_id"]
     messages = list(state.get("planner_messages", []))
     retrieved_records = list(state.get("retrieved_records", []))
     tool_results = list(state.get("tool_results", []))
@@ -545,50 +358,28 @@ async def run_tool_calls(
                 {"tool_call_id": call["id"], "name": call["name"], "content": content},
                 [],
             )
-        if call["name"] == "structured_filter_query_tool" and (
-            graph_client is None or confirmed_relation_types is None or term_type_schema is None
-        ):
-            # 跟 _dispatch_tool_call 里同一个检查提前到这里——不配置的话，
-            # 走到 _resolve_tool_arguments 只会白白多打一次付费 LLM 调用，
-            # 结果早就能确定不需要执行。
-            content = json.dumps({"error": "structured_filter_query_tool 未配置"}, ensure_ascii=False)
+        try:
+            tool, _ = tool_registry.get(call["name"])
+        except KeyError:
+            content = json.dumps({"error": f"未知工具: {call['name']}"}, ensure_ascii=False)
             return (
                 {"tool_call_id": call["id"], "name": call["name"], "content": content},
                 [],
             )
         try:
-            resolved_arguments = await _resolve_tool_arguments(
-                call["name"], arguments,
-                fallback_query=state.get("question", ""),
-                terms=terms or [],
-                term_type_schema=term_type_schema or {},
-                allowed_combinations=allowed_combinations or [],
-                llm_registry=llm_registry,
-                llm_provider_name=llm_provider_name,
-            )
-        except ToolArgumentResolutionError as exc:
+            resolved_arguments = await tool.resolve_arguments(arguments, context=context)
+            observation, new_records = await tool.execute(resolved_arguments, context=context)
+        except Exception as exc:
             content = json.dumps({"error": str(exc)}, ensure_ascii=False)
             return (
                 {"tool_call_id": call["id"], "name": call["name"], "content": content},
                 [],
             )
-        content, new_records = await _dispatch_tool_call(
-            call["name"],
-            resolved_arguments,
-            tenant_id=tenant_id,
-            embedding_registry=embedding_registry,
-            embedding_provider_name=embedding_provider_name,
-            vector_store=vector_store,
-            bm25_index=bm25_index,
-            llm_registry=llm_registry,
-            llm_provider_name=llm_provider_name,
-            rerank_provider=rerank_provider,
-            query_rewrite_enabled=query_rewrite_enabled,
-            terms=terms,
-            graph_client=graph_client,
-            confirmed_relation_types=confirmed_relation_types,
-            term_type_schema=term_type_schema,
-        )
+        if call["name"] == "structured_filter_query_tool":
+            for anchor in observation.get("anchors", []):
+                for neighbor in anchor.get("neighbors", []):
+                    neighbor["association"] = describe_association(neighbor.get("hops", 1))
+        content = json.dumps(observation, ensure_ascii=False)
         return (
             {"tool_call_id": call["id"], "name": call["name"], "content": content},
             new_records,

@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from app.agent.graph import build_agent_graph
+from app.agent.tool_registry import discover_tools
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.providers.base import (
@@ -12,6 +15,12 @@ from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, Embeddi
 from app.providers.registry import ProviderRegistry
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
+
+# 这些测试都走 enable_autonomous_planning=True 的 Planner 路径，真的会
+# 用到 tool_registry 里注册的工具（vector_search_tool/
+# structured_filter_query_tool），用 discover_tools 扫描真实的
+# app/agent/tools/ 目录构建一次，供所有调用点复用。
+_TOOL_REGISTRY = discover_tools(Path(__file__).resolve().parents[2] / "app" / "agent" / "tools")
 
 
 class FakeEmbeddingProvider:
@@ -83,6 +92,7 @@ async def test_planner_calls_tool_once_then_answers():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         enable_autonomous_planning=True,
     )
@@ -128,6 +138,7 @@ async def test_planner_exceeding_max_rounds_falls_back_and_creates_ticket():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         enable_autonomous_planning=True,
         max_tool_call_rounds=1,
@@ -172,6 +183,7 @@ async def test_planner_final_answer_attempt_succeeds_avoids_ticket():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         enable_autonomous_planning=True,
         max_tool_call_rounds=1,
@@ -219,6 +231,7 @@ async def test_planner_does_not_surface_another_tenants_records():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         enable_autonomous_planning=True,
     )
@@ -287,6 +300,7 @@ async def test_planner_graph_uses_structured_filter_query_tool_with_term_guard_c
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         enable_autonomous_planning=True,
         terms=terms,
@@ -361,6 +375,7 @@ async def test_planner_streams_final_answer_and_emits_tool_status():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         enable_autonomous_planning=True,
         on_answer_chunk=on_answer_chunk,
@@ -440,6 +455,7 @@ async def test_output_safety_reviews_leading_commentary_text_from_earlier_planne
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         enable_autonomous_planning=True,
         on_answer_chunk=on_answer_chunk,
@@ -503,6 +519,7 @@ async def test_planner_falls_back_to_non_streaming_when_provider_lacks_tool_stre
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         enable_autonomous_planning=True,
         on_answer_chunk=on_answer_chunk,

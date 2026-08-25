@@ -7,9 +7,11 @@ from app.agent.planner import (
     run_planner_turn_streaming,
     run_tool_calls,
 )
+from app.agent.tool_registry import ToolContext, ToolManifest, ToolRegistry
+from app.agent.tools.structured_filter_query.tool import TOOL as STRUCTURED_FILTER_QUERY_TOOL
+from app.agent.tools.vector_search.tool import TOOL as VECTOR_SEARCH_TOOL
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
-from app.graphrag.ontology_constraints import AllowedCombination
 from app.providers.base import (
     ProviderCapability,
     ProviderRequest,
@@ -72,6 +74,42 @@ def _embedding_registry() -> EmbeddingRegistry:
     return registry
 
 
+def _fake_tool_registry(**tools) -> ToolRegistry:
+    """tools 是 name -> Tool 实例的映射，直接注册进一个真实的 ToolRegistry
+    （复用真实类而不是再造一个 fake registry），manifest 用最简单的占位
+    内容，测试不关心 schema 具体形状时用这个够了。"""
+    registry = ToolRegistry()
+    for name, tool in tools.items():
+        registry.register(
+            ToolManifest(name=name, description="", parameters_schema={"type": "object", "properties": {}}),
+            tool,
+        )
+    return registry
+
+
+def _full_tool_registry() -> ToolRegistry:
+    """run_planner_turn/run_planner_turn_streaming 系列测试大多不关心
+    tools schema 的具体内容，只需要一个包含真实两个工具的注册表即可。"""
+    return _fake_tool_registry(
+        vector_search_tool=VECTOR_SEARCH_TOOL,
+        structured_filter_query_tool=STRUCTURED_FILTER_QUERY_TOOL,
+    )
+
+
+def _context(**overrides) -> ToolContext:
+    defaults = dict(
+        tenant_id="t1", question="",
+        embedding_registry=None, embedding_provider_name="",
+        vector_store=None, bm25_index=None,
+        llm_registry=None, llm_provider_name="fake-llm",
+        rerank_provider=None, query_rewrite_enabled=False,
+        terms=[], graph_client=None, confirmed_relation_types=set(),
+        term_type_schema={}, allowed_combinations=[],
+    )
+    defaults.update(overrides)
+    return ToolContext(**defaults)
+
+
 async def test_run_planner_turn_returns_pending_tool_calls_when_llm_requests_a_tool():
     llm_registry = ProviderRegistry()
     llm_registry.register(
@@ -102,6 +140,7 @@ async def test_run_planner_turn_returns_pending_tool_calls_when_llm_requests_a_t
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
         max_tool_call_rounds=3,
+        tool_registry=_full_tool_registry(),
     )
 
     assert update["pending_tool_calls"] == [
@@ -124,14 +163,16 @@ async def test_planner_sends_byte_identical_tools_schema_across_rounds():
         ProviderResult(text="最终答案"),
     ])
     llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+    tool_registry = _full_tool_registry()
 
     state = {"planner_messages": [{"role": "user", "content": "随便问点什么"}], "tool_call_round": 0}
     await run_planner_turn(
         state, llm_registry=llm_registry, llm_provider_name="fake-llm", max_tool_call_rounds=3,
+        tool_registry=tool_registry,
     )
     # 每轮结束后立刻拍快照（序列化成字符串），不留到最后才比引用——
-    # ScriptedLLMProvider 存的是 ProviderRequest 对象引用，_TOOL_SCHEMAS
-    # 又是模块级共享的可变列表，如果两轮之间被就地修改，最后才比较引用
+    # ScriptedLLMProvider 存的是 ProviderRequest 对象引用，tool_registry.schemas()
+    # 每次调用都会重新构造一份新列表，如果内容之间有差异，最后才比较引用
     # 只会看到"同一个（已经被改过的）对象"，测不出这种回归；每轮结束后
     # 立刻序列化，才是真正对比"这一轮实际发出去的内容"。
     first_round_tools = json.dumps(provider.requests[0].tools, sort_keys=True)
@@ -145,6 +186,7 @@ async def test_planner_sends_byte_identical_tools_schema_across_rounds():
     }
     await run_planner_turn(
         state2, llm_registry=llm_registry, llm_provider_name="fake-llm", max_tool_call_rounds=3,
+        tool_registry=tool_registry,
     )
     second_round_tools = json.dumps(provider.requests[1].tools, sort_keys=True)
 
@@ -169,6 +211,7 @@ async def test_run_planner_turn_returns_answer_when_llm_stops_calling_tools():
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
         max_tool_call_rounds=3,
+        tool_registry=_full_tool_registry(),
     )
 
     assert update["answer_text"] == "重启路由器即可解决。"
@@ -203,6 +246,7 @@ async def test_run_planner_turn_gives_up_when_final_answer_attempt_also_returns_
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
         max_tool_call_rounds=3,
+        tool_registry=_full_tool_registry(),
     )
 
     assert update == {"planner_gave_up": True}
@@ -241,6 +285,7 @@ async def test_run_planner_turn_gives_up_when_final_answer_attempt_raises():
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
         max_tool_call_rounds=3,
+        tool_registry=_full_tool_registry(),
     )
 
     assert update == {"planner_gave_up": True}
@@ -273,6 +318,7 @@ async def test_run_planner_turn_final_answer_attempt_succeeds_when_rounds_exhaus
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
         max_tool_call_rounds=3,
+        tool_registry=_full_tool_registry(),
     )
 
     assert update["planner_gave_up"] is False
@@ -306,6 +352,7 @@ async def test_run_planner_turn_final_answer_attempt_does_not_pass_tools():
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
         max_tool_call_rounds=3,
+        tool_registry=_full_tool_registry(),
     )
 
     assert provider.requests[1].tools is None
@@ -321,7 +368,6 @@ async def test_run_tool_calls_executes_vector_search_and_scopes_to_state_tenant(
     )
 
     state = {
-        "tenant_id": "t1",
         "planner_messages": [{"role": "user", "content": "网络连不上怎么办？"}],
         # 恶意/异常情况下 arguments 里混入了别的 tenant_id，执行时必须被忽略
         "pending_tool_calls": [
@@ -333,8 +379,9 @@ async def test_run_tool_calls_executes_vector_search_and_scopes_to_state_tenant(
         ],
     }
 
-    update = await run_tool_calls(
-        state,
+    registry = _fake_tool_registry(vector_search_tool=VECTOR_SEARCH_TOOL)
+    context = _context(
+        tenant_id="t1",
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
@@ -343,6 +390,8 @@ async def test_run_tool_calls_executes_vector_search_and_scopes_to_state_tenant(
         llm_provider_name="fake-llm",
         query_rewrite_enabled=False,
     )
+
+    update = await run_tool_calls(state, tool_registry=registry, context=context)
 
     assert update["pending_tool_calls"] == []
     assert [r.id for r in update["retrieved_records"]] == ["faq/network.md"]
@@ -375,161 +424,6 @@ class FakeGraphClientForStructuredQuery:
         return {"rows": self._rows, "total_count": self._total_count}
 
 
-async def test_resolve_tool_arguments_passes_through_vector_search_tool_without_llm_call():
-    from app.agent.planner import _resolve_tool_arguments
-
-    llm_registry = ProviderRegistry()
-    llm_registry.register(ProviderCapability.LLM, "fake-llm", ScriptedLLMProvider([]))
-
-    resolved = await _resolve_tool_arguments(
-        "vector_search_tool", {"query": "网络连不上怎么办"},
-        fallback_query="网络连不上怎么办？",
-        terms=[], term_type_schema={}, allowed_combinations=[],
-        llm_registry=llm_registry, llm_provider_name="fake-llm",
-    )
-
-    assert resolved == {"query": "网络连不上怎么办"}
-
-
-async def test_resolve_tool_arguments_triggers_independent_call_for_structured_filter_query_tool():
-    from app.agent.planner import _resolve_tool_arguments
-
-    llm_registry = ProviderRegistry()
-    provider = ScriptedLLMProvider(
-        [ProviderResult(text='{"anchor": {"term_type": "订单号"}}')]
-    )
-    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
-
-    resolved = await _resolve_tool_arguments(
-        "structured_filter_query_tool", {"query_intent": "查一下订单号有多少个"},
-        fallback_query="查一下订单号有多少个",
-        terms=[], term_type_schema={}, allowed_combinations=[],
-        llm_registry=llm_registry, llm_provider_name="fake-llm",
-    )
-
-    assert resolved == {"anchor": {"term_type": "订单号"}}
-    assert len(provider.requests) == 1
-    # 独立参数生成调用不走 function-calling 协议、不带历史。
-    assert provider.requests[0].tools is None
-    assert len(provider.requests[0].messages) == 1
-
-
-async def test_resolve_tool_arguments_falls_back_to_original_question_when_query_intent_empty():
-    from app.agent.planner import _resolve_tool_arguments
-
-    llm_registry = ProviderRegistry()
-    provider = ScriptedLLMProvider([ProviderResult(text='{"anchor": {"term_type": "订单号"}}')])
-    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
-
-    await _resolve_tool_arguments(
-        "structured_filter_query_tool", {"query_intent": "   "},
-        fallback_query="coke-cola公司有多少个订单",
-        terms=[], term_type_schema={}, allowed_combinations=[],
-        llm_registry=llm_registry, llm_provider_name="fake-llm",
-    )
-
-    # 召回 query 用的是原始问题的兜底值，不是空白字符串——通过 prompt 里
-    # 是否出现原始问题文本来验证。
-    assert "coke-cola公司有多少个订单" in provider.requests[0].messages[0]["content"]
-
-
-async def test_resolve_tool_arguments_strips_markdown_code_fence():
-    from app.agent.planner import _resolve_tool_arguments
-
-    llm_registry = ProviderRegistry()
-    llm_registry.register(
-        ProviderCapability.LLM, "fake-llm",
-        ScriptedLLMProvider([ProviderResult(text='```json\n{"anchor": {"term_type": "订单号"}}\n```')]),
-    )
-
-    resolved = await _resolve_tool_arguments(
-        "structured_filter_query_tool", {"query_intent": "查订单"},
-        fallback_query="查订单",
-        terms=[], term_type_schema={}, allowed_combinations=[],
-        llm_registry=llm_registry, llm_provider_name="fake-llm",
-    )
-
-    assert resolved == {"anchor": {"term_type": "订单号"}}
-
-
-async def test_resolve_tool_arguments_raises_when_independent_call_returns_invalid_json():
-    from app.agent.planner import ToolArgumentResolutionError, _resolve_tool_arguments
-
-    llm_registry = ProviderRegistry()
-    llm_registry.register(
-        ProviderCapability.LLM, "fake-llm",
-        ScriptedLLMProvider([ProviderResult(text="这不是 JSON")]),
-    )
-
-    try:
-        await _resolve_tool_arguments(
-            "structured_filter_query_tool", {"query_intent": "查订单"},
-            fallback_query="查订单",
-            terms=[], term_type_schema={}, allowed_combinations=[],
-            llm_registry=llm_registry, llm_provider_name="fake-llm",
-        )
-        assert False, "应该抛出 ToolArgumentResolutionError"
-    except ToolArgumentResolutionError:
-        pass
-
-
-async def test_resolve_tool_arguments_raises_for_unknown_tool():
-    from app.agent.planner import ToolArgumentResolutionError, _resolve_tool_arguments
-
-    llm_registry = ProviderRegistry()
-    llm_registry.register(ProviderCapability.LLM, "fake-llm", ScriptedLLMProvider([]))
-
-    try:
-        await _resolve_tool_arguments(
-            "unknown_tool", {},
-            fallback_query="问题",
-            terms=[], term_type_schema={}, allowed_combinations=[],
-            llm_registry=llm_registry, llm_provider_name="fake-llm",
-        )
-        assert False, "应该抛出 ToolArgumentResolutionError"
-    except ToolArgumentResolutionError:
-        pass
-
-
-async def test_resolve_tool_arguments_includes_recall_candidates_in_prompt():
-    """端到端验证复现场景：query_intent 提到"公司"，召回到的候选（term_type
-    "公司"、relation 三元组、实体名 Coca-Cola）应该出现在独立参数生成调用
-    看到的 prompt 里。"""
-    from app.agent.planner import _resolve_tool_arguments
-    from app.graphrag.ontology import Term
-    from app.graphrag.ontology_categories import TermTypeCategory
-
-    llm_registry = ProviderRegistry()
-    provider = ScriptedLLMProvider([ProviderResult(text='{"anchor": {"term_type": "订单号"}}')])
-    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
-
-    coca_cola_term = Term(
-        tenant_id="demo", node_key="公司:Coca-Cola", standard_name="Coca-Cola",
-        aliases=[], term_type="公司",
-    )
-
-    await _resolve_tool_arguments(
-        "structured_filter_query_tool",
-        {"query_intent": "查询Coca-Cola这家公司名下有多少个订单"},
-        fallback_query="查询Coca-Cola这家公司名下有多少个订单",
-        terms=[coca_cola_term],
-        term_type_schema={
-            "订单号": TermTypeCategory(value="订单号", extra_fields=[]),
-            "公司": TermTypeCategory(value="公司", extra_fields=[]),
-        },
-        allowed_combinations=[
-            AllowedCombination(subject_term_type="订单号", relation_type="BELONG_TO", object_term_type="产品"),
-            AllowedCombination(subject_term_type="产品", relation_type="BELONG_TO", object_term_type="公司"),
-        ],
-        llm_registry=llm_registry, llm_provider_name="fake-llm",
-    )
-
-    prompt = provider.requests[0].messages[0]["content"]
-    assert "公司" in prompt
-    assert "Coca-Cola" in prompt
-    assert "BELONG_TO" in prompt
-
-
 async def test_run_tool_calls_executes_structured_filter_query_tool_with_name_anchor():
     _, vector_store, bm25_index = _build_store_and_index()
     embedding_registry = _embedding_registry()
@@ -540,8 +434,6 @@ async def test_run_tool_calls_executes_structured_filter_query_tool_with_name_an
     )
 
     state = {
-        "tenant_id": "t1",
-        "question": "网关超时示例是什么",
         "planner_messages": [],
         "pending_tool_calls": [
             {
@@ -556,8 +448,10 @@ async def test_run_tool_calls_executes_structured_filter_query_tool_with_name_an
         "standard_name": "示例错误码E502", "node_key": "示例错误码E502", "term_type": "error_code",
         "all_properties": {},
     }])
-    update = await run_tool_calls(
-        state,
+    registry = _fake_tool_registry(structured_filter_query_tool=STRUCTURED_FILTER_QUERY_TOOL)
+    context = _context(
+        tenant_id="t1",
+        question="网关超时示例是什么",
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
@@ -569,6 +463,7 @@ async def test_run_tool_calls_executes_structured_filter_query_tool_with_name_an
         confirmed_relation_types=set(),
         term_type_schema={"error_code": TermTypeCategory(value="error_code", extra_fields=[])},
     )
+    update = await run_tool_calls(state, tool_registry=registry, context=context)
 
     tool_message = update["planner_messages"][-1]
     assert "示例错误码E502" in tool_message["content"]
@@ -587,8 +482,6 @@ async def test_run_tool_calls_degrades_gracefully_when_structured_filter_query_r
     )
 
     state = {
-        "tenant_id": "t1",
-        "question": "随便问点什么",
         "planner_messages": [],
         "pending_tool_calls": [
             {
@@ -599,8 +492,10 @@ async def test_run_tool_calls_degrades_gracefully_when_structured_filter_query_r
         ],
     }
 
-    update = await run_tool_calls(
-        state,
+    registry = _fake_tool_registry(structured_filter_query_tool=STRUCTURED_FILTER_QUERY_TOOL)
+    context = _context(
+        tenant_id="t1",
+        question="随便问点什么",
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
@@ -612,6 +507,7 @@ async def test_run_tool_calls_degrades_gracefully_when_structured_filter_query_r
         confirmed_relation_types=set(),
         term_type_schema={},
     )
+    update = await run_tool_calls(state, tool_registry=registry, context=context)
 
     tool_message = update["planner_messages"][-1]
     assert tool_message["role"] == "tool"
@@ -619,19 +515,26 @@ async def test_run_tool_calls_degrades_gracefully_when_structured_filter_query_r
     assert "error" in parsed
 
 
-async def test_run_tool_calls_skips_independent_call_when_structured_filter_query_unconfigured():
-    """graph_client/confirmed_relation_types/term_type_schema 缺任何一个时，
-    应该在触发独立参数生成调用之前就短路返回错误——不能为一个已知会被
-    拒绝的调用白白多打一次付费 LLM 调用。"""
+async def test_run_tool_calls_reports_error_when_structured_filter_query_unconfigured():
+    """graph_client 未配置（None）时，structured_filter_query_tool.execute()
+    返回 {"error": "structured_filter_query_tool 未配置"}。
+
+    这个检查现在发生在 Tool.execute() 内部（见
+    app/agent/tools/structured_filter_query/tool.py）——Tool 协议里"是否
+    配置好了"是每个工具自己的私事，通用的 run_tool_calls 分发层不应该
+    认识某个具体工具的配置细节，那样会破坏插件化的初衷。这跟迁移前的
+    行为有一处刻意的差异：迁移前 run_tool_calls 会在触发独立参数生成
+    调用（resolve_arguments）之前就用工具专属的知识短路，省下一次注定
+    会被拒绝的付费 LLM 调用；迁移后这个优化不再存在于通用分发层，
+    resolve_arguments 总是会真的执行一次——这是 Task 3 pre-flight 阶段
+    与协调者确认过的、插件化架构的可接受代价。"""
     _, vector_store, bm25_index = _build_store_and_index()
     embedding_registry = _embedding_registry()
     llm_registry = ProviderRegistry()
-    provider = ScriptedLLMProvider([])  # 一次调用都不该发生，脚本留空
+    provider = ScriptedLLMProvider([ProviderResult(text='{"anchor": {"term_type": "订单号"}}')])
     llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
 
     state = {
-        "tenant_id": "t1",
-        "question": "随便问点什么",
         "planner_messages": [],
         "pending_tool_calls": [
             {
@@ -642,21 +545,24 @@ async def test_run_tool_calls_skips_independent_call_when_structured_filter_quer
         ],
     }
 
-    update = await run_tool_calls(
-        state,
+    registry = _fake_tool_registry(structured_filter_query_tool=STRUCTURED_FILTER_QUERY_TOOL)
+    context = _context(
+        tenant_id="t1",
+        question="随便问点什么",
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
-        # graph_client/confirmed_relation_types/term_type_schema 全部留默认 None
+        # graph_client 留默认 None——"未配置"
     )
+    update = await run_tool_calls(state, tool_registry=registry, context=context)
 
     tool_message = update["planner_messages"][-1]
     parsed = json.loads(tool_message["content"])
     assert parsed == {"error": "structured_filter_query_tool 未配置"}
-    assert provider.requests == []  # 独立参数生成调用一次都没发起
+    assert len(provider.requests) == 1  # 独立参数生成调用确实发生了一次
 
 
 async def test_run_tool_calls_annotates_expand_neighbors_with_association():
@@ -671,8 +577,6 @@ async def test_run_tool_calls_annotates_expand_neighbors_with_association():
     )
 
     state = {
-        "tenant_id": "t1",
-        "question": "网关超时示例关联什么",
         "planner_messages": [],
         "pending_tool_calls": [
             {
@@ -688,8 +592,10 @@ async def test_run_tool_calls_annotates_expand_neighbors_with_association():
         "all_properties": {},
         "neighbors": [{"related_name": "示例登录模块", "relation_type": "RELATED_TO", "hops": 2}],
     }])
-    update = await run_tool_calls(
-        state,
+    registry = _fake_tool_registry(structured_filter_query_tool=STRUCTURED_FILTER_QUERY_TOOL)
+    context = _context(
+        tenant_id="t1",
+        question="网关超时示例关联什么",
         embedding_registry=embedding_registry,
         embedding_provider_name="fake-embedding",
         vector_store=vector_store,
@@ -701,6 +607,7 @@ async def test_run_tool_calls_annotates_expand_neighbors_with_association():
         confirmed_relation_types=set(),
         term_type_schema={"error_code": TermTypeCategory(value="error_code", extra_fields=[])},
     )
+    update = await run_tool_calls(state, tool_registry=registry, context=context)
 
     tool_message = update["planner_messages"][-1]
     parsed = json.loads(tool_message["content"])
@@ -708,35 +615,27 @@ async def test_run_tool_calls_annotates_expand_neighbors_with_association():
 
 
 def test_tool_schemas_no_longer_include_graph_query_tool():
-    from app.agent.planner import _TOOL_SCHEMAS
-    names = [s["function"]["name"] for s in _TOOL_SCHEMAS]
+    from pathlib import Path
+
+    from app.agent.tool_registry import discover_tools
+
+    tools_dir = Path(__file__).resolve().parents[2] / "app" / "agent" / "tools"
+    registry = discover_tools(tools_dir)
+    names = [s["function"]["name"] for s in registry.schemas()]
     assert "graph_query_tool" not in names
     assert "structured_filter_query_tool" in names
 
 
 async def test_run_tool_calls_reports_error_for_malformed_arguments_without_crashing():
-    _, vector_store, bm25_index = _build_store_and_index()
-    embedding_registry = _embedding_registry()
-    llm_registry = ProviderRegistry()
-    llm_registry.register(ProviderCapability.LLM, "fake-llm", ScriptedLLMProvider([]))
-
+    registry = _fake_tool_registry(vector_search_tool=VECTOR_SEARCH_TOOL)
     state = {
-        "tenant_id": "t1",
         "planner_messages": [],
         "pending_tool_calls": [
             {"id": "call_3", "name": "vector_search_tool", "arguments": "不是合法JSON"}
         ],
     }
 
-    update = await run_tool_calls(
-        state,
-        embedding_registry=embedding_registry,
-        embedding_provider_name="fake-embedding",
-        vector_store=vector_store,
-        bm25_index=bm25_index,
-        llm_registry=llm_registry,
-        llm_provider_name="fake-llm",
-    )
+    update = await run_tool_calls(state, tool_registry=registry, context=_context(tenant_id="t1"))
 
     tool_message = update["planner_messages"][-1]
     assert tool_message["role"] == "tool"
@@ -759,57 +658,39 @@ def test_route_after_planner_goes_to_responder_when_answer_ready():
     assert route_after_planner(state) == "responder"
 
 
-async def test_run_tool_calls_executes_multiple_tools_concurrently(monkeypatch):
-    """同一轮请求了两个工具时，两次 _dispatch_tool_call 应该并发执行，
-    不是排队顺序执行——用两个互等的 asyncio.Event 证明。"""
-    import app.agent.planner as planner_module
-
+async def test_run_tool_calls_executes_multiple_tools_concurrently():
+    """同一轮请求了两个工具时，两次工具调用应该并发执行，不是排队顺序
+    执行——用两个互等的 asyncio.Event 证明。"""
     started = {"call_1": asyncio.Event(), "call_2": asyncio.Event()}
 
-    async def fake_dispatch_tool_call(name, arguments, **kwargs):
-        call_id = arguments["call_id"]
-        started[call_id].set()
-        other = "call_2" if call_id == "call_1" else "call_1"
-        await asyncio.wait_for(started[other].wait(), timeout=5)
-        return f'{{"ok": "{call_id}"}}', []
+    class _EventWaitingTool:
+        async def resolve_arguments(self, raw_arguments, *, context):
+            return raw_arguments
 
-    async def fake_resolve_tool_arguments(tool_name, raw_arguments, **kwargs):
-        return raw_arguments
+        async def execute(self, arguments, *, context):
+            call_id = arguments["call_id"]
+            started[call_id].set()
+            other = "call_2" if call_id == "call_1" else "call_1"
+            await asyncio.wait_for(started[other].wait(), timeout=5)
+            return {"ok": call_id}, []
 
-    monkeypatch.setattr(planner_module, "_dispatch_tool_call", fake_dispatch_tool_call)
-    monkeypatch.setattr(planner_module, "_resolve_tool_arguments", fake_resolve_tool_arguments)
+    # 同一个 fake Tool 实例注册在两个不同的工具名下——恢复原本要验证的
+    # "同一轮混合请求多个不同名字的工具"场景，不需要真实工具实现里那些
+    # 跟并发性无关的细节。
+    tool = _EventWaitingTool()
+    registry = _fake_tool_registry(
+        vector_search_tool=tool, structured_filter_query_tool=tool,
+    )
 
     state = {
-        "tenant_id": "t1",
         "planner_messages": [],
         "pending_tool_calls": [
             {"id": "call_1", "name": "vector_search_tool", "arguments": '{"call_id": "call_1"}'},
-            # 两个不同的工具名，恢复原本要验证的"同一轮混合请求多个工具"场景——
-            # structured_filter_query_tool 会先触发 _resolve_tool_arguments 的独立
-            # 参数生成调用，这里同时 monkeypatch 掉它（透传 raw_arguments），让它
-            # 也能走到下面被 monkeypatch 的 _dispatch_tool_call，不破坏两个
-            # asyncio.Event 互等的前提。
             {"id": "call_2", "name": "structured_filter_query_tool", "arguments": '{"call_id": "call_2"}'},
         ],
     }
 
-    update = await run_tool_calls(
-        state,
-        embedding_registry=_embedding_registry(),
-        embedding_provider_name="fake-embedding",
-        vector_store=InMemoryVectorStore(),
-        bm25_index=BM25Index(),
-        llm_registry=ProviderRegistry(),
-        llm_provider_name="fake-llm",
-        query_rewrite_enabled=False,
-        # 三个都必须给非 None 值——否则 structured_filter_query_tool 会在
-        # 走到 monkeypatch 的 _dispatch_tool_call 之前，先被 _execute_one 里
-        # "未配置" 短路检查拦下（具体值不重要，_dispatch_tool_call 本身已被
-        # monkeypatch，不会真的用到它们）。
-        graph_client=object(),
-        confirmed_relation_types=set(),
-        term_type_schema={},
-    )
+    update = await run_tool_calls(state, tool_registry=registry, context=_context(tenant_id="t1"))
 
     contents_by_call_id = {r["tool_call_id"]: r["content"] for r in update["tool_results"]}
     assert contents_by_call_id["call_1"] == '{"ok": "call_1"}'
@@ -818,94 +699,52 @@ async def test_run_tool_calls_executes_multiple_tools_concurrently(monkeypatch):
     assert [r["tool_call_id"] for r in update["tool_results"]] == ["call_1", "call_2"]
 
 
-async def test_run_tool_calls_propagates_exception_from_tool_dispatch(monkeypatch):
-    """当某个工具调用抛异常时，run_tool_calls() 应该立刻抛出该异常，
-    不因为用了 asyncio.gather(return_exceptions=True) 就吞了它。"""
-    import app.agent.planner as planner_module
+async def test_run_tool_calls_downgrades_tool_execution_failure_to_error_observation_without_crashing():
+    """当某个工具的 execute() 抛异常时，run_tool_calls() 把它降级成这次
+    调用的 {"error": ...} 观察结果、正常返回，不让整个 run_tool_calls
+    崩溃——同一轮里的另一个工具调用（call_1）应该照常成功完成，不受
+    call_2 失败的影响。
 
-    async def fake_dispatch_tool_call(name, arguments, **kwargs):
-        if arguments.get("fail"):
-            raise ValueError("模拟工具调用失败")
-        return '{"ok": "success"}', []
+    这是这次迁移里一处刻意的行为收紧，跟"未配置"场景（见上面
+    test_run_tool_calls_reports_error_when_structured_filter_query_unconfigured
+    的说明）同一类：迁移前只有 resolve_arguments 阶段的
+    ToolArgumentResolutionError 会被这样降级，execute() 阶段抛出的异常会
+    直接从 asyncio.gather(return_exceptions=True) 里重新抛出、让整条
+    Planner 轮次崩溃；新架构把 resolve_arguments/execute 两个阶段统一包
+    在同一个 try/except 里（见 app/agent/planner.py::run_tool_calls 的
+    _execute_one），任何单个工具的失败都不应该拖垮同一轮里其它工具调用
+    的结果，也不应该让整条 Agent 推理链路崩溃——这是 Task 3 pre-flight
+    阶段与协调者确认过的、优先保证"单个工具失败可优雅降级"的设计取舍。
+    """
 
-    async def fake_resolve_tool_arguments(tool_name, raw_arguments, **kwargs):
-        return raw_arguments
+    class _MaybeFailingTool:
+        async def resolve_arguments(self, raw_arguments, *, context):
+            return raw_arguments
 
-    monkeypatch.setattr(planner_module, "_dispatch_tool_call", fake_dispatch_tool_call)
-    monkeypatch.setattr(planner_module, "_resolve_tool_arguments", fake_resolve_tool_arguments)
+        async def execute(self, arguments, *, context):
+            if arguments.get("fail"):
+                raise ValueError("模拟工具调用失败")
+            return {"ok": "success"}, []
+
+    tool = _MaybeFailingTool()
+    registry = _fake_tool_registry(
+        vector_search_tool=tool, structured_filter_query_tool=tool,
+    )
 
     state = {
-        "tenant_id": "t1",
         "planner_messages": [],
         "pending_tool_calls": [
             {"id": "call_1", "name": "vector_search_tool", "arguments": '{}'},
-            # 两个不同的工具名，恢复原本要验证的"同一轮混合请求多个工具"场景——
-            # structured_filter_query_tool 会先经过 _resolve_tool_arguments 的独立
-            # 参数生成调用，这里同时 monkeypatch 掉它（透传 raw_arguments），让它也
-            # 能走到下面被 monkeypatch 的 _dispatch_tool_call 并抛出 ValueError。
             {"id": "call_2", "name": "structured_filter_query_tool", "arguments": '{"fail": true}'},
         ],
     }
 
-    try:
-        await run_tool_calls(
-            state,
-            embedding_registry=_embedding_registry(),
-            embedding_provider_name="fake-embedding",
-            vector_store=InMemoryVectorStore(),
-            bm25_index=BM25Index(),
-            llm_registry=ProviderRegistry(),
-            llm_provider_name="fake-llm",
-            # 三个都必须给非 None 值，理由同上一个测试。
-            graph_client=object(),
-            confirmed_relation_types=set(),
-            term_type_schema={},
-        )
-        assert False, "应该抛异常"
-    except ValueError as e:
-        assert "模拟工具调用失败" in str(e)
+    update = await run_tool_calls(state, tool_registry=registry, context=_context(tenant_id="t1"))
 
-
-async def test_dispatch_tool_call_routes_structured_filter_query_tool():
-    from app.agent.planner import _dispatch_tool_call
-
-    class _FakeGraphClient:
-        async def execute_structured_filter_query(self, args, *, resolved, tenant_id, term_type_schema):
-            raise AssertionError("should not be called")
-
-    content, records = await _dispatch_tool_call(
-        "structured_filter_query_tool",
-        {"anchor": {"term_type": "SKU"},
-         "constraints": [{"kind": "attribute", "field": "standard_name", "operator": "eq", "value": "x"}]},
-        tenant_id="muji",
-        embedding_registry=None, embedding_provider_name="", vector_store=None, bm25_index=None,
-        llm_registry=None, llm_provider_name="", rerank_provider=None, query_rewrite_enabled=False,
-        terms=[], graph_client=_FakeGraphClient(),
-        confirmed_relation_types=set(),
-        term_type_schema={},
-    )
-
-    assert records == []
-    # SKU 不在空的 term_type_schema 里，validate_structured_filter_query 应拒绝，
-    # 走结构化错误分支（而不是命中未配置守卫，也不会真的执行图谱查询）。
-    parsed = json.loads(content)
-    assert "error" in parsed
-    assert "term_type" in parsed["error"]
-
-
-async def test_dispatch_tool_call_reports_unconfigured_when_schema_data_missing():
-    from app.agent.planner import _dispatch_tool_call
-
-    content, records = await _dispatch_tool_call(
-        "structured_filter_query_tool", {"anchor_term_type": "SKU", "constraints": []},
-        tenant_id="muji",
-        embedding_registry=None, embedding_provider_name="", vector_store=None, bm25_index=None,
-        llm_registry=None, llm_provider_name="", rerank_provider=None, query_rewrite_enabled=False,
-        terms=None, graph_client=None, confirmed_relation_types=None, term_type_schema=None,
-    )
-
-    assert records == []
-    assert "未配置" in content
+    contents_by_call_id = {r["tool_call_id"]: r["content"] for r in update["tool_results"]}
+    assert contents_by_call_id["call_1"] == '{"ok": "success"}'
+    parsed_call_2 = json.loads(contents_by_call_id["call_2"])
+    assert "模拟工具调用失败" in parsed_call_2["error"]
 
 
 class ScriptedStreamingLLMProvider:
@@ -964,6 +803,7 @@ async def test_run_planner_turn_streaming_forwards_text_deltas_for_direct_answer
         banned_terms=None,
         on_answer_chunk=on_answer_chunk,
         on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
     )
 
     assert update["answer_text"] == "重启路由器即可解决。"
@@ -1015,6 +855,7 @@ async def test_run_planner_turn_streaming_does_not_forward_text_for_pure_tool_ca
         banned_terms=None,
         on_answer_chunk=on_answer_chunk,
         on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
     )
 
     assert sent_chunks == []
@@ -1054,6 +895,7 @@ async def test_run_planner_turn_streaming_replaces_sentence_matching_banned_term
         banned_terms=["敏感词"],
         on_answer_chunk=on_answer_chunk,
         on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
     )
 
     assert sent_chunks == [LITE_SAFETY_FALLBACK_SENTENCE]
@@ -1093,6 +935,7 @@ async def test_run_planner_turn_streaming_preserves_embedded_newline_when_no_sub
         banned_terms=None,
         on_answer_chunk=on_answer_chunk,
         on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
     )
 
     # 按句子拼接会丢失中间的换行（"第一行。第二行。"），原始增量拼接则
@@ -1133,6 +976,7 @@ async def test_run_planner_turn_streaming_uses_joined_sentences_not_raw_text_whe
         banned_terms=["敏感词"],
         on_answer_chunk=on_answer_chunk,
         on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
     )
 
     assert sent_chunks == ["这是安全的第一句。", LITE_SAFETY_FALLBACK_SENTENCE]
@@ -1176,6 +1020,7 @@ async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_als
         banned_terms=None,
         on_answer_chunk=on_answer_chunk,
         on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
     )
 
     # 证明"最后陈述"重试真的发生过（第二轮脚本被消费、返回空文本导致放弃），
@@ -1232,6 +1077,7 @@ async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_rai
         banned_terms=None,
         on_answer_chunk=on_answer_chunk,
         on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
     )
 
     assert update["planner_gave_up"] is True
@@ -1288,6 +1134,7 @@ async def test_run_planner_turn_streaming_final_answer_attempt_preserves_partial
         banned_terms=None,
         on_answer_chunk=on_answer_chunk,
         on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
     )
 
     assert update["planner_gave_up"] is True
@@ -1336,6 +1183,7 @@ async def test_run_planner_turn_streaming_final_answer_attempt_succeeds_when_rou
         banned_terms=None,
         on_answer_chunk=on_answer_chunk,
         on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
     )
 
     assert update["planner_gave_up"] is False
@@ -1379,6 +1227,7 @@ async def test_run_planner_turn_streaming_final_answer_attempt_does_not_pass_too
         banned_terms=None,
         on_answer_chunk=on_answer_chunk,
         on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
     )
 
     assert provider.requests[1].tools is None

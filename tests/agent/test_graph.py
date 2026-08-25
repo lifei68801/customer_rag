@@ -1,12 +1,20 @@
 import logging
+from pathlib import Path
 
 from app.agent.graph import _looks_temporal, build_agent_graph
+from app.agent.tool_registry import discover_tools
 from app.graphrag.ontology import Term
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
+
+# 本文件所有测试都走确定性路径（enable_autonomous_planning 默认 False，
+# 从不实际使用 tool_registry），但 build_agent_graph 的 tool_registry 参数
+# 现在是必填项（不给默认值，见 app/agent/graph.py 的说明），两条路径共用
+# 同一个函数签名，这里统一构造一次真实注册表传给每个调用点。
+_TOOL_REGISTRY = discover_tools(Path(__file__).resolve().parents[2] / "app" / "agent" / "tools")
 
 
 class FakeEmbeddingProvider:
@@ -89,6 +97,7 @@ async def test_happy_path_returns_llm_answer_with_used_sources():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
     )
 
@@ -110,6 +119,7 @@ async def test_does_not_surface_another_tenants_records():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
     )
 
@@ -130,6 +140,7 @@ async def test_no_records_triggers_fallback_and_creates_ticket():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
     )
 
@@ -176,6 +187,7 @@ async def test_min_relevance_score_triggers_fallback_when_all_matches_are_weak()
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         min_relevance_score=0.5,
     )
@@ -222,6 +234,7 @@ async def test_min_relevance_score_does_not_affect_default_behavior_when_unset()
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
     )
 
@@ -247,6 +260,7 @@ async def test_ticket_conn_persists_ticket_for_later_stale_scan():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         ticket_conn=ticket_conn,
     )
@@ -288,6 +302,7 @@ async def test_fallback_asks_for_clarification_for_future_time_instead_of_ticket
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         memory_conn=memory_conn,
     )
@@ -359,6 +374,7 @@ async def test_time_reply_merges_with_pending_clarification_before_retrieval():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         memory_conn=memory_conn,
     )
@@ -409,6 +425,7 @@ async def test_semantic_review_flags_output_as_unsafe(caplog):
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
     )
 
@@ -435,6 +452,7 @@ async def test_unsafe_input_short_circuits_without_calling_llm():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         banned_terms=["敏感词"],
     )
@@ -457,6 +475,7 @@ async def test_prompt_injection_attempt_short_circuits_without_calling_llm():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
     )
 
@@ -505,6 +524,7 @@ async def test_on_answer_chunk_streams_sentences_when_provider_supports_it():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         on_answer_chunk=on_answer_chunk,
     )
@@ -536,6 +556,7 @@ async def test_on_answer_chunk_replaces_unsafe_sentence_with_fallback_text():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         banned_terms=["敏感词"],
         on_answer_chunk=on_answer_chunk,
@@ -564,6 +585,7 @@ async def test_on_answer_chunk_not_called_when_provider_lacks_streaming_support(
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         on_answer_chunk=on_answer_chunk,
     )
@@ -623,6 +645,7 @@ async def test_correction_check_short_circuits_and_updates_memory():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         memory_conn=conn,
     )
@@ -681,6 +704,7 @@ async def test_correction_check_does_not_trigger_for_normal_question():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         memory_conn=conn,
     )
@@ -735,6 +759,7 @@ async def test_term_guard_node_forwards_tenant_id_to_graph_client():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
         terms=terms,
         graph_client=graph_client,
@@ -759,6 +784,7 @@ async def test_output_safety_flags_internal_leakage_without_calling_semantic_rev
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
     )
 
@@ -795,6 +821,7 @@ async def test_output_safety_does_not_flag_email_in_generated_answer():
         bm25_index=bm25_index,
         llm_registry=llm_registry,
         llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
         query_rewrite_enabled=False,
     )
 
