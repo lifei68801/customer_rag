@@ -6,13 +6,17 @@ import logging
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from app.agent.tools import (
+    STRUCTURED_FILTER_QUERY_PARAMETERS_SCHEMA,
     STRUCTURED_FILTER_QUERY_TOOL_SCHEMA,
+    STRUCTURED_FILTER_QUERY_USAGE_GUIDE,
     VECTOR_SEARCH_TOOL_SCHEMA,
     structured_filter_query_tool,
     vector_search_tool,
 )
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
+from app.graphrag.ontology_constraints import AllowedCombination
+from app.graphrag.ontology_recall import format_recall_candidates, recall_ontology_candidates
 from app.graphrag.term_guard import GraphClientProtocol, describe_association
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderStreamChunk, ToolCall
 from app.providers.embedding import EmbeddingRegistry
@@ -341,6 +345,111 @@ async def run_planner_turn_streaming(
     }
 
 
+class ToolArgumentResolutionError(Exception):
+    """_resolve_tool_arguments 失败时抛出——调用方（run_tool_calls）捕获后
+    降级成这次工具调用的 {"error": ...} 观察结果，不会让整个 Planner 轮次
+    崩溃。"""
+
+
+def _strip_json_code_fence(text: str) -> str:
+    """独立参数生成调用不走 function-calling 协议，纯靠指令要求模型直接
+    输出 JSON——即便提示词明确要求不要用代码块包裹，个别时候模型还是会
+    习惯性地包一层 ```json ... ``` 或 ``` ... ```，这里做一次防御性剥离，
+    不影响本身就没有代码块的正常情况。"""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped[3:]
+        if stripped.startswith("json"):
+            stripped = stripped[4:]
+        if stripped.endswith("```"):
+            stripped = stripped[:-3]
+        stripped = stripped.strip()
+    return stripped
+
+
+def _build_structured_filter_query_prompt(query_intent: str, candidates) -> str:
+    schema_text = json.dumps(STRUCTURED_FILTER_QUERY_PARAMETERS_SCHEMA, ensure_ascii=False, indent=2)
+    return (
+        "你是一个把自然语言查询意图转成结构化查询参数的助手。给定下面的查询意图、"
+        "使用说明、JSON Schema、以及召回到的本体候选参考，输出一段严格匹配这个 "
+        "JSON Schema 的 JSON 对象作为你的完整回复——不要输出任何 JSON 之外的文字，"
+        "也不要用 markdown 代码块包裹。\n\n"
+        f"使用说明：\n{STRUCTURED_FILTER_QUERY_USAGE_GUIDE}\n\n"
+        f"JSON Schema：\n{schema_text}\n\n"
+        "constraints.hops 里的 relation_type/target_term_type、constraints 里的 "
+        "field/target_field，以及 anchor.term_type，都应该优先使用下面候选参考里"
+        "出现过的名字，不要凭空发明没见过的名字。\n\n"
+        f"候选参考：\n{format_recall_candidates(candidates)}\n\n"
+        f"查询意图：{query_intent}"
+    )
+
+
+async def _resolve_structured_filter_query_arguments(
+    query_intent: str,
+    *,
+    terms: list[Term],
+    term_type_schema: dict[str, TermTypeCategory],
+    allowed_combinations: list[AllowedCombination],
+    llm_registry: ProviderRegistry,
+    llm_provider_name: str,
+) -> dict[str, Any]:
+    """structured_filter_query_tool 的独立参数生成调用：召回本体候选 +
+    完整 schema 说明 + query_intent，不走 function-calling 协议、不带
+    历史，要求模型直接输出匹配 schema 的 JSON。"""
+    candidates = recall_ontology_candidates(
+        query_intent, terms=terms, term_type_schema=term_type_schema,
+        allowed_combinations=allowed_combinations,
+    )
+    prompt = _build_structured_filter_query_prompt(query_intent, candidates)
+    try:
+        result = await llm_registry.run(
+            ProviderCapability.LLM,
+            ProviderRequest(messages=[{"role": "user", "content": prompt}]),
+            provider_name=llm_provider_name,
+        )
+    except Exception as exc:
+        raise ToolArgumentResolutionError(f"参数生成调用失败：{exc}") from exc
+    try:
+        return json.loads(_strip_json_code_fence(result.text))
+    except json.JSONDecodeError as exc:
+        raise ToolArgumentResolutionError(
+            f"参数生成调用返回的内容不是合法 JSON：{result.text[:200]!r}"
+        ) from exc
+
+
+async def _resolve_tool_arguments(
+    tool_name: str,
+    raw_arguments: dict[str, Any],
+    *,
+    fallback_query: str,
+    terms: list[Term],
+    term_type_schema: dict[str, TermTypeCategory],
+    allowed_combinations: list[AllowedCombination],
+    llm_registry: ProviderRegistry,
+    llm_provider_name: str,
+) -> dict[str, Any]:
+    """按工具名分发到对应的参数解析方法，返回这个工具调用最终会被执行
+    使用的参数字典。跟 _dispatch_tool_call（按工具名分发执行）是平行
+    关系，发生在它之前。
+
+    fallback_query 是本轮用户原始问题——vector_search_tool 直接复用
+    raw_arguments 里的 query；structured_filter_query_tool 的
+    query_intent 理论上是必填字段，但防御性地在它为空/空白时回退用
+    fallback_query 作为召回 query。
+    """
+    if tool_name == "vector_search_tool":
+        return raw_arguments
+    if tool_name == "structured_filter_query_tool":
+        query_intent = str(raw_arguments.get("query_intent") or "").strip() or fallback_query
+        return await _resolve_structured_filter_query_arguments(
+            query_intent,
+            terms=terms, term_type_schema=term_type_schema,
+            allowed_combinations=allowed_combinations,
+            llm_registry=llm_registry, llm_provider_name=llm_provider_name,
+        )
+    raise ToolArgumentResolutionError(f"未知工具: {tool_name}")
+
+
 async def _dispatch_tool_call(
     name: str,
     arguments: dict[str, Any],
@@ -413,6 +522,7 @@ async def run_tool_calls(
     graph_client: GraphClientProtocol | None = None,
     confirmed_relation_types: set[str] | None = None,
     term_type_schema: dict[str, TermTypeCategory] | None = None,
+    allowed_combinations: list[AllowedCombination] | None = None,
 ) -> dict[str, Any]:
     """执行 state["pending_tool_calls"] 里的每一个工具调用，结果回填对话历史。
 
@@ -435,9 +545,25 @@ async def run_tool_calls(
                 {"tool_call_id": call["id"], "name": call["name"], "content": content},
                 [],
             )
+        try:
+            resolved_arguments = await _resolve_tool_arguments(
+                call["name"], arguments,
+                fallback_query=state.get("question", ""),
+                terms=terms or [],
+                term_type_schema=term_type_schema or {},
+                allowed_combinations=allowed_combinations or [],
+                llm_registry=llm_registry,
+                llm_provider_name=llm_provider_name,
+            )
+        except ToolArgumentResolutionError as exc:
+            content = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return (
+                {"tool_call_id": call["id"], "name": call["name"], "content": content},
+                [],
+            )
         content, new_records = await _dispatch_tool_call(
             call["name"],
-            arguments,
+            resolved_arguments,
             tenant_id=tenant_id,
             embedding_registry=embedding_registry,
             embedding_provider_name=embedding_provider_name,

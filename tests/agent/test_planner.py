@@ -9,6 +9,7 @@ from app.agent.planner import (
 )
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
+from app.graphrag.ontology_constraints import AllowedCombination
 from app.providers.base import (
     ProviderCapability,
     ProviderRequest,
@@ -335,20 +336,179 @@ class FakeGraphClientForStructuredQuery:
         return {"rows": self._rows, "total_count": self._total_count}
 
 
+async def test_resolve_tool_arguments_passes_through_vector_search_tool_without_llm_call():
+    from app.agent.planner import _resolve_tool_arguments
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", ScriptedLLMProvider([]))
+
+    resolved = await _resolve_tool_arguments(
+        "vector_search_tool", {"query": "网络连不上怎么办"},
+        fallback_query="网络连不上怎么办？",
+        terms=[], term_type_schema={}, allowed_combinations=[],
+        llm_registry=llm_registry, llm_provider_name="fake-llm",
+    )
+
+    assert resolved == {"query": "网络连不上怎么办"}
+
+
+async def test_resolve_tool_arguments_triggers_independent_call_for_structured_filter_query_tool():
+    from app.agent.planner import _resolve_tool_arguments
+
+    llm_registry = ProviderRegistry()
+    provider = ScriptedLLMProvider(
+        [ProviderResult(text='{"anchor": {"term_type": "订单号"}}')]
+    )
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+
+    resolved = await _resolve_tool_arguments(
+        "structured_filter_query_tool", {"query_intent": "查一下订单号有多少个"},
+        fallback_query="查一下订单号有多少个",
+        terms=[], term_type_schema={}, allowed_combinations=[],
+        llm_registry=llm_registry, llm_provider_name="fake-llm",
+    )
+
+    assert resolved == {"anchor": {"term_type": "订单号"}}
+    assert len(provider.requests) == 1
+    # 独立参数生成调用不走 function-calling 协议、不带历史。
+    assert provider.requests[0].tools is None
+    assert len(provider.requests[0].messages) == 1
+
+
+async def test_resolve_tool_arguments_falls_back_to_original_question_when_query_intent_empty():
+    from app.agent.planner import _resolve_tool_arguments
+
+    llm_registry = ProviderRegistry()
+    provider = ScriptedLLMProvider([ProviderResult(text='{"anchor": {"term_type": "订单号"}}')])
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+
+    await _resolve_tool_arguments(
+        "structured_filter_query_tool", {"query_intent": "   "},
+        fallback_query="coke-cola公司有多少个订单",
+        terms=[], term_type_schema={}, allowed_combinations=[],
+        llm_registry=llm_registry, llm_provider_name="fake-llm",
+    )
+
+    # 召回 query 用的是原始问题的兜底值，不是空白字符串——通过 prompt 里
+    # 是否出现原始问题文本来验证。
+    assert "coke-cola公司有多少个订单" in provider.requests[0].messages[0]["content"]
+
+
+async def test_resolve_tool_arguments_strips_markdown_code_fence():
+    from app.agent.planner import _resolve_tool_arguments
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, "fake-llm",
+        ScriptedLLMProvider([ProviderResult(text='```json\n{"anchor": {"term_type": "订单号"}}\n```')]),
+    )
+
+    resolved = await _resolve_tool_arguments(
+        "structured_filter_query_tool", {"query_intent": "查订单"},
+        fallback_query="查订单",
+        terms=[], term_type_schema={}, allowed_combinations=[],
+        llm_registry=llm_registry, llm_provider_name="fake-llm",
+    )
+
+    assert resolved == {"anchor": {"term_type": "订单号"}}
+
+
+async def test_resolve_tool_arguments_raises_when_independent_call_returns_invalid_json():
+    from app.agent.planner import ToolArgumentResolutionError, _resolve_tool_arguments
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, "fake-llm",
+        ScriptedLLMProvider([ProviderResult(text="这不是 JSON")]),
+    )
+
+    try:
+        await _resolve_tool_arguments(
+            "structured_filter_query_tool", {"query_intent": "查订单"},
+            fallback_query="查订单",
+            terms=[], term_type_schema={}, allowed_combinations=[],
+            llm_registry=llm_registry, llm_provider_name="fake-llm",
+        )
+        assert False, "应该抛出 ToolArgumentResolutionError"
+    except ToolArgumentResolutionError:
+        pass
+
+
+async def test_resolve_tool_arguments_raises_for_unknown_tool():
+    from app.agent.planner import ToolArgumentResolutionError, _resolve_tool_arguments
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", ScriptedLLMProvider([]))
+
+    try:
+        await _resolve_tool_arguments(
+            "unknown_tool", {},
+            fallback_query="问题",
+            terms=[], term_type_schema={}, allowed_combinations=[],
+            llm_registry=llm_registry, llm_provider_name="fake-llm",
+        )
+        assert False, "应该抛出 ToolArgumentResolutionError"
+    except ToolArgumentResolutionError:
+        pass
+
+
+async def test_resolve_tool_arguments_includes_recall_candidates_in_prompt():
+    """端到端验证复现场景：query_intent 提到"公司"，召回到的候选（term_type
+    "公司"、relation 三元组、实体名 Coca-Cola）应该出现在独立参数生成调用
+    看到的 prompt 里。"""
+    from app.agent.planner import _resolve_tool_arguments
+    from app.graphrag.ontology import Term
+    from app.graphrag.ontology_categories import TermTypeCategory
+
+    llm_registry = ProviderRegistry()
+    provider = ScriptedLLMProvider([ProviderResult(text='{"anchor": {"term_type": "订单号"}}')])
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+
+    coca_cola_term = Term(
+        tenant_id="demo", node_key="公司:Coca-Cola", standard_name="Coca-Cola",
+        aliases=[], term_type="公司",
+    )
+
+    await _resolve_tool_arguments(
+        "structured_filter_query_tool",
+        {"query_intent": "查询Coca-Cola这家公司名下有多少个订单"},
+        fallback_query="查询Coca-Cola这家公司名下有多少个订单",
+        terms=[coca_cola_term],
+        term_type_schema={
+            "订单号": TermTypeCategory(value="订单号", extra_fields=[]),
+            "公司": TermTypeCategory(value="公司", extra_fields=[]),
+        },
+        allowed_combinations=[
+            AllowedCombination(subject_term_type="订单号", relation_type="BELONG_TO", object_term_type="产品"),
+            AllowedCombination(subject_term_type="产品", relation_type="BELONG_TO", object_term_type="公司"),
+        ],
+        llm_registry=llm_registry, llm_provider_name="fake-llm",
+    )
+
+    prompt = provider.requests[0].messages[0]["content"]
+    assert "公司" in prompt
+    assert "Coca-Cola" in prompt
+    assert "BELONG_TO" in prompt
+
+
 async def test_run_tool_calls_executes_structured_filter_query_tool_with_name_anchor():
     _, vector_store, bm25_index = _build_store_and_index()
     embedding_registry = _embedding_registry()
     llm_registry = ProviderRegistry()
-    llm_registry.register(ProviderCapability.LLM, "fake-llm", ScriptedLLMProvider([]))
+    llm_registry.register(
+        ProviderCapability.LLM, "fake-llm",
+        ScriptedLLMProvider([ProviderResult(text='{"anchor": {"name": "网关超时示例"}}')]),
+    )
 
     state = {
         "tenant_id": "t1",
+        "question": "网关超时示例是什么",
         "planner_messages": [],
         "pending_tool_calls": [
             {
                 "id": "call_2",
                 "name": "structured_filter_query_tool",
-                "arguments": '{"anchor": {"name": "网关超时示例"}}',
+                "arguments": '{"query_intent": "查网关超时示例是什么"}',
             }
         ],
     }
@@ -382,16 +542,20 @@ async def test_run_tool_calls_annotates_expand_neighbors_with_association():
     _, vector_store, bm25_index = _build_store_and_index()
     embedding_registry = _embedding_registry()
     llm_registry = ProviderRegistry()
-    llm_registry.register(ProviderCapability.LLM, "fake-llm", ScriptedLLMProvider([]))
+    llm_registry.register(
+        ProviderCapability.LLM, "fake-llm",
+        ScriptedLLMProvider([ProviderResult(text='{"anchor": {"name": "网关超时示例"}, "expand": {"hops": 2}}')]),
+    )
 
     state = {
         "tenant_id": "t1",
+        "question": "网关超时示例关联什么",
         "planner_messages": [],
         "pending_tool_calls": [
             {
                 "id": "call_2",
                 "name": "structured_filter_query_tool",
-                "arguments": '{"anchor": {"name": "网关超时示例"}, "expand": {"hops": 2}}',
+                "arguments": '{"query_intent": "网关超时示例关联什么，展开2跳"}',
             }
         ],
     }
@@ -493,7 +657,11 @@ async def test_run_tool_calls_executes_multiple_tools_concurrently(monkeypatch):
         "planner_messages": [],
         "pending_tool_calls": [
             {"id": "call_1", "name": "vector_search_tool", "arguments": '{"call_id": "call_1"}'},
-            {"id": "call_2", "name": "structured_filter_query_tool", "arguments": '{"call_id": "call_2"}'},
+            # 用 vector_search_tool 而不是 structured_filter_query_tool——这个测试验证的是
+            # run_tool_calls 本身的并发调度，跟具体工具名无关；structured_filter_query_tool
+            # 会先触发 _resolve_tool_arguments 的独立参数生成调用，绕开这里 monkeypatch 的
+            # _dispatch_tool_call，破坏两个 asyncio.Event 互等的前提。
+            {"id": "call_2", "name": "vector_search_tool", "arguments": '{"call_id": "call_2"}'},
         ],
     }
 
@@ -532,7 +700,11 @@ async def test_run_tool_calls_propagates_exception_from_tool_dispatch(monkeypatc
         "planner_messages": [],
         "pending_tool_calls": [
             {"id": "call_1", "name": "vector_search_tool", "arguments": '{}'},
-            {"id": "call_2", "name": "structured_filter_query_tool", "arguments": '{"fail": true}'},
+            # 用 vector_search_tool 而不是 structured_filter_query_tool——同上一个测试的
+            # 理由：这里验证的是异常传播，不是具体工具路由，structured_filter_query_tool
+            # 会先经过 _resolve_tool_arguments 的独立参数生成调用，绕开这里 monkeypatch
+            # 的 _dispatch_tool_call，让下面这次调用永远不会抛出 ValueError。
+            {"id": "call_2", "name": "vector_search_tool", "arguments": '{"fail": true}'},
         ],
     }
 

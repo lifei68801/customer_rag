@@ -246,10 +246,11 @@ async def test_planner_graph_uses_structured_filter_query_tool_with_term_guard_c
                         ToolCall(
                             id="call_1",
                             name="structured_filter_query_tool",
-                            arguments='{"anchor": {"name": "网关超时示例"}}',
+                            arguments='{"query_intent": "查网关超时示例的标准名称"}',
                         )
                     ],
                 ),
+                ProviderResult(text='{"anchor": {"name": "网关超时示例"}}'),  # 独立参数生成调用
                 ProviderResult(text="已确认标准名称是示例错误码E502。"),
             ]
         ),
