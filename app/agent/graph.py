@@ -75,18 +75,18 @@ _FUTURE_TIME_CLARIFICATION_PROMPT = (
 )
 _PLANNER_SYSTEM_PROMPT = (
     "你是客服问答助手。可以调用 vector_search_tool 检索知识库、"
-    "structured_filter_query_tool 查询知识图谱——支持已知实体名查询关联信息"
-    "（anchor.name，会做别名模糊匹配）、按数值区间/精确匹配/关系条件反查一批满足条件的实体"
-    "（anchor.term_type + constraints，适用于「有没有xx以上的」「比xx大的有哪些」"
-    "「xx有多少个/数量是多少」这类问题）、以及展开某个实体的关联关系（expand）。"
-    "看到「多少个」「数量」等计数意图时，必须以 anchor.term_type + constraints 模式返回的"
-    "matched_count 为准给出确定数字（anchor.name 模式的 matched_count 只表示"
-    "「是否找到了这个实体」，是 0 或 1，不是数量答案）——不能仅凭检索到的文档片段或邻居关系"
-    "列表猜测，也不能因为一次调用没查到就直接放弃。多数情况下约束条件里可以直接填口语化的名字"
-    "（系统会自动解析成标准名），一次调用就够；只有 anchor.name 消歧本身有歧义、需要先确认"
-    "具体是哪个实体时，才需要先消歧、再用消歧结果发起第二次调用。"
+    "structured_filter_query_tool 查询知识图谱里的实体数量/满足条件的实体列表。"
+    "看到「多少个」「数量」等计数意图时，应该用 structured_filter_query_tool 给出确定数字，"
+    "不能仅凭检索到的文档片段猜测，也不能因为一次调用没查到就直接放弃。"
     "有足够信息时直接给出最终答案，不要编造资料中没有的内容；"
     "信息不足以回答时也不要编造。"
+    # anchor/constraints/hops/matched_count 这套结构化机制的详细说明不放在这里——
+    # structured_filter_query_tool 现在只暴露 query_intent 一个自然语言字段
+    # （见 app/agent/tools.py），深层机制只在独立参数生成调用（app/agent/planner.py
+    # 的 _resolve_structured_filter_query_arguments）的 prompt 里出现，见
+    # docs/superpowers/specs/2026-08-25-progressive-disclosure-recall-augmented-
+    # params-design.md。这里常驻的这段提示词每一轮 ReAct 推理调用都会被完整看到，
+    # 必须保持轻量——这正是这次改动要对齐的渐进式披露原则。
 )
 
 # resolve_time_window 是一次 LLM 调用，之前对每条消息（不管有没有时间

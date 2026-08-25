@@ -124,9 +124,32 @@ async def test_structured_filter_query_tool_resolves_name_anchor():
     assert result["anchors"][0]["standard_name"] == "示例错误码E502"
 
 
-def test_structured_filter_query_tool_schema_supports_anchor_name_and_expand():
+def test_structured_filter_query_tool_schema_only_exposes_query_intent():
     from app.agent.tools import STRUCTURED_FILTER_QUERY_TOOL_SCHEMA
+
     properties = STRUCTURED_FILTER_QUERY_TOOL_SCHEMA["function"]["parameters"]["properties"]
-    assert "anchor" in properties
-    assert "expand" in properties
+    assert set(properties) == {"query_intent"}
+    assert STRUCTURED_FILTER_QUERY_TOOL_SCHEMA["function"]["parameters"]["required"] == ["query_intent"]
+    # 详细能力说明（anchor/constraints/hops 这套结构化机制）不应该出现在
+    # 对外暴露的 description 里——这是渐进式披露的核心：第一次推理调用
+    # 只看到"用自然语言描述想查什么"，不需要理解结构化字段本身。
+    description = STRUCTURED_FILTER_QUERY_TOOL_SCHEMA["function"]["description"]
+    for forbidden in ("anchor", "constraints", "hops", "matched_count"):
+        assert forbidden not in description
     assert "graph_query_tool" not in str(STRUCTURED_FILTER_QUERY_TOOL_SCHEMA)
+
+
+def test_structured_filter_query_usage_guide_and_full_schema_preserve_detail():
+    from app.agent.tools import (
+        STRUCTURED_FILTER_QUERY_PARAMETERS_SCHEMA,
+        STRUCTURED_FILTER_QUERY_USAGE_GUIDE,
+    )
+
+    # 详细机制说明搬到这两个常量里，供独立参数生成调用引用——内容本身
+    # 还在，只是不再暴露在对外的工具 schema 里。
+    assert "anchor" in STRUCTURED_FILTER_QUERY_USAGE_GUIDE
+    assert "constraints" in STRUCTURED_FILTER_QUERY_USAGE_GUIDE
+    properties = STRUCTURED_FILTER_QUERY_PARAMETERS_SCHEMA["properties"]
+    assert "anchor" in properties
+    assert "constraints" in properties
+    assert "expand" in properties
