@@ -35,6 +35,17 @@
 
 **不改动 `app/agent/graph.py` 的图结构**：这两阶段都封装在 `app/agent/planner.py` 的 `run_planner_turn`/`run_planner_turn_streaming` 内部——一次"回合"内部从今天的 1 次 LLM 调用变成最多 2 次（阶段1 + 阶段2，多工具时阶段2 并发跑多份），但对外产出的返回形状（`pending_tool_calls`/`planner_messages`）跟今天完全一致，`route_after_planner` 不需要改。
 
+### 阶段提示词的拆分与位置
+
+今天 `app/agent/graph.py:76-90` 的 `_PLANNER_SYSTEM_PROMPT` 是一份混在一起的提示词，既管"要不要调工具"又管"参数具体怎么填"，**里面没有任何一句话要求 LLM 在决定调用工具时顺带写一句自包含、已经做过指代消解的叙述文字**——今天模型会说"让我查一下xxx"，纯粹是对话式模型自己"边想边说"的自然倾向，不是被提示词工程刻意要求、有质量保证的输出。"阶段1叙述文字直接当召回 query 复用"这个设计能不能成立，完全取决于这段文字的质量，所以这一节明确写清楚提示词怎么拆、写在哪里、里面必须包含什么，不能留给实现阶段临场发挥。
+
+**拆成两份新的提示词常量**，定义位置不变——还是 `app/agent/graph.py`，紧挨着 `_PLANNER_SYSTEM_PROMPT` 现在的位置（第76-90行附近），延续这个文件"提示词常量集中定义在模块顶部"的现有组织方式：
+
+- **`_PLANNER_STAGE1_SYSTEM_PROMPT`**：负责"要不要调工具、调哪个"这部分决策指导（今天 `_PLANNER_SYSTEM_PROMPT` 里跟"选工具"相关的部分，比如两个工具各自是干什么用的概述），**新增一条明确要求**：如果决定调用工具，必须在回复文字里用一句完整、自包含的话说明打算查什么——把"它""这个""刚才那个"之类的指代词换成前面已经了解到的具体名字（比如结合前面工具结果里查到的信息，把"它关联的公司"写成"Cola关联的公司"）；这句话会被用来检索相关的术语和关系作为参考，写得越具体、越自包含，参考信息就越准。
+- **`_PLANNER_STAGE2_SYSTEM_PROMPT`**：保留今天 `_PLANNER_SYSTEM_PROMPT` 里"anchor.term_type + constraints 模式怎么用""matched_count 语义"这些参数填写层面的指导（今天第78-89行大部分内容），供阶段2参数生成调用时使用。
+
+**接入方式**：沿用 `term_guard_context` 现成的"追加一条 system 消息"模式（`app/agent/graph.py:637` 的 `messages.append({"role": "system", "content": term_guard_context})`）——基础系统消息（今天 `wrap_system_prompt(_PLANNER_SYSTEM_PROMPT)` 这条，内容收窄成跟工具选择/参数填写都无关的、纯客服助手身份/编造禁令那部分）保留在对话最前面不变，阶段1调用前追加 `_PLANNER_STAGE1_SYSTEM_PROMPT`，阶段2调用前追加 `_PLANNER_STAGE2_SYSTEM_PROMPT`（`structured_filter_query_tool` 的阶段2还要再追加召回候选那段文本）——两段提示词是"叠加"关系，不是互相替换，也不需要在两次调用之间清空/重建 `planner_messages`。
+
 **预算语义不变**：`max_tool_call_rounds`（默认3）仍然按"回合"计数，不改默认值——语义上还是"最多去图谱/向量库查几轮"，不是"最多几次原始 LLM 调用"。代价是实际 LLM 调用预算从"最多3次"变成"最多6次"（多工具并发时更高，但那部分是并发发生，不叠加轮次预算）。这跟已经写好、正在等你审阅的另一份 spec（`docs/superpowers/specs/2026-08-25-planner-graceful-budget-exhaustion-design.md`，轮次耗尽时的"最后陈述"兵底）不冲突——那份 spec 处理的是"即使这份设计上线后，某些场景依然会把轮次用完，该怎么收场"，跟这里"怎么降低轮次被浪费在猜错参数上"是两个独立、互补的问题。
 
 ### 召回机制
@@ -84,6 +95,7 @@
 - 阶段1/阶段2 拆分：验证阶段1请求的 `tools` 参数里每个工具的 `parameters` 确实是空 schema；验证阶段2请求强制 `tool_choice` 指定到具体工具。
 - 叙述文字复用：验证阶段1文本非空时用它做召回 query，为空时回退到原始用户问题。
 - 端到端：用本轮复现的真实 tenant 数据（或等价的测试 fixture）构造"coke-cola公司有多少个订单"场景，验证召回候选里确实包含正确的两条 relation 三元组和 Cola/Coca-Cola 两个实体候选。
+- 阶段提示词：验证阶段1调用发出的 `messages` 里确实追加了 `_PLANNER_STAGE1_SYSTEM_PROMPT`（包含"写一句自包含、已指代消解的叙述"这条要求）；验证阶段2调用发出的 `messages` 里确实追加了 `_PLANNER_STAGE2_SYSTEM_PROMPT`；验证两段提示词是追加关系，基础系统消息不会被替换/丢失。
 
 ## Non-Goals
 
@@ -100,3 +112,4 @@
 - relation 候选必须以完整 `(subject_term_type, relation_type, object_term_type)` 三元组形式出现在召回结果里，不能只召回 `relation_type` 字符串本身。
 - `max_tool_call_rounds` 默认值不变，语义仍然是"回合数"而非"LLM 调用次数"。
 - 不改动 `structured_filter_query.py` 里已有的解析/校验/fuzzy resolution 逻辑本身。
+- `_PLANNER_STAGE1_SYSTEM_PROMPT` 必须显式要求 LLM 在决定调用工具时，用一句自包含、已做指代消解的话说明查询意图——这不是可选的文风建议，是"阶段1叙述文字可以直接当召回 query 复用"这个设计成立的前提条件。`_PLANNER_STAGE1_SYSTEM_PROMPT`/`_PLANNER_STAGE2_SYSTEM_PROMPT` 定义在 `app/agent/graph.py`，采用追加（而非替换）现有基础系统消息的方式接入。
