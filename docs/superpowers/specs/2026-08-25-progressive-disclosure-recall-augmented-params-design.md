@@ -8,86 +8,105 @@
 
 这份设计要解决的正是这个更早的问题：**让 LLM 在生成参数之前，先看到跟这次问题相关的、真实存在于这个 tenant 本体里的候选名字**，把"凭空猜"变成"从候选里挑"。
 
+设计过程中参照了 Claude Code 自己的 Skill 渐进式披露机制做过一轮调研（结论见"架构"一节）：Skill 机制能做到"先只看名字+描述、需要时再展开细节"，前提是"用哪个技能"本身不需要结构化参数——`tools` 数组里永远只有一个 schema 极简且从不变化的 `Skill` 工具，每个技能的详细说明书是作为**普通对话内容**（工具执行结果）追加进历史的，不是塞进某个工具自己的 `parameters` schema 里。`structured_filter_query_tool` 有 `anchor`/`constraints.hops` 这些必须跟本体对得上号的结构化字段，天然不是"选择题"，Skill 机制本身没有直接回答"这种真正需要结构化参数的工具该怎么渐进式披露"——这份设计借用它的核心原理（详细能力说明放进稳定的、可复用的对话内容里，`tools` 参数本身保持极简且永不改变），但为 `structured_filter_query_tool` 的参数生成单独设计了一次独立调用。
+
 ## 目标
 
-- 把"要不要调工具、调哪个"和"这个工具的参数具体填什么"拆成两次独立的 LLM 决策，避免让模型在还没决定用哪个工具时就要面对完整参数 schema 的认知负担。
-- 针对 `structured_filter_query_tool`，在"填参数"这一步之前，基于用户问题（及本轮已经了解到的上下文）对本体做一次召回，把候选的 term_type、relation_type 三元组（带方向）、字段名、实体名字喂给 LLM 参考，而不是让它凭空生成。
-- **两阶段拆分不能以破坏 KV cache 为代价**——`tools` 请求参数在整个会话生命周期内必须保持字节级别不变，渐进式披露通过指令层（prompt 内容）实现，不通过在不同调用里传不同的 `tools`/`parameters` 实现。这是这份设计除了"降低猜参数出错率"之外同等重要的第二个目标，详见"两阶段工具调用"一节。
-- 不引入新的基础设施依赖（不新建 embedding 索引、不新增 LLM 调用次数之外的额外调用）。
+- 把"要不要调工具、调哪个、大致想查什么"和"这个工具的参数具体填什么结构化字段"拆成两次独立的 LLM 决策，避免让模型在同一次生成里既要判断意图又要精确对齐本体里的字段名/关系方向。
+- 针对 `structured_filter_query_tool`，在"填参数"这一步之前，基于用户意图对本体做一次召回，把候选的 term_type、relation_type 三元组（带方向）、字段名、实体名字喂给 LLM 参考，而不是让它凭空生成。
+- **这个拆分不能以破坏 KV cache 为代价**——`tools` 请求参数从会话第一次调用起就必须是最终形态，字节级别永不改变。这是这份设计除了"降低猜参数出错率"之外同等重要的第二个目标。
+- 不引入新的基础设施依赖（不新建 embedding 索引、不新增本设计范围之外的额外 LLM 调用）。
 - 跟已有的 `resolve_term()`/fuzzy constraint value resolution/`anchor.name` 消歧机制不冲突、互补共存，形成"生成前召回降低出错概率 → 执行前再校验一次 → 全部失败也有体面收场"的三层防御。
 
 ## 架构
 
-### 两阶段工具调用
+### 工具 schema 的永久简化
 
-对 `vector_search_tool` 和 `structured_filter_query_tool` 统一生效。
+主流 OpenAI-compatible 协议（包括这个仓库实际用的 DeepSeek，`app/providers/openai_compatible.py`）的 KV cache 命中判定是分层的——`tools` 参数排在最前面（比 system prompt 还靠前），`tools` 数组只要有任何差异，这次请求的缓存就从最开头整体失效，之前积累的对话历史缓存全部作废（业界通用行为，不是这个仓库特有的限制）。所以这份设计**不通过"给不同阶段传不同的 `tools`"来实现渐进式披露**，而是把 `structured_filter_query_tool` 在 `tools[]` 里的 `parameters` **永久性地大幅简化**，从第一次调用起就是这个样子，不再变化：
 
-**先说清楚一个前提，这个前提决定了下面所有机制怎么设计**：主流 OpenAI-compatible 协议（包括这个仓库实际用的 DeepSeek）的 KV cache 命中判定是分层的——`tools` 参数排在最前面（比 system prompt 还靠前），`tools` 数组只要有任何差异（哪怕只是某个工具的 `parameters` 从完整 schema 换成空 schema），这次请求的缓存就从最开头整体失效，之前积累的对话历史缓存全部作废（这是业界通用行为，不是这个仓库特有的限制）。所以**渐进式披露不能通过"给阶段1传一份精简过的 `tools`、给阶段2传完整版"来实现**——那样做的代价是每一轮都双倍浪费缓存。
+```python
+STRUCTURED_FILTER_QUERY_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "structured_filter_query_tool",
+        "description": "在知识图谱里查询/筛选实体——具体能力和使用方式见对话上文的说明。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query_intent": {
+                    "type": "string",
+                    "description": (
+                        "用自然语言描述这次想查询/筛选的内容：想找什么类型的实体、"
+                        "有什么筛选条件、涉及哪些已知的名字。写得越具体、越自包含"
+                        "（把'它''这个'之类的指代词换成前面已经了解到的具体名字）"
+                        "越好——这句话会被用来检索本体里相关的术语和关系作为参考，"
+                        "帮你把接下来的实际查询参数填对。"
+                    ),
+                },
+            },
+            "required": ["query_intent"],
+        },
+    },
+}
+```
 
-**这份设计改用的机制**：`tools` 参数（两个工具的完整 schema，跟今天 `_TOOL_SCHEMAS` 完全一样）**从会话第一次调用到结束，字节级别永远不变**。"只看名字和描述、还不用纠结参数"这件事，通过**指令内容**做到，不通过"隐藏 schema"做到——这跟 Claude Code 自己的技能披露机制原理是一致的：Claude Code 的 `tools` 里始终只有一个 `Skill` 工具、schema 从不变化，每个技能的详细说明书是作为**普通对话内容**（工具执行结果）追加进历史的，不是塞进 `tools` schema 里的。
+今天 `STRUCTURED_FILTER_QUERY_TOOL_SCHEMA` 里那一整套"anchor.name 怎么用、anchor.term_type+constraints 怎么组合、constraints.hops 最多几跳、matched_count 语义"的详细能力说明，从工具自己的 `description`/`parameters` 里搬出来，作为**稳定、每轮都在的纯文本**并入 `_PLANNER_SYSTEM_PROMPT`（`app/agent/graph.py:76-90`）——这样模型在决定要不要调用、以及写 `query_intent` 的时候，依然能看到完整能力说明，可以尽量写得精确（比如已经知道要查两跳关系，可以在 `query_intent` 里直接说清楚"通过订单号-产品-公司两跳关系筛选"），只是不需要在这次生成里同时产出结构化 JSON 字段。
 
-**阶段1——工具选择（探测性调用，不写入持久化历史）**：
+`vector_search_tool` 的 schema **不变**（它本来就只有一个 `query` 字符串，没有需要简化的复杂度）。
 
-- 请求：跟今天完全一样的 `tools`（两个工具的完整 schema，不做任何精简）、`tool_choice: "auto"`，`messages` 末尾追加一条只属于这次探测调用的指令（内容见下一节 `_PLANNER_STAGE1_SYSTEM_PROMPT`）：大意是"这一步只需要判断要不要调用工具、调用哪个/哪些，参数字段可以先随便填占位值，不用纠结——真正的参数会在你做出选择之后单独引导你填"。
-- LLM 在这一步可以：不调用任何工具、直接回答（保留今天的行为，这种情况下这次调用本身就是最终结果，直接按今天的路径处理，不进入阶段2）；或者请求调用一个或多个工具（保留今天 `run_tool_calls` 已经支持的并发执行能力）。
-- **这次调用的响应不会被追加进 `planner_messages`**——只在内存里读取两样东西：① 请求了哪些工具（`tool_calls[].name`，`arguments` 字段整体丢弃，不管里面填了什么）；② 伴随的自然语言叙述文字（`ProviderResult.text`，就是今天已经存在的"让我查一下xxx"那段话）。因为这次调用没有落进历史，阶段2看到的对话前缀（`tools` + 基础系统消息 + 到目前为止的真实历史）跟阶段1看到的**完全一样**，只是各自在末尾追加了不同的一小段指令——这是能做到的最大限度前缀复用。
-
-**阶段2——参数生成**（对阶段1识别出的每个工具，各自按 `tool_calls[].id` 独立执行一次，多个工具/多次同工具调用并发跑；对话前缀沿用阶段1看到的那份真实历史，不包含阶段1本身）：
-
-- 请求：跟阶段1一样的 `tools`（不变）、`tool_choice` 强制指定成这一个工具（`{"type": "function", "function": {"name": "..."}}`，标准 OpenAI-compatible 机制，不需要改动 `tools` 本身），`messages` 末尾追加这个工具专属的指令+参考信息。
-- **按工具名分发到对应的参数解析方法**（用户要求的"识别到不同工具、调用对应的参数解析方法"，具体设计见下面"参数解析分发器"一节）：`structured_filter_query_tool` 才真正发起这次阶段2调用（追加 `_PLANNER_STAGE2_SYSTEM_PROMPT` + 召回候选参考文本）；`vector_search_tool` 直接跳过阶段2，不发起任何额外调用。
-- 这次调用产出的才是真正会被执行的参数——追加进 `planner_messages` 的 assistant 消息（`tool_calls`）用的是这一步的结果，不是阶段1那次被丢弃的探测结果。
-
-**不改动 `app/agent/graph.py` 的图结构**：整个两阶段流程封装在 `app/agent/planner.py` 的 `run_planner_turn`/`run_planner_turn_streaming` 内部——一次"回合"内部从今天的 1 次 LLM 调用变成"1 次探测（不落历史）+ N 次参数生成（N = 阶段1选中且需要参数解析的工具调用数，`vector_search_tool` 不算在内）"，但对外产出的返回形状（`pending_tool_calls`/`planner_messages`）跟今天完全一致，`route_after_planner` 不需要改。
+**这不是"阶段1/阶段2用不同 tools"，是"这个工具的 schema 永久变简单了"**——从会话第一次调用到最后一次，`tools[]` 逐字节保持一致，不存在任何一次调用需要传跟其他调用不一样的版本，KV cache 约束因此被彻底满足，不需要"探测调用不落历史"这类额外机制。
 
 ### 参数解析分发器
 
-对应用户要求的"方法里面可以根据识别到不同工具，调用对应的参数解析方法"——在 `app/agent/planner.py` 内新增一个按工具名分发的函数，跟今天已有的 `_dispatch_tool_call`（按工具名分发**执行**）是平行关系，这个新函数分发的是**参数解析**，发生在 `_dispatch_tool_call` 之前：
+对应用户要求的"方法里面可以根据识别到不同工具，调用对应的参数解析方法"——`app/agent/planner.py` 内新增一个按工具名分发的函数，跟今天已有的 `_dispatch_tool_call`（按工具名分发**执行**）是平行关系，发生在 `_dispatch_tool_call` 之前：
 
 ```python
 async def _resolve_tool_arguments(
-    tool_name: str, *, narration_query: str, messages: list[dict[str, Any]],
+    tool_name: str, raw_arguments: dict[str, Any], *,
     terms: list[Term], term_type_schema: dict[str, TermTypeCategory],
     confirmed_relation_types: set[str],
     llm_registry: ProviderRegistry, llm_provider_name: str,
-) -> str:
-    """按工具名分发到对应的参数解析方法，返回这个工具调用最终使用的
-    JSON 参数字符串。narration_query 是阶段1产出的叙述文字（为空则是
-    原始用户问题），messages 是阶段1看到的那份真实历史（不含阶段1本身）。
-    """
+) -> dict[str, Any]:
+    """按工具名分发到对应的参数解析方法，返回这个工具调用最终会被执行使用
+    的参数字典。raw_arguments 是这一轮 ReAct 推理调用里模型自己产出的原始
+    参数（vector_search_tool 是 {"query": ...}，structured_filter_query_tool
+    是 {"query_intent": ...}）。"""
     if tool_name == "vector_search_tool":
-        return _resolve_vector_search_arguments(narration_query)
+        return raw_arguments  # 原样透传，不发起任何额外调用
     if tool_name == "structured_filter_query_tool":
         return await _resolve_structured_filter_query_arguments(
-            narration_query, messages=messages, terms=terms,
-            term_type_schema=term_type_schema,
+            raw_arguments.get("query_intent", ""),
+            terms=terms, term_type_schema=term_type_schema,
             confirmed_relation_types=confirmed_relation_types,
             llm_registry=llm_registry, llm_provider_name=llm_provider_name,
         )
     raise ValueError(f"未知工具: {tool_name}")
 ```
 
-- **`_resolve_vector_search_arguments`**：不调用 LLM，纯函数，直接把 `narration_query` 包成这个工具需要的 `{"query": narration_query}` 返回——这就是用户要求的"vector_tool没有入参则跳过参数解析"。之所以直接复用叙述文字而不是信任阶段1自己填的 `query` 参数，是为了保持"阶段1的参数字段一律丢弃、不被任何工具信任"这条规则没有例外，简单、好验证。
-- **`_resolve_structured_filter_query_arguments`**：发起上面说的阶段2调用（`tool_choice` 强制指定 + 召回候选参考），返回真正解析出的参数。
+- **`vector_search_tool`**：零额外 LLM 调用，`raw_arguments` 本身就是可以直接执行的参数——这就是用户要求的"vector_tool没有入参[复杂度]则跳过参数解析"。
+- **`structured_filter_query_tool`**：发起下面说的独立参数生成调用。
 
-### 阶段提示词的拆分与位置
+调用时机：这一轮 ReAct 推理调用产出的 `tool_calls`（含 `raw_arguments`）**正常追加进 `planner_messages`**（今天的行为不变，不需要"探测调用、丢弃"这类机制）——模型自己说的那句 `query_intent` 会原样留在对话历史里，供未来轮次参考；`_resolve_tool_arguments` 解析出的**真正用于执行**的参数不会回填替换历史里的 `query_intent`，执行结果（`tool` role 消息）才是下一轮模型真正会看到的新信息。
 
-今天 `app/agent/graph.py:76-90` 的 `_PLANNER_SYSTEM_PROMPT` 是一份混在一起的提示词，既管"要不要调工具"又管"参数具体怎么填"，**里面没有任何一句话要求 LLM 在决定调用工具时顺带写一句自包含、已经做过指代消解的叙述文字**——今天模型会说"让我查一下xxx"，纯粹是对话式模型自己"边想边说"的自然倾向，不是被提示词工程刻意要求、有质量保证的输出。"阶段1叙述文字直接当召回 query 复用"这个设计能不能成立，完全取决于这段文字的质量，所以这一节明确写清楚提示词怎么拆、写在哪里、里面必须包含什么，不能留给实现阶段临场发挥。
+### 独立参数生成调用
 
-**拆成两份新的提示词常量**，定义位置不变——还是 `app/agent/graph.py`，紧挨着 `_PLANNER_SYSTEM_PROMPT` 现在的位置（第76-90行附近），延续这个文件"提示词常量集中定义在模块顶部"的现有组织方式：
+只有 `structured_filter_query_tool` 才会触发，`_resolve_structured_filter_query_arguments` 内部完成：
 
-- **`_PLANNER_STAGE1_SYSTEM_PROMPT`**：负责"要不要调工具、调哪个"这部分决策指导（今天 `_PLANNER_SYSTEM_PROMPT` 里跟"选工具"相关的部分，比如两个工具各自是干什么用的概述），**新增两条明确要求**：① 这一步不用纠结参数具体怎么填，参数字段可以先填占位值，真正的参数会在下一步单独引导你填；② 如果决定调用工具，必须在回复文字里用一句完整、自包含的话说明打算查什么——把"它""这个""刚才那个"之类的指代词换成前面已经了解到的具体名字（比如结合前面工具结果里查到的信息，把"它关联的公司"写成"Cola关联的公司"）；这句话会被用来检索相关的术语和关系作为参考，写得越具体、越自包含，参考信息就越准。
-- **`_PLANNER_STAGE2_SYSTEM_PROMPT`**：保留今天 `_PLANNER_SYSTEM_PROMPT` 里"anchor.term_type + constraints 模式怎么用""matched_count 语义"这些参数填写层面的指导（今天第78-89行大部分内容），供 `_resolve_structured_filter_query_arguments` 发起阶段2调用时使用。
+1. **召回**：以 `query_intent` 文本为 query，对本体做一次召回（见下节），得到候选 term_type/relation 三元组/字段名/实体名。
+2. **调用**：发起一次**独立、自包含、不走 function-calling 协议**的 LLM 调用——不带 `tools`/`tool_choice`，只有一条 prompt：`structured_filter_query_tool` 完整参数 schema 的文字说明（今天 `STRUCTURED_FILTER_QUERY_TOOL_SCHEMA` 那份详细描述）+ 上面召回到的候选参考 + `query_intent` 原文，要求模型直接输出一段匹配这个 schema 的 JSON。**不携带这一轮之前的对话历史**——`query_intent` 已经要求做过指代消解、本身自包含，召回候选也是当次现算的新鲜数据，不依赖历史上下文；不带历史让这次调用更聚焦，也不需要为它单独设计历史截断/传递机制。
+3. **解析**：返回的 JSON 字符串复用今天已有的 `parse_structured_filter_query_args` 做形状校验（同一份校验代码，不新增校验逻辑）——解析失败的处理方式见"错误处理"。
 
-**接入方式**：沿用 `term_guard_context` 现成的"追加一条 system 消息"模式（`app/agent/graph.py:637` 的 `messages.append({"role": "system", "content": term_guard_context})`）——基础系统消息（今天 `wrap_system_prompt(_PLANNER_SYSTEM_PROMPT)` 这条，内容收窄成跟工具选择/参数填写都无关的、纯客服助手身份/编造禁令那部分）保留在对话最前面不变且字节级别不变，阶段1的探测调用在（不落历史的）临时 `messages` 副本末尾追加 `_PLANNER_STAGE1_SYSTEM_PROMPT`，阶段2调用在真实历史末尾追加 `_PLANNER_STAGE2_SYSTEM_PROMPT`（`structured_filter_query_tool` 还要再追加召回候选那段文本）——两段提示词都是"追加"关系，不替换、不修改前面已经存在的任何消息。
+这次独立调用因为每次都带着（随 `query_intent`/召回结果变化的）不同候选参考，本身不具备被复用的 KV cache 前缀——这是recall-augmented生成的固有代价，不是这个机制选择造成的，不需要额外优化。
 
-**预算语义不变**：`max_tool_call_rounds`（默认3）仍然按"回合"计数，不改默认值——语义上还是"最多去图谱/向量库查几轮"，不是"最多几次原始 LLM 调用"。代价是实际 LLM 调用预算从"最多3次"变成"最多6次"（多工具并发时更高，但那部分是并发发生，不叠加轮次预算）。这跟已经写好、正在等你审阅的另一份 spec（`docs/superpowers/specs/2026-08-25-planner-graceful-budget-exhaustion-design.md`，轮次耗尽时的"最后陈述"兵底）不冲突——那份 spec 处理的是"即使这份设计上线后，某些场景依然会把轮次用完，该怎么收场"，跟这里"怎么降低轮次被浪费在猜错参数上"是两个独立、互补的问题。
+### 承认的代价
+
+`structured_filter_query_tool` 每次被调用，**固定需要2次 LLM 调用**（ReAct 推理决策 1 次 + 独立参数生成 1 次），不再有"模型自己很确定、一次调用就能把结构化参数填对"的快速路径——今天单次调用能做到的这件事，这份设计里永远要付出2次调用的延迟/成本。这是为了用"query_intent 只是自然语言，几乎不会填错"换掉"结构化字段容易猜错、猜错了要等下一轮才能纠正、且纠正本身也可能猜错方向"这个更贵的失败模式，本次设计明确选择正确率优先于单次调用延迟。
 
 ### 召回机制
 
 四类候选统一走同一套召回逻辑，不区分"小池子直接全给"和"大池子才召回"——小池子（term_type/relation 三元组/字段名，demo 租户实测几十条量级）本来就会在召回时把自己基本全部召回回来，不需要单独分支处理。
 
-**候选来源**（每次 Planner 回合从当次已经加载的数据现算，不做进程级缓存——`terms`/`term_type_schema`/`confirmed_relation_types` 本来就是 `app/api/agent_routes.py` 每次请求都重新 `list_terms`/`list_term_types`/`list_relation_types` 加载的新鲜数据，直接在这份数据上建候选索引是纯 CPU 计算，不会因为审核流程刚确认的新术语/新关系类型而召回不到，也不需要给任何写路径接失效钩子）：
+**候选来源**（每次独立参数生成调用从当次已经加载的数据现算，不做进程级缓存——`terms`/`term_type_schema`/`confirmed_relation_types` 本来就是 `app/api/agent_routes.py` 每次请求都重新 `list_terms`/`list_term_types`/`list_relation_types` 加载的新鲜数据，直接在这份数据上建候选索引是纯 CPU 计算，不会因为审核流程刚确认的新术语/新关系类型而召回不到，也不需要给任何写路径接失效钩子）：
 
 - **term_type 候选**：`term_type_schema` 里每个已确认类型的名字
 - **relation 候选**：`term_type_relation_allowlist` 表里每一条已确认的 `(subject_term_type, relation_type, object_term_type)` 三元组，召回时以完整三元组形式出现（比如"订单号 --BELONG_TO--> 产品"），不是只召回 `relation_type` 这个孤立字符串——这样 LLM 能直接读出方向，不需要自己再猜
@@ -96,7 +115,7 @@ async def _resolve_tool_arguments(
 
 **召回算法**：
 
-1. 召回 query 文本 = 阶段1产出的叙述文字（为空则用原始用户问题）
+1. 召回 query 文本 = `query_intent`（理论上必填字段不该为空；防御性地，为空/空白时回退用原始用户问题）
 2. 把 query 按 token 边界切成 1~4 词长的滑动窗口 n-gram（中英文混合分词：英文按 `[a-z0-9_]+` 整段切，中文按字切，复用 `app/retrieval/bm25.py` 里 `_TOKEN_PATTERN` 现成的正则规则，不用重新发明）
 3. 对每个 n-gram 和每个候选名字，计算**最长公共连续子串**长度（大小写不敏感），除以候选名字长度得到 0~1 的归一化分数
 4. 分数 ≥ 阈值（0.3，重叠长度至少2个字符，避免单字符/极短噪声匹配）的候选保留，按分数降序排列，每类候选各截断到 Top-K（K 的具体数值留给实现计划确定，实体名候选池子最大，K 应该比 term_type/relation/字段名候选的 K 更保守）
@@ -108,54 +127,53 @@ async def _resolve_tool_arguments(
 
 "coke-cola公司有多少个订单"：
 
-1. 阶段1（探测调用，`tools` 完整不变，`tool_choice:"auto"`，末尾追加 `_PLANNER_STAGE1_SYSTEM_PROMPT`）：LLM 决定调用 `structured_filter_query_tool`，参数字段填了占位值（会被丢弃），同时说了句"让我查一下coke-cola公司的订单数量"（这句叙述文字流式展示给用户，被前端记录进 reasoningTrail；这次调用本身不写入 `planner_messages`）
-2. 分发：`_resolve_tool_arguments("structured_filter_query_tool", narration_query="让我查一下coke-cola公司的订单数量", ...)` 命中 `_resolve_structured_filter_query_arguments` 分支
-3. 召回：query = "让我查一下coke-cola公司的订单数量"，切出 n-gram（包含"coke"、"cola"、"公司"、"订单"等），跟四类候选比对：
-   - term_type 候选命中"公司"（精确匹配，分数1.0）、"订单号"（"订单"是"订单号"的最长公共子串，分数约0.67）
-   - relation 三元组候选命中"产品 --BELONG_TO--> 公司"、"订单号 --BELONG_TO--> 产品"（因为召回的是完整三元组，即使 query 里没提"产品"，这两条三元组本身的文本里包含"公司"/"订单号"，也会被召回进来）
-   - 实体名候选命中"Cola"（"cola" n-gram 命中标准名"Cola"，分数1.0）、"Coca-Cola"（"cola" n-gram 命中"Coca-Cola"里的"Cola"子串，分数约0.44）
-4. 阶段2调用（`tools` 仍然是同一份完整 schema，`tool_choice` 强制指定成 `structured_filter_query_tool`，`messages` 沿用阶段1看到的那份真实历史，末尾追加 `_PLANNER_STAGE2_SYSTEM_PROMPT` + 上面这些候选）：LLM 能直接看到"订单号 --BELONG_TO--> 产品"和"产品 --BELONG_TO--> 公司"这两条方向明确的关系三元组，不需要自己猜方向，也能看到"Cola"和"Coca-Cola"两个候选实体名供参考，填出正确的两跳 `constraints`——这次调用产出的参数才是真正会被执行的
-5. 执行前，`_resolve_fuzzy_constraint_values`（已上线）再对 `target_value` 做一次最终校验/解析
-6. 执行、返回结果——这次一轮（1次探测 + 1次参数生成）就应该能拿到正确参数，不需要像复现时那样反复试错到轮次耗尽
+1. ReAct 推理调用（`tools` 是今天简化后的固定版本，system prompt 已包含完整能力说明）：LLM 决定调用 `structured_filter_query_tool`，产出 `{"query_intent": "查询公司标准名为Coca-Cola的订单数量，需要通过订单号-产品-公司两跳BELONG_TO关系筛选"}`——这次调用（含这段文字，会流式展示给用户/进入 reasoningTrail）正常追加进 `planner_messages`。
+2. 分发：`_resolve_tool_arguments("structured_filter_query_tool", {"query_intent": "..."}, ...)` 命中独立参数生成分支。
+3. 召回：query = 上面那句 `query_intent`，切出 n-gram，跟四类候选比对：
+   - term_type 候选命中"公司"（精确匹配）、"订单号"（"订单"是最长公共子串）
+   - relation 三元组候选命中"产品 --BELONG_TO--> 公司"、"订单号 --BELONG_TO--> 产品"（完整三元组形式，即使 query 里没提"产品"，三元组文本本身包含"公司"/"订单号"也会被召回）
+   - 实体名候选命中"Coca-Cola"（精确匹配标准名）
+4. 独立参数生成调用（不带 `tools`、不带历史，只有 schema 说明+召回候选+`query_intent`）：产出正确的两跳 `constraints`，能直接看到"订单号 --BELONG_TO--> 产品"和"产品 --BELONG_TO--> 公司"这两条方向明确的三元组，不需要自己猜方向。
+5. `parse_structured_filter_query_args` 校验通过；执行前 `_resolve_fuzzy_constraint_values`（已上线）再对 `target_value` 做一次最终校验/解析。
+6. 执行、返回结果——这次一轮（2次 LLM 调用，固定成本）应该能拿到正确参数，不需要像复现时那样反复试错到轮次耗尽。
 
 ## 错误处理
 
-- 召回本身不会失败（纯本地字符串计算，没有网络调用），唯一的"失败"是召回不到任何候选——不做特殊处理，阶段2照常执行（LLM 只是拿不到候选参考，退化成今天的行为），后两层防御继续兜底。
-- 阶段2的参数生成如果解析失败（比如 LLM 仍然填了不存在的字段名）——沿用 `structured_filter_query.py` 现有的 `parse_structured_filter_query_args`/`validate_structured_filter_query` 全部校验逻辑，不做任何改动，这层设计只影响"喂给 LLM 参考什么"，不影响"喂进来的参数怎么校验"。
-- 阶段1如果没选任何工具、直接回答——跟今天完全一样的行为，不受这次改动影响，这次探测调用的结果就直接当最终答案用（不会因为"没落历史"这条规则而把一个正常的直接回答也丢弃——"丢弃"只针对"请求了工具调用时伴随的参数"这一种情况）。
-- 阶段1请求了工具调用、但阶段2（`_resolve_structured_filter_query_arguments`）这次调用本身失败（网络错误、provider 报错）——降级成这个工具调用的错误观察结果（`{"error": "..."}`），跟 `run_structured_filter_query` 今天对其他内部异常的降级方式一致，不会让整个 Planner 轮次崩溃，但会正常消耗掉这一轮的工具调用预算（LLM 下一轮会看到这个错误，可能重试或换个思路）。
+- 召回本身不会失败（纯本地字符串计算，没有网络调用），唯一的"失败"是召回不到任何候选——不做特殊处理，独立参数生成调用照常执行（只是拿不到候选参考，退化成"没有召回增强"的效果），后两层防御继续兜底。
+- 独立参数生成调用本身失败（网络错误、provider 报错）——降级成这个工具调用的错误观察结果（`{"error": "..."}`），跟 `run_structured_filter_query` 今天对其他内部异常的降级方式一致，不会让整个 Planner 轮次崩溃，正常消耗这一轮的工具调用预算。
+- 独立参数生成调用返回的文本不是合法 JSON，或合法 JSON 但形状不对——`parse_structured_filter_query_args` 已有的校验会捕获并返回结构化错误，跟今天"LLM 直接产出错误参数"时的处理路径完全一致，不需要新增校验逻辑。
+- `vector_search_tool` 因为不发起额外调用，没有这一层新的失败模式。
 
 ## 测试
 
+- **KV cache 兼容性**：验证 `STRUCTURED_FILTER_QUERY_TOOL_SCHEMA` 从模块加载起就是简化后的最终形态（`parameters` 只有 `query_intent`），不存在任何"运行时再简化一次"的代码路径；验证多轮调用之间传给 provider 的 `tools` 参数逐字节相等。
+- 参数解析分发器：验证 `_resolve_tool_arguments("vector_search_tool", ...)` 不发起任何 LLM 调用，原样返回 `raw_arguments`；验证 `_resolve_tool_arguments("structured_filter_query_tool", ...)` 发起了一次不带 `tools` 的独立调用；验证未知工具名抛出异常。
+- 独立参数生成调用：验证这次调用的请求里没有 `tools`/`tool_choice` 字段；验证请求的 `messages` 只包含 schema 说明+召回候选+`query_intent`，不包含本轮之前的对话历史。
 - 召回算法（`longest_common_substring_score` 及切 n-gram 的逻辑）：纯函数单元测试，覆盖复现场景里的具体案例（"coke-cola" vs "Cola"/"Coca-Cola" 打分）、大小写不敏感、阈值截断、Top-K 截断。
 - relation 三元组候选：验证召回结果确实是完整三元组（带方向），不是裸的 `relation_type` 字符串。
-- **KV cache 兼容性（这份设计最核心的不变量）**：验证阶段1和阶段2两次请求的 `tools` 参数**逐字节相等**（同一个对象/同一份序列化结果，不只是"内容等价"）；验证跨多个回合，每一次调用（不管是阶段1还是阶段2）传的 `tools` 都跟第一次调用完全一致；验证阶段1的探测调用产出的 assistant 消息**没有**出现在传给阶段2的 `messages` 里。
-- 参数解析分发器：验证 `_resolve_tool_arguments("vector_search_tool", ...)` 不发起任何 LLM 调用，直接返回 `{"query": narration_query}`；验证 `_resolve_tool_arguments("structured_filter_query_tool", ...)` 发起了一次 `tool_choice` 强制指定的调用；验证未知工具名抛出异常。
-- 召回算法（`longest_common_substring_score` 及切 n-gram 的逻辑）：纯函数单元测试，覆盖复现场景里的具体案例（"coke-cola" vs "Cola"/"Coca-Cola" 打分）、大小写不敏感、阈值截断、Top-K 截断。
-- relation 三元组候选：验证召回结果确实是完整三元组（带方向），不是裸的 `relation_type` 字符串。
-- 叙述文字复用：验证阶段1文本非空时用它做召回 query（同时也是 `vector_search_tool` 的 `query` 参数），为空时回退到原始用户问题。
-- 端到端：用本轮复现的真实 tenant 数据（或等价的测试 fixture）构造"coke-cola公司有多少个订单"场景，验证召回候选里确实包含正确的两条 relation 三元组和 Cola/Coca-Cola 两个实体候选。
-- 阶段提示词：验证阶段1的探测调用发出的 `messages` 末尾追加了 `_PLANNER_STAGE1_SYSTEM_PROMPT`（包含"参数先填占位值""写一句自包含、已指代消解的叙述"这两条要求）；验证阶段2调用发出的 `messages` 末尾追加了 `_PLANNER_STAGE2_SYSTEM_PROMPT`；验证两段提示词都是追加在真实历史/基础系统消息之后，不替换、不修改前面已有的任何消息。
-- 流式路径：验证阶段1的叙述文字通过 `on_answer_chunk` 正常推送；验证阶段2不触发任何 `on_answer_chunk` 调用（即使 provider 在 `tool_choice` 强制指定时意外返回了文本，也不展示给用户——具体处理方式留给实现计划：忽略即可，不需要报错）。
+- `query_intent` 为空时的回退：验证召回 query 回退到原始用户问题。
+- 端到端：用本轮复现的真实 tenant 数据（或等价的测试 fixture）构造"coke-cola公司有多少个订单"场景，验证召回候选里确实包含正确的两条 relation 三元组和 Cola/Coca-Cola 相关实体候选，验证独立参数生成调用最终产出的参数能正确执行。
+- 历史持久化：验证 ReAct 推理调用产出的 `query_intent` 原样出现在 `planner_messages` 里（不被替换成解析后的结构化参数）。
 
 ## Non-Goals
 
 - 不引入 embedding 索引或语义检索——现阶段 aliases 数据本身大多为空，语义层面的收益无法验证，且会引入新的基础设施/成本/延迟。
-- 不新增独立配置开关——这次改动本身不引入比今天更差的失败模式（召回不到就是退化成今天的行为），不需要开关快速关掉。
-- 不改动查询引擎（`app/graphrag/neo4j_client.py`）、不改动五层白名单校验（`validate_structured_filter_query`）——这层设计只影响"生成参数之前给 LLM 看什么参考信息"，不影响参数生成之后的校验/执行逻辑。
-- 不做召回结果的持久化缓存——每次现算，避免过期问题，代价是每回合多一次纯 CPU 的字符串比较开销，认为这个代价可以接受。
+- 不新增独立配置开关——这次改动本身不引入比今天更差的失败模式（召回不到/独立调用失败都有明确降级路径），不需要开关快速关掉。
+- 不改动查询引擎（`app/graphrag/neo4j_client.py`）、不改动五层白名单校验（`validate_structured_filter_query`）——这层设计只影响"生成参数之前给 LLM 看什么参考信息、通过几次调用生成"，不影响参数生成之后的校验/执行逻辑。
+- 不做召回结果的持久化缓存——每次现算，避免过期问题，代价是每次独立参数生成调用多一次纯 CPU 的字符串比较开销，认为这个代价可以接受。
+- 不保留"模型很确定时一次调用搞定"的快速路径——`structured_filter_query_tool` 固定走2次调用，见"承认的代价"一节，这是本次设计明确接受的取舍，不是遗漏。
 
 ## Global Constraints
 
-- **`tools` 请求参数在整个会话生命周期内、每一次 LLM 调用（不管是探测调用还是参数生成调用）里必须逐字节保持一致**——不允许为任何一个工具在任何一次调用里传精简/不同的 `parameters` 或 `description`。这是这份设计能兼容 KV cache 的硬约束，不是性能优化建议，违反这一条等于让"渐进式披露"这个改动本身变成缓存的主要破坏源。
-- 渐进式披露（"只关注要不要调工具，先不管参数"）通过 `_PLANNER_STAGE1_SYSTEM_PROMPT` 里的指令文字实现，不通过修改 `tools` schema 实现。
-- 阶段1这次探测调用的响应（包括它自己填的参数、包括是否有 `tool_calls`）在"确实请求了工具调用"的分支下**不写入 `planner_messages`**——阶段2看到的历史必须是阶段1看到的那份历史，不多不少。
-- 阶段2调用必须用 `tool_choice` 精确指定到分发目标工具（`{"type": "function", "function": {"name": ...}}`），不能继续用 `"auto"`。
-- 参数解析按工具名分发（`_resolve_tool_arguments`，`app/agent/planner.py`，跟已有的 `_dispatch_tool_call` 是平行关系）：`vector_search_tool` 不发起任何额外 LLM 调用，直接复用阶段1的叙述文字作为 `query`；`structured_filter_query_tool` 才真正发起阶段2调用。
+- **`STRUCTURED_FILTER_QUERY_TOOL_SCHEMA` 的 `parameters` 永久只有 `query_intent` 一个字段，从会话第一次调用起就是这个形态**——不允许存在任何"运行时根据阶段切换 schema"的代码路径。今天那份详细能力说明搬进 `_PLANNER_SYSTEM_PROMPT`（常驻、稳定），不再放在工具自己的 `description`/`parameters` 里。
+- `vector_search_tool` 的 schema 不变。
+- `tools` 请求参数在整个会话生命周期内、每一次 ReAct 推理调用里必须逐字节保持一致——这是这份设计能兼容 KV cache 的硬约束。
+- 独立参数生成调用**不使用 function-calling 协议**（不带 `tools`/`tool_choice`），**不携带本轮之前的对话历史**（只有 schema 说明+召回候选+`query_intent`）。
+- 参数解析按工具名分发（`_resolve_tool_arguments`，`app/agent/planner.py`，跟已有的 `_dispatch_tool_call` 是平行关系，发生在它之前）：`vector_search_tool` 零额外调用直接透传；`structured_filter_query_tool` 触发独立参数生成调用。
+- ReAct 推理调用产出的原始 `tool_calls`（含 `query_intent`）正常追加进 `planner_messages`，不做任何丢弃/替换——独立参数生成调用解析出的真正执行参数只用于 `_dispatch_tool_call` 的实际执行，不回填覆盖历史里模型自己说的 `query_intent`。
 - 召回机制的调用入口封装在 `app/agent/planner.py` 内；不改 `app/agent/graph.py` 的图结构/路由。
 - 召回算法本身不依赖任何外部服务调用（不调 embedding provider、不调 LLM）——必须是纯本地计算。
-- 召回索引每次 Planner 回合基于当次已加载的 `terms`/`term_type_schema`/`confirmed_relation_types` 现算，不做进程级缓存。
+- 召回索引每次独立参数生成调用基于当次已加载的 `terms`/`term_type_schema`/`confirmed_relation_types` 现算，不做进程级缓存。
 - relation 候选必须以完整 `(subject_term_type, relation_type, object_term_type)` 三元组形式出现在召回结果里，不能只召回 `relation_type` 字符串本身。
 - `max_tool_call_rounds` 默认值不变，语义仍然是"回合数"而非"LLM 调用次数"。
 - 不改动 `structured_filter_query.py` 里已有的解析/校验/fuzzy resolution 逻辑本身。
-- `_PLANNER_STAGE1_SYSTEM_PROMPT` 必须显式要求 LLM 在决定调用工具时，用一句自包含、已做指代消解的话说明查询意图——这不是可选的文风建议，是"阶段1叙述文字可以直接当召回 query（以及 `vector_search_tool` 的 `query` 参数）复用"这个设计成立的前提条件。`_PLANNER_STAGE1_SYSTEM_PROMPT`/`_PLANNER_STAGE2_SYSTEM_PROMPT` 定义在 `app/agent/graph.py`，采用追加（而非替换）现有基础系统消息的方式接入。
