@@ -15,6 +15,7 @@ from app.api import deps
 from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology_categories import list_term_types
+from app.graphrag.ontology_constraints import list_allowed_combinations
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.terms_store import list_terms
 from app.providers.embedding import EmbeddingRegistry
@@ -111,6 +112,7 @@ async def agent_chat_endpoint(
     term_type_schema = {
         c.value: c for c in await list_term_types(review_conn, tenant_id, status="confirmed")
     }
+    allowed_combinations = await list_allowed_combinations(review_conn, tenant_id, status="confirmed")
     enable_autonomous_planning = (
         settings.agent_enable_autonomous_planning and not payload.voice_response
     )
@@ -157,6 +159,7 @@ async def agent_chat_endpoint(
             terms=terms,
             confirmed_relation_types=confirmed_relation_types,
             term_type_schema=term_type_schema,
+            allowed_combinations=allowed_combinations,
             graph_client=graph_client,
             memory_conn=memory_conn,
             ticket_conn=memory_conn,
