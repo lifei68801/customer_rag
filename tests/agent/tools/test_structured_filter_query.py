@@ -48,6 +48,31 @@ def test_manifest_schema_only_exposes_query_intent():
         assert forbidden not in raw["description"]
 
 
+def test_manifest_description_trigger_cue_and_query_intent_match_content_exactly():
+    """精确逐字符比对（不是子串检查）——manifest.yaml 里如果用 YAML 折叠
+    标量（`>`）跨行写多行中文，换行处会被折叠成一个空格、结尾还会带一个
+    多余的换行符，这跟原始 Python 字符串字面量拼接完全不是一回事（中文
+    本来就不需要词间空格）。这条测试直接钉死三个字段的解析结果，任何
+    回归（比如改回折叠标量）都会在这里失败，不依赖人工重新逐字核对。"""
+    raw = yaml.safe_load(_manifest_path().read_text(encoding="utf-8"))
+    assert raw["description"] == (
+        "在知识图谱里查询实体数量/满足条件的实体列表——用自然语言描述"
+        "你想查什么就行，不需要给出结构化参数，后续步骤会引导你把它"
+        "转成实际能执行的查询。"
+    )
+    assert raw["trigger_cue"] == (
+        "看到「多少个」「数量」等计数意图时，应该用 structured_filter_query_tool 给出确定数字，"
+        "不能仅凭检索到的文档片段猜测，也不能因为一次调用没查到就直接放弃。"
+    )
+    assert raw["parameters_schema"]["properties"]["query_intent"]["description"] == (
+        "用自然语言描述这次想查询/筛选的内容：想找什么类型的实体、"
+        "有什么筛选条件、涉及哪些已知的名字。写得越具体、越自包含"
+        "（把'它''这个'之类的指代词换成前面已经了解到的具体名字）"
+        "越好——这句话会被用来检索本体里相关的术语和关系作为参考，"
+        "帮你把接下来的实际查询参数填对。"
+    )
+
+
 async def test_resolve_arguments_triggers_recall_augmented_call():
     llm_registry = ProviderRegistry()
     provider = ScriptedLLMProvider([ProviderResult(text='{"anchor": {"term_type": "订单号"}}')])

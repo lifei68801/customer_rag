@@ -30,6 +30,19 @@ def test_manifest_schema_does_not_expose_tenant_id():
     assert "tenant_id" not in raw["parameters_schema"]["properties"]
 
 
+def test_manifest_description_matches_content_exactly():
+    """精确逐字符比对（不是子串检查）——manifest.yaml 里如果用 YAML 折叠
+    标量（`>`）跨行写多行中文，换行处会被折叠成一个空格、结尾还会带一个
+    多余的换行符，这跟原始 Python 字符串字面量拼接完全不是一回事（中文
+    本来就不需要词间空格）。这条测试直接钉死解析结果，任何回归（比如
+    改回折叠标量）都会在这里失败，不依赖人工重新逐字核对。"""
+    raw = yaml.safe_load(_manifest_path().read_text(encoding="utf-8"))
+    assert raw["description"] == (
+        "在企业知识库中做混合检索（向量+关键词），返回相关文档片段。"
+        "当需要补充事实性资料来回答用户问题时调用。"
+    )
+
+
 async def test_execute_returns_records_scoped_to_tenant():
     records = [
         VectorRecord(

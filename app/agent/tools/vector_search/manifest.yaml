@@ -1,7 +1,5 @@
 name: vector_search_tool
-description: >
-  在企业知识库中做混合检索（向量+关键词），返回相关文档片段。
-  当需要补充事实性资料来回答用户问题时调用。
+description: "在企业知识库中做混合检索（向量+关键词），返回相关文档片段。当需要补充事实性资料来回答用户问题时调用。"
 parameters_schema:
   type: object
   properties:
