@@ -29,7 +29,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         ) : message.isStreaming ? (
           <ThinkingIndicator statusText={message.statusText} />
         ) : null}
-        {!isUser && message.reasoningTrail.length > 0 && (
+        {!isUser && !message.isStreaming && message.reasoningTrail.length > 0 && (
           <ReasoningTrail steps={message.reasoningTrail} />
         )}
         {!isUser && !message.isStreaming && message.usedSources.length > 0 && (
@@ -61,7 +61,7 @@ function ReasoningTrail({ steps }: { steps: string[] }) {
       </summary>
       <ol className="mt-1 space-y-1 text-xs text-ink-soft">
         {steps.map((step, index) => (
-          <li key={index} className="whitespace-pre-wrap">
+          <li key={index} className="whitespace-pre-wrap break-words">
             {index + 1}. {step}
           </li>
         ))}

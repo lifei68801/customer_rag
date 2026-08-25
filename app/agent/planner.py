@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from app.agent.tools import (
@@ -21,6 +22,8 @@ from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import VectorRecord, VectorStore
 from app.safety.rules import LITE_SAFETY_FALLBACK_SENTENCE, check_text
 from app.voice.streaming_responder import stream_sentences
+
+logger = logging.getLogger(__name__)
 
 _TOOL_SCHEMAS = [VECTOR_SEARCH_TOOL_SCHEMA, STRUCTURED_FILTER_QUERY_TOOL_SCHEMA]
 
@@ -102,8 +105,10 @@ async def _run_final_answer_attempt(
             provider_name=llm_provider_name,
         )
     except Exception:
+        logger.warning("_run_final_answer_attempt: 最后陈述调用失败", exc_info=True)
         return {"planner_gave_up": True}
     if not result.text:
+        logger.warning("_run_final_answer_attempt: 最后陈述调用返回空文本")
         return {"planner_gave_up": True}
     messages = [*messages, {"role": "assistant", "content": result.text}]
     return {
@@ -198,6 +203,7 @@ async def _run_final_answer_attempt_streaming(
     output_safety_node 做完整安全审查，跟正常轮次的处理方式完全一致。
     """
     final_messages = [*messages, {"role": "system", "content": _FINAL_ANSWER_INSTRUCTION}]
+    sent_sentences: list[str] = []
     try:
         raw_stream = llm_registry.stream_with_tools(
             ProviderCapability.LLM,
@@ -208,7 +214,6 @@ async def _run_final_answer_attempt_streaming(
         raw_text_parts: list[str] = []
         text_stream = _split_stream_text_and_tool_calls(raw_stream, tool_calls_box, raw_text_parts)
 
-        sent_sentences: list[str] = []
         any_sentence_substituted = False
         async for sentence in stream_sentences(text_stream):
             safety_result = check_text(sentence, banned_terms=banned_terms, include_email=False)
@@ -220,10 +225,20 @@ async def _run_final_answer_attempt_streaming(
             await on_answer_chunk(safe_sentence)
             sent_sentences.append(safe_sentence)
     except Exception:
-        return {"planner_gave_up": True}
+        logger.warning(
+            "_run_final_answer_attempt_streaming: 最后陈述流式调用中途失败，"
+            "已经推送给用户的 %d 句话并入 streamed_round_texts 供后续安全审查",
+            len(sent_sentences),
+            exc_info=True,
+        )
+        return {
+            "planner_gave_up": True,
+            "streamed_round_texts": [*streamed_round_texts, *sent_sentences],
+        }
 
     full_text = "".join(sent_sentences) if any_sentence_substituted else "".join(raw_text_parts)
     if not full_text:
+        logger.warning("_run_final_answer_attempt_streaming: 最后陈述调用返回空文本")
         return {"planner_gave_up": True}
 
     messages = [*messages, {"role": "assistant", "content": full_text}]

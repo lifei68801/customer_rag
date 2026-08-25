@@ -168,6 +168,44 @@ async def test_run_planner_turn_gives_up_when_final_answer_attempt_also_returns_
     assert update == {"planner_gave_up": True}
 
 
+async def test_run_planner_turn_gives_up_when_final_answer_attempt_raises():
+    class _FirstScriptedThenRaisingProvider:
+        def __init__(self, first_response):
+            self._first_response = first_response
+            self._call_count = 0
+
+        async def complete(self, request):
+            self._call_count += 1
+            if self._call_count == 1:
+                return self._first_response
+            raise RuntimeError("boom")
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        _FirstScriptedThenRaisingProvider(
+            ProviderResult(
+                text="",
+                tool_calls=[ToolCall(id="call_x", name="vector_search_tool", arguments="{}")],
+            )
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "问题"}],
+        "tool_call_round": 3,
+    }
+
+    update = await run_planner_turn(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+    )
+
+    assert update == {"planner_gave_up": True}
+
+
 async def test_run_planner_turn_final_answer_attempt_succeeds_when_rounds_exhausted():
     llm_registry = ProviderRegistry()
     llm_registry.register(
@@ -832,6 +870,114 @@ async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_als
     assert len(provider.requests) == 2
     assert update == {"planner_gave_up": True}
     assert tool_status_calls == 0
+
+
+async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_raises():
+    class _RaisingStreamingProvider:
+        def __init__(self, first_round):
+            self._first_round = first_round
+            self._call_count = 0
+
+        async def complete(self, request):
+            raise NotImplementedError("此 Fake 只用于测试流式路径")
+
+        async def stream_complete_with_tools(self, request):
+            self._call_count += 1
+            if self._call_count == 1:
+                for chunk in self._first_round:
+                    yield chunk
+                return
+            raise RuntimeError("boom")
+            yield  # pragma: no cover - unreachable, makes this a generator
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        _RaisingStreamingProvider(
+            [ProviderStreamChunk(tool_calls=[ToolCall(id="call_1", name="vector_search_tool", arguments="{}")])]
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "问题"}],
+        "tool_call_round": 3,
+    }
+
+    async def on_answer_chunk(text: str) -> None:
+        pass
+
+    async def on_tool_status() -> None:
+        pass
+
+    update = await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=None,
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+    )
+
+    assert update["planner_gave_up"] is True
+    assert update["streamed_round_texts"] == []
+
+
+async def test_run_planner_turn_streaming_final_answer_attempt_preserves_partial_text_on_failure():
+    """回归测试 Finding 1 的修复：最后陈述流式调用中途失败时，已经推送
+    给用户的部分文本必须并入 streamed_round_texts，供 output_safety_node
+    的完整规则+泄露审查覆盖，而不是随着 except 分支被直接丢弃。"""
+
+    class _PartialThenRaisingProvider:
+        def __init__(self, first_round):
+            self._first_round = first_round
+            self._call_count = 0
+
+        async def complete(self, request):
+            raise NotImplementedError("此 Fake 只用于测试流式路径")
+
+        async def stream_complete_with_tools(self, request):
+            self._call_count += 1
+            if self._call_count == 1:
+                for chunk in self._first_round:
+                    yield chunk
+                return
+            yield ProviderStreamChunk(text="已经查到部分信息。")
+            raise RuntimeError("boom")
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        _PartialThenRaisingProvider(
+            [ProviderStreamChunk(tool_calls=[ToolCall(id="call_1", name="vector_search_tool", arguments="{}")])]
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "问题"}],
+        "tool_call_round": 3,
+    }
+    sent_chunks: list[str] = []
+
+    async def on_answer_chunk(text: str) -> None:
+        sent_chunks.append(text)
+
+    async def on_tool_status() -> None:
+        pass
+
+    update = await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=None,
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+    )
+
+    assert update["planner_gave_up"] is True
+    assert "已经查到部分信息。" in update["streamed_round_texts"]
+    assert sent_chunks == ["已经查到部分信息。"]
 
 
 async def test_run_planner_turn_streaming_final_answer_attempt_succeeds_when_rounds_exhausted():
