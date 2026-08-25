@@ -1,0 +1,19 @@
+name: structured_filter_query_tool
+description: >
+  在知识图谱里查询实体数量/满足条件的实体列表——用自然语言描述你想查什么就行，
+  不需要给出结构化参数，后续步骤会引导你把它转成实际能执行的查询。
+trigger_cue: >
+  看到「多少个」「数量」等计数意图时，应该用 structured_filter_query_tool 给出确定数字，
+  不能仅凭检索到的文档片段猜测，也不能因为一次调用没查到就直接放弃。
+parameters_schema:
+  type: object
+  properties:
+    query_intent:
+      type: string
+      description: >
+        用自然语言描述这次想查询/筛选的内容：想找什么类型的实体、有什么筛选条件、
+        涉及哪些已知的名字。写得越具体、越自包含（把'它''这个'之类的指代词换成
+        前面已经了解到的具体名字）越好——这句话会被用来检索本体里相关的术语和
+        关系作为参考，帮你把接下来的实际查询参数填对。
+  required:
+    - query_intent

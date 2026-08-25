@@ -1,44 +1,15 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from app.graphrag.ontology import Term
-from app.graphrag.ontology_categories import TermTypeCategory
+from app.agent.tool_registry import ToolContext
+from app.graphrag.ontology_recall import format_recall_candidates, recall_ontology_candidates
 from app.graphrag.structured_filter_query import run_structured_filter_query
-from app.graphrag.term_guard import GraphClientProtocol
-from app.providers.embedding import EmbeddingRegistry
-from app.providers.registry import ProviderRegistry
-from app.providers.rerank import RerankProvider
-from app.retrieval.bm25 import BM25Index
-from app.retrieval.hybrid_search import hybrid_search
-from app.retrieval.vector_store import VectorRecord, VectorStore
+from app.providers.base import ProviderCapability, ProviderRequest
+from app.retrieval.vector_store import VectorRecord
 
-# OpenAI function-calling 格式的工具 schema。刻意不在 properties 里暴露 tenant_id——
-# 隔离维度只能由系统层（tool_call_node）从 AgentState 注入，不能是 LLM 可控参数
-# （见 docs/AGENT_PLANNER_DESIGN.md §4.2）。
-
-VECTOR_SEARCH_TOOL_SCHEMA: dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": "vector_search_tool",
-        "description": (
-            "在企业知识库中做混合检索（向量+关键词），返回相关文档片段。"
-            "当需要补充事实性资料来回答用户问题时调用。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "检索查询语句，可以是用户问题本身或其改写/子问题",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-}
-
-STRUCTURED_FILTER_QUERY_USAGE_GUIDE = (
+_USAGE_GUIDE = (
     "在知识图谱里查询实体——支持三种用法，可以组合使用：\n"
     "1. 已知实体名，查它是什么/关联着什么：anchor.name（会做别名模糊匹配）+ expand。\n"
     "2. 不知道具体实体名，按条件筛选一批满足条件的实体，"
@@ -58,7 +29,7 @@ STRUCTURED_FILTER_QUERY_USAGE_GUIDE = (
     "具体所指的问题（而不是要数yy的数量）时，才用 anchor.name。"
 )
 
-STRUCTURED_FILTER_QUERY_PARAMETERS_SCHEMA: dict[str, Any] = {
+_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "anchor": {
@@ -175,81 +146,79 @@ STRUCTURED_FILTER_QUERY_PARAMETERS_SCHEMA: dict[str, Any] = {
     "required": ["anchor"],
 }
 
-STRUCTURED_FILTER_QUERY_TOOL_SCHEMA: dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": "structured_filter_query_tool",
-        "description": (
-            "在知识图谱里查询实体数量/满足条件的实体列表——用自然语言描述"
-            "你想查什么就行，不需要给出结构化参数，后续步骤会引导你把它"
-            "转成实际能执行的查询。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query_intent": {
-                    "type": "string",
-                    "description": (
-                        "用自然语言描述这次想查询/筛选的内容：想找什么类型的实体、"
-                        "有什么筛选条件、涉及哪些已知的名字。写得越具体、越自包含"
-                        "（把'它''这个'之类的指代词换成前面已经了解到的具体名字）"
-                        "越好——这句话会被用来检索本体里相关的术语和关系作为参考，"
-                        "帮你把接下来的实际查询参数填对。"
-                    ),
-                },
-            },
-            "required": ["query_intent"],
-        },
-    },
-}
+
+class ToolArgumentResolutionError(Exception):
+    """resolve_arguments 失败时抛出——调用方（app/agent/planner.py 的
+    run_tool_calls）捕获后降级成这次工具调用的 {"error": ...} 观察结果，
+    不会让整个 Planner 轮次崩溃。"""
 
 
-async def vector_search_tool(
-    query: str,
-    *,
-    tenant_id: str,
-    embedding_registry: EmbeddingRegistry,
-    embedding_provider_name: str,
-    vector_store: VectorStore,
-    bm25_index: BM25Index,
-    llm_registry: ProviderRegistry,
-    llm_provider_name: str,
-    rerank_provider: RerankProvider | None = None,
-    query_rewrite_enabled: bool = True,
-    top_k: int = 3,
-) -> list[VectorRecord]:
-    """vector_search_tool 的实际执行体，薄封装 hybrid_search。
+def _strip_json_code_fence(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped[3:]
+        if stripped.startswith("json"):
+            stripped = stripped[4:]
+        if stripped.endswith("```"):
+            stripped = stripped[:-3]
+        stripped = stripped.strip()
+    return stripped
 
-    tenant_id 是关键字专属参数，只能由调用方（tool_call_node）从
-    AgentState 传入，不出现在 VECTOR_SEARCH_TOOL_SCHEMA 里，LLM 无法控制。
-    """
-    return await hybrid_search(
-        query,
-        embedding_registry=embedding_registry,
-        embedding_provider_name=embedding_provider_name,
-        vector_store=vector_store,
-        bm25_index=bm25_index,
-        llm_registry=llm_registry,
-        llm_provider_name=llm_provider_name,
-        tenant_id=tenant_id,
-        rerank_provider=rerank_provider,
-        query_rewrite_enabled=query_rewrite_enabled,
-        final_top_k=top_k,
+
+def _build_prompt(query_intent: str, candidates) -> str:
+    schema_text = json.dumps(_PARAMETERS_SCHEMA, ensure_ascii=False, indent=2)
+    return (
+        "你是一个把自然语言查询意图转成结构化查询参数的助手。给定下面的查询意图、"
+        "使用说明、JSON Schema、以及召回到的本体候选参考，输出一段严格匹配这个 "
+        "JSON Schema 的 JSON 对象作为你的完整回复——不要输出任何 JSON 之外的文字，"
+        "也不要用 markdown 代码块包裹。\n\n"
+        f"使用说明：\n{_USAGE_GUIDE}\n\n"
+        f"JSON Schema：\n{schema_text}\n\n"
+        "constraints.hops 里的 relation_type/target_term_type、constraints 里的 "
+        "field/target_field，以及 anchor.term_type，都应该优先使用下面候选参考里"
+        "出现过的名字，不要凭空发明没见过的名字。\n\n"
+        f"候选参考：\n{format_recall_candidates(candidates)}\n\n"
+        f"查询意图：{query_intent}"
     )
 
 
-async def structured_filter_query_tool(
-    arguments: dict[str, Any],
-    *,
-    tenant_id: str,
-    terms: list[Term],
-    graph_client: GraphClientProtocol,
-    confirmed_relation_types: set[str],
-    term_type_schema: dict[str, TermTypeCategory],
-) -> dict[str, Any]:
-    """structured_filter_query_tool 的实际执行体，薄封装
-    structured_filter_query.py::run_structured_filter_query。"""
-    return await run_structured_filter_query(
-        arguments, terms=terms, graph_client=graph_client, tenant_id=tenant_id,
-        confirmed_relation_types=confirmed_relation_types, term_type_schema=term_type_schema,
-    )
+class StructuredFilterQueryTool:
+    async def resolve_arguments(
+        self, raw_arguments: dict[str, Any], *, context: ToolContext
+    ) -> dict[str, Any]:
+        query_intent = str(raw_arguments.get("query_intent") or "").strip() or context.question
+        candidates = recall_ontology_candidates(
+            query_intent, terms=context.terms, term_type_schema=context.term_type_schema,
+            allowed_combinations=context.allowed_combinations,
+        )
+        prompt = _build_prompt(query_intent, candidates)
+        try:
+            result = await context.llm_registry.run(
+                ProviderCapability.LLM,
+                ProviderRequest(messages=[{"role": "user", "content": prompt}]),
+                provider_name=context.llm_provider_name,
+            )
+        except Exception as exc:
+            raise ToolArgumentResolutionError(f"参数生成调用失败：{exc}") from exc
+        try:
+            return json.loads(_strip_json_code_fence(result.text))
+        except json.JSONDecodeError as exc:
+            raise ToolArgumentResolutionError(
+                f"参数生成调用返回的内容不是合法 JSON：{result.text[:200]!r}"
+            ) from exc
+
+    async def execute(
+        self, arguments: dict[str, Any], *, context: ToolContext
+    ) -> tuple[dict[str, Any], list[VectorRecord]]:
+        if context.graph_client is None:
+            return {"error": "structured_filter_query_tool 未配置"}, []
+        observation = await run_structured_filter_query(
+            arguments, terms=context.terms, graph_client=context.graph_client,
+            tenant_id=context.tenant_id,
+            confirmed_relation_types=context.confirmed_relation_types,
+            term_type_schema=context.term_type_schema,
+        )
+        return observation, []
+
+
+TOOL = StructuredFilterQueryTool()
