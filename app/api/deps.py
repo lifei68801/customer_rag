@@ -37,6 +37,7 @@ from app.retrieval.factory import build_vector_store_from_settings
 from app.retrieval.vector_store import VectorStore
 from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.neptune_client import NeptuneGraphClient
 from app.memory.factory import build_memory_conn_from_settings
 from app.providers.asr import ASRProvider
 from app.providers.tts import TTSProvider
@@ -75,7 +76,7 @@ __all__ = [
 
 _bm25_index_cache: BM25Index | None = None
 _bm25_index_lock = asyncio.Lock()
-_graph_client_cache: Neo4jGraphClient | None = None
+_graph_client_cache: Neo4jGraphClient | NeptuneGraphClient | None = None
 _graph_client_lock = asyncio.Lock()
 _memory_conn_cache: aiosqlite.Connection | None = None
 _memory_conn_lock = asyncio.Lock()
@@ -206,7 +207,7 @@ def get_table_extractor(
 
 async def get_graph_client(
     settings: Settings = Depends(get_settings),
-) -> Neo4jGraphClient:
+) -> Neo4jGraphClient | NeptuneGraphClient:
     """进程内单例，避免每次请求都新建一个 Neo4j 驱动连接池。"""
     global _graph_client_cache
     if _graph_client_cache is None:

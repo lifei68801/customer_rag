@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "changeme123"
+    # 图数据库后端选择："neo4j"（默认）| "neptune"。见
+    # docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md。
+    graph_backend: Literal["neo4j", "neptune"] = "neo4j"
+    neptune_endpoint: str = ""
+    neptune_port: int = 8182
     # 默认指向占位示例数据，正式环境必须替换为真实术语表文件路径。
     terminology_path: str = "app/graphrag/terminology_seed.yaml"
 
