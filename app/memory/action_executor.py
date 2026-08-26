@@ -24,6 +24,22 @@ async def _embed_text(
     return result.vectors[0]
 
 
+async def _current_text(
+    conn: aiosqlite.Connection, *, memory_id: str, tenant_id: str, user_id: str
+) -> str | None:
+    """UPDATE/DELETE 前先查一次这条记忆变更前的 text，供 append_history 的
+    old_text 使用——必须在 upsert_memory_item()/mark_deleted() 执行之前调用，
+    否则读到的已经是变更后的值（或者对 DELETE 而言，mark_deleted 本身不清空
+    text 列，语义上依然应该在变更发生前读取，避免未来代码调整顺序时引入
+    难以察觉的 bug）。查不到（memory_id 不存在）时返回 None，不抛异常。"""
+    cursor = await conn.execute(
+        "SELECT text FROM memory_items WHERE memory_id = ? AND tenant_id = ? AND user_id = ?",
+        (memory_id, tenant_id, user_id),
+    )
+    row = await cursor.fetchone()
+    return row[0] if row else None
+
+
 async def apply_memory_actions(
     conn: aiosqlite.Connection,
     *,
@@ -45,6 +61,7 @@ async def apply_memory_actions(
         text = action.get("text", "")
         memory_id = action.get("memory_id", "")
         reason = action.get("reason") or None
+        conflict_type = action.get("conflict_type") or None
 
         if event == "ADD":
             if not text:
@@ -72,12 +89,16 @@ async def apply_memory_actions(
                 old_text=None,
                 new_text=text,
                 reason=reason,
+                conflict_type=conflict_type,
             )
             applied.append({"event": "ADD", "memory_id": resolved_id, "text": text})
 
         elif event == "UPDATE":
             if not text or not memory_id:
                 continue
+            old_text = await _current_text(
+                conn, memory_id=memory_id, tenant_id=tenant_id, user_id=user_id
+            )
             embedding = await _embed_text(
                 text,
                 embedding_registry=embedding_registry,
@@ -97,15 +118,19 @@ async def apply_memory_actions(
                 tenant_id=tenant_id,
                 user_id=user_id,
                 event="UPDATE",
-                old_text=None,
+                old_text=old_text,
                 new_text=text,
                 reason=reason,
+                conflict_type=conflict_type,
             )
             applied.append({"event": "UPDATE", "memory_id": memory_id, "text": text})
 
         elif event == "DELETE":
             if not memory_id:
                 continue
+            old_text = await _current_text(
+                conn, memory_id=memory_id, tenant_id=tenant_id, user_id=user_id
+            )
             await mark_deleted(
                 conn, memory_id=memory_id, tenant_id=tenant_id, user_id=user_id
             )
@@ -115,9 +140,10 @@ async def apply_memory_actions(
                 tenant_id=tenant_id,
                 user_id=user_id,
                 event="DELETE",
-                old_text=None,
+                old_text=old_text,
                 new_text=None,
                 reason=reason,
+                conflict_type=conflict_type,
             )
             applied.append({"event": "DELETE", "memory_id": memory_id, "text": ""})
 
