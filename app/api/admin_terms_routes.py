@@ -10,7 +10,6 @@ import aiosqlite
 
 from app.api import deps
 from app.graphrag.duplicate_detection import find_similar_terms
-from app.graphrag.duplicate_review_queue import is_tombstoned
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
@@ -23,6 +22,7 @@ from app.graphrag.terms_store import (
     create_term,
     delete_term,
     get_term,
+    is_tombstoned,
     list_terms,
     update_term,
 )

@@ -8,6 +8,7 @@ from app.graphrag.ontology_categories import (
     update_term_type,
 )
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
+from app.graphrag import terms_store
 from app.graphrag.terms_store import (
     InvalidExtraPropertyTypeError,
     TermNameConflictError,
@@ -18,7 +19,9 @@ from app.graphrag.terms_store import (
     delete_term,
     ensure_terms_schema,
     get_term,
+    is_tombstoned,
     list_terms,
+    merge_terms,
     migrate_term_type,
     update_term,
     upsert_term_with_node_key,
@@ -1143,3 +1146,164 @@ async def test_update_term_rename_and_retype_in_one_call_still_detects_conflict_
     category = await get_term(conn, "t1", "Coffee", "类目")
     assert product.aliases == ["拿铁"]
     assert category.term_type == "类目"
+
+
+# merge_terms：把"合并两条术语"这个领域操作从 app/graphrag/duplicate_
+# review_queue.py 收进 Term 仓储自己——那边只负责查行+调用+标记 approved，
+# 墓碑命名/别名并集/失败补偿这些安全语义都在这里，用真实的 update_term()
+# 测（不再需要一个 fake terms_module 去避免建 terms 表）。
+
+
+async def test_merge_terms_tombstones_merged_and_appends_aliases_onto_keeper():
+    conn = await _connect()
+    await create_term_type(conn, tenant_id="default", value="公司")
+    await confirm_ontology(conn, "default")
+    await create_term(
+        conn, tenant_id="default", standard_name="Coca-Cola", aliases=["coke"], term_type="公司",
+    )
+    await create_term(
+        conn, tenant_id="default", standard_name="可口可乐", aliases=["可乐公司"], term_type="公司",
+    )
+
+    await merge_terms(
+        conn, tenant_id="default",
+        keep_node_key="公司:Coca-Cola", merged_node_key="公司:可口可乐",
+    )
+
+    keeper = await get_term(conn, "default", "Coca-Cola", "公司")
+    assert set(keeper.aliases) == {"coke", "可口可乐", "可乐公司"}
+
+    all_terms = await list_terms(conn, tenant_id="default")
+    merged_row = next(t for t in all_terms if t.node_key == "公司:可口可乐")
+    assert is_tombstoned(merged_row)
+    assert merged_row.standard_name == "[已合并] 公司:可口可乐"
+    assert merged_row.aliases == []
+
+
+async def test_merge_terms_raises_term_not_found_for_unknown_node_key():
+    conn = await _connect()
+    await create_term_type(conn, tenant_id="default", value="公司")
+    await confirm_ontology(conn, "default")
+    await create_term(conn, tenant_id="default", standard_name="Coca-Cola", aliases=[], term_type="公司")
+
+    with pytest.raises(TermNotFoundError):
+        await merge_terms(
+            conn, tenant_id="default",
+            keep_node_key="公司:Coca-Cola", merged_node_key="公司:不存在",
+        )
+
+
+async def _insert_term_row_bypassing_conflict_check(
+    conn: aiosqlite.Connection, *, tenant_id: str, node_key: str,
+    standard_name: str, aliases: list[str], term_type: str,
+) -> None:
+    """直接往 terms 表插行，绕开 create_term() 的 _check_name_conflict——
+    用来构造"两条术语已经共享同一个别名"这种正常创建路径本来无法到达的
+    状态（真实场景类似 ETL 写入路径绕开了通常的冲突检查），验证 merge_terms
+    在这种状态下遇到真实冲突时的处理是否正确。跟
+    tests/api/test_admin_duplicate_review_routes.py::_seed_terms 是同一个
+    思路。"""
+    import json as _json
+    await conn.execute(
+        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
+        "extra_properties, source) VALUES (?, ?, ?, ?, ?, '{}', 'manual')",
+        (tenant_id, node_key, standard_name, _json.dumps(aliases, ensure_ascii=False), term_type),
+    )
+    await conn.commit()
+
+
+async def test_merge_terms_restores_merged_term_when_append_step_fails(monkeypatch):
+    """追加别名这一步（Step 2）失败时，merged 那条应该被恢复成合并前的
+    原状，不是停留在墓碑状态。用 monkeypatch 只在第二次 update_term 调用
+    （追加那一步）注入一次性失败，第三次调用（补偿恢复）用真实的
+    update_term 正常执行——验证补偿本身在"没有更深层冲突"的普通失败场景
+    下确实能成功恢复。（"一个真实的同名冲突，恰好连补偿恢复也会撞上同一个
+    冲突"这种更刁钻的场景，见下面 test_merge_terms_logs_and_reraises_
+    original_error_when_compensation_also_fails——那个测试顺带也验证了
+    TermNameConflictError 真的会从一次真实冲突里传播出来，这里不重复
+    构造一次。）"""
+    conn = await _connect()
+    await create_term_type(conn, tenant_id="default", value="公司")
+    await confirm_ontology(conn, "default")
+    await create_term(
+        conn, tenant_id="default", standard_name="Coca-Cola", aliases=[], term_type="公司",
+    )
+    await create_term(
+        conn, tenant_id="default", standard_name="可口可乐股份", aliases=["可乐"], term_type="公司",
+    )
+
+    real_update_term = terms_store.update_term
+    call_count = {"n": 0}
+
+    async def _fail_on_second_call(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("simulated transient failure on append step")
+        return await real_update_term(*args, **kwargs)
+
+    monkeypatch.setattr(terms_store, "update_term", _fail_on_second_call)
+
+    with pytest.raises(RuntimeError, match="simulated transient failure"):
+        await merge_terms(
+            conn, tenant_id="default",
+            keep_node_key="公司:Coca-Cola", merged_node_key="公司:可口可乐股份",
+        )
+
+    assert call_count["n"] == 3
+    # merged 那条应该被恢复成合并前的原状，不是停留在墓碑状态。
+    merged_row = await get_term(conn, "default", "可口可乐股份", "公司")
+    assert not is_tombstoned(merged_row)
+    assert merged_row.aliases == ["可乐"]
+    # keeper 完全没有被追加成功（Step 2 一开始就失败了）。
+    keeper = await get_term(conn, "default", "Coca-Cola", "公司")
+    assert keeper.aliases == []
+
+
+async def test_merge_terms_logs_and_reraises_original_error_when_compensation_also_fails(
+    monkeypatch, caplog,
+):
+    """恢复 merged 那条（补偿写入）本身也可能失败——比如恢复目标名字这期间
+    被并发写入抢占。用 monkeypatch 让 update_term 在第三次调用（补偿那次）
+    时额外抛出，验证：(a) 调用方看到的是触发整条回滚路径的原始异常，不是
+    补偿失败的异常；(b) 有一条 ERROR 日志留下人工核对所需的全部线索。"""
+    conn = await _connect()
+    await create_term_type(conn, tenant_id="default", value="公司")
+    await confirm_ontology(conn, "default")
+    await create_term(
+        conn, tenant_id="default", standard_name="Coca-Cola", aliases=[], term_type="公司",
+    )
+    await _insert_term_row_bypassing_conflict_check(
+        conn, tenant_id="default", node_key="公司:可口可乐股份",
+        standard_name="可口可乐股份", aliases=["可乐"], term_type="公司",
+    )
+    await _insert_term_row_bypassing_conflict_check(
+        conn, tenant_id="default", node_key="公司:某第三方公司",
+        standard_name="某第三方公司", aliases=["可乐"], term_type="公司",
+    )
+
+    real_update_term = terms_store.update_term
+    call_count = {"n": 0}
+
+    async def _flaky_update_term(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 3:
+            raise RuntimeError("simulated concurrent write stole the name back")
+        return await real_update_term(*args, **kwargs)
+
+    monkeypatch.setattr(terms_store, "update_term", _flaky_update_term)
+
+    with caplog.at_level("ERROR", logger="app.graphrag.terms_store"):
+        with pytest.raises(TermNameConflictError):
+            await merge_terms(
+                conn, tenant_id="default",
+                keep_node_key="公司:Coca-Cola", merged_node_key="公司:可口可乐股份",
+            )
+
+    assert call_count["n"] == 3
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) == 1
+    message = error_records[0].getMessage()
+    assert "default" in message
+    assert "可口可乐股份" in message
+    assert "可乐" in message
+    assert "simulated concurrent write stole the name back" in message

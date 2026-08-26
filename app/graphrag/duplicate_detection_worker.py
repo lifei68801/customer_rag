@@ -12,9 +12,8 @@ from app.graphrag.duplicate_detection import find_duplicate_pairs
 from app.graphrag.duplicate_review_queue import (
     enqueue_duplicate_suggestion,
     has_any_duplicate_record,
-    is_tombstoned,
 )
-from app.graphrag.terms_store import list_terms
+from app.graphrag.terms_store import is_tombstoned, list_terms
 
 logger = logging.getLogger(__name__)
 

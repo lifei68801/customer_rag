@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import aiosqlite
-
-logger = logging.getLogger(__name__)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS duplicate_review_queue (
@@ -34,33 +31,6 @@ class DuplicateReviewNotFoundError(Exception):
 
 class DuplicateReviewAlreadyResolvedError(Exception):
     """这条记录已经被批准/驳回过，不能重复处理。"""
-
-
-_TOMBSTONE_PREFIX = "[已合并] "
-
-
-def _tombstone_name(node_key: str) -> str:
-    """approve_duplicate_suggestion 把被合并那条 Term 的 standard_name 重写
-    成这个格式（"合并进了别的术语"的墓碑标记）——这是这个格式唯一的生成
-    位置，其它需要构造/识别这个字符串的地方（is_tombstoned 本身、批准逻辑
-    里 tombstone/恢复两处调用）都通过这里，不重复拼字面量。"""
-    return f"{_TOMBSTONE_PREFIX}{node_key}"
-
-
-def is_tombstoned(term: Any) -> bool:
-    """term（真实的 app.graphrag.ontology.Term，或测试用的同名 duck-typed
-    对象）是否已经是一条被 approve_duplicate_suggestion 合并掉的墓碑行。
-
-    墓碑行的 standard_name 字面包含了被合并前的原始名字（"[已合并]
-    {node_key}"，node_key 通常带着原 standard_name），如果不过滤掉，
-    duplicate_detection_worker.py 的批量扫描、admin_terms_routes.py
-    创建术语时的相似度提示，都可能把墓碑行的字符串当成一个正常术语去跟
-    别的术语比相似度——同类型里名字凑巧是墓碑串子串的术语很容易因此
-    被算出很高的相似度分（甚至 1.0），造成"建议合并一个已经被合并过的
-    行"这种垃圾建议，一旦被批准还会把墓碑串本身当垃圾数据写进另一条
-    术语的 aliases。所有需要判断"这条术语是不是已经不该再参与重复检测"
-    的地方都应该调这个函数，不要自己写 standard_name.startswith(...)。"""
-    return term.standard_name.startswith(_TOMBSTONE_PREFIX)
 
 
 async def ensure_duplicate_review_schema(conn: aiosqlite.Connection) -> None:
@@ -162,22 +132,18 @@ async def approve_duplicate_suggestion(
     review_id: int,
     tenant_id: str,
     keep_node_key: str,
-    terms_module: Any = None,
 ) -> None:
     """keep_node_key 是候选对里保留哪一条的 node_key（必须是这条记录的
-    candidate_a_node_key/candidate_b_node_key 之一）。被合并那条 Term 的
-    standard_name，连同它自己已有的全部 aliases，一起追加进保留那条的
-    aliases（去重）——不是只追加 standard_name，否则被合并那条自己的别名
-    会变成孤儿，resolve_term() 再也找不回它们。被合并那条 Term 本身不删除
-    （node_key 可能已经被 Neo4j 图数据引用，删除会破坏引用完整性），只是
-    它的 standard_name 变成了保留那条的一个 alias。
+    candidate_a_node_key/candidate_b_node_key 之一）。实际的合并写入（墓碑化
+    被合并那条、把它原本的 standard_name+aliases 追加进保留那条、失败时
+    补偿恢复）委托给 terms_store.merge_terms()——那是 terms 表自己的操作，
+    这一层只负责把"候选对里的哪个是 merged"这个审核队列特有的判断做完，
+    再把 terms_store.TermNotFoundError 翻译成这条队列自己的
+    DuplicateReviewNotFoundError（其它异常，比如 TermNameConflictError，
+    原样透传给调用方——那不是"审核记录本身有问题"，是"合并写入本身失败
+    了"，调用方按自己的语义处理）。"""
+    from app.graphrag import terms_store
 
-    terms_module 默认使用 app.graphrag.terms_store（真实的 list_terms/
-    update_term）；测试可以传一个提供同名异步方法的 fake 对象，不需要真的
-    建一张 terms 表。
-    """
-    if terms_module is None:
-        from app.graphrag import terms_store as terms_module
     row = await _fetch_pending_row(conn, review_id, tenant_id=tenant_id)
     candidates = {row["candidate_a_node_key"], row["candidate_b_node_key"]}
     if keep_node_key not in candidates:
@@ -186,101 +152,18 @@ async def approve_duplicate_suggestion(
         )
     merged_node_key = next(nk for nk in candidates if nk != keep_node_key)
 
-    terms = await terms_module.list_terms(conn, tenant_id)
-    terms_by_node_key = {t.node_key: t for t in terms}
-    keep_term = terms_by_node_key.get(keep_node_key)
-    merged_term = terms_by_node_key.get(merged_node_key)
-    if keep_term is None or merged_term is None:
-        raise DuplicateReviewNotFoundError(
-            f"候选术语不存在（可能已被删除）: keep={keep_node_key!r}, merged={merged_node_key!r}"
-        )
-
-    merged_original_standard_name = merged_term.standard_name
-    merged_original_aliases = list(merged_term.aliases)
-
-    # Step 1: Tombstone the merged row first — rename its standard_name to a
-    # node_key-derived string and clear aliases to avoid name conflicts.
-    await terms_module.update_term(
-        conn,
-        tenant_id=tenant_id,
-        standard_name=merged_term.standard_name,
-        new_standard_name=_tombstone_name(merged_term.node_key),
-        aliases=[],
-        term_type=merged_term.term_type,
-        extra_properties=merged_term.extra_properties,
-        current_term_type=merged_term.term_type,
-    )
-
-    # Step 2: Append the merged term's original standard_name and aliases onto
-    # the keeper using pre-tombstone values. Wrap in try/except to restore the
-    # merged term if this step fails — since each update_term() commits internally,
-    # we must compensate if step 2 raises after step 1 has already committed.
-    merged_aliases = list(dict.fromkeys(
-        [*keep_term.aliases, merged_original_standard_name, *merged_original_aliases]
-    ))
     try:
-        await terms_module.update_term(
+        await terms_store.merge_terms(
             conn,
             tenant_id=tenant_id,
-            standard_name=keep_term.standard_name,
-            new_standard_name=keep_term.standard_name,
-            aliases=merged_aliases,
-            term_type=keep_term.term_type,
-            extra_properties=keep_term.extra_properties,
-            current_term_type=keep_term.term_type,
+            keep_node_key=keep_node_key,
+            merged_node_key=merged_node_key,
         )
-    except Exception as append_exc:
-        # Restore the merged term to its original state before re-raising.
-        # This compensating call is itself unguarded risk: if IT also raises
-        # (e.g. a concurrent write already grabbed merged_original_standard_name
-        # back), the data that only existed in merged_original_standard_name/
-        # merged_original_aliases (local Python variables at this point) is now
-        # gone from the database with no trace — the row is left permanently
-        # tombstoned with aliases=[]. Guard it, log everything needed for
-        # manual recovery on failure, and always re-raise so the caller still
-        # learns the merge failed.
-        try:
-            await terms_module.update_term(
-                conn,
-                tenant_id=tenant_id,
-                standard_name=_tombstone_name(merged_term.node_key),
-                new_standard_name=merged_original_standard_name,
-                aliases=merged_original_aliases,
-                term_type=merged_term.term_type,
-                extra_properties=merged_term.extra_properties,
-                current_term_type=merged_term.term_type,
-            )
-        except Exception as compensation_exc:
-            # Compensation itself failed — the merged row is now stuck
-            # tombstoned (standard_name=_tombstone_name(...), aliases=[]) and
-            # its original name/aliases only exist in this log line. Log at
-            # error level with everything needed for a human to manually
-            # restore the row, then re-raise the *original* append_exc (not
-            # compensation_exc): the caller (approve route / CLI) triggered
-            # this whole path because of append_exc, and that's the error
-            # message that's actually useful to them — the compensation
-            # failure is a secondary, already-logged problem, not something
-            # the caller can act on differently.
-            logger.error(
-                "合并审批失败且补偿恢复也失败：review_id=%s tenant_id=%r "
-                "被合并术语 node_key=%r 的原始 standard_name=%r、aliases=%r "
-                "已经从数据库丢失（该行目前仍是墓碑状态 standard_name=%r, "
-                "aliases=[]），需要人工核对/手动恢复。触发合并失败的原始异常=%r，"
-                "补偿恢复自身失败的异常=%r",
-                review_id, tenant_id, merged_term.node_key,
-                merged_original_standard_name, merged_original_aliases,
-                _tombstone_name(merged_term.node_key), append_exc, compensation_exc,
-                exc_info=True,
-            )
-            raise append_exc from compensation_exc
-        logger.warning(
-            "合并审批 review_id=%s tenant_id=%r 追加别名步骤失败，已回滚：把被合并"
-            "术语 node_key=%r 的 standard_name/aliases 恢复为合并前的状态"
-            "（standard_name=%r, aliases=%r）。原始异常=%r",
-            review_id, tenant_id, merged_term.node_key,
-            merged_original_standard_name, merged_original_aliases, append_exc,
-        )
-        raise
+    except terms_store.TermNotFoundError as exc:
+        raise DuplicateReviewNotFoundError(
+            f"候选术语不存在（可能已被删除）: keep={keep_node_key!r}, merged={merged_node_key!r}"
+        ) from exc
+
     await conn.execute(
         "UPDATE duplicate_review_queue SET status='approved', "
         "resolved_at=datetime('now'), resolved_note=? "
