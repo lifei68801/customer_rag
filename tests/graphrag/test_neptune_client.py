@@ -1,6 +1,6 @@
 from app.graphrag.neptune_client import NeptuneGraphClient
 from app.graphrag.ontology_categories import TermTypeCategory
-from app.graphrag.structured_filter_query import AttributeConstraint, ResolvedAnchor, TypeAnchor
+from app.graphrag.structured_filter_query import AttributeConstraint, ExpandSpec, ResolvedAnchor, TypeAnchor
 
 
 class FakeNeptuneClient:
@@ -100,3 +100,65 @@ async def test_ensure_tenant_scoped_schema_runs_backfill():
     await client.ensure_tenant_scoped_schema()
 
     assert any("tenant_id" in q and "IS NULL" in q for q, _ in client_stub.calls)
+
+
+async def test_execute_structured_filter_query_group_by_returns_aggregated_groups():
+    from app.graphrag.structured_filter_query import GroupBy, Hop, RelationConstraint, StructuredFilterQueryArgs
+
+    client_stub = FakeNeptuneClient(rows=[{"value": "红色", "count": 12}, {"value": "白色", "count": 8}])
+    client = NeptuneGraphClient(client=client_stub)
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="SKU"),
+        constraints=[RelationConstraint(
+            hops=[Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue")],
+            target_field="raw_value", target_operator="eq", target_value="__group__",
+        )],
+        expand=None, group_by=GroupBy(constraint_index=0), limit=20,
+    )
+
+    result = await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None), tenant_id="muji",
+        term_type_schema={
+            "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
+            "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
+        },
+    )
+
+    # group_by 分支只发一次 execute_open_cypher（没有单独的 count 请求——聚合
+    # 结果本身就是"总数"，不需要像非 group_by 分支那样先查 total 再查 rows）。
+    assert len(client_stub.calls) == 1
+    assert result == {"groups": [{"value": "红色", "count": 12}, {"value": "白色", "count": 8}]}
+    assert "count(DISTINCT anchor)" in client_stub.last_query
+    assert "RETURN g0_hop0.raw_value AS value" in client_stub.last_query
+    assert "group_field" not in client_stub.last_parameters
+
+
+async def test_execute_structured_filter_query_expand_includes_optional_match_and_limit_param():
+    from app.graphrag.structured_filter_query import StructuredFilterQueryArgs
+
+    client_stub = FakeNeptuneClient(call_results=[
+        [{"total": 1}],
+        [{"standard_name": "x", "node_key": "k", "term_type": "T", "all_properties": {}, "neighbors": []}],
+    ])
+    client = NeptuneGraphClient(client=client_stub)
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="T"),
+        constraints=[AttributeConstraint(field="standard_name", operator="eq", value="x")],
+        expand=ExpandSpec(hops=1, relation_type="BELONG_TO", direction="outgoing"),
+        group_by=None, limit=5,
+    )
+
+    result = await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="T", node_key=None),
+        tenant_id="demo", term_type_schema={"T": TermTypeCategory(value="T", extra_fields=[])},
+    )
+
+    rows_query, rows_params = client_stub.calls[-1]
+    assert "OPTIONAL MATCH" in rows_query
+    assert "-[r:BELONG_TO*1..1]->" in rows_query
+    assert "collect(DISTINCT CASE WHEN neighbor IS NULL THEN NULL" in rows_query
+    # LIMIT 必须约束的是锚点数、不是展开后的行数——WITH...LIMIT 必须出现在
+    # OPTIONAL MATCH 之前。
+    assert rows_query.index("LIMIT $limit") < rows_query.index("OPTIONAL MATCH")
+    assert rows_params["limit"] == 5
+    assert result["rows"][0]["neighbors"] == []

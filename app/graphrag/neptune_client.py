@@ -29,6 +29,20 @@ RETURN related.standard_name AS related_name,
        [rel IN r | type(rel)][-1] AS relation_type,
        2 AS hops
 """
+# ALL(rel IN r WHERE rel.tenant_id = $tenant_id) must check every edge on the
+# 2-hop path, not just one of them — :Term nodes here aren't themselves
+# tenant-scoped and can be shared across tenants, so a path that only checks
+# one hop could "borrow" a second edge written by a different tenant and leak
+# it into this tenant's subgraph. Any future edit to this query that narrows
+# the ALL(...) check to a single edge reintroduces a real cross-tenant leak,
+# not just a cosmetic bug.
+#
+# AND related <> t guards against self-loops: Cypher only guarantees a single
+# path doesn't reuse the same edge twice, it does not stop a path from going
+# out on one edge and coming back on a different one — relation extraction
+# routinely produces edges in both directions between the same pair of terms
+# (e.g. A-REQUIRES->B and B-PART_OF->A). Without this filter, the 2-hop branch
+# would return t itself as if it were "indirectly related to itself".
 
 _ENSURE_INDEXES_QUERIES: list[str] = []
 # Neptune 对属性没有 Neo4j 那种显式 CREATE INDEX 语法（它按内部存储结构
@@ -117,6 +131,13 @@ _EXPAND_RETURN_FRAGMENT = (
     "ELSE {related_name: neighbor.standard_name, "
     "relation_type: [rel IN r | type(rel)][-1], hops: length(p)} END) AS neighbors"
 )
+# The CASE WHEN neighbor IS NULL THEN NULL ... END wrapper is not decorative:
+# an anchor with zero neighbors still produces one row out of OPTIONAL MATCH,
+# with `neighbor` bound to null. Without the CASE, collect(DISTINCT {...})
+# would build the map literal anyway and collect a single-element list like
+# [{related_name: null, ...}] — a fake "neighbor" that only looks real.
+# Folding that row to NULL first lets collect() drop it (collect() ignores
+# NULL elements), so a neighborless anchor correctly gets neighbors: [].
 
 
 class NeptuneGraphClient:
@@ -214,6 +235,17 @@ class NeptuneGraphClient:
             "anchor.type AS term_type, properties(anchor) AS all_properties"
         )
         if args.expand is not None:
+            # WITH anchor ORDER BY anchor.node_key LIMIT $limit must run before
+            # the OPTIONAL MATCH that expands neighbors — $limit bounds the
+            # number of anchors, not the number of (anchor, neighbor) row
+            # pairs. Moving LIMIT after the expansion would instead truncate
+            # the exploded rows: an anchor with many neighbors could eat the
+            # whole limit budget by itself, so the same limit=5 would return a
+            # shrinking, unpredictable, and wrongly-ordered set of anchors
+            # depending on how many neighbors each one happens to have. The
+            # ORDER BY has to stay paired with this LIMIT in the same WITH too
+            # — anchors must be ranked and cut down before expansion runs, not
+            # interleaved with it.
             expand_clause = _build_expand_clause(args.expand)
             rows_query = (
                 f"{anchor_match} WHERE {where_sql} "
