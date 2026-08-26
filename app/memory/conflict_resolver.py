@@ -123,6 +123,11 @@ def _parse_actions(text: str) -> list[dict[str, str]]:
         conflict_type = str(item.get("conflict_type", "")).strip().lower()
         if conflict_type not in _VALID_CONFLICT_TYPES:
             conflict_type = ""
+        if event in {"ADD", "NONE"}:
+            # ADD/NONE 不是冲突，即使 LLM 无视提示词硬塞了一个 conflict_type
+            # 也要清空——否则会污染 memory_history 的审计列，让离线按
+            # conflict_type 分组统计冲突数的查询虚高。
+            conflict_type = ""
         actions.append(
             {
                 "event": event,

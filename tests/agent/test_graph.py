@@ -686,6 +686,111 @@ async def test_correction_check_short_circuits_and_updates_memory():
     assert "macOS系统" in recent_turns[1]["content"]
 
 
+async def test_correction_check_exact_duplicate_short_circuit_falls_through_to_rag_answer():
+    """新增的 resolve_memory_actions 精确文本去重短路（见
+    app/memory/conflict_resolver.py）也会影响 correction_check_node 这第二个
+    调用点：如果用户口中的"更正"抽取出来的事实跟已有记忆文本逐字相同，
+    resolve_memory_actions 不再发起第三次 LLM 调用去问冲突决策，而是直接在
+    进程内判 NONE；apply_memory_actions 对 NONE 不写任何东西，applied 为
+    空列表，correction_check_node 的 `if not applied: return {}`
+    （app/agent/graph.py 约 328-329 行）被触发，整轮请求退回正常 RAG 问答
+    路径。这个行为已经被判定为可接受（LLM 的系统提示词本来就会让它对精确
+    重复判 NONE，这里只是省掉了一次多余的 LLM 调用，不改变结果），这个测试
+    只是把它从"没人验证过"变成"有测试钉住"——不改动 correction_check_node
+    本身。"""
+    import aiosqlite
+
+    from app.memory.memory_store import list_active_memory_items, upsert_memory_item
+    from app.memory.schema import ensure_schema
+
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+    await upsert_memory_item(
+        conn,
+        memory_id="m1",
+        tenant_id="t1",
+        user_id="u1",
+        text="客户使用Windows系统",
+        embedding=[1.0, 0.0],
+    )
+
+    embedding_registry, vector_store, bm25_index, _unused_registry, _unused_provider = (
+        await _build_dependencies(with_records=True, llm_text="不应该被用到")
+    )
+
+    class ScriptedLLMProvider:
+        def __init__(self, responses: list[str]) -> None:
+            self._responses = list(responses)
+            self.requests: list[ProviderRequest] = []
+
+        async def complete(self, request: ProviderRequest) -> ProviderResult:
+            self.requests.append(request)
+            return ProviderResult(text=self._responses.pop(0))
+
+    llm_provider = ScriptedLLMProvider(
+        [
+            '{"is_correction": true}',  # correction_check_node 的意图检测
+            '{"facts": ["客户使用Windows系统"]}',  # fact_extractor：抽出的事实
+            # 跟 m1 已有文本逐字相同
+            # 没有第三条给冲突决策器的响应——精确重复短路后 resolve_memory_
+            # actions 根本不发起这次 LLM 调用，如果这个短路被意外移除，下面
+            # 这两条响应会被错位消费，responder 会把 "重启路由器即可解决。"
+            # 当成冲突决策器的 JSON 去解析（解析失败退回规则兜底），
+            # output_safety 的语义审查会因为响应耗尽直接抛异常，测试会失败
+            # 而不是悄悄通过。
+            "重启路由器即可解决。",  # responder：短路后正常走 RAG 回答
+            '{"is_safe": true}',  # output_safety 对正常回答的语义安全审查
+        ]
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+    )
+
+    result = await graph.ainvoke(
+        {
+            "question": "你记错了，其实我用的是Windows系统",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "u1",
+        }
+    )
+
+    # correction_check_node 因为 applied 为空提前 return {}，没有产出
+    # is_correction_handled，请求落回正常 RAG 问答路径拿到检索结果的答案。
+    assert result.get("is_correction_handled") is not True
+    assert result["final_text"] == "重启路由器即可解决。"
+    assert result["used_sources"] == ["faq/network.md"]
+
+    # 意图检测 + 事实抽取（各1次） + responder 生成答案 + output_safety
+    # 语义审查，一共4次——如果短路失效、冲突决策器多打一次 LLM，响应队列
+    # 会错位，上面几条断言会先失败；这里额外确认真的只打了4次。
+    assert len(llm_provider.requests) == 4
+    # 更直接地证明冲突决策器这次真的没被调用：它的系统提示词里有这个独有
+    # 短语（app/memory/conflict_resolver.py 的 _SYSTEM_PROMPT），四次请求
+    # 里任何一次的 system message 都不应该含它。
+    assert not any(
+        "记忆冲突决策器" in (msg.get("content") or "")
+        for req in llm_provider.requests
+        for msg in req.messages
+    )
+
+    # 精确重复判 NONE，m1 的记忆条目应该原封不动，没有任何"更新"发生。
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
+    unchanged = next(item for item in items if item["memory_id"] == "m1")
+    assert unchanged["text"] == "客户使用Windows系统"
+
+
 async def test_correction_check_does_not_trigger_for_normal_question():
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(with_records=True, llm_text="重启路由器即可解决。")

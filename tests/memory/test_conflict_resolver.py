@@ -149,6 +149,25 @@ async def test_fallback_actions_include_empty_conflict_type():
     ]
 
 
+async def test_add_event_conflict_type_from_llm_is_forced_to_empty():
+    """LLM 不该给 ADD 事件带 conflict_type（系统提示词明确说了不需要），但
+    万一它无视提示词硬塞了一个合法值，也要被强制清空——conflict_type 只对
+    UPDATE/DELETE 有意义，让它漏到 ADD/NONE 行会污染 memory_history 的审计
+    列（离线按 conflict_type 分组统计冲突数的查询会虚高）。"""
+    llm_text = (
+        '{"actions": [{"event": "ADD", "text": "新事实", "reason": "r", '
+        '"conflict_type": "value"}]}'
+    )
+    actions = await resolve_memory_actions(
+        new_facts=["新事实"], existing_memories=[],
+        llm_registry=_registry(FixedLLMProvider(llm_text)),
+        llm_provider_name="llm", timeout_sec=1.0,
+    )
+
+    assert actions[0]["event"] == "ADD"
+    assert actions[0]["conflict_type"] == ""
+
+
 async def test_exact_text_duplicate_short_circuits_without_calling_llm():
     """新事实文本跟已有记忆完全一致时直接判 NONE，不发起 LLM 调用——用一个
     会抛异常的 provider 验证"根本没被调用"，而不是"调用失败后降级"，

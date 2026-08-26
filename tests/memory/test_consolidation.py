@@ -65,6 +65,60 @@ async def test_run_memory_consolidation_adds_new_fact_end_to_end():
     assert [i["text"] for i in items] == ["客户使用企业版套餐"]
 
 
+async def test_run_memory_consolidation_writes_conflict_type_into_memory_history_end_to_end():
+    """resolver 输出的 conflict_type 键名要真正流到 executor 写入 memory_
+    history 的那一列——之前只有 test_conflict_resolver.py 证明 resolver
+    "产出"这个键，test_action_executor.py 证明 executor 能"消费"一个手写的
+    action 字典，但从没有一个测试让真实 resolver 的输出流进真实的
+    apply_memory_actions 再去查 memory_history 表。这里预置一条记忆，让
+    LLM 返回一个 UPDATE + conflict_type=temporal 的决策，走完整的
+    extract_facts -> resolve_memory_actions -> apply_memory_actions 链路，
+    再直接查 memory_history 验证 old_text/new_text/conflict_type 三列。"""
+    conn = await _connect()
+    await upsert_memory_item(
+        conn, memory_id="m1", tenant_id="t1", user_id="u1", text="客户使用企业版套餐",
+    )
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        ScriptedLLMProvider(
+            [
+                '{"is_delay": false}',  # detect_delay_intent
+                '{"facts": ["客户已升级为旗舰版套餐"]}',  # extract_facts
+                '{"actions": [{"event": "UPDATE", "target_memory_id": "m1", '
+                '"text": "客户已升级为旗舰版套餐", "reason": "客户主动更正套餐信息", '
+                '"conflict_type": "temporal"}]}',  # resolve_memory_actions
+            ]
+        ),
+    )
+
+    applied = await run_memory_consolidation(
+        conn,
+        tenant_id="t1",
+        user_id="u1",
+        user_input="其实我们现在已经升级到旗舰版套餐了",
+        assistant_output="好的，已为您更新记录",
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+    )
+
+    assert applied == [
+        {"event": "UPDATE", "memory_id": "m1", "text": "客户已升级为旗舰版套餐"}
+    ]
+
+    cursor = await conn.execute(
+        "SELECT old_text, new_text, conflict_type FROM memory_history WHERE memory_id = ?",
+        ("m1",),
+    )
+    row = await cursor.fetchone()
+    # list_active_memory_items（run_memory_consolidation 内部调用）会把
+    # conn.row_factory 设成 aiosqlite.Row，这里显式转成 tuple 再比较，
+    # 不依赖调用方是否碰过 row_factory。
+    assert tuple(row) == ("客户使用企业版套餐", "客户已升级为旗舰版套餐", "temporal")
+
+
 async def test_run_memory_consolidation_no_facts_extracted_writes_nothing():
     conn = await _connect()
     llm_registry = ProviderRegistry()
