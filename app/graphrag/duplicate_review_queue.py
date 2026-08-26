@@ -165,8 +165,26 @@ async def approve_duplicate_suggestion(
             f"候选术语不存在（可能已被删除）: keep={keep_node_key!r}, merged={merged_node_key!r}"
         )
 
+    merged_original_standard_name = merged_term.standard_name
+    merged_original_aliases = list(merged_term.aliases)
+
+    # Step 1: Tombstone the merged row first — rename its standard_name to a
+    # node_key-derived string and clear aliases to avoid name conflicts.
+    await terms_module.update_term(
+        conn,
+        tenant_id=tenant_id,
+        standard_name=merged_term.standard_name,
+        new_standard_name=f"[已合并] {merged_term.node_key}",
+        aliases=[],
+        term_type=merged_term.term_type,
+        extra_properties=merged_term.extra_properties,
+        current_term_type=merged_term.term_type,
+    )
+
+    # Step 2: Append the merged term's original standard_name and aliases onto
+    # the keeper using pre-tombstone values.
     merged_aliases = list(dict.fromkeys(
-        [*keep_term.aliases, merged_term.standard_name, *merged_term.aliases]
+        [*keep_term.aliases, merged_original_standard_name, *merged_original_aliases]
     ))
     await terms_module.update_term(
         conn,

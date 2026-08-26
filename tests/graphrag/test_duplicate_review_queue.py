@@ -12,6 +12,9 @@ from app.graphrag.duplicate_review_queue import (
     list_pending_duplicate_suggestions,
     reject_duplicate_suggestion,
 )
+from app.graphrag.ontology_categories import create_term_type
+from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
+from app.graphrag.terms_store import create_term, ensure_terms_schema, get_term, list_terms
 
 
 @pytest.fixture
@@ -162,13 +165,71 @@ async def test_approve_duplicate_suggestion_merges_aliases(conn):
         keep_node_key="公司:Coca-Cola", terms_module=fake_store,
     )
 
-    assert len(fake_store.update_calls) == 1
-    call = fake_store.update_calls[0]
-    assert call["standard_name"] == "Coca-Cola"
-    assert call["new_standard_name"] == "Coca-Cola"
-    assert call["term_type"] == "公司"
-    assert set(call["aliases"]) == {"coke", "可口可乐", "可乐公司"}
+    assert len(fake_store.update_calls) == 2
+    # Call 0: tombstone the merged term
+    tombstone_call = fake_store.update_calls[0]
+    assert tombstone_call["standard_name"] == "可口可乐"
+    assert tombstone_call["new_standard_name"].startswith("[已合并] ")
+    assert tombstone_call["aliases"] == []
+    assert tombstone_call["term_type"] == "公司"
+    # Call 1: append onto keeper
+    append_call = fake_store.update_calls[1]
+    assert append_call["standard_name"] == "Coca-Cola"
+    assert append_call["new_standard_name"] == "Coca-Cola"
+    assert append_call["term_type"] == "公司"
+    assert set(append_call["aliases"]) == {"coke", "可口可乐", "可乐公司"}
     assert await count_pending_duplicate_suggestions(conn, tenant_id="t1") == 0
+
+
+async def test_approve_duplicate_suggestion_with_real_terms_store():
+    """Integration test using real terms_store (not fake) to verify the tombstone
+    approach works against the real _check_name_conflict validation."""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    await ensure_ontology_schema(conn)
+    await create_term_type(conn, tenant_id="default", value="公司")
+    await confirm_ontology(conn, "default")
+    await ensure_duplicate_review_schema(conn)
+
+    # Create the real terms (same pair as the fake test)
+    await create_term(
+        conn, tenant_id="default", standard_name="Coca-Cola",
+        aliases=["coke"], term_type="公司",
+    )
+    await create_term(
+        conn, tenant_id="default", standard_name="可口可乐",
+        aliases=["可乐公司"], term_type="公司",
+    )
+
+    # Enqueue them as duplicates and approve, using the real terms_store (no fake)
+    coca_cola_node_key = "公司:Coca-Cola"
+    cola_node_key = "公司:可口可乐"
+    await enqueue_duplicate_suggestion(
+        conn, tenant_id="default",
+        candidate_a_node_key=coca_cola_node_key,
+        candidate_b_node_key=cola_node_key,
+        similarity_score=0.8, reason="别名匹配",
+    )
+    pending = await list_pending_duplicate_suggestions(conn, tenant_id="default")
+    review_id = pending[0]["review_id"]
+
+    # This should NOT raise TermNameConflictError
+    await approve_duplicate_suggestion(
+        conn, review_id=review_id, tenant_id="default",
+        keep_node_key=coca_cola_node_key,
+    )
+
+    # Verify keeper's aliases now include the merged term's original standard_name and aliases
+    keeper = await get_term(conn, "default", "Coca-Cola")
+    assert set(keeper.aliases) == {"coke", "可口可乐", "可乐公司"}
+
+    # Verify merged term still exists (not deleted) but is tombstoned
+    all_terms = await list_terms(conn, tenant_id="default")
+    merged_term_row = next(t for t in all_terms if t.node_key == cola_node_key)
+    assert merged_term_row.standard_name.startswith("[已合并] ")
+    assert merged_term_row.aliases == []
+
+    await conn.close()
 
 
 async def test_approve_unknown_review_id_raises(conn):
