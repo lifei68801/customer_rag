@@ -4,11 +4,15 @@
 
 对照开源项目 semantica-agi/semantica 的 `semantica/conflicts/conflict_detector.py` 做的架构比较发现：它对知识冲突有一套类型化分类（值冲突/类型冲突/关系冲突/时间冲突/逻辑冲突）+ 严重度/置信度打分，判断过程是规则驱动、结构化、可审计的。
 
-customer_rag 现在的冲突处理（`app/memory/conflict_resolver.py::resolve_memory_actions`，第23-70行）是一次 LLM 调用直接产出 `ADD`/`UPDATE`/`DELETE`/`NONE` 四选一的决策，没有中间的"这是哪种类型的冲突"这一层。这次的目标是引入 semantica 的五分类框架，但**不照搬它的"规则驱动打分"**——semantica 能用确定性规则（关键字段检测、数值差异量级）打分，前提是它处理的是结构化的键值属性；customer_rag 的记忆条目是自由文本（`app/memory/fact_extractor.py::extract_facts` 抽出来的是一句话，比如"用户偏好邮件联系"），没有"字段"、"数值"这些结构化维度可比，规则打分无从谈起。这份设计采用的是**分类和决策依然都由 LLM 完成，但输出结构从"裸决策"变成"先分类、再决策"**，换来的是更可审计、更容易发现系统性误判的记录，不是脱离 LLM 的确定性规则引擎。
+customer_rag 现在的冲突处理（`app/memory/conflict_resolver.py::resolve_memory_actions`，第23-70行）是一次 LLM 调用直接产出 `ADD`/`UPDATE`/`DELETE`/`NONE` 四选一的决策，没有中间的"这是哪种类型的冲突"这一层。这次的目标是引入 semantica 分类框架背后的思路，但有两层调整，不是照搬：
+
+1. **不照搬"规则驱动打分"**——semantica 能用确定性规则（关键字段检测、数值差异量级）打分，前提是它处理的是结构化的键值属性；customer_rag 的记忆条目是自由文本（`app/memory/fact_extractor.py::extract_facts` 抽出来的是一句话，比如"用户偏好邮件联系"），没有"字段"、"数值"这些结构化维度可比，规则打分无从谈起。这份设计采用的是**分类和决策依然都由 LLM 完成，但输出结构从"裸决策"变成"先分类、再决策"**，换来的是更可审计、更容易发现系统性误判的记录，不是脱离 LLM 的确定性规则引擎。
+
+2. **不照搬全部五个类别，只取三个**——semantica 的分类对象是知识图谱里的结构化实体（多实体、有类型标签、实体间有关系边）；customer_rag 这份 spec 处理的是自由文本、**单一主体**的记忆条目（几乎都是围绕"用户"这一个实体的陈述），跟"多实体互相关联、带类型标签"这种数据形状不是一回事。逐个类别核对下来：`value`（值变化）、`temporal`（时间先后不一致）、`logical`（语义互斥需推理）在自由文本、单主体场景下都能找到清晰的真实场景；`type`（同一实体被打上不同类型标签）在这套记忆模型里没有对应物——记忆条目本身不是"带类型字段的实体"，没有"类型"这个维度可以冲突；`relationship`（两个实体间关系的陈述矛盾）依赖"图里有实体A、实体B、A-B之间有一条关系边"这个前提，customer_rag 的记忆条目通常只围绕用户自身的属性/偏好，不建模"用户与其它具体实体的关系"。这两类在这套内容形态下用不上，硬留着只会给 LLM 添加无意义的分类选项、增加误分类噪音，**这份设计只采用三分类：`value`/`temporal`/`logical`**。
 
 ## 目标
 
-- `resolve_memory_actions` 的 LLM 输出增加一个 `conflict_type` 字段（五选一：`value`/`type`/`relationship`/`temporal`/`logical`；`ADD`/`NONE` 场景没有真正的"冲突"，`conflict_type` 允许为空），随决策一起落进 `memory_history`。
+- `resolve_memory_actions` 的 LLM 输出增加一个 `conflict_type` 字段（三选一：`value`/`temporal`/`logical`；`ADD`/`NONE` 场景没有真正的"冲突"，`conflict_type` 允许为空），随决策一起落进 `memory_history`。
 - 在发起 LLM 调用之前，加一道确定性预过滤：新事实文本跟已有记忆文本完全一致时，直接短路判 `NONE`，不发起 LLM 调用——现在这条规则只存在于超时/失败的降级路径（`_fallback_actions`，第100-113行），正常路径下即使完全重复也会正常调一次 LLM。
 - `DELETE` 决策的 prompt 层面要求：LLM 给出的 `reason` 必须引用新事实的具体内容作为依据，不能是空泛的理由。
 - 顺带修复一个现有的小缺口：`app/memory/action_executor.py::apply_memory_actions` 的 `UPDATE`/`DELETE` 分支调用 `append_history()` 时，`old_text` 参数固定传 `None`（第100、119行）——`memory_history` 表本身有 `old_text` 这一列，但从来没被真正填过，这次改动顺手把它填上（`UPDATE`/`DELETE` 前先查一次当前的 `text`，见下方"修复 old_text"）。
@@ -42,10 +46,8 @@ _SYSTEM_PROMPT = (
     "ADD=历史不存在该信息；UPDATE=同主题但内容更新（需给出 target_memory_id）；"
     "DELETE=新事实明确否定旧事实（需给出 target_memory_id，reason 必须引用新事实"
     "的具体内容作为依据，不能是空泛的理由）；NONE=重复或无价值。"
-    "冲突类型（conflict_type）仅在 UPDATE/DELETE 时给出，五选一："
+    "冲突类型（conflict_type）仅在 UPDATE/DELETE 时给出，三选一："
     "value=同一属性的值发生变化（如住址、联系方式偏好）；"
-    "type=同一实体被归入不同类别；"
-    "relationship=实体之间关系的陈述矛盾；"
     "temporal=不同时间点的陈述不一致，需要判断谁更新；"
     "logical=语义上互斥、需要推理才能发现的矛盾。"
     "ADD/NONE 不需要 conflict_type。"
@@ -58,7 +60,7 @@ _SYSTEM_PROMPT = (
 
 ```python
 conflict_type = str(item.get("conflict_type", "")).strip().lower()
-if conflict_type not in {"value", "type", "relationship", "temporal", "logical"}:
+if conflict_type not in {"value", "temporal", "logical"}:
     conflict_type = ""
 actions.append({
     "event": event,
@@ -127,7 +129,7 @@ async def append_history(
 ## Global Constraints
 
 - 分类和决策依然完全由 LLM 完成，不引入脱离 LLM 的确定性打分规则。
-- `conflict_type` 五选一：`value`/`type`/`relationship`/`temporal`/`logical`，`ADD`/`NONE` 允许为空，非法值归一化成空字符串而不是拒绝整条 action。
+- `conflict_type` 三选一：`value`/`temporal`/`logical`（不采用 semantica 的 `type`/`relationship` 两类——这套记忆模型是自由文本、单一主体，没有"实体类型标签"和"实体间关系边"这两个维度可以对应），`ADD`/`NONE` 允许为空，非法值归一化成空字符串而不是拒绝整条 action。
 - `memory_history` 通过 `add_column_if_missing` 迁移新增 `conflict_type` 列，不改 `_SCHEMA_SQL` 里已有的 `CREATE TABLE` 语句本身（照顾已建库的部署环境）。
 - 精确文本去重预过滤只做字符串相等判断，不做相似度计算；相似度层面的判断留给 LLM 的 `conflict_type` 分类。
 - `DELETE` 保持现有的软删除机制（`mark_deleted` 不变），这份设计只加强 `DELETE` 决策本身的 prompt 约束（`reason` 必须引用新事实具体内容）。
