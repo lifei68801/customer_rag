@@ -38,5 +38,9 @@ _Avoid_: 泛指的"数据管道"——必须点明这条路径是"LLM 推断 + �
 **关系类型（relation type）**:
 两个 Term 节点之间边的类型标签。无论 LLM 抽取还是 ETL 场景，都统一走 `tenant_relation_types` 表（租户可自助增删改、有 draft/confirm 两阶段生命周期，命名要求全大写）——这是 2026-08-15 的修正：最初曾考虑给 ETL 场景的关系单独固定写死在代码里，但确认存在多个业务域不同的 ETL 租户后，改为统一复用 schema 定义层，通过后台 UI 为每个租户各自定义/确认自己的关系集（如 MUJI 的 `has_sku`/`belongs_to_category` 会以 `HAS_SKU`/`BELONGS_TO_CATEGORY` 形式注册），不再需要每接入一个租户就改一次 Python 代码。
 
+**记忆巩固（memory consolidation）**:
+"抽取事实 -> 与已有记忆比对冲突 -> 执行记忆动作"这条核心链路（`app/memory/consolidation.py::consolidate_memory`），有两个触发时机：异步排队（对话结束后，`run_memory_consolidation` 委托调用）、同步即时（用户当轮明确表达"更正"意图，`app/agent/graph.py::correction_check_node` 直接调用）。两种触发时机共用同一条链路，不是两套独立实现。
+_Avoid_: 记忆更新、冲突检测（这两个词只指链路里的某一步，不是整条链路本身）
+
 **MUJI**:
 接入中的一个新租户，商品目录场景。知识图谱需求是结构化商品目录问答（"有 500ml 以上的吗"这类数值范围过滤），跟其他租户的"从文档抽取专有名词"场景是完全不同的技术路径，但复用同一套 Term 节点体系和 Neo4j 实例，靠 tenant_id 隔离。设计方案见 `docs/MUJI_知识图谱_Schema设计方案_v6.md`。

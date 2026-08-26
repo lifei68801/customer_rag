@@ -32,18 +32,15 @@ from app.memory.clarification import (
     merge_clarification_reply,
     set_pending_clarification,
 )
-from app.memory.action_executor import apply_memory_actions
-from app.memory.conflict_resolver import resolve_memory_actions
+from app.memory.consolidation import consolidate_memory
 from app.memory.consolidation_queue import enqueue_consolidation_job
 from app.memory.context_injection import inject_memory_context
 from app.memory.correction_intent import detect_correction_intent
-from app.memory.fact_extractor import extract_facts
 from app.memory.session_window_store import SessionWindowStore, SQLiteSessionWindowStore
-from app.memory.similarity import find_similar_memory_items
 from app.memory.structured_recall import search_turns_by_keyword_and_window
 from app.memory.temporal_resolver import TimeWindowResult, resolve_time_window
 from app.providers.base import ProviderCapability, ProviderRequest
-from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
+from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
 from app.retrieval.bm25 import BM25Index
@@ -287,43 +284,16 @@ def build_agent_graph(
 
         tenant_id = state["tenant_id"]
         user_id = state.get("user_id", "")
-        facts = await extract_facts(
-            user_input=question,
-            assistant_output="",
-            llm_registry=llm_registry,
-            llm_provider_name=llm_provider_name,
-        )
-        if not facts:
-            return {}
-
-        embed_result = await embedding_registry.run(
-            EmbeddingRequest(texts=facts), provider_name=embedding_provider_name
-        )
-        candidates: dict[str, dict[str, Any]] = {}
-        for vector in embed_result.vectors:
-            similar = await find_similar_memory_items(
-                memory_conn,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                query_vector=vector,
-                top_k=20,
-            )
-            for item in similar:
-                candidates[item["memory_id"]] = item
-
-        actions = await resolve_memory_actions(
-            new_facts=facts,
-            existing_memories=list(candidates.values()),
-            llm_registry=llm_registry,
-            llm_provider_name=llm_provider_name,
-        )
-        applied = await apply_memory_actions(
+        applied = await consolidate_memory(
             memory_conn,
             tenant_id=tenant_id,
             user_id=user_id,
-            actions=actions,
+            user_input=question,
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
             embedding_registry=embedding_registry,
             embedding_provider_name=embedding_provider_name,
+            similarity_top_k=20,
         )
         if not applied:
             return {}

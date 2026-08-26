@@ -54,13 +54,13 @@ async def _narrow_existing_memories(
     return list(candidates.values())
 
 
-async def run_memory_consolidation(
+async def consolidate_memory(
     conn: aiosqlite.Connection,
     *,
     tenant_id: str,
     user_id: str,
     user_input: str,
-    assistant_output: str,
+    assistant_output: str = "",
     llm_registry: ProviderRegistry,
     llm_provider_name: str,
     fact_extract_timeout_sec: float = 2.0,
@@ -68,9 +68,21 @@ async def run_memory_consolidation(
     embedding_registry: EmbeddingRegistry | None = None,
     embedding_provider_name: str | None = None,
     similarity_top_k: int = 20,
-    now: datetime | None = None,
 ) -> list[dict[str, str]]:
-    """对话后置处理：抽取事实 -> 与已有记忆比对冲突 -> 执行记忆动作。
+    """记忆巩固的核心链路：抽取事实 -> 与已有记忆比对冲突 -> 执行记忆动作。
+
+    这条链路被两个触发入口共用，只是触发时机不同：`run_memory_consolidation`
+    （下方，异步 consolidation 队列，对话结束后排队处理）和
+    `app/agent/graph.py::correction_check_node`（用户当轮明确表达"更正"
+    意图时，在请求路径内同步处理，不等异步队列）。两条路径曾经各自内联
+    一份几乎相同的"抽事实->窄化候选->冲突决策->执行"实现，导致这条链路
+    的行为变化（如短路逻辑）只被其中一处评审到——现在两边都只调用这一个
+    函数，核心行为只有一处需要看懂、需要测。
+
+    assistant_output 默认空字符串：correction_check_node 只有用户当轮这
+    句话，没有配套的助手回复（纠错语境下助手还没来得及回答），"事实"只能
+    从用户这句话本身抽取；run_memory_consolidation 场景则总是会传真实的
+    助手回复文本。
 
     embedding_registry/embedding_provider_name 均为可选：
     - 不提供（默认）：沿用旧行为，把该用户全部 active 记忆条目传给冲突
@@ -79,37 +91,7 @@ async def run_memory_consolidation(
     - 提供：对每条新抽取的事实做一次向量相似度检索，取 Top-K 候选的并集
       传给冲突决策器，而不是全量，可以扩展到单用户成千上万条记忆的场景；
       同时新增/更新的记忆条目也会被同步 embedding，供下一轮检索使用。
-
-    now 为可选项：用于延迟意图检测（"我先试试，稍后再联系"类话语）解析出
-    确认时间的计算基准，不提供则用 datetime.now()。这一步和事实抽取/冲突
-    决策相互独立，放在函数最前面执行、不受 `facts` 是否为空影响——哪怕这
-    句话本身抽不出任何值得记忆的长期事实，只要表达了"稍后再试"的意图，也
-    要照常写入一条延迟确认记录，供后续跟进扫描（Task 13）捞取。
     """
-    resolved_now = now or datetime.now()
-    is_delay = await detect_delay_intent(
-        user_input, llm_registry=llm_registry, llm_provider_name=llm_provider_name
-    )
-    if is_delay:
-        time_result = await resolve_time_window(
-            user_input,
-            llm_registry=llm_registry,
-            llm_provider_name=llm_provider_name,
-            reference_time=resolved_now,
-        )
-        if time_result.resolved and time_result.is_future:
-            confirm_after = time_result.start
-        else:
-            confirm_after = resolved_now + timedelta(hours=_DEFAULT_DELAY_CONFIRMATION_HOURS)
-        await ensure_delayed_confirmation_schema(conn)
-        await schedule_delayed_confirmation(
-            conn,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            context=user_input,
-            confirm_after=confirm_after,
-        )
-
     facts = await extract_facts(
         user_input=user_input,
         assistant_output=assistant_output,
@@ -149,4 +131,69 @@ async def run_memory_consolidation(
         actions=actions,
         embedding_registry=embedding_registry,
         embedding_provider_name=embedding_provider_name,
+    )
+
+
+async def run_memory_consolidation(
+    conn: aiosqlite.Connection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    user_input: str,
+    assistant_output: str,
+    llm_registry: ProviderRegistry,
+    llm_provider_name: str,
+    fact_extract_timeout_sec: float = 2.0,
+    conflict_resolve_timeout_sec: float = 2.0,
+    embedding_registry: EmbeddingRegistry | None = None,
+    embedding_provider_name: str | None = None,
+    similarity_top_k: int = 20,
+    now: datetime | None = None,
+) -> list[dict[str, str]]:
+    """异步 consolidation 队列入口：先做延迟意图调度，再委托给
+    `consolidate_memory` 完成"抽事实->冲突决策->执行"的核心链路。
+
+    now 为可选项：用于延迟意图检测（"我先试试，稍后再联系"类话语）解析出
+    确认时间的计算基准，不提供则用 datetime.now()。这一步和事实抽取/冲突
+    决策相互独立，放在函数最前面执行、不受 `facts` 是否为空影响——哪怕这
+    句话本身抽不出任何值得记忆的长期事实，只要表达了"稍后再试"的意图，也
+    要照常写入一条延迟确认记录，供后续跟进扫描（Task 13）捞取。
+    """
+    resolved_now = now or datetime.now()
+    is_delay = await detect_delay_intent(
+        user_input, llm_registry=llm_registry, llm_provider_name=llm_provider_name
+    )
+    if is_delay:
+        time_result = await resolve_time_window(
+            user_input,
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
+            reference_time=resolved_now,
+        )
+        if time_result.resolved and time_result.is_future:
+            confirm_after = time_result.start
+        else:
+            confirm_after = resolved_now + timedelta(hours=_DEFAULT_DELAY_CONFIRMATION_HOURS)
+        await ensure_delayed_confirmation_schema(conn)
+        await schedule_delayed_confirmation(
+            conn,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            context=user_input,
+            confirm_after=confirm_after,
+        )
+
+    return await consolidate_memory(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        user_input=user_input,
+        assistant_output=assistant_output,
+        llm_registry=llm_registry,
+        llm_provider_name=llm_provider_name,
+        fact_extract_timeout_sec=fact_extract_timeout_sec,
+        conflict_resolve_timeout_sec=conflict_resolve_timeout_sec,
+        embedding_registry=embedding_registry,
+        embedding_provider_name=embedding_provider_name,
+        similarity_top_k=similarity_top_k,
     )

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import aiosqlite
 
-from app.memory.consolidation import run_memory_consolidation
+from app.memory.consolidation import consolidate_memory, run_memory_consolidation
 from app.memory.delayed_confirmation import ensure_delayed_confirmation_schema, list_due_confirmations
 from app.memory.memory_store import list_active_memory_items, upsert_memory_item
 from app.memory.schema import ensure_schema
@@ -198,6 +198,177 @@ async def test_run_memory_consolidation_narrows_candidates_by_similarity_when_em
     )
 
     conflict_resolve_request = llm_provider.requests[2]
+    prompt_payload = json.loads(conflict_resolve_request.messages[1]["content"])
+    existing_texts = {item["text"] for item in prompt_payload["existing_memories"]}
+    assert existing_texts == {"很像的历史记忆"}
+
+
+# consolidate_memory 是"抽事实 -> 冲突决策 -> 执行"这条核心链路本身的直接
+# 测试面——run_memory_consolidation（异步 consolidation 队列入口）和
+# app/agent/graph.py::correction_check_node（同步纠错入口）都只是这条链路
+# 外面包一层各自独有的前置/后置步骤，不应该只靠这两个调用方的集成测试
+# 间接覆盖核心行为。下面几个测试直接调 consolidate_memory，不涉及延迟
+# 意图检测（那是 run_memory_consolidation 独有的部分，见上面几个测试）。
+
+
+async def test_consolidate_memory_adds_new_fact_end_to_end():
+    conn = await _connect()
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        ScriptedLLMProvider(
+            [
+                '{"facts": ["客户使用企业版套餐"]}',
+                '{"actions": [{"event": "ADD", "target_memory_id": "", '
+                '"text": "客户使用企业版套餐", "reason": "首次提及"}]}',
+            ]
+        ),
+    )
+
+    applied = await consolidate_memory(
+        conn,
+        tenant_id="t1",
+        user_id="u1",
+        user_input="我们公司用的是企业版套餐",
+        assistant_output="好的，已记录",
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+    )
+
+    assert applied == [
+        {"event": "ADD", "memory_id": applied[0]["memory_id"], "text": "客户使用企业版套餐"}
+    ]
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
+    assert [i["text"] for i in items] == ["客户使用企业版套餐"]
+
+
+async def test_consolidate_memory_defaults_assistant_output_to_empty_string():
+    # correction_check_node 只有用户这句话，没有配套的助手回复（纠错语境
+    # 下助手当轮还没答复）——assistant_output 不传时应该退化成空字符串，
+    # 而不是要求调用方每次都显式传 ""。
+    conn = await _connect()
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        ScriptedLLMProvider(
+            [
+                '{"facts": ["客户使用macOS系统"]}',
+                '{"actions": [{"event": "ADD", "target_memory_id": "", '
+                '"text": "客户使用macOS系统", "reason": "客户更正"}]}',
+            ]
+        ),
+    )
+
+    applied = await consolidate_memory(
+        conn,
+        tenant_id="t1",
+        user_id="u1",
+        user_input="其实我用的是macOS系统",
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+    )
+
+    assert applied[0]["text"] == "客户使用macOS系统"
+
+
+async def test_consolidate_memory_writes_conflict_type_into_memory_history_end_to_end():
+    conn = await _connect()
+    await upsert_memory_item(
+        conn, memory_id="m1", tenant_id="t1", user_id="u1", text="客户使用企业版套餐",
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "llm",
+        ScriptedLLMProvider(
+            [
+                '{"facts": ["客户已升级为旗舰版套餐"]}',
+                '{"actions": [{"event": "UPDATE", "target_memory_id": "m1", '
+                '"text": "客户已升级为旗舰版套餐", "reason": "客户主动更正套餐信息", '
+                '"conflict_type": "temporal"}]}',
+            ]
+        ),
+    )
+
+    applied = await consolidate_memory(
+        conn,
+        tenant_id="t1",
+        user_id="u1",
+        user_input="其实我们现在已经升级到旗舰版套餐了",
+        assistant_output="好的，已为您更新记录",
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+    )
+
+    assert applied == [
+        {"event": "UPDATE", "memory_id": "m1", "text": "客户已升级为旗舰版套餐"}
+    ]
+    cursor = await conn.execute(
+        "SELECT old_text, new_text, conflict_type FROM memory_history WHERE memory_id = ?",
+        ("m1",),
+    )
+    row = await cursor.fetchone()
+    assert tuple(row) == ("客户使用企业版套餐", "客户已升级为旗舰版套餐", "temporal")
+
+
+async def test_consolidate_memory_no_facts_extracted_writes_nothing():
+    conn = await _connect()
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, "llm", ScriptedLLMProvider(['{"facts": []}']),
+    )
+
+    applied = await consolidate_memory(
+        conn,
+        tenant_id="t1",
+        user_id="u1",
+        user_input="你好",
+        assistant_output="您好，有什么可以帮您",
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+    )
+
+    assert applied == []
+    items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
+    assert items == []
+
+
+async def test_consolidate_memory_narrows_candidates_by_similarity_when_embedding_registry_provided():
+    conn = await _connect()
+    await upsert_memory_item(
+        conn, memory_id="m1", tenant_id="t1", user_id="u1", text="很像的历史记忆",
+        embedding=[1.0, 0.0],
+    )
+    await upsert_memory_item(
+        conn, memory_id="m2", tenant_id="t1", user_id="u1", text="不像的历史记忆",
+        embedding=[0.0, 1.0],
+    )
+
+    llm_registry = ProviderRegistry()
+    llm_provider = RecordingLLMProvider(
+        ['{"facts": ["客户使用企业版套餐"]}', '{"actions": []}']
+    )
+    llm_registry.register(ProviderCapability.LLM, "llm", llm_provider)
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FixedEmbeddingProvider())
+
+    await consolidate_memory(
+        conn,
+        tenant_id="t1",
+        user_id="u1",
+        user_input="我们公司用的是企业版套餐",
+        assistant_output="好的，已记录",
+        llm_registry=llm_registry,
+        llm_provider_name="llm",
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        similarity_top_k=1,
+    )
+
+    conflict_resolve_request = llm_provider.requests[1]
     prompt_payload = json.loads(conflict_resolve_request.messages[1]["content"])
     existing_texts = {item["text"] for item in prompt_payload["existing_memories"]}
     assert existing_texts == {"很像的历史记忆"}
