@@ -9,6 +9,7 @@ from pydantic import BaseModel, field_validator
 import aiosqlite
 
 from app.api import deps
+from app.graphrag.duplicate_detection import find_similar_terms
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
@@ -36,6 +37,7 @@ class TermResponse(BaseModel):
     term_type: str
     extra_properties: dict[str, Any] = {}
     source: str
+    similar_terms: list[dict[str, Any]] | None = None
 
 
 class TermListResponse(BaseModel):
@@ -74,13 +76,14 @@ class TermWriteRequest(BaseModel):
         return [alias.strip() for alias in value if alias.strip()]
 
 
-def _to_response(term: Term) -> TermResponse:
+def _to_response(term: Term, *, similar_terms: list[dict[str, Any]] | None = None) -> TermResponse:
     return TermResponse(
         standard_name=term.standard_name,
         aliases=term.aliases,
         term_type=term.term_type,
         extra_properties=term.extra_properties,
         source=term.source,
+        similar_terms=similar_terms,
     )
 
 
@@ -122,6 +125,16 @@ async def create_new_term(
         await require_active_tenant(review_conn, tenant_id)
     except TenantNotFoundError:
         raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    # 创建前先跟同租户、同类型的现有术语比一遍相似度，供管理员在提交后
+    # 直接看到"这个新名字是不是已经有一个很像的术语了"——查询范围限定在
+    # 同 term_type，避免不同类型之间凑巧撞名字的噪声提示。
+    existing_terms = await list_terms(review_conn, tenant_id, source=None)
+    same_type_terms = [t for t in existing_terms if t.term_type == payload.term_type]
+    similar = find_similar_terms(payload.standard_name, same_type_terms)
+    similar_terms_payload = [
+        {"node_key": term.node_key, "standard_name": term.standard_name, "similarity_score": score}
+        for term, score in similar
+    ]
     try:
         await create_term(
             review_conn,
@@ -156,7 +169,7 @@ async def create_new_term(
             term.standard_name, tenant_id,
         )
         raise
-    return _to_response(term)
+    return _to_response(term, similar_terms=similar_terms_payload)
 
 
 @router.put("/{standard_name}", response_model=TermResponse)

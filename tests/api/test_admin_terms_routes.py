@@ -136,6 +136,10 @@ def test_list_terms_returns_all_terms(terms_conn):
             "standard_name": "错误码E502", "aliases": ["网关超时"],
             "term_type": "error_code",
             "extra_properties": {}, "source": "manual",
+            # Task 3：TermResponse 新增 similar_terms 字段——list_all_terms
+            # 走的是 _to_response(term)，不传 similar_terms 参数，默认值 None
+            # 会原样出现在 JSON 响应里，这里更新期望值以匹配新 schema。
+            "similar_terms": None,
         }
     ]
 
@@ -940,6 +944,70 @@ def test_update_and_delete_term_disambiguate_by_term_type(terms_conn):
         assert remaining_names == {"拿铁"}
     finally:
         app.dependency_overrides.clear()
+
+
+def test_create_term_returns_similar_terms_hint(terms_conn):
+    """Task 3：创建新术语时，响应体里附带一份跟现有同类型术语的相似度
+    提示——先建一条 standard_name="Coca-Cola"、别名带"可乐"的术语，再
+    创建 standard_name="可口可乐" 的新术语。新旧标准名/别名互不完全
+    相同（否则会先撞上 _check_name_conflict 的精确名字冲突检测，测不到
+    这里要验证的相似度提示），但"可乐"是"可口可乐"的连续子串，
+    longest_common_substring_score 按重叠长度/候选别名长度算出 2/2 = 1.0。"""
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "Coca-Cola", "aliases": ["可乐"],
+                "term_type": "t", "extra_properties": {},
+            },
+            headers=_authed_headers(session_store),
+        )
+
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "可口可乐", "aliases": [],
+                "term_type": "t", "extra_properties": {},
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["similar_terms"]) == 1
+    assert body["similar_terms"][0]["standard_name"] == "Coca-Cola"
+    assert body["similar_terms"][0]["similarity_score"] == 1.0
+
+
+def test_create_term_no_similar_terms_returns_empty_list(terms_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "完全独特的名字XYZ123", "aliases": [],
+                "term_type": "t", "extra_properties": {},
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["similar_terms"] == []
 
 
 def test_create_term_rejects_bool_inside_number_array_via_http(terms_conn):
