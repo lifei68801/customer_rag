@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import aiosqlite
 
+from app.db_migrations import add_column_if_missing
+
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS conversation_turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,3 +78,6 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
     """幂等建表，可重复调用。"""
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
+    await add_column_if_missing(
+        conn, table="memory_history", column="conflict_type", ddl="TEXT",
+    )

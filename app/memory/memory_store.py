@@ -70,10 +70,12 @@ async def append_history(
     old_text: str | None,
     new_text: str | None,
     reason: str | None,
+    conflict_type: str | None = None,
 ) -> None:
     await conn.execute(
-        "INSERT INTO memory_history (memory_id, tenant_id, user_id, event, old_text, new_text, reason) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (memory_id, tenant_id, user_id, event, old_text, new_text, reason),
+        "INSERT INTO memory_history "
+        "(memory_id, tenant_id, user_id, event, old_text, new_text, reason, conflict_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (memory_id, tenant_id, user_id, event, old_text, new_text, reason, conflict_type),
     )
     await conn.commit()

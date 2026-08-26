@@ -130,3 +130,33 @@ async def test_append_history_records_an_audit_row():
     cursor = await conn.execute("SELECT event, new_text FROM memory_history")
     rows = await cursor.fetchall()
     assert rows == [("ADD", "客户使用企业版套餐")]
+
+
+async def test_append_history_records_conflict_type():
+    conn = await _connect()
+
+    await append_history(
+        conn, memory_id="m1", tenant_id="t1", user_id="u1", event="UPDATE",
+        old_text="旧内容", new_text="新内容", reason="套餐变更", conflict_type="value",
+    )
+
+    cursor = await conn.execute(
+        "SELECT conflict_type FROM memory_history WHERE memory_id = ?", ("m1",)
+    )
+    row = await cursor.fetchone()
+    assert row[0] == "value"
+
+
+async def test_append_history_conflict_type_defaults_to_none():
+    conn = await _connect()
+
+    await append_history(
+        conn, memory_id="m1", tenant_id="t1", user_id="u1", event="ADD",
+        old_text=None, new_text="新内容", reason=None,
+    )
+
+    cursor = await conn.execute(
+        "SELECT conflict_type FROM memory_history WHERE memory_id = ?", ("m1",)
+    )
+    row = await cursor.fetchone()
+    assert row[0] is None
