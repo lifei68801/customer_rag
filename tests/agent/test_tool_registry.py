@@ -115,6 +115,32 @@ def test_discover_tools_raises_when_tool_py_missing_TOOL_export(tmp_path):
         discover_tools(tmp_path)
 
 
+def test_discover_tools_raises_when_TOOL_does_not_satisfy_protocol(tmp_path):
+    """TOOL 存在，但缺 resolve_arguments/execute 里的任意一个——只检查
+    hasattr(module, "TOOL") 不够，一个方法名拼错的 TOOL 会注册成功，
+    然后每次调用都在 execute 阶段悄悄失败（因为 run_tool_calls 现在会把
+    任何异常都降级成 {"error": ...}），这正是 manifest 校验想在启动阶段
+    就拦下的"格式问题静默跳过"，只是被推迟到了运行时。"""
+    tool_dir = tmp_path / "half_tool"
+    tool_dir.mkdir()
+    (tool_dir / "manifest.yaml").write_text(
+        "name: half_tool\ndescription: \"x\"\nparameters_schema:\n  type: object\n  properties: {}\n",
+        encoding="utf-8",
+    )
+    (tool_dir / "tool.py").write_text(
+        "class _HalfTool:\n"
+        "    async def resolve_arguments(self, raw_arguments, *, context):\n"
+        "        return raw_arguments\n"
+        "    # 没有定义 execute\n"
+        "\n"
+        "TOOL = _HalfTool()\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ToolManifestError):
+        discover_tools(tmp_path)
+
+
 def test_tool_manifest_to_schema_shape(tmp_path):
     _write_tool(tmp_path, "shape_tool")
     registry = discover_tools(tmp_path)

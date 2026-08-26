@@ -155,7 +155,21 @@ def discover_tools(tools_dir: Path) -> ToolRegistry:
     manifests.sort(key=lambda item: item[0].name)
     for manifest, manifest_path in manifests:
         module = _load_tool_module(manifest_path.parent)
-        if not hasattr(module, "TOOL"):
+        tool = getattr(module, "TOOL", None)
+        if tool is None:
             raise ToolManifestError(f"{manifest_path.parent}/tool.py 没有导出 TOOL")
-        registry.register(manifest, module.TOOL)
+        for method in ("resolve_arguments", "execute"):
+            if not callable(getattr(tool, method, None)):
+                # 只检查 TOOL 存在还不够——run_tool_calls 现在会把 resolve_
+                # arguments/execute 抛出的任何异常都降级成 {"error": ...}
+                # 观察结果正常返回（见 app/agent/planner.py），一个方法名
+                # 拼错/签名不对的 TOOL 不会在这里报错，而是每次调用都悄悄
+                # 失败——这正是"manifest/tool.py 格式问题不允许静默跳过"
+                # 这条 Global Constraint 想避免的情形，只是被 execute() 阶段
+                # 的宽松异常处理从"根本不会发生"变成了"会发生，但发生得
+                # 很晚很隐蔽"，所以必须在这里提前校验。
+                raise ToolManifestError(
+                    f"{manifest_path.parent}/tool.py 的 TOOL 不满足 Tool 协议：缺少 {method}()"
+                )
+        registry.register(manifest, tool)
     return registry

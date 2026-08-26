@@ -47,9 +47,10 @@ _VALID_KINDS = frozenset({"attribute", "relation"})
 
 class StructuredFilterQueryError(Exception):
     """请求参数没通过解析或 schema 校验链——字段/关系类型不在已确认 schema 里、
-    运算符和字段声明的类型不匹配、hops 超过2跳等。调用方（本次改造的
-    app/agent/tools.py::structured_filter_query_tool）捕获这个异常，转成结构化
-    {"error": ...} 观察结果返回给 LLM，不让它作为未处理异常向上传播——见
+    运算符和字段声明的类型不匹配、hops 超过2跳等。调用方（
+    app/agent/tools/structured_filter_query/tool.py::StructuredFilterQueryTool）
+    捕获这个异常，转成结构化 {"error": ...} 观察结果返回给 LLM，不让它作为
+    未处理异常向上传播——见
     docs/superpowers/specs/2026-08-17-structured-filter-query-tool-design.md 第4节。"""
 
 

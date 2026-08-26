@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.agent.graph import build_agent_graph
+from app.agent.graph import _build_planner_system_prompt, build_agent_graph
 from app.agent.tool_registry import discover_tools
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
@@ -21,6 +21,27 @@ from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
 # structured_filter_query_tool），用 discover_tools 扫描真实的
 # app/agent/tools/ 目录构建一次，供所有调用点复用。
 _TOOL_REGISTRY = discover_tools(Path(__file__).resolve().parents[2] / "app" / "agent" / "tools")
+
+
+def test_build_planner_system_prompt_matches_content_exactly():
+    """精确逐字符比对（不是"拼接公式自洽"这种同义反复的检查）——这是这次
+    插件化改造touch到的、面向 LLM 的最高杠杆字符串，之前完全没有测试
+    覆盖：_PLANNER_BASE_PROMPT 打错字、manifest.yaml 的 trigger_cue 字段
+    丢失、trigger_cues() 里一个 .get() 拼写错误，都会在这里被拦下，不会
+    悄悄带着错误内容上线。硬编码的这段期望值不能改成引用
+    _PLANNER_BASE_PROMPT/_TOOL_REGISTRY.trigger_cues() 本身——那样测试
+    的就是"函数输出等于它自己用到的常量"，是重言式，测不出常量本身
+    出错的情况。"""
+    prompt = _build_planner_system_prompt(_TOOL_REGISTRY)
+
+    assert prompt == (
+        "你是客服问答助手。可以调用 vector_search_tool 检索知识库、"
+        "structured_filter_query_tool 查询知识图谱里的实体数量/满足条件的实体列表。"
+        "有足够信息时直接给出最终答案，不要编造资料中没有的内容；"
+        "信息不足以回答时也不要编造。"
+        "看到「多少个」「数量」等计数意图时，应该用 structured_filter_query_tool 给出确定数字，"
+        "不能仅凭检索到的文档片段猜测，也不能因为一次调用没查到就直接放弃。"
+    )
 
 
 class FakeEmbeddingProvider:

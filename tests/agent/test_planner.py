@@ -470,6 +470,26 @@ async def test_run_tool_calls_executes_structured_filter_query_tool_with_name_an
     assert graph_client.queried_tenant_ids == ["t1"]
 
 
+async def test_run_tool_calls_reports_error_for_unknown_tool_name():
+    """LLM 幻觉出一个不存在的工具名（tool_registry 里没有注册过）时，
+    run_tool_calls 应该降级成 {"error": "未知工具: ..."} 观察结果正常
+    返回，不应该抛 KeyError 崩溃——这是插件化改造之前 _dispatch_tool_call
+    就有的既有行为，迁移后旧测试被删掉了，没有等价测试补上，这里补回来。"""
+    state = {
+        "planner_messages": [],
+        "pending_tool_calls": [
+            {"id": "call_1", "name": "does_not_exist_tool", "arguments": "{}"},
+        ],
+    }
+
+    update = await run_tool_calls(state, tool_registry=_fake_tool_registry(), context=_context())
+
+    tool_message = update["planner_messages"][-1]
+    assert tool_message["role"] == "tool"
+    parsed = json.loads(tool_message["content"])
+    assert parsed == {"error": "未知工具: does_not_exist_tool"}
+
+
 async def test_run_tool_calls_degrades_gracefully_when_structured_filter_query_resolution_fails():
     """独立参数生成调用返回非法 JSON 时，run_tool_calls 应该把这次工具调用
     降级成 {"error": ...} 观察结果正常返回，而不是让整个 run_tool_calls 崩溃。"""

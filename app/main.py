@@ -58,6 +58,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         logger.warning("启动预热 BM25 索引失败，将在首个请求时重试", exc_info=True)
 
+    # 工具注册表必须在启动阶段构建成功——manifest 格式错误/tool.py 缺 TOOL
+    # 导出/工具名重复这三类问题，按插件化计划的 Global Constraints 要求
+    # 必须让进程直接启动失败，不允许拖到第一个请求才暴露（get_tool_registry
+    # 是懒加载单例，不在这里主动预热的话，一个损坏的工具目录会让进程正常
+    # 启动、然后在每一次 /agent/chat 请求上都重新扫描、重新失败）。跟上面
+    # BM25 预热不同，这里不吞异常——manifest/工具目录损坏是需要立刻发现
+    # 并修复的部署错误，不是"暂时不可用、稍后自动恢复"的瞬时故障。
+    await deps.get_tool_registry()
+
     yield
 
 
