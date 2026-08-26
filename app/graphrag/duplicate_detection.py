@@ -10,6 +10,15 @@ def _names_of(term: Term) -> list[str]:
     return [term.standard_name, *term.aliases]
 
 
+def _is_purely_numeric(name: str) -> bool:
+    """纯数字标准名（如批量导入的"销量"术语 100/101/102...）两两之间按
+    LCS/较短字符串长度打分极易超阈值（"100"跟"101"共享"10"两个字符，
+    2/3≈0.67），会把审核队列刷爆成大量毫无意义的建议——这类术语直接跳过
+    检测，不参与相似度比对（无论作为批跑的两两比对候选，还是创建时点
+    提示的候选/已有术语）。"""
+    return name.strip().isdigit()
+
+
 def term_similarity_score(a: Term, b: Term) -> float:
     """两条术语的相似度——比对范围是各自的 standard_name + 全部 aliases，
     两两取最高分；longest_common_substring_score 本身对 a/b 不对称
@@ -35,8 +44,12 @@ def find_similar_terms(
     """candidate_name 是一个裸字符串（尚未创建成 Term），跟 existing_terms
     里每一条的 standard_name/aliases 比对，返回超过阈值的 (Term, score)，
     按 score 降序排列。"""
+    if _is_purely_numeric(candidate_name):
+        return []
     scored = []
     for term in existing_terms:
+        if _is_purely_numeric(term.standard_name):
+            continue
         score = max(
             (
                 max(
@@ -57,6 +70,7 @@ def find_duplicate_pairs(terms: list[Term]) -> list[tuple[Term, Term, float]]:
     """对 terms 两两比对，返回超过阈值的 (term_a, term_b, score)——term_a/
     term_b 按 node_key 字符串排序，保证同一对术语的结果跟输入列表顺序无关。
     调用方负责先按 term_type 分组再传进来，这个函数本身不做分组。"""
+    terms = [t for t in terms if not _is_purely_numeric(t.standard_name)]
     pairs: list[tuple[Term, Term, float]] = []
     for i in range(len(terms)):
         for j in range(i + 1, len(terms)):

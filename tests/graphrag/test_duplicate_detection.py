@@ -72,3 +72,44 @@ def test_find_duplicate_pairs_order_independent():
     pairs_b = find_duplicate_pairs([_KEKOULE, _COCA, _PEPSI])
 
     assert pairs_a == pairs_b
+
+
+def test_find_duplicate_pairs_skips_purely_numeric_standard_names():
+    # 纯数字标准名（如批量导入的"销量"术语 100/101/102...）两两之间按
+    # LCS/较短字符串长度打分极易超阈值（"100"跟"101"共享"10"两个字符，
+    # 2/3≈0.67），会把审核队列刷爆成几万条毫无意义的建议——这类术语跳过
+    # 检测，不参与两两比对。
+    numeric_a = Term(
+        tenant_id="t1", node_key="销量:100", standard_name="100", aliases=[], term_type="销量",
+    )
+    numeric_b = Term(
+        tenant_id="t1", node_key="销量:101", standard_name="101", aliases=[], term_type="销量",
+    )
+
+    pairs = find_duplicate_pairs([numeric_a, numeric_b])
+
+    assert pairs == []
+
+
+def test_find_duplicate_pairs_still_compares_non_numeric_terms():
+    # 数字过滤不能误伤原有的非数字重复检测
+    pairs = find_duplicate_pairs([_COCA, _PEPSI, _KEKOULE])
+    assert len(pairs) == 1
+
+
+def test_find_similar_terms_returns_empty_for_purely_numeric_candidate():
+    numeric_existing = Term(
+        tenant_id="t1", node_key="销量:101", standard_name="101", aliases=[], term_type="销量",
+    )
+    results = find_similar_terms("100", [numeric_existing])
+
+    assert results == []
+
+
+def test_find_similar_terms_excludes_purely_numeric_existing_terms():
+    numeric_existing = Term(
+        tenant_id="t1", node_key="销量:100", standard_name="100", aliases=[], term_type="销量",
+    )
+    results = find_similar_terms("非数字候选名100", [numeric_existing, _COCA])
+
+    assert numeric_existing not in [r[0] for r in results]
