@@ -9,6 +9,7 @@ import { Pager } from './Pager'
 import { StandardNameInput } from './StandardNameInput'
 import { TaskStatusBadge } from './TaskStatusBadge'
 import { fetchGraphTerms, createTerm, type GraphTerm } from './termsApi'
+import { DuplicateTermSuggestionsTab } from './DuplicateTermSuggestionsTab'
 
 const PAGE_SIZE = 20
 
@@ -48,7 +49,7 @@ interface CreateEntityDraft {
   error: string | null
 }
 
-type Tab = 'pending' | 'history'
+type Tab = 'pending' | 'history' | 'duplicates'
 type HistoryFilter = 'all' | 'approved' | 'rejected'
 
 const focusRing =
@@ -324,11 +325,13 @@ export function GraphReviewsPage() {
       refreshPending().catch((err) => {
         console.error('待审核列表刷新失败', err)
       })
-    } else {
+    } else if (tab === 'history') {
       refreshHistory().catch((err) => {
         console.error('历史记录刷新失败', err)
       })
     }
+    // tab === 'duplicates'：DuplicateTermSuggestionsTab 自己管理数据加载，
+    // 这里不需要（也不应该）触发 pending/history 的刷新。
   }, [tab, refreshPending, refreshHistory])
 
   const handleApprove = async (reviewId: number) => {
@@ -590,6 +593,15 @@ export function GraphReviewsPage() {
           }`}
         >
           历史记录
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('duplicates')}
+          className={`min-h-[44px] cursor-pointer rounded-control border border-subtle px-4 py-2 text-sm font-bold transition ${focusRing} ${
+            tab === 'duplicates' ? 'bg-accent-pink text-on-accent shadow-soft-sm' : 'bg-paper text-ink'
+          }`}
+        >
+          疑似重复术语
         </button>
       </div>
 
@@ -1029,6 +1041,8 @@ export function GraphReviewsPage() {
           onPageChange={setHistoryPage}
         />
       )}
+
+      {tab === 'duplicates' && <DuplicateTermSuggestionsTab />}
     </div>
   )
 }
