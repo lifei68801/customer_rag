@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminDensity } from './DensityContext'
@@ -10,6 +10,7 @@ import { StandardNameInput } from './StandardNameInput'
 import { TaskStatusBadge } from './TaskStatusBadge'
 import { fetchGraphTerms, createTerm, type GraphTerm } from './termsApi'
 import { DuplicateTermSuggestionsTab } from './DuplicateTermSuggestionsTab'
+import { useLatestRequestGuard } from './useLatestRequestGuard'
 
 const PAGE_SIZE = 20
 
@@ -156,15 +157,16 @@ export function GraphReviewsPage() {
     }
   }, [historyLoaded, history.length, historyPage])
 
-  // 快速连续翻页会同时有多个请求在途；每次发起请求前递增各自的序号，
-  // 响应回来时只有序号仍是"最新"的那一个才允许写入 state——旧请求的
-  // 响应即使后到，也不会覆盖新请求已经写入的数据。
-  const pendingRequestIdRef = useRef(0)
-  const historyRequestIdRef = useRef(0)
+  // 请求序号保护逻辑收在 useLatestRequestGuard 里（跟 DocumentsPage.tsx
+  // 共用同一个原语）；pending/history 各自独立的派生状态（drafts、共享
+  // error 横幅）比较多，不套完整的 usePaginatedAdminList，只换掉计数器
+  // 这一部分。
+  const pendingGuard = useLatestRequestGuard()
+  const historyGuard = useLatestRequestGuard()
 
   const refreshPending = useCallback(async () => {
     if (!sessionToken) return
-    const requestId = ++pendingRequestIdRef.current
+    const requestId = pendingGuard.next()
     try {
       const response = await adminFetch(
         `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=pending&page=${pendingPage}&page_size=${PAGE_SIZE}`,
@@ -175,7 +177,7 @@ export function GraphReviewsPage() {
         throw new Error(extractErrorDetail(body, '加载待审核列表失败'))
       }
       const data = (await response.json()) as { reviews: PendingReview[]; total: number }
-      if (requestId !== pendingRequestIdRef.current) return
+      if (!pendingGuard.isLatest(requestId)) return
       setPending(data.reviews)
       setPendingTotal(data.total)
       setDrafts(
@@ -190,14 +192,14 @@ export function GraphReviewsPage() {
         ),
       )
     } catch (err) {
-      if (requestId !== pendingRequestIdRef.current) return
+      if (!pendingGuard.isLatest(requestId)) return
       setError(err instanceof Error ? err.message : '加载待审核列表失败')
     } finally {
-      if (requestId === pendingRequestIdRef.current) {
+      if (pendingGuard.isLatest(requestId)) {
         setPendingLoaded(true)
       }
     }
-  }, [sessionToken, tenantId, pendingPage])
+  }, [sessionToken, tenantId, pendingPage, pendingGuard])
 
   // 只清选中状态，不清 batchResult——batchResult 要留到用户看到汇总为止。
   // 批量提交结束后会调用 refreshPending()，那会产生一个新的 pending 数组
@@ -295,7 +297,7 @@ export function GraphReviewsPage() {
 
   const refreshHistory = useCallback(async () => {
     if (!sessionToken) return
-    const requestId = ++historyRequestIdRef.current
+    const requestId = historyGuard.next()
     try {
       const response = await adminFetch(
         `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=${historyFilter}&page=${historyPage}&page_size=${PAGE_SIZE}`,
@@ -306,18 +308,18 @@ export function GraphReviewsPage() {
         throw new Error(extractErrorDetail(body, '加载历史记录失败'))
       }
       const data = (await response.json()) as { reviews: ResolvedReview[]; total: number }
-      if (requestId !== historyRequestIdRef.current) return
+      if (!historyGuard.isLatest(requestId)) return
       setHistory(data.reviews)
       setHistoryTotal(data.total)
     } catch (err) {
-      if (requestId !== historyRequestIdRef.current) return
+      if (!historyGuard.isLatest(requestId)) return
       setError(err instanceof Error ? err.message : '加载历史记录失败')
     } finally {
-      if (requestId === historyRequestIdRef.current) {
+      if (historyGuard.isLatest(requestId)) {
         setHistoryLoaded(true)
       }
     }
-  }, [sessionToken, tenantId, historyFilter, historyPage])
+  }, [sessionToken, tenantId, historyFilter, historyPage, historyGuard])
 
   useEffect(() => {
     setError(null)

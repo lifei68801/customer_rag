@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAdminAuth } from './useAdminAuth'
 import { useConfirm } from './ConfirmContext'
@@ -9,6 +9,7 @@ import { deleteTerm, fetchTermsPage, updateTerm, type TermRecord } from './terms
 import { useToast } from './ToastContext'
 import { adminFetch } from './adminApi'
 import { Pager } from './Pager'
+import { usePaginatedAdminList } from './usePaginatedAdminList'
 
 const PAGE_SIZE = 20
 
@@ -56,12 +57,6 @@ export function TermsPage() {
   const confirm = useConfirm()
   const showToast = useToast()
   const { density } = useAdminDensity()
-  const [terms, setTerms] = useState<TermRecord[]>([])
-  const [loaded, setLoaded] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [page, setPage] = useState(1)
-  const [total, setTotal] = useState(0)
-
   const [termTypeOptions, setTermTypeOptions] = useState<string[]>([])
   const [optionsLoaded, setOptionsLoaded] = useState(false)
 
@@ -91,45 +86,28 @@ export function TermsPage() {
       .finally(() => setOptionsLoaded(true))
   }, [sessionToken, tenantId])
 
-  // 快速连续翻页会同时有多个请求在途；每次发起请求前递增请求序号，响应回来
-  // 时只有序号仍是"最新"的那一个才允许写入 state——旧请求的响应即使后到，
-  // 也不会覆盖新请求已经写入的数据。（照抄 GraphReviewsPage.tsx 的模式。）
-  const refreshRequestIdRef = useRef(0)
-
-  const refresh = useCallback(async () => {
-    if (!sessionToken) return
-    const requestId = ++refreshRequestIdRef.current
-    try {
+  const fetchPage = useCallback(
+    async (page: number) => {
+      if (!sessionToken) return { items: [], total: 0 }
       const data = await fetchTermsPage(
         sessionToken, tenantId, page, PAGE_SIZE,
         sourceFilter === 'all' ? undefined : sourceFilter,
       )
-      if (requestId !== refreshRequestIdRef.current) return
-      setTerms(data.terms)
-      setTotal(data.total)
-    } catch (err) {
-      if (requestId !== refreshRequestIdRef.current) return
-      setError(err instanceof Error ? err.message : '加载术语表失败')
-    } finally {
-      if (requestId === refreshRequestIdRef.current) {
-        setLoaded(true)
-      }
-    }
-  }, [sessionToken, tenantId, page, sourceFilter])
-
-  useEffect(() => {
-    refresh().catch((err) => {
-      console.error('术语表刷新失败', err)
-    })
-  }, [refresh])
+      return { items: data.terms, total: data.total }
+    },
+    [sessionToken, tenantId, sourceFilter],
+  )
+  const {
+    items: terms, total, loaded, error, setError, page, setPage, refresh,
+  } = usePaginatedAdminList(fetchPage)
 
   useEffect(() => {
     setPage(1)
-  }, [tenantId])
+  }, [tenantId, setPage])
 
   useEffect(() => {
     setPage(1)
-  }, [sourceFilter])
+  }, [sourceFilter, setPage])
 
   useEffect(() => {
     if (loaded && terms.length === 0 && page > 1) {

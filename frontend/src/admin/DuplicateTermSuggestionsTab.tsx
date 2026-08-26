@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
@@ -6,6 +6,7 @@ import { useToast } from './ToastContext'
 import { useConfirm } from './ConfirmContext'
 import { Pager } from './Pager'
 import { Skeleton } from './Skeleton'
+import { usePaginatedAdminList } from './usePaginatedAdminList'
 
 const PAGE_SIZE = 20
 
@@ -25,24 +26,11 @@ export function DuplicateTermSuggestionsTab() {
   const { tenantId } = useAdminTenant()
   const showToast = useToast()
   const confirm = useConfirm()
-  const [suggestions, setSuggestions] = useState<DuplicateSuggestion[]>([])
-  const [loaded, setLoaded] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [page, setPage] = useState(1)
-  const [total, setTotal] = useState(0)
   const [processingId, setProcessingId] = useState<number | null>(null)
 
-  // 快速连续翻页会同时有多个请求在途；每次发起请求前递增序号，响应回来时
-  // 只有序号仍是"最新"的那一个才允许写入 state——旧请求的响应即使后到，
-  // 也不会覆盖新请求已经写入的数据。跟 GraphReviewsPage.tsx 的
-  // refreshPending/refreshHistory 用的是同一个模式。
-  const requestIdRef = useRef(0)
-
-  const refresh = useCallback(async () => {
-    if (!sessionToken) return
-    const requestId = ++requestIdRef.current
-    setError(null)
-    try {
+  const fetchPage = useCallback(
+    async (page: number) => {
+      if (!sessionToken) return { items: [], total: 0 }
       const response = await adminFetch(
         `/api/admin/duplicate-reviews?tenant_id=${encodeURIComponent(tenantId)}&page=${page}&page_size=${PAGE_SIZE}`,
         sessionToken,
@@ -52,26 +40,17 @@ export function DuplicateTermSuggestionsTab() {
         throw new Error(extractErrorDetail(body, '加载疑似重复列表失败'))
       }
       const data: { suggestions: DuplicateSuggestion[]; total: number } = await response.json()
-      if (requestId !== requestIdRef.current) return
-      setSuggestions(data.suggestions)
-      setTotal(data.total)
-    } catch (err) {
-      if (requestId !== requestIdRef.current) return
-      setError(err instanceof Error ? err.message : '加载疑似重复列表失败')
-    } finally {
-      if (requestId === requestIdRef.current) {
-        setLoaded(true)
-      }
-    }
-  }, [sessionToken, tenantId, page])
+      return { items: data.suggestions, total: data.total }
+    },
+    [sessionToken, tenantId],
+  )
+  const {
+    items: suggestions, total, loaded, error, setError, page, setPage, refresh,
+  } = usePaginatedAdminList(fetchPage)
 
   useEffect(() => {
     setPage(1)
-  }, [tenantId])
-
-  useEffect(() => {
-    refresh()
-  }, [refresh])
+  }, [tenantId, setPage])
 
   const handleApprove = async (reviewId: number, keepNodeKey: string, mergeNodeKey: string) => {
     if (!sessionToken || processingId !== null) return
