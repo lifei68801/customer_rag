@@ -330,7 +330,7 @@ export function DocumentsPage() {
 
       <form
         onSubmit={handleUpload}
-        className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4 shadow-soft"
+        className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4"
       >
         <input type="file" name="file" required className="text-ink" />
         <label className="flex items-center gap-2 text-sm text-ink">
@@ -349,7 +349,7 @@ export function DocumentsPage() {
         <button
           type="submit"
           disabled={uploading}
-          className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-5 py-2.5 font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           {uploading ? '上传中…' : '上传文档'}
         </button>
@@ -358,7 +358,7 @@ export function DocumentsPage() {
       {jobError && (
         <p
           role="alert"
-          className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink shadow-soft-sm"
+          className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink"
         >
           {jobError}
         </p>
@@ -371,7 +371,7 @@ export function DocumentsPage() {
             job.is_stuck ? (
               <div
                 key={job.job_id}
-                className="flex items-center justify-between rounded-card border border-status-error bg-card px-4 py-3 shadow-soft-sm"
+                className="flex items-center justify-between rounded-card border border-status-error bg-card px-4 py-3"
               >
                 <span className="text-ink">
                   {displayFileName(job.file_path)}
@@ -385,7 +385,7 @@ export function DocumentsPage() {
                     type="button"
                     onClick={() => handleRetryJob(job.job_id)}
                     disabled={jobActionId !== null}
-                    className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-3 py-1.5 text-sm font-bold text-on-accent shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-3 py-1.5 text-sm font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                   >
                     {jobActionId === job.job_id ? '处理中…' : '重新执行'}
                   </button>
@@ -393,7 +393,7 @@ export function DocumentsPage() {
                     type="button"
                     onClick={() => handleDeleteJob(job.job_id, job.file_path)}
                     disabled={jobActionId !== null}
-                    className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                   >
                     {jobActionId === job.job_id ? '处理中…' : '删除'}
                   </button>
@@ -402,7 +402,7 @@ export function DocumentsPage() {
             ) : (
               <div
                 key={job.job_id}
-                className={`rounded-card border bg-accent-yellow px-3 py-2 text-sm text-on-accent shadow-soft-sm ${
+                className={`rounded-card border bg-accent-secondary px-3 py-2 text-sm text-on-accent ${
                   job.last_error ? 'border-status-error' : 'border-subtle'
                 }`}
               >
@@ -421,7 +421,7 @@ export function DocumentsPage() {
           {deadJobs.map((job) => (
             <div
               key={job.job_id}
-              className="flex items-center justify-between rounded-card border border-status-error bg-card px-4 py-3 shadow-soft-sm"
+              className="flex items-center justify-between rounded-card border border-status-error bg-card px-4 py-3"
             >
               <span className="text-ink">
                 {displayFileName(job.file_path)}
@@ -432,7 +432,7 @@ export function DocumentsPage() {
                   type="button"
                   onClick={() => handleRetryJob(job.job_id)}
                   disabled={jobActionId !== null}
-                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-3 py-1.5 text-sm font-bold text-on-accent shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-3 py-1.5 text-sm font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                 >
                   {jobActionId === job.job_id ? '处理中…' : '重试'}
                 </button>
@@ -440,7 +440,7 @@ export function DocumentsPage() {
                   type="button"
                   onClick={() => handleDeleteJob(job.job_id, job.file_path)}
                   disabled={jobActionId !== null}
-                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                 >
                   {jobActionId === job.job_id ? '处理中…' : '删除'}
                 </button>
@@ -455,7 +455,7 @@ export function DocumentsPage() {
         {deleteError && (
           <p
             role="alert"
-            className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink shadow-soft-sm"
+            className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink"
           >
             {deleteError}
           </p>
@@ -464,7 +464,7 @@ export function DocumentsPage() {
         {previewError && (
           <p
             role="alert"
-            className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink shadow-soft-sm"
+            className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink"
           >
             {previewError}
           </p>
@@ -475,7 +475,7 @@ export function DocumentsPage() {
             return (
               <div
                 key={doc.file_path}
-                className={`flex flex-col gap-2 rounded-card border border-subtle bg-card shadow-soft-sm ${
+                className={`flex flex-col gap-2 rounded-card border border-subtle bg-card ${
                   density === 'compact' ? 'px-2.5 py-1.5' : 'px-4 py-3'
                 }`}
               >
@@ -489,7 +489,7 @@ export function DocumentsPage() {
                       type="button"
                       onClick={() => handleTogglePreview(doc.file_path)}
                       disabled={preview === 'loading'}
-                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       {preview === 'loading'
                         ? '加载中…'
@@ -501,7 +501,7 @@ export function DocumentsPage() {
                       type="button"
                       onClick={() => handleDownloadFile(doc.file_path)}
                       disabled={downloadingPath !== null}
-                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       {downloadingPath === doc.file_path ? '打开中…' : '查看原文件'}
                     </button>
@@ -509,7 +509,7 @@ export function DocumentsPage() {
                       type="button"
                       onClick={() => handleDelete(doc.file_path)}
                       disabled={deletingPath !== null}
-                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       {deletingPath === doc.file_path ? '删除中…' : '删除'}
                     </button>
