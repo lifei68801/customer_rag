@@ -103,7 +103,7 @@ async def reject_duplicate_suggestion(
 
 ### 创建时点的相似度提示
 
-在 `admin_terms_routes.py` 的创建术语路由（`POST /`，`admin_terms_routes.py:114`，内部调用 `create_term`）里，在实际调用 `create_term()` 之前，先用 `list_terms(conn, tenant_id)` 拉出同 `term_type` 下的全部现有术语（术语表规模小，这个操作足够轻，不需要专门的索引/近似搜索结构），对新术语的 `standard_name` 逐一计算相似度，超阈值就在响应里附带一个 `similar_terms: [{node_key, standard_name, similarity_score}]` 字段（不阻断创建，创建请求本身仍然成功——这是"提示"，不是"拦截"）。前端收到这个字段后，在创建成功的提示里额外展示"检测到可能相似的已有术语：XX（相似度0.7），要不要改成给它加别名而不是新建"，具体交互细节由前端实现决定，这份设计只定义后端返回的数据形状，不展开前端交互设计。
+在 `admin_terms_routes.py` 的创建术语路由（`POST /`，`admin_terms_routes.py:114`，内部调用 `create_term`）里，在实际调用 `create_term()` 之前，先用 `list_terms(conn, tenant_id)` 拉出同 `term_type` 下的全部现有术语（术语表规模小，这个操作足够轻，不需要专门的索引/近似搜索结构），把**新术语的 `standard_name`**，跟每条现有术语的 **`standard_name` 和全部 `aliases`**（不只是 `standard_name`，理由见上一节"相似度算法"——只比 `standard_name` 对 `standard_name` 抓不住"新术语的标准名恰好是已有术语的一个别名"这类场景，比如新建 `standard_name="可口可乐"`，而已有术语 `standard_name="Coca-Cola"` 早就把"可口可乐"登记成了别名）逐一计算相似度，两两取最高分，超阈值就在响应里附带一个 `similar_terms: [{node_key, standard_name, similarity_score}]` 字段（不阻断创建，创建请求本身仍然成功——这是"提示"，不是"拦截"）。新术语自己请求体里如果也带了 `aliases`（`create_term` 本身支持这个参数），这一步暂不额外比对这些新别名——创建时点提示优先覆盖"新标准名撞已有术语"这个最常见的场景，新别名撞已有术语属于更边缘的情况，留给批跑 worker（覆盖全字段两两比对）兜底，不在创建时点这个更轻量的检查里重复做。前端收到这个字段后，在创建成功的提示里额外展示"检测到可能相似的已有术语：XX（相似度0.7），要不要改成给它加别名而不是新建"，具体交互细节由前端实现决定，这份设计只定义后端返回的数据形状，不展开前端交互设计。
 
 ### 定期批跑 worker
 
@@ -133,6 +133,7 @@ async def main(
 ## Global Constraints
 
 - 相似度算法复用 `app/graphrag/ontology_recall.py::longest_common_substring_score`，不引入新的字符串相似度实现。
+- 相似度比对范围统一是"一侧的 `standard_name`，跟另一侧的 `standard_name` 和全部 `aliases`"，两两取最高分——批跑 worker 和创建时点提示都遵守这条，不只比 `standard_name` 对 `standard_name`（否则抓不住"新标准名恰好是已有术语别名"这类场景，这正是这份设计要解决的核心问题）。创建时点提示不额外比对新术语请求体里可能带的 `aliases`，这部分留给批跑 worker 兜底。
 - 阈值 `_DUPLICATE_SIMILARITY_THRESHOLD = 0.6`，比 `ontology_recall.py` 的召回阈值 `0.3` 更保守。
 - `duplicate_review_queue` 是新表，不复用 `graph_review_queue`。
 - 合并操作只影响 SQLite `terms` 表（通过已有的 `update_term()` 追加别名），不删除被合并的 Term 行本身，不触碰 Neo4j 图数据。
