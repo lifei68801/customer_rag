@@ -147,7 +147,7 @@ export function SchemaEtlConfigBuilder({
           type="button"
           onClick={handleAddEntity}
           disabled={disabled || files.length === 0}
-          className={`self-start rounded-control border border-subtle bg-card px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          className={`self-start rounded-control border border-subtle bg-card px-3 py-1.5 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           + 添加实体映射
         </button>
@@ -169,7 +169,7 @@ export function SchemaEtlConfigBuilder({
           type="button"
           onClick={handleAddRelation}
           disabled={disabled || files.length === 0}
-          className={`self-start rounded-control border border-subtle bg-card px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          className={`self-start rounded-control border border-subtle bg-card px-3 py-1.5 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           + 添加关系映射
         </button>
@@ -218,7 +218,7 @@ export function SchemaEtlConfigBuilder({
               setSubmitting(false)
             }
           }}
-          className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-primary px-5 py-2.5 font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
         >
           {submitting ? '提交中…' : '确认并开始运行'}
         </button>
