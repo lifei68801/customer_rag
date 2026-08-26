@@ -10,7 +10,7 @@ from app.config.settings import Settings
 from app.graphrag.ontology_categories import create_term_type
 from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
-from app.graphrag.terms_store import create_term, ensure_terms_schema, list_terms
+from app.graphrag.terms_store import create_term, ensure_terms_schema, list_terms, update_term
 from app.main import app
 
 
@@ -999,6 +999,50 @@ def test_create_term_no_similar_terms_returns_empty_list(terms_conn):
             "/api/admin/t1/terms",
             json={
                 "standard_name": "完全独特的名字XYZ123", "aliases": [],
+                "term_type": "t", "extra_properties": {},
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["similar_terms"] == []
+
+
+def test_create_term_excludes_tombstoned_terms_from_similar_terms_hint(terms_conn):
+    """Fix 1：创建时的相似度提示不该把已经被合并（duplicate_review_queue.
+    approve_duplicate_suggestion 打上"[已合并] "墓碑标记）的行当成"这个
+    新名字看起来很像"的候选。墓碑串是"[已合并] {node_key}"，node_key 带着
+    被合并前的原始 standard_name（这里是"可口可乐股份"，node_key
+    "t:可口可乐股份"）；新建术语的标准名"可口可乐"是这个墓碑串里的一个
+    连续子串，longest_common_substring_score 按 重叠长度/min(len(a),len(b))
+    算出 1.0——不过滤的话这条墓碑行会作为"相似"提示出现，见 Fix 1 的
+    调查记录。"""
+    asyncio.run(
+        create_term(
+            terms_conn, tenant_id="t1", standard_name="可口可乐股份", aliases=[],
+            term_type="t",
+        )
+    )
+    asyncio.run(
+        update_term(
+            terms_conn, tenant_id="t1", standard_name="可口可乐股份",
+            new_standard_name="[已合并] t:可口可乐股份", aliases=[],
+            term_type="t", current_term_type="t",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "可口可乐", "aliases": [],
                 "term_type": "t", "extra_properties": {},
             },
             headers=_authed_headers(session_store),

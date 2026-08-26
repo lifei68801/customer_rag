@@ -3,6 +3,7 @@ import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
+import { useConfirm } from './ConfirmContext'
 import { Pager } from './Pager'
 import { Skeleton } from './Skeleton'
 
@@ -23,6 +24,7 @@ export function DuplicateTermSuggestionsTab() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const showToast = useToast()
+  const confirm = useConfirm()
   const [suggestions, setSuggestions] = useState<DuplicateSuggestion[]>([])
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -39,6 +41,7 @@ export function DuplicateTermSuggestionsTab() {
   const refresh = useCallback(async () => {
     if (!sessionToken) return
     const requestId = ++requestIdRef.current
+    setError(null)
     try {
       const response = await adminFetch(
         `/api/admin/duplicate-reviews?tenant_id=${encodeURIComponent(tenantId)}&page=${page}&page_size=${PAGE_SIZE}`,
@@ -70,8 +73,13 @@ export function DuplicateTermSuggestionsTab() {
     refresh()
   }, [refresh])
 
-  const handleApprove = async (reviewId: number, keepNodeKey: string) => {
+  const handleApprove = async (reviewId: number, keepNodeKey: string, mergeNodeKey: string) => {
     if (!sessionToken || processingId !== null) return
+    const confirmed = await confirm({
+      message: `${mergeNodeKey} 的标准名和别名将并入 ${keepNodeKey}，${mergeNodeKey} 将被标记为已合并，此操作不可撤销。`,
+      confirmLabel: '合并',
+    })
+    if (!confirmed) return
     setError(null)
     setProcessingId(reviewId)
     try {
@@ -150,7 +158,7 @@ export function DuplicateTermSuggestionsTab() {
                 <button
                   type="button"
                   disabled={processingId !== null}
-                  onClick={() => handleApprove(s.review_id, s.candidate_a_node_key)}
+                  onClick={() => handleApprove(s.review_id, s.candidate_a_node_key, s.candidate_b_node_key)}
                   className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1 text-sm ${focusRing} disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   合并（保留 {s.candidate_a_node_key}）
@@ -158,7 +166,7 @@ export function DuplicateTermSuggestionsTab() {
                 <button
                   type="button"
                   disabled={processingId !== null}
-                  onClick={() => handleApprove(s.review_id, s.candidate_b_node_key)}
+                  onClick={() => handleApprove(s.review_id, s.candidate_b_node_key, s.candidate_a_node_key)}
                   className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1 text-sm ${focusRing} disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   合并（保留 {s.candidate_b_node_key}）

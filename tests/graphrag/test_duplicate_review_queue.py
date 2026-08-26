@@ -301,6 +301,82 @@ async def test_approve_duplicate_suggestion_compensates_on_append_failure(conn):
     assert pending_after[0]["review_id"] == review_id
 
 
+async def test_approve_duplicate_suggestion_reraises_original_error_when_compensation_also_fails(
+    conn, caplog
+):
+    """Fix 3：补偿恢复（把被合并术语的 standard_name/aliases 改回合并前的
+    状态）本身也可能失败（比如并发写入已经把这个名字抢回去了）——这种情况
+    下不能让补偿失败的异常吞掉/替换调用方原本需要看到的错误：真正触发
+    这整条回滚路径的是"追加别名到保留术语"这一步的失败（append_exc），
+    调用方关心的是这个。补偿失败时改成记一条 ERROR 日志，带上 tenant_id、
+    被合并术语的 node_key、丢失的原始 standard_name/aliases，以及两个异常，
+    留下人工核对/手动恢复的线索，然后依然重新抛出原始异常。"""
+    from app.graphrag.ontology import Term
+    from app.graphrag.terms_store import TermNameConflictError
+
+    class _FailOnSecondAndThirdUpdateStore:
+        def __init__(self):
+            self.terms = {
+                "公司:Coca-Cola": Term(
+                    tenant_id="t1", node_key="公司:Coca-Cola", standard_name="Coca-Cola",
+                    aliases=["coke"], term_type="公司",
+                ),
+                "公司:可口可乐": Term(
+                    tenant_id="t1", node_key="公司:可口可乐", standard_name="可口可乐",
+                    aliases=["可乐公司"], term_type="公司",
+                ),
+            }
+            self.update_calls = []
+
+        async def list_terms(self, conn, tenant_id):
+            return list(self.terms.values())
+
+        async def update_term(self, conn, *, tenant_id, standard_name, new_standard_name,
+                               aliases, term_type, extra_properties=None, current_term_type=None):
+            self.update_calls.append({
+                "standard_name": standard_name, "new_standard_name": new_standard_name,
+                "aliases": aliases, "term_type": term_type,
+            })
+            if len(self.update_calls) == 2:
+                raise TermNameConflictError("simulated append conflict")
+            if len(self.update_calls) == 3:
+                raise RuntimeError("simulated concurrent write stole the name back")
+
+    fake_store = _FailOnSecondAndThirdUpdateStore()
+    await enqueue_duplicate_suggestion(
+        conn, tenant_id="t1", candidate_a_node_key="公司:Coca-Cola",
+        candidate_b_node_key="公司:可口可乐", similarity_score=0.8, reason="别名匹配",
+    )
+    pending = await list_pending_duplicate_suggestions(conn, tenant_id="t1")
+    review_id = pending[0]["review_id"]
+
+    with caplog.at_level("ERROR", logger="app.graphrag.duplicate_review_queue"):
+        with pytest.raises(TermNameConflictError, match="simulated append conflict"):
+            await approve_duplicate_suggestion(
+                conn, review_id=review_id, tenant_id="t1",
+                keep_node_key="公司:Coca-Cola", terms_module=fake_store,
+            )
+
+    # 三次调用：tombstone、失败的追加、失败的补偿恢复
+    assert len(fake_store.update_calls) == 3
+
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) == 1
+    message = error_records[0].getMessage()
+    # 丢失数据的排查线索必须都在这条日志里：租户、被合并术语的原始名字/
+    # 别名、两个异常各自的信息。
+    assert "t1" in message
+    assert "可口可乐" in message
+    assert "可乐公司" in message
+    assert "simulated append conflict" in message
+    assert "simulated concurrent write stole the name back" in message
+
+    # 待审核记录仍然是 pending——没有被误标记成 approved。
+    pending_after = await list_pending_duplicate_suggestions(conn, tenant_id="t1")
+    assert len(pending_after) == 1
+    assert pending_after[0]["review_id"] == review_id
+
+
 async def test_approve_unknown_review_id_raises(conn):
     with pytest.raises(DuplicateReviewNotFoundError):
         await approve_duplicate_suggestion(

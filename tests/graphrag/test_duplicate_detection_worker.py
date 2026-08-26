@@ -1,15 +1,17 @@
 import aiosqlite
 import pytest
 
+import app.graphrag.duplicate_detection_worker as duplicate_detection_worker_module
 from app.graphrag.duplicate_detection_worker import main
 from app.graphrag.duplicate_review_queue import (
+    approve_duplicate_suggestion,
     ensure_duplicate_review_schema,
     list_pending_duplicate_suggestions,
     reject_duplicate_suggestion,
 )
 from app.graphrag.ontology_categories import create_term_type
 from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
-from app.graphrag.terms_store import create_term, ensure_terms_schema
+from app.graphrag.terms_store import create_term, ensure_terms_schema, get_term, list_terms, update_term
 
 
 @pytest.fixture
@@ -99,3 +101,92 @@ async def test_main_does_not_compare_across_term_types(conn):
 
     # 跨类型重名是合法的（见 2026-08-22 那份计划），不应该被当成疑似重复
     assert processed == 0
+
+
+async def test_main_excludes_tombstoned_terms_from_candidates(conn):
+    """Fix 1：已经被合并（approve_duplicate_suggestion 打上"[已合并] "
+    墓碑标记）的行不该再被当作候选参与两两比对——墓碑串本身包含被合并前
+    的原始名字（node_key 通常带着原 standard_name），短名字很容易跟它
+    算出很高的相似度，一旦被再次建议并批准，墓碑串本身会被当垃圾数据
+    写进另一条术语的 aliases（见 Fix 1 的调查记录）。"""
+    await create_term(
+        conn, tenant_id="t1", standard_name="可口可乐", aliases=[],
+        term_type="公司", source="manual",
+    )
+    await create_term(
+        conn, tenant_id="t1", standard_name="可口可乐股份", aliases=[],
+        term_type="公司", source="manual",
+    )
+    # 把第二条术语按 approve_duplicate_suggestion 实际使用的墓碑格式打上
+    # 标记（走真实的 update_term，不是直接改数据库行，保证格式跟生产
+    # 代码一致）。
+    await update_term(
+        conn, tenant_id="t1", standard_name="可口可乐股份",
+        new_standard_name="[已合并] 公司:可口可乐股份", aliases=[],
+        term_type="公司", current_term_type="公司",
+    )
+
+    processed = await main(review_conn=conn, tenant_id="t1")
+
+    assert processed == 0
+    assert await list_pending_duplicate_suggestions(conn, tenant_id="t1") == []
+
+
+async def test_scan_tenant_skips_bucket_over_pairwise_scan_limit(conn, monkeypatch, caplog):
+    """Fix 4：单个 term_type 分组超过临时上限时，整组跳过不比对（不崩溃、
+    不静默假装比对过了），并留一条 WARNING 日志点名租户/类型/条数。"""
+    monkeypatch.setattr(
+        duplicate_detection_worker_module, "_MAX_BUCKET_SIZE_FOR_PAIRWISE_SCAN", 1
+    )
+    await create_term(
+        conn, tenant_id="t1", standard_name="Coca-Cola", aliases=["可口可乐"],
+        term_type="公司", source="manual",
+    )
+    await create_term(
+        conn, tenant_id="t1", standard_name="可口可乐股份", aliases=[],
+        term_type="公司", source="manual",
+    )
+
+    with caplog.at_level("WARNING", logger="app.graphrag.duplicate_detection_worker"):
+        processed = await main(review_conn=conn, tenant_id="t1")
+
+    assert processed == 0
+    assert await list_pending_duplicate_suggestions(conn, tenant_id="t1") == []
+    assert any(
+        "超过两两比对的临时上限" in record.message for record in caplog.records
+    )
+
+
+async def test_main_second_run_does_not_resuggest_approved_tombstoned_pair(conn):
+    """Fix 8（一部分）：approve 之后再跑一次 worker，不应该重新建议这一对
+    （既因为 has_any_duplicate_record 已经有 approved 记录，也因为墓碑行
+    被 Fix 1 的过滤挡在候选池外——双重保险，任何一个失效都能被这个用例
+    抓到）。"""
+    await create_term(
+        conn, tenant_id="t1", standard_name="Coca-Cola", aliases=["可口可乐"],
+        term_type="公司", source="manual",
+    )
+    await create_term(
+        conn, tenant_id="t1", standard_name="可口可乐股份", aliases=[],
+        term_type="公司", source="manual",
+    )
+
+    first_run_processed = await main(review_conn=conn, tenant_id="t1")
+    assert first_run_processed == 1
+    pending = await list_pending_duplicate_suggestions(conn, tenant_id="t1")
+    assert len(pending) == 1
+    await approve_duplicate_suggestion(
+        conn, review_id=pending[0]["review_id"], tenant_id="t1",
+        keep_node_key="公司:Coca-Cola",
+    )
+
+    second_run_processed = await main(review_conn=conn, tenant_id="t1")
+
+    assert second_run_processed == 0
+    assert await list_pending_duplicate_suggestions(conn, tenant_id="t1") == []
+    keeper = await get_term(conn, "t1", "Coca-Cola", "公司")
+    assert set(keeper.aliases) == {"可口可乐", "可口可乐股份"}
+    all_terms = await list_terms(conn, "t1")
+    merged_row = next(t for t in all_terms if t.node_key == "公司:可口可乐股份")
+    assert merged_row.standard_name.startswith("[已合并] ")
+    assert merged_row.aliases == []

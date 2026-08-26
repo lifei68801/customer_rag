@@ -10,6 +10,7 @@ import aiosqlite
 
 from app.api import deps
 from app.graphrag.duplicate_detection import find_similar_terms
+from app.graphrag.duplicate_review_queue import is_tombstoned
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
@@ -129,7 +130,13 @@ async def create_new_term(
     # 直接看到"这个新名字是不是已经有一个很像的术语了"——查询范围限定在
     # 同 term_type，避免不同类型之间凑巧撞名字的噪声提示。
     existing_terms = await list_terms(review_conn, tenant_id, source=None)
-    same_type_terms = [t for t in existing_terms if t.term_type == payload.term_type]
+    # 已经被合并过的墓碑行（duplicate_review_queue.approve_duplicate_suggestion
+    # 打上的标记）排除在外——它的 standard_name 字面包含被合并前的原名，不该
+    # 被当成"这个新名字看起来很像"的提示对象，见 is_tombstoned() 的说明。
+    same_type_terms = [
+        t for t in existing_terms
+        if t.term_type == payload.term_type and not is_tombstoned(t)
+    ]
     similar = find_similar_terms(payload.standard_name, same_type_terms)
     similar_terms_payload = [
         {"node_key": term.node_key, "standard_name": term.standard_name, "similarity_score": score}

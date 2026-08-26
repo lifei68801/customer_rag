@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 from collections import defaultdict
 
 import aiosqlite
@@ -11,18 +12,43 @@ from app.graphrag.duplicate_detection import find_duplicate_pairs
 from app.graphrag.duplicate_review_queue import (
     enqueue_duplicate_suggestion,
     has_any_duplicate_record,
+    is_tombstoned,
 )
 from app.graphrag.terms_store import list_terms
+
+logger = logging.getLogger(__name__)
+
+# 每个 term_type 分组允许两两比对的最大术语数——find_duplicate_pairs 是
+# O(n²) 的暴力两两比对，本仓库真实租户有 10 万+ 量级的术语（见
+# neo4j_client.py "MUJI 的 SKU 18万+ 行" 的说明），不加上限的话单个大分组
+# 会让一次扫描长时间不返回甚至耗尽内存。这只是一个止损性质的临时上限，
+# 不是真正的可扩展匹配方案——真正的方案需要索引/分批比对，超出这次修复
+# 的范围，这里只做到"超过上限就跳过整组并留日志"，不崩溃、不假装比对过了。
+_MAX_BUCKET_SIZE_FOR_PAIRWISE_SCAN = 2000
 
 
 async def _scan_tenant(conn: aiosqlite.Connection, tenant_id: str) -> int:
     terms = await list_terms(conn, tenant_id)
     by_term_type: dict[str, list] = defaultdict(list)
     for term in terms:
+        # 已经被合并过的墓碑行（approve_duplicate_suggestion 打上的标记）不该
+        # 再作为候选参与比对——它的 standard_name 字面包含被合并前的原名，
+        # 短名字很容易跟它算出很高的相似度，见 is_tombstoned() 的说明。
+        if is_tombstoned(term):
+            continue
         by_term_type[term.term_type].append(term)
 
     enqueued = 0
-    for term_type_terms in by_term_type.values():
+    for term_type, term_type_terms in by_term_type.items():
+        if len(term_type_terms) > _MAX_BUCKET_SIZE_FOR_PAIRWISE_SCAN:
+            logger.warning(
+                "租户 %r 的实体类型 %r 下有 %d 条术语，超过两两比对的临时上限 "
+                "%d，本轮跳过整个分组、不做重复检测（不是真正的可扩展匹配"
+                "方案，只是止损）",
+                tenant_id, term_type, len(term_type_terms),
+                _MAX_BUCKET_SIZE_FOR_PAIRWISE_SCAN,
+            )
+            continue
         for term_a, term_b, score in find_duplicate_pairs(term_type_terms):
             already_exists = await has_any_duplicate_record(
                 conn, tenant_id=tenant_id,
@@ -56,21 +82,36 @@ async def main(
 
     resolved_settings = settings or Settings()
     conn = review_conn
+    # 只有这次调用自己开的连接才由自己负责关闭——传入 review_conn 的调用方
+    # （测试、FastAPI 依赖注入）拥有那个连接的生命周期，不该被这里关掉。
+    # get_review_conn() 返回的是进程内缓存的单例连接，但这个函数的生产
+    # 入口只有 CLI（python -m app.graphrag.duplicate_detection_worker）自己
+    # 独占一个进程、跑完就退出，关闭它不会影响到别的调用方；aiosqlite 的
+    # 后台工作线程不是 daemon 线程，泄漏一个未关闭的连接会让 CLI 进程在
+    # 逻辑上跑完之后还挂在解释器退出阶段不返回（同
+    # tests/api/test_admin_duplicate_review_routes.py 的 review_conn fixture
+    # 里记录的那个症状），这是这个 worker 目前唯一的生产入口，必须关。
+    opened_conn_here = conn is None
     if conn is None:
         conn = await get_review_conn(resolved_settings)
 
-    if tenant_id is not None:
-        tenant_ids = [tenant_id]
-    else:
-        from app.graphrag.tenants_store import list_tenants
+    try:
+        if tenant_id is not None:
+            tenant_ids = [tenant_id]
+        else:
+            from app.graphrag.tenants_store import list_tenants
 
-        tenants = await list_tenants(conn, include_disabled=False)
-        tenant_ids = [t["tenant_id"] for t in tenants]
+            tenants = await list_tenants(conn, include_disabled=False)
+            tenant_ids = [t["tenant_id"] for t in tenants]
 
-    total = 0
-    for tid in tenant_ids:
-        total += await _scan_tenant(conn, tid)
-    return total
+        total = 0
+        for tid in tenant_ids:
+            total += await _scan_tenant(conn, tid)
+        print(f"本次扫描 {len(tenant_ids)} 个租户，新增 {total} 条疑似重复合并建议")
+        return total
+    finally:
+        if opened_conn_here:
+            await conn.close()
 
 
 def _parse_args() -> argparse.Namespace:
