@@ -232,6 +232,75 @@ async def test_approve_duplicate_suggestion_with_real_terms_store():
     await conn.close()
 
 
+async def test_approve_duplicate_suggestion_compensates_on_append_failure(conn):
+    """If the append step (step 2) fails after tombstone (step 1) succeeds,
+    the merged term must be restored to its original state before the exception
+    propagates, so the review stays pending and retry can work correctly."""
+    from app.graphrag.ontology import Term
+    from app.graphrag.terms_store import TermNameConflictError
+
+    class _FailOnSecondUpdateStore:
+        def __init__(self):
+            self.terms = {
+                "公司:Coca-Cola": Term(
+                    tenant_id="t1", node_key="公司:Coca-Cola", standard_name="Coca-Cola",
+                    aliases=["coke"], term_type="公司",
+                ),
+                "公司:可口可乐": Term(
+                    tenant_id="t1", node_key="公司:可口可乐", standard_name="可口可乐",
+                    aliases=["可乐公司"], term_type="公司",
+                ),
+            }
+            self.update_calls = []
+
+        async def list_terms(self, conn, tenant_id):
+            return list(self.terms.values())
+
+        async def update_term(self, conn, *, tenant_id, standard_name, new_standard_name,
+                               aliases, term_type, extra_properties=None, current_term_type=None):
+            self.update_calls.append({
+                "standard_name": standard_name, "new_standard_name": new_standard_name,
+                "aliases": aliases, "term_type": term_type,
+            })
+            # Raise on the second call (the append/step-2 call)
+            if len(self.update_calls) == 2:
+                raise TermNameConflictError("simulated name conflict on append")
+
+    fake_store = _FailOnSecondUpdateStore()
+    await enqueue_duplicate_suggestion(
+        conn, tenant_id="t1", candidate_a_node_key="公司:Coca-Cola",
+        candidate_b_node_key="公司:可口可乐", similarity_score=0.8, reason="别名匹配",
+    )
+    pending = await list_pending_duplicate_suggestions(conn, tenant_id="t1")
+    review_id = pending[0]["review_id"]
+
+    # Approve should raise due to fake failure on step 2
+    with pytest.raises(TermNameConflictError):
+        await approve_duplicate_suggestion(
+            conn, review_id=review_id, tenant_id="t1",
+            keep_node_key="公司:Coca-Cola", terms_module=fake_store,
+        )
+
+    # Verify 3 calls were made: tombstone, failed append, and compensating restore
+    assert len(fake_store.update_calls) == 3
+    # Call 0: tombstone
+    assert fake_store.update_calls[0]["standard_name"] == "可口可乐"
+    assert fake_store.update_calls[0]["new_standard_name"].startswith("[已合并] ")
+    assert fake_store.update_calls[0]["aliases"] == []
+    # Call 1: attempted append (raised)
+    assert fake_store.update_calls[1]["standard_name"] == "Coca-Cola"
+    assert fake_store.update_calls[1]["new_standard_name"] == "Coca-Cola"
+    # Call 2: compensating restore
+    assert fake_store.update_calls[2]["standard_name"] == f"[已合并] 公司:可口可乐"
+    assert fake_store.update_calls[2]["new_standard_name"] == "可口可乐"
+    assert fake_store.update_calls[2]["aliases"] == ["可乐公司"]
+
+    # Verify the review row is still pending (not marked approved)
+    pending_after = await list_pending_duplicate_suggestions(conn, tenant_id="t1")
+    assert len(pending_after) == 1
+    assert pending_after[0]["review_id"] == review_id
+
+
 async def test_approve_unknown_review_id_raises(conn):
     with pytest.raises(DuplicateReviewNotFoundError):
         await approve_duplicate_suggestion(

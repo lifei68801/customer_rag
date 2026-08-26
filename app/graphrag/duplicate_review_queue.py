@@ -182,20 +182,36 @@ async def approve_duplicate_suggestion(
     )
 
     # Step 2: Append the merged term's original standard_name and aliases onto
-    # the keeper using pre-tombstone values.
+    # the keeper using pre-tombstone values. Wrap in try/except to restore the
+    # merged term if this step fails — since each update_term() commits internally,
+    # we must compensate if step 2 raises after step 1 has already committed.
     merged_aliases = list(dict.fromkeys(
         [*keep_term.aliases, merged_original_standard_name, *merged_original_aliases]
     ))
-    await terms_module.update_term(
-        conn,
-        tenant_id=tenant_id,
-        standard_name=keep_term.standard_name,
-        new_standard_name=keep_term.standard_name,
-        aliases=merged_aliases,
-        term_type=keep_term.term_type,
-        extra_properties=keep_term.extra_properties,
-        current_term_type=keep_term.term_type,
-    )
+    try:
+        await terms_module.update_term(
+            conn,
+            tenant_id=tenant_id,
+            standard_name=keep_term.standard_name,
+            new_standard_name=keep_term.standard_name,
+            aliases=merged_aliases,
+            term_type=keep_term.term_type,
+            extra_properties=keep_term.extra_properties,
+            current_term_type=keep_term.term_type,
+        )
+    except Exception:
+        # Restore the merged term to its original state before re-raising.
+        await terms_module.update_term(
+            conn,
+            tenant_id=tenant_id,
+            standard_name=f"[已合并] {merged_term.node_key}",
+            new_standard_name=merged_original_standard_name,
+            aliases=merged_original_aliases,
+            term_type=merged_term.term_type,
+            extra_properties=merged_term.extra_properties,
+            current_term_type=merged_term.term_type,
+        )
+        raise
     await conn.execute(
         "UPDATE duplicate_review_queue SET status='approved', "
         "resolved_at=datetime('now'), resolved_note=? "
