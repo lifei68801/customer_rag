@@ -312,12 +312,12 @@ export function SchemaEtlPage() {
       <h1 className="text-xl font-bold text-ink">表格导入（租户：{tenantId}）</h1>
 
       {confirmed === false && (
-        <div className="rounded-card border border-subtle bg-accent-yellow px-3 py-2 text-sm text-on-accent shadow-soft-sm">
+        <div className="rounded-card border border-subtle bg-accent-secondary px-3 py-2 text-sm text-on-accent">
           该租户本体 schema 尚未确认，请先完成本体 schema 确认后再触发 ETL。
         </div>
       )}
 
-      <div className="flex flex-col gap-2 rounded-panel border border-subtle bg-card shadow-soft-sm">
+      <div className="flex flex-col gap-2 rounded-panel border border-subtle bg-card">
         <button
           type="button"
           onClick={() => setBuilderExpanded((prev) => !prev)}
@@ -348,7 +348,7 @@ export function SchemaEtlPage() {
         )}
       </div>
 
-      <div className="flex flex-col gap-2 rounded-panel border border-subtle bg-card shadow-soft-sm">
+      <div className="flex flex-col gap-2 rounded-panel border border-subtle bg-card">
         <button
           type="button"
           onClick={() => setUploadFormExpanded((prev) => !prev)}
@@ -388,9 +388,9 @@ export function SchemaEtlPage() {
                         key={file.filename}
                         type="button"
                         onClick={() => setSampleSelectedFilename(file.filename)}
-                        className={`rounded-control border border-subtle px-3 py-1.5 text-xs font-bold shadow-soft-sm ${
+                        className={`rounded-control border border-subtle px-3 py-1.5 text-xs font-bold ${
                           sampleSelectedFilename === file.filename
-                            ? 'bg-accent-pink text-on-accent'
+                            ? 'bg-accent-primary text-on-accent'
                             : 'bg-paper text-ink'
                         } ${focusRing}`}
                       >
@@ -410,7 +410,7 @@ export function SchemaEtlPage() {
                     type="button"
                     onClick={handleDownloadSample}
                     disabled={downloadingSample}
-                    className={`self-start rounded-control border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    className={`self-start rounded-control border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                   >
                     {downloadingSample ? '下载中…' : '下载全部（zip）'}
                   </button>
@@ -453,7 +453,7 @@ export function SchemaEtlPage() {
               <button
                 type="submit"
                 disabled={uploading || confirmed !== true}
-                className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-primary px-5 py-2.5 font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
               >
                 {uploading ? '提交中…' : '开始运行'}
               </button>
@@ -468,7 +468,7 @@ export function SchemaEtlPage() {
           <p className="text-ink-soft">还没有任何跑批记录。在上方上传数据文件开始第一次运行。</p>
         )}
         {runs.length > 0 && (
-          <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card shadow-soft-sm">
+          <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card">
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-subtle bg-paper text-ink">
@@ -502,10 +502,10 @@ export function SchemaEtlPage() {
       </div>
 
       {selectedRun && (
-        <div className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4 shadow-soft">
+        <div className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4">
           <h2 className="font-bold text-ink">跑批详情：{selectedRun.run_id}</h2>
           {selectedRun.status === 'failed' && (
-            <p role="alert" className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink shadow-soft-sm">
+            <p role="alert" className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
               失败：{selectedRun.error}
             </p>
           )}
@@ -517,7 +517,7 @@ export function SchemaEtlPage() {
                 {selectedRun.report.relations_written ?? 0} 条，跳过{' '}
                 {selectedRun.report.relations_skipped ?? 0} 条
               </p>
-              <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle shadow-soft-sm">
+              <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle">
                 <table className="w-full text-left text-sm">
                   <thead>
                     <tr className="border-b border-subtle bg-paper text-ink">
@@ -551,7 +551,7 @@ export function SchemaEtlPage() {
                   <h3 className="font-bold text-ink">
                     映射级跳过（共 {selectedRun.report.skipped_mappings.length} 条）
                   </h3>
-                  <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle shadow-soft-sm">
+                  <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle">
                     <table className="w-full text-left text-sm">
                       <thead>
                         <tr className="border-b border-subtle bg-paper text-ink">
@@ -579,7 +579,7 @@ export function SchemaEtlPage() {
                     跳过明细（预览前 {SKIPPED_ROWS_PREVIEW_LIMIT} 条，共{' '}
                     {selectedRun.report.skipped_rows.length} 条）
                   </h3>
-                  <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle shadow-soft-sm">
+                  <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle">
                     <table className="w-full text-left text-sm">
                       <thead>
                         <tr className="border-b border-subtle bg-paper text-ink">
