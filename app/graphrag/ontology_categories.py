@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import aiosqlite
 
+from app.db_migrations import add_column_if_missing
+
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS ontology_term_types (
     tenant_id                 TEXT NOT NULL,
@@ -216,15 +218,10 @@ async def _migrate_term_types_add_standard_name_value_type_if_needed(
     )
     if await cursor.fetchone() is None:
         return
-    cursor = await conn.execute("PRAGMA table_info(ontology_term_types)")
-    existing_columns = {row[1] for row in await cursor.fetchall()}
-    if "standard_name_value_type" in existing_columns:
-        return
-    await conn.execute(
-        "ALTER TABLE ontology_term_types "
-        "ADD COLUMN standard_name_value_type TEXT NOT NULL DEFAULT 'string'"
+    await add_column_if_missing(
+        conn, table="ontology_term_types", column="standard_name_value_type",
+        ddl="TEXT NOT NULL DEFAULT 'string'",
     )
-    await conn.commit()
 
 
 async def ensure_categories_schema(conn: aiosqlite.Connection) -> None:
