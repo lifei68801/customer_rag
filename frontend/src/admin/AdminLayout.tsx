@@ -11,7 +11,7 @@ const focusRing =
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-control border border-subtle px-3 py-2.5 text-sm font-bold transition ${focusRing} ${
-    isActive ? 'bg-accent-pink text-on-accent shadow-soft-sm' : 'bg-paper text-ink hover:bg-interactive-hover'
+    isActive ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
 export function AdminLayout() {
@@ -52,14 +52,14 @@ export function AdminLayout() {
               <DensitySwitcher />
               <Link
                 to="/"
-                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-2 text-center text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-2 text-center text-sm font-bold text-ink transition active:scale-95 active:opacity-90 ${focusRing}`}
               >
                 返回前台
               </Link>
               <button
                 type="button"
                 onClick={logout}
-                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-2 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-2 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 ${focusRing}`}
               >
                 登出
               </button>
