@@ -2,72 +2,122 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('/fonts/ibm-plex-mono-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('/fonts/ibm-plex-mono-500.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('/fonts/ibm-plex-mono-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  src: url('/fonts/ibm-plex-sans-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  src: url('/fonts/ibm-plex-sans-500.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* 下面这批 --color-* 变量必须写成空格分隔的 RGB 三元组（"20 17 17"），不能写 hex
    （"#141111"）——tailwind.config.ts 用 rgb(var(--x) / <alpha-value>) 消费它们才能支持
    bg-x/40 这类透明度修饰符，写成 hex 会让该颜色的所有 Tailwind class（不只是透明度修饰符）
    静默编译失败。--color-border-subtle / --shadow-color-1 / --shadow-color-2 是例外，它们
    各自带固定 alpha 通道，以完整 rgba(...) 值直接使用，不走这条转换路径，保持 rgba 写法不变。 */
 :root {
-  --color-paper: 255 250 239;
-  --color-ink: 20 17 17;
-  --color-ink-soft: 92 87 80;
-  --color-card: 255 255 255;
-  --color-interactive-hover: 255 255 255;
+  /* default 皮肤：信标的日间版本，浅蓝灰基座，青/铜信号色相不变但加深到
+     能在浅底上当前景色用（WCAG AA 校验见计划头部"Font self-hosting：
+     具体取值"一节——ink 14.45:1，ink-soft 6.47:1，accent-primary 前景色
+     6.25:1，accent-secondary 前景色 5.22:1，全部通过正文 4.5:1 门槛）。 */
+  --color-paper: 238 241 244;
+  --color-ink: 20 33 43;
+  --color-ink-soft: 70 88 106;
+  --color-card: 248 250 251;
+  --color-interactive-hover: 227 232 236;
+  --color-accent-primary: 11 96 121;
+  --color-accent-secondary: 138 90 18;
   --color-accent-pink: 254 125 168;
   --color-accent-yellow: 255 212 64;
   --color-accent-cyan: 39 204 243;
   --color-accent-green: 169 216 119;
   --color-accent-orange: 248 161 111;
-  --color-status-success: 169 216 119;
-  --color-status-error: 220 38 38;
-  --color-status-error-strong: 220 38 38;
-  --color-status-error-hover: 251 216 216;
-  --color-text-on-accent: 20 17 17;
-  --color-border-subtle: rgba(20, 17, 17, 0.12);
-  --shadow-color-1: rgba(20, 17, 17, 0.08);
-  --shadow-color-2: rgba(20, 17, 17, 0.14);
+  --color-status-success: 46 125 84;
+  --color-status-error: 178 58 46;
+  --color-status-error-strong: 178 58 46;
+  --color-status-error-hover: 244 224 220;
+  --color-text-on-accent: 255 255 255;
+  --color-border-subtle: rgba(20, 33, 43, 0.14);
+  --shadow-color-1: rgba(20, 33, 43, 0.08);
+  --shadow-color-2: rgba(20, 33, 43, 0.14);
 }
 
 :root[data-skin='dark'] {
-  --color-paper: 21 21 23;
-  --color-ink: 249 250 251;
-  --color-ink-soft: 207 211 214;
-  --color-card: 44 44 46;
-  --color-interactive-hover: 44 44 46;
+  /* dark 皮肤：信标本体——深蓝黑基座 + 青色主信号 + 铜色次信号。 */
+  --color-paper: 18 22 28;
+  --color-ink: 227 232 237;
+  --color-ink-soft: 137 150 163;
+  --color-card: 24 30 38;
+  --color-interactive-hover: 32 40 50;
+  --color-accent-primary: 71 184 214;
+  --color-accent-secondary: 242 169 60;
   --color-accent-pink: 255 122 184;
   --color-accent-yellow: 255 217 61;
   --color-accent-cyan: 56 217 240;
   --color-accent-green: 149 224 102;
   --color-accent-orange: 255 164 92;
-  --color-status-success: 149 224 102;
-  --color-status-error: 255 92 92;
-  --color-status-error-strong: 237 0 0;
-  --color-status-error-hover: 58 34 38;
-  --color-text-on-accent: 21 21 23;
-  --color-border-subtle: rgba(249, 250, 251, 0.14);
+  --color-status-success: 79 190 138;
+  --color-status-error: 226 88 74;
+  --color-status-error-strong: 196 58 43;
+  --color-status-error-hover: 58 30 26;
+  --color-text-on-accent: 12 16 21;
+  --color-border-subtle: rgba(227, 232, 237, 0.14);
   --shadow-color-1: rgba(0, 0, 0, 0.35);
   --shadow-color-2: rgba(0, 0, 0, 0.5);
 }
 
 :root[data-skin='business-blue'] {
-  --color-paper: 244 246 248;
-  --color-ink: 27 36 48;
-  --color-ink-soft: 90 107 123;
-  --color-card: 255 255 255;
-  --color-interactive-hover: 255 255 255;
+  /* business-blue 皮肤：信标语言内的靛蓝信号变体——底色跟 dark 皮肤完全
+     一致，只把主信号色从青偏移到靛蓝（WCAG 校验：text-on-accent 在这个
+     靛蓝填充块上 5.37:1，通过）。 */
+  --color-paper: 18 22 28;
+  --color-ink: 227 232 237;
+  --color-ink-soft: 137 150 163;
+  --color-card: 24 30 38;
+  --color-interactive-hover: 32 40 50;
+  --color-accent-primary: 91 127 214;
+  --color-accent-secondary: 242 169 60;
   --color-accent-pink: 122 137 182;
   --color-accent-yellow: 93 152 142;
   --color-accent-cyan: 82 146 178;
   --color-accent-green: 107 155 124;
   --color-accent-orange: 166 124 82;
-  --color-status-success: 107 155 124;
-  --color-status-error: 179 58 58;
-  --color-status-error-strong: 179 58 58;
-  --color-status-error-hover: 234 217 217;
-  --color-text-on-accent: 27 36 48;
-  --color-border-subtle: rgba(27, 36, 48, 0.12);
-  --shadow-color-1: rgba(27, 36, 48, 0.08);
-  --shadow-color-2: rgba(27, 36, 48, 0.14);
+  --color-status-success: 79 190 138;
+  --color-status-error: 226 88 74;
+  --color-status-error-strong: 196 58 43;
+  --color-status-error-hover: 58 30 26;
+  --color-text-on-accent: 12 16 21;
+  --color-border-subtle: rgba(227, 232, 237, 0.14);
+  --shadow-color-1: rgba(0, 0, 0, 0.35);
+  --shadow-color-2: rgba(0, 0, 0, 0.5);
 }
 
 body {
