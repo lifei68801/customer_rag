@@ -135,3 +135,8 @@ async def append_history(
 - `DELETE` 保持现有的软删除机制（`mark_deleted` 不变），这份设计只加强 `DELETE` 决策本身的 prompt 约束（`reason` 必须引用新事实具体内容）。
 - `old_text` 的查询必须发生在 `upsert_memory_item()`/`mark_deleted()` 执行之前。
 - 不做记忆过期/保留策略，不新增记忆溯源字段——这两条在讨论阶段已经明确排除，不属于这份设计的范围。
+
+## 已知缺口 / 后续跟进（实现阶段发现，记录在这里避免变成未文档化的意外）
+
+- **`resolve_memory_actions`→`apply_memory_actions` 不是只有 `run_memory_consolidation` 一条调用链路**——写这份设计和对应实现计划时误以为 `app/memory/consolidation.py::run_memory_consolidation` 是唯一调用点，实际上 `app/agent/graph.py::correction_check_node`（用户在当前会话里说"不对，应该是..."触发的即时更正节点，在真实请求路径上同步调用，不经过异步 consolidation 队列）也直接调用这对函数。这次新增的"精确文本去重预过滤"因此也会影响这条路径：如果用户重新陈述的更正内容跟已有记忆逐字相同，`resolve_memory_actions` 会直接短路判 `NONE`，`apply_memory_actions` 返回空的 `applied` 列表，`correction_check_node` 因此不会产出"好的，已经帮您更正为..."这句确认文案，请求会转而走正常问答流程。这不是这次改动引入的高风险行为——即使在这次改动之前，`_SYSTEM_PROMPT` 本来就把"NONE=重复或无价值"写给 LLM，一个按提示词行事的 LLM 面对逐字相同的文本大概率也会判 `NONE`，只是没有确定性保证；这次改动只是把这个本该如此的判断从"依赖 LLM 遵守提示词"变成"确定性保证"，多数情况下结果不变，只是跳过了一次多余的 LLM 调用。记录这个事实，是因为它是一次未经专门评审的、影响真实请求路径用户可见文案的行为变化，不应该只是两处调用点碰巧字符串写法一致带来的意外副作用。
+- **`conflict_type` 目前是只写不读的字段**——`memory_history.conflict_type` 被正确写入，但代码库里没有任何管理后台路由、CLI 或查询读取这一列。这份设计的动机是"更容易发现系统性误判"，在真正有一个消费方（哪怕只是一条 `SELECT event, conflict_type, COUNT(*) FROM memory_history GROUP BY ...` 的管理后台视图）之前，这个价值是潜在的，没有兑现。**后续跟进**：评估是否需要一个简单的审计视图/统计查询作为下一步。
