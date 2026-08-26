@@ -112,7 +112,7 @@ export function DuplicateTermSuggestionsTab() {
       {error && (
         <p
           role="alert"
-          className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink shadow-soft-sm"
+          className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink"
         >
           {error}
         </p>
@@ -124,7 +124,7 @@ export function DuplicateTermSuggestionsTab() {
           {suggestions.map((s) => (
             <li
               key={s.review_id}
-              className="flex flex-col gap-2 rounded-card border border-subtle bg-card p-4 shadow-soft-sm"
+              className="flex flex-col gap-2 rounded-card border border-subtle bg-card p-4"
             >
               <p className="text-sm text-ink">
                 <span className="font-bold">{s.candidate_a_node_key}</span>

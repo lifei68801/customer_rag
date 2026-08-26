@@ -177,7 +177,7 @@ export function TermsPage() {
           id="source-filter"
           value={sourceFilter}
           onChange={(event) => setSourceFilter(event.target.value as SourceFilter)}
-          className={`rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
+          className={`rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:outline-none ${focusRing}`}
         >
           <option value="all">全部</option>
           <option value="manual">手工</option>
@@ -190,7 +190,7 @@ export function TermsPage() {
       {error && (
         <p
           role="alert"
-          className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink shadow-soft-sm"
+          className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink"
         >
           {error}
         </p>
@@ -204,7 +204,7 @@ export function TermsPage() {
           return (
             <div
               key={key}
-              className={`flex flex-col gap-3 rounded-card border border-subtle bg-card shadow-soft-sm ${
+              className={`flex flex-col gap-3 rounded-card border border-subtle bg-card ${
                 density === 'compact' ? 'p-2.5' : 'p-4'
               }`}
             >
@@ -232,7 +232,7 @@ export function TermsPage() {
                       type="button"
                       onClick={() => handleStartEdit(term)}
                       disabled={editingKey !== null || deletingKey !== null}
-                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       编辑
                     </button>
@@ -240,7 +240,7 @@ export function TermsPage() {
                       type="button"
                       onClick={() => handleDelete(term)}
                       disabled={editingKey !== null || deletingKey !== null}
-                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       {deletingKey === key ? '删除中…' : '删除'}
                     </button>
@@ -259,7 +259,7 @@ export function TermsPage() {
                       }
                       placeholder="标准名"
                       aria-label={`标准名（${term.standard_name}）`}
-                      className={`min-w-[10rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none ${focusRing}`}
+                      className={`min-w-[10rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:outline-none ${focusRing}`}
                     />
                     <input
                       value={editDraft.aliases}
@@ -268,7 +268,7 @@ export function TermsPage() {
                       }
                       placeholder="别名（逗号分隔）"
                       aria-label={`别名（${term.standard_name}）`}
-                      className={`min-w-[10rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none ${focusRing}`}
+                      className={`min-w-[10rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:outline-none ${focusRing}`}
                     />
                     <select
                       value={editDraft.term_type}
@@ -276,7 +276,7 @@ export function TermsPage() {
                         setEditDraft((prev) => (prev ? { ...prev, term_type: event.target.value } : prev))
                       }
                       aria-label={`类型（${term.standard_name}）`}
-                      className={`min-w-[8rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
+                      className={`min-w-[8rem] flex-1 rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:outline-none ${focusRing}`}
                     >
                       <option value="">（无类型）</option>
                       {optionsLoaded && editDraft.term_type && !termTypeOptions.includes(editDraft.term_type) && (
@@ -294,7 +294,7 @@ export function TermsPage() {
                       type="button"
                       onClick={() => handleSaveEdit(term)}
                       disabled={!editDraft.standard_name.trim() || savingKey !== null}
-                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-4 py-2 font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       {savingKey === key ? '保存中…' : '保存'}
                     </button>
@@ -302,7 +302,7 @@ export function TermsPage() {
                       type="button"
                       onClick={handleCancelEdit}
                       disabled={savingKey !== null}
-                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                      className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                     >
                       取消
                     </button>
