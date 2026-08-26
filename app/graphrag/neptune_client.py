@@ -5,6 +5,8 @@ from typing import Any, Protocol
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.structured_filter_query import (
     AttributeConstraint,
+    ExpandSpec,
+    Hop,
     RelationConstraint,
     ResolvedAnchor,
     StructuredFilterQueryArgs,
@@ -99,7 +101,7 @@ def _resolve_cast(
     return _CAST_BY_VALUE_TYPE.get(category.standard_name_value_type)
 
 
-def _build_hop_match_pattern(hops: list, *, prefix: str) -> tuple[str, dict[str, object]]:
+def _build_hop_match_pattern(hops: list[Hop], *, prefix: str) -> tuple[str, dict[str, object]]:
     params: dict[str, object] = {}
     pattern = "MATCH (anchor)"
     for i, hop in enumerate(hops):
@@ -111,7 +113,12 @@ def _build_hop_match_pattern(hops: list, *, prefix: str) -> tuple[str, dict[str,
     return pattern, params
 
 
-def _build_expand_clause(expand) -> str:
+def _build_expand_clause(expand: ExpandSpec) -> str:
+    # relation_type 为 None（不限定关系类型）时 rel_pattern 必须是空字符串，不能拼出
+    # 一个空的 `:` 类型段——这段模式串是直接字符串插值拼出来的（openCypher 的关系
+    # 类型语法本身不能参数化）：relation_type 非空时它已经过 validate_structured_
+    # filter_query 的正则格式 + 已确认 relation_type 白名单双重校验，插值才是安全的；
+    # 为 None 时干脆不让 `:` 出现在查询文本里，不留任何可以被污染的位置。
     rel_pattern = f":{expand.relation_type}" if expand.relation_type else ""
     if expand.direction == "outgoing":
         arrow_in, arrow_out = "-", "->"
@@ -168,6 +175,31 @@ class NeptuneGraphClient:
         tenant_id: str,
         term_type_schema: dict[str, TermTypeCategory],
     ) -> dict[str, Any]:
+        """按已校验的结构化条件筛选 Term 节点并执行 openCypher 查询——调用方
+        （app/graphrag/structured_filter_query.py::run_structured_filter_query）
+        必须已经跑过 validate_structured_filter_query，本方法不重复校验
+        field/relation_type 是否在已确认 schema 里，只负责拼查询文本并通过
+        NeptuneClientProtocol 发出去。
+
+        field/target_field/relation_type 都是靠字符串插值直接拼进查询文本的，
+        不是参数化传入的——这不是疏漏，是刻意的：openCypher 对动态属性名/关系
+        类型的访问只能在运行时按名字解析，插值成静态查询文本之后 Neptune 的
+        查询规划器才能在规划阶段命中按 (tenant_id, type, field) 建的索引，
+        参数化写法会退化成不带索引的全量扫描。
+
+        插值之所以安全，完全依赖调用方已经替我们做完的两道校验（本方法自己
+        不再重复判断）：relation_type 过格式正则（^[A-Z][A-Z0-9_]{0,63}$）+
+        该租户已确认 relation_type 成员校验；field/target_field 要么是保留字
+        standard_name，要么是该 term_type 已确认 extra_fields 成员，同样经过
+        格式校验。任何一处把这条校验链绕过去、直接把未经确认的 LLM 输出拼进
+        这里，都会把这个方法变成一个可注入的入口——这条约束是这份代码唯一
+        安全的运行前提，不是可选的防御层。
+
+        resolved 由调用方解析 args.anchor 之后传入：resolved.node_key 有值
+        （NameAnchor 消歧命中了具体实体）时按 tenant_id + node_key 精确定位
+        单个锚点；node_key 为 None（TypeAnchor，按 term_type 扫描候选集合）
+        时按 tenant_id + type 定位这一整个 term_type 下的候选集合。
+        """
         params: dict[str, Any] = {"tenant_id": tenant_id}
         if resolved.node_key is not None:
             anchor_match = "MATCH (anchor:Term {tenant_id: $tenant_id, node_key: $anchor_node_key})"

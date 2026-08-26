@@ -1,3 +1,5 @@
+import pytest
+
 from app.config.settings import Settings
 from app.graphrag.factory import build_graph_client_from_settings, load_terms_from_settings
 
@@ -107,3 +109,20 @@ def test_build_graph_client_from_settings_neptune_does_not_call_driver_factory()
     )
 
     assert driver_factory_called is False
+
+
+def test_build_graph_client_from_settings_neptune_without_injected_factory_raises_not_implemented():
+    # 真实 AWS Neptune 连接尚未实现（见 factory.py::_default_neptune_client_factory
+    # 的说明）——这条测试钉住"没有注入 neptune_client_factory 时必须 fail-fast 抛
+    # NotImplementedError"这个行为，而不是默默产出一个看似能用、实际连不上 Neptune
+    # 的 client。这是本次改动能安全合并（在 Neptune 连通性尚未实测的前提下）的
+    # 论据之一，必须有测试钉住，不能只靠代码审查记住这一点。
+    settings = Settings(
+        **_base_kwargs(),
+        graph_backend="neptune",
+        neptune_endpoint="neptune.example.com",
+        neptune_port=8182,
+    )
+
+    with pytest.raises(NotImplementedError):
+        build_graph_client_from_settings(settings)

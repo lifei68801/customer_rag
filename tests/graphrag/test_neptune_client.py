@@ -93,6 +93,62 @@ async def test_execute_structured_filter_query_anchor_by_node_key():
     assert count_params["anchor_node_key"] == "产品:红茶拿铁"
 
 
+async def test_execute_structured_filter_query_builds_relation_exists_subquery():
+    from app.graphrag.structured_filter_query import Hop, RelationConstraint, StructuredFilterQueryArgs
+
+    client_stub = FakeNeptuneClient(call_results=[[{"total": 0}], []])
+    client = NeptuneGraphClient(client=client_stub)
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="SKU"),
+        constraints=[RelationConstraint(
+            hops=[Hop(relation_type="HAS_VARIANT", direction="outgoing", target_term_type="VariantValue")],
+            target_field="raw_value", target_operator="eq", target_value="红",
+        )],
+        expand=None, group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="SKU", node_key=None), tenant_id="muji",
+        term_type_schema={
+            "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
+            "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
+        },
+    )
+
+    count_query, count_params = client_stub.calls[0]
+    assert "EXISTS {" in count_query
+    assert "-[:HAS_VARIANT]->" in count_query
+    assert "c0_hop0.raw_value = $c0_target_value" in count_query
+    assert "c0_target_field" not in count_params
+    assert count_params["c0_target_value"] == "红"
+
+
+async def test_execute_structured_filter_query_relation_constraint_incoming_direction_reverses_arrow():
+    from app.graphrag.structured_filter_query import Hop, RelationConstraint, StructuredFilterQueryArgs
+
+    client_stub = FakeNeptuneClient(call_results=[[{"total": 0}], []])
+    client = NeptuneGraphClient(client=client_stub)
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="VariantValue"),
+        constraints=[RelationConstraint(
+            hops=[Hop(relation_type="HAS_VARIANT", direction="incoming", target_term_type="SKU")],
+            target_field="price", target_operator="gt", target_value=0,
+        )],
+        expand=None, group_by=None, limit=20,
+    )
+
+    await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="VariantValue", node_key=None), tenant_id="muji",
+        term_type_schema={
+            "VariantValue": TermTypeCategory(value="VariantValue", extra_fields=[]),
+            "SKU": TermTypeCategory(value="SKU", extra_fields=[]),
+        },
+    )
+
+    count_query, _ = client_stub.calls[0]
+    assert "<-[:HAS_VARIANT]-" in count_query
+
+
 async def test_ensure_tenant_scoped_schema_runs_backfill():
     client_stub = FakeNeptuneClient(rows=[])
     client = NeptuneGraphClient(client=client_stub)
