@@ -16,6 +16,7 @@ from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.table_extraction import TableExtractionFunction
 from app.ingestion.table_extraction_factory import build_table_extractor_from_settings
 from app.ingestion.tracking import ensure_tracking_schema
+from app.graphrag.duplicate_review_queue import ensure_duplicate_review_schema
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.review_queue import ensure_review_schema
 from app.graphrag.terms_store import ensure_terms_schema
@@ -326,6 +327,7 @@ async def get_review_conn(
                 conn = await aiosqlite.connect(str(db_path))
                 try:
                     await ensure_review_schema(conn)
+                    await ensure_duplicate_review_schema(conn)
                     await ensure_terms_schema(
                         conn, seed_yaml_path=Path(settings.terminology_path)
                     )
