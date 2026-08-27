@@ -30,12 +30,12 @@ export function ChatInput({ disabled, onSend }: ChatInputProps) {
         onChange={(event) => setValue(event.target.value)}
         placeholder="输入你的问题…"
         disabled={disabled}
-        className={`flex-1 rounded-control border border-subtle bg-paper px-4 py-2.5 text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none disabled:opacity-50 ${focusRing}`}
+        className={`flex-1 rounded-control border border-subtle bg-paper px-4 py-2.5 text-ink placeholder:text-ink-soft focus:outline-none disabled:opacity-50 ${focusRing}`}
       />
       <button
         type="submit"
         disabled={disabled || !value.trim()}
-        className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-5 py-2.5 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+        className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-5 py-2.5 font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
       >
         发送
       </button>

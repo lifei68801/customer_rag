@@ -33,8 +33,8 @@ function normalizeMath(text: string): string {
 // LLM 回复习惯性会带标准 markdown 语法（列表/加粗/表格/代码块），聊天气泡
 // 之前是纯文本渲染（<p>{text}</p>），用户看到的是没转换过的原始符号。
 // components 覆盖每个元素的样式而不是引入 @tailwindcss/typography，是为了
-// 跟这套圆角 + 柔和阴影的设计 token（rounded-*/border-subtle/accent-*/
-// shadow-soft）保持一致，而不是套一个通用 prose 主题。
+// 跟这套圆角 + 边框的设计 token（rounded-*/border-subtle/accent-*）
+// 保持一致，而不是套一个通用 prose 主题。
 const components: Components = {
   p: ({ children }) => <p className="whitespace-pre-wrap leading-relaxed">{children}</p>,
   strong: ({ children }) => <strong className="font-bold">{children}</strong>,
