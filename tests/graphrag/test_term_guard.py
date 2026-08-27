@@ -88,6 +88,27 @@ def test_describe_association_labels_direct_and_indirect_hops():
     assert describe_association(2) == "间接关联（经过 2 跳）"
 
 
+async def test_caps_injected_neighbors_per_term_and_notes_the_remainder():
+    # 2026-08-27 真实案例：某个术语在图谱里挂了 996 个一跳邻居（订单号），
+    # 不加上限原样注入直接淹没了 LLM 的上下文，在它开始推理前就把问题
+    # 带偏。这里钉住：单个术语最多展示 _MAX_NEIGHBORS_PER_TERM 条，
+    # 剩余数量以一句说明收尾，不逐条列出。
+    from app.graphrag.term_guard import _MAX_NEIGHBORS_PER_TERM
+
+    many_rows = [
+        {"related_name": f"订单{i}", "relation_type": "BELONG_TO", "hops": 1}
+        for i in range(_MAX_NEIGHBORS_PER_TERM + 5)
+    ]
+    graph_client = FakeGraphClient(subgraph_rows=many_rows)
+
+    context = await build_term_guard_context(
+        "我这边报了网关超时", terms=_TERMS, tenant_id="t1", graph_client=graph_client
+    )
+
+    assert context.count("关联: 订单") == _MAX_NEIGHBORS_PER_TERM
+    assert "还有 5 条关联未展示" in context
+
+
 _TWO_TERMS = [
     Term(
         tenant_id="t1", node_key="错误码E502",

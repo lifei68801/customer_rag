@@ -109,6 +109,36 @@ def test_match_terms_finds_fuzzy_variant_via_alias():
     assert [m.standard_name for m in matches] == ["服务器连接超时"]
 
 
+_MIXED_CASE_TERMS = [
+    Term(
+        tenant_id="t1", node_key="公司:Coca-Cola",
+        standard_name="Coca-Cola", aliases=[], term_type="公司",
+    ),
+    Term(
+        tenant_id="t1", node_key="产品:Cola",
+        standard_name="Cola", aliases=[], term_type="产品",
+    ),
+]
+
+
+def test_match_terms_is_case_insensitive_for_exact_match():
+    matches = match_terms("请问COCA-COLA公司的联系方式", _MIXED_CASE_TERMS)
+
+    assert "Coca-Cola" in [m.standard_name for m in matches]
+
+
+def test_match_terms_is_case_insensitive_for_fuzzy_match():
+    # 2026-08-27 真实案例：用户把"Coca-Cola"打成全小写的"coke-cola"（拼写
+    # 也有出入）。大小写不敏感之前，case-sensitive 比较下"Coca-Cola"
+    # （9字符，多处大小写不一致）相似度约 0.55，远低于 0.75 阈值完全
+    # 匹配不上；只有短候选"Cola"（词尾巧合只差大小写）勉强压线命中，
+    # 导致强制注入的是错误的实体（产品而不是公司）。忽略大小写后两者
+    # 都应该正确命中。
+    matches = match_terms("coke-cola公司有多少个订单", _MIXED_CASE_TERMS)
+
+    assert "Coca-Cola" in [m.standard_name for m in matches]
+
+
 def test_match_terms_respects_custom_fuzzy_threshold():
     # fuzzy_threshold 是可调的公开参数——用非默认值验证它真的生效。
     # 同一段文本在默认阈值0.75下命中（见

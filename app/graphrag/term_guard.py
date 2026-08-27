@@ -24,6 +24,9 @@ class GraphClientProtocol(Protocol):
     ) -> dict[str, Any]: ...
 
 
+_MAX_NEIGHBORS_PER_TERM = 20
+
+
 def describe_association(hops: int) -> str:
     """把 hops 转成人类可读的标签：1 跳是直接关联，其余（目前只有 2）
     是经过 N 跳推导出的间接关联。两个消费 query_subgraph 结果的地方
@@ -98,7 +101,13 @@ async def build_term_guard_context(
         lines.append(
             f"- {term.standard_name}（类型: {term.term_type}）"
         )
-        for row in subgraph:
+        # 2026-08-27 真实案例：一个术语在图谱里的一跳邻居可能有成百上千个
+        # （比如某个产品名下挂了上千个订单号），不加上限地原样全部塞进
+        # 上下文，会在 LLM 真正开始推理前就用体量巨大、跟当前问题未必
+        # 相关的事实把它的注意力淹没/带偏——这不是"多给点参考没坏处"，
+        # 是实测会让模型完全误判问题在问什么。跟 resolve_arguments 默认
+        # limit=20 一致的量级，超出部分只说明"还有多少条"，不逐条列出。
+        for row in subgraph[:_MAX_NEIGHBORS_PER_TERM]:
             # hops 字段区分直接事实（1 跳）和推导出的间接事实（2 跳，只有
             # REQUIRES/PRECEDES/PART_OF 这类链式关系才会出现），标注清楚
             # 避免 LLM 把两者当同等确定性的信息——见
@@ -108,4 +117,7 @@ async def build_term_guard_context(
             lines.append(
                 f"  {label}: {row['related_name']}（关系: {row['relation_type']}）"
             )
+        remaining = len(subgraph) - _MAX_NEIGHBORS_PER_TERM
+        if remaining > 0:
+            lines.append(f"  （还有 {remaining} 条关联未展示，数量过多已省略）")
     return "\n".join(lines)

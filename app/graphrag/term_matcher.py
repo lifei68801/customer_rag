@@ -14,9 +14,10 @@ def _has_fuzzy_match(text: str, candidate: str, *, threshold: float) -> bool:
     window = len(candidate)
     if window == 0 or len(text) < window:
         return False
+    candidate_lower = candidate.lower()
     for i in range(len(text) - window + 1):
         span = text[i : i + window]
-        ratio = difflib.SequenceMatcher(None, span, candidate).ratio()
+        ratio = difflib.SequenceMatcher(None, span.lower(), candidate_lower).ratio()
         if ratio >= threshold:
             return True
     return False
@@ -47,10 +48,11 @@ def match_terms(
     调整阈值前需要先确认不会反过来漏掉真实的模糊变体场景（如"服务器
     连接超时"打错1字后的相似度约 0.857）。
     """
+    text_lower = text.lower()
     matched: list[Term] = []
     for term in terms:
         candidates = [term.standard_name, *term.aliases]
-        if any(candidate and candidate in text for candidate in candidates):
+        if any(candidate and candidate.lower() in text_lower for candidate in candidates):
             matched.append(term)
             continue
         if any(
