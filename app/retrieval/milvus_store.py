@@ -10,15 +10,10 @@ from app.tenancy import validate_tenant_id as _validate_tenant_id
 # 字符集，防止过滤表达式注入（与 Neo4j 关系类型白名单同思路）。规则本身
 # 放在 app/tenancy.py，供 HTTP 入口层复用同一份定义——见那里的说明。
 
-
-class MilvusQueryIteratorProtocol(Protocol):
-    """pymilvus 的 QueryIterator：next() 按内部 batch_size 分批返回，取到
-    最后一批之后再调用一次 next() 会返回空列表——不是抛异常表示结束，调用方
-    必须用"空列表"判断终止，见 MilvusVectorStore._query_all 的用法。"""
-
-    def next(self) -> list[dict[str, Any]]: ...
-
-    def close(self) -> None: ...
+# Milvus 服务端对单次 query() 的硬性限制：(offset+limit) 必须落在
+# [1, 16384] 区间，超过直接报 MilvusException（不是静默截断），实测确认
+# 见 MilvusVectorStore._query_all 的说明。这不是我们自己定的业务上限。
+_MAX_QUERY_WINDOW = 16384
 
 
 class MilvusClientProtocol(Protocol):
@@ -40,15 +35,6 @@ class MilvusClientProtocol(Protocol):
         filter: str,
         **kwargs: Any,
     ) -> list[dict[str, Any]]: ...
-
-    def query_iterator(
-        self,
-        *,
-        collection_name: str,
-        filter: str,
-        output_fields: list[str] | None = None,
-        **kwargs: Any,
-    ) -> MilvusQueryIteratorProtocol: ...
 
     def delete(
         self,
@@ -141,31 +127,37 @@ class MilvusVectorStore:
         )
 
     async def _query_all(self, *, filter: str) -> list[dict[str, Any]]:
-        """按 filter 分页拉取全部匹配行，不受 Milvus 单次 query() 的 limit
-        上限约束（该上限通常在 16384 左右，且 list_all()/list_by_source()
-        都需要"不管有多少条、全部拿到"的语义——固定写一个更大的数字只是
-        把截断的边界往后挪，语料/单文档 chunk 数迟早会超过任何写死的数字，
-        到时候会静默丢数据，没有任何报错信号）。用 MilvusClient.query_iterator
-        分批拉取直到某一批为空为止——这是 pymilvus 官方为"导出/全量遍历"
-        场景提供的 API，内部自己处理分页，不是我们自己发明的分页逻辑。
+        """按 filter 拉取全部匹配行，limit 用 _MAX_QUERY_WINDOW（16384）——
+        这不是我们挑的数字，是 Milvus 服务端对单次 query() 的硬性
+        "max query result window" 限制（超过会直接报错，不是静默截断，
+        实测确认见下）。
+
+        2026-08-27 的第一版实现改用过 MilvusClient.query_iterator（pymilvus
+        官方的分页导出 API，理论上没有条数上限），但线上实测直接把服务
+        打挂：query_iterator 内部翻页时会把上一批最后一条记录的主键值
+        拼进游标过滤表达式（形如 `id > "<上一条id>"`），但没有对这个值
+        做转义——这个项目的 id 是 `{文件路径}#{chunk序号}` 格式，Windows
+        环境上传的路径必然含反斜杠，一旦某一批最后一条记录的 id 里有
+        反斜杠，下一次翻页请求的过滤表达式直接解析失败，抛
+        MilvusException 一路冒泡到 FastAPI 层变成 500（比这次要修的
+        "10000 条硬截断"更糟——从"数据不全"变成"服务不可用"）。反斜杠/
+        双引号转义是这个文件其它方法（delete_by_source/list_by_source
+        自己构造 filter 时）一直有意识在做的事，但 query_iterator 走的是
+        pymilvus 内部逻辑，我们没有入口去补这个转义。
+
+        16384 这个上限意味着：collection 总量或单文档 chunk 数一旦超过
+        它，这里仍然会截断——但至少不会崩溃，且这个数字有 Milvus 官方
+        文档依据，不是凭感觉写的占位符。真正做到"不管多大都不截断"需要
+        自己实现一套基于排序字段的安全游标分页（且要求 Milvus query 支持
+        显式排序），这是一块本次没有覆盖到的已知缺口，留给之后专门评估。
         """
-
-        def _run() -> list[dict[str, Any]]:
-            iterator = self._client.query_iterator(
-                collection_name=self._collection_name, filter=filter,
-            )
-            rows: list[dict[str, Any]] = []
-            try:
-                while True:
-                    batch = iterator.next()
-                    if not batch:
-                        break
-                    rows.extend(batch)
-            finally:
-                iterator.close()
-            return rows
-
-        return await asyncio.to_thread(_run)
+        rows = await asyncio.to_thread(
+            self._client.query,
+            collection_name=self._collection_name,
+            filter=filter,
+            limit=_MAX_QUERY_WINDOW,
+        )
+        return rows
 
     @staticmethod
     def _rows_to_records(rows: list[dict[str, Any]]) -> list[VectorRecord]:
