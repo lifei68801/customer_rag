@@ -26,7 +26,13 @@ _USAGE_GUIDE = (
     "（target_field=standard_name，target_value 直接填 xx 的口语化/别名名称，"
     "会自动模糊解析成标准名，不需要先把 xx 解析成具体实体再回填）——这是解决这类问题"
     "最直接的写法。只有当查询意图本身是在问「xx是什么/xx关联着什么」这类需要先明确xx"
-    "具体所指的问题（而不是要数yy的数量）时，才用 anchor.name。"
+    "具体所指的问题（而不是要数yy的数量）时，才用 anchor.name。\n"
+    "如果 yy 和 xx 之间在候选参考的「可能相关的关系」里找不到直接的一跳关系，"
+    "先检查候选参考里有没有「可能相关的多跳路径」——如果有，说明 yy 和 xx 之间"
+    "隔着一个中间实体类型，必须把那条路径的每一跳（含各自的 relation_type/"
+    "direction/target_term_type）原样抄进 constraints.hops，不能只抄第一跳就"
+    "省略中间类型直接把 target_field/target_value 接到 yy 自己身上——那样等于"
+    "没有对 xx 做任何过滤，返回的会是 yy 这个类型下的全部数量，不是 xx 名下的数量。"
 )
 
 _PARAMETERS_SCHEMA: dict[str, Any] = {
@@ -165,7 +171,7 @@ def _strip_json_code_fence(text: str) -> str:
     return stripped
 
 
-def _build_prompt(query_intent: str, candidates) -> str:
+def _build_prompt(query_intent: str, original_question: str, candidates) -> str:
     schema_text = json.dumps(_PARAMETERS_SCHEMA, ensure_ascii=False, indent=2)
     return (
         "你是一个把自然语言查询意图转成结构化查询参数的助手。给定下面的查询意图、"
@@ -178,7 +184,13 @@ def _build_prompt(query_intent: str, candidates) -> str:
         "field/target_field，以及 anchor.term_type，都应该优先使用下面候选参考里"
         "出现过的名字，不要凭空发明没见过的名字。\n\n"
         f"候选参考：\n{format_recall_candidates(candidates)}\n\n"
-        f"查询意图：{query_intent}"
+        f"查询意图（由上一步的助手改写整理）：{query_intent}\n\n"
+        f"用户原始问题（未经改写，逐字原文）：{original_question}\n\n"
+        "上一步的改写可能会丢失用户原话里「多少个/数量/一共有多少/有几个」这类"
+        "计数意图——判断是否要用 anchor.term_type + constraints 模式（计数场景）"
+        "时，必须同时参考用户原始问题；只要原始问题里出现了计数措辞，即使查询"
+        "意图这句话里没有，也要按计数场景处理，不能因为改写丢词就退化成 "
+        "anchor.name 模式。"
     )
 
 
@@ -188,10 +200,11 @@ class StructuredFilterQueryTool:
     ) -> dict[str, Any]:
         query_intent = str(raw_arguments.get("query_intent") or "").strip() or context.question
         candidates = recall_ontology_candidates(
-            query_intent, terms=context.terms, term_type_schema=context.term_type_schema,
+            f"{query_intent}\n{context.question}", terms=context.terms,
+            term_type_schema=context.term_type_schema,
             allowed_combinations=context.allowed_combinations,
         )
-        prompt = _build_prompt(query_intent, candidates)
+        prompt = _build_prompt(query_intent, context.question, candidates)
         try:
             result = await context.llm_registry.run(
                 ProviderCapability.LLM,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 
 from app.graphrag.ontology import Term
@@ -20,6 +21,11 @@ _TERM_TYPE_TOP_K = 10
 _RELATION_TOP_K = 10
 _FIELD_TOP_K = 10
 _ENTITY_TOP_K = 20
+_PATH_TOP_K = 10
+# constraints.hops 的 schema 本身限定"最多2跳"（见
+# app/agent/tools/structured_filter_query/tool.py 的 _PARAMETERS_SCHEMA），
+# 路径搜索的跳数上限跟工具能表达的上限对齐——搜出工具用不了的3跳路径没有
+# 意义。
 
 
 def _tokenize_ngrams(text: str, *, max_len: int = _NGRAM_MAX_LEN) -> list[str]:
@@ -133,10 +139,102 @@ def _rank(scored: list[tuple[float, object]], *, top_k: int) -> list[object]:
 
 
 @dataclass(frozen=True)
+class RecallPathHop:
+    relation_type: str
+    direction: str  # "outgoing" | "incoming"，跟 structured_filter_query_tool
+    # 的 constraints.hops[].direction 用同一套取值，方便深层参数生成 LLM 直接
+    # 照抄这个字段值，不用自己再判断方向。
+    target_term_type: str
+
+
+@dataclass(frozen=True)
+class RecallPath:
+    """从 source_term_type 出发、经过 hops 里每一跳，最终到达 hops 最后一个
+    元素的 target_term_type 的一条完整可达路径——单跳关系已经由
+    RecallCandidates.relations 覆盖，这里只收 2 跳（及以上，若未来放开
+    _PATH_TOP_K 对应的跳数上限）的路径，因为那才是深层参数生成 LLM 自己
+    推理最容易漏掉的部分（见 2026-08-27 对"公司有多少个订单"这类跨中间
+    实体查询的排查记录）。"""
+    source_term_type: str
+    hops: tuple[RecallPathHop, ...]
+
+
+def _build_adjacency(
+    allowed_combinations: list[AllowedCombination],
+) -> dict[str, list[RecallPathHop]]:
+    """把 allowed_combinations 铺成的关系三元组，展开成一张按 term_type
+    索引、双向都能走的邻接表——一条 "订单号 --BELONG_TO--> 产品" 的确认
+    组合，既要能从"订单号"正向走到"产品"（direction=outgoing），也要能
+    支持将来某条路径需要从"产品"反向走回"订单号"（direction=incoming）
+    的场景，跟 structured_filter_query_tool 的 constraints.hops 本身允许
+    两个方向是同一个道理。"""
+    adjacency: dict[str, list[RecallPathHop]] = defaultdict(list)
+    for combo in allowed_combinations:
+        adjacency[combo.subject_term_type].append(
+            RecallPathHop(
+                relation_type=combo.relation_type,
+                direction="outgoing",
+                target_term_type=combo.object_term_type,
+            )
+        )
+        adjacency[combo.object_term_type].append(
+            RecallPathHop(
+                relation_type=combo.relation_type,
+                direction="incoming",
+                target_term_type=combo.subject_term_type,
+            )
+        )
+    return adjacency
+
+
+def _find_multi_hop_paths(
+    *,
+    source_term_types: list[str],
+    target_term_types: set[str],
+    allowed_combinations: list[AllowedCombination],
+    max_hops: int = 2,
+) -> list[RecallPath]:
+    """从每个候选 source_term_type 出发，在 allowed_combinations 构成的
+    关系图上做有界 BFS，找出能到达任一 target_term_type、长度在
+    [2, max_hops] 跳之间的路径——只找多跳路径，1 跳的直接关系已经由
+    RecallCandidates.relations 单独覆盖，不在这里重复。
+
+    source/target 都来自同一批"看起来跟这次查询相关"的候选 term_type
+    （见 recall_ontology_candidates 的调用处），不是全量本体节点，规模
+    小（通常个位数到十位数），双重循环 BFS 不构成性能问题。
+    """
+    adjacency = _build_adjacency(allowed_combinations)
+    paths: list[RecallPath] = []
+    seen: set[tuple[str, tuple[RecallPathHop, ...]]] = set()
+
+    for source in source_term_types:
+        frontier: list[tuple[str, tuple[RecallPathHop, ...]]] = [(source, ())]
+        for _ in range(max_hops):
+            next_frontier: list[tuple[str, tuple[RecallPathHop, ...]]] = []
+            for current_type, hops_so_far in frontier:
+                for hop in adjacency.get(current_type, ()):
+                    new_hops = hops_so_far + (hop,)
+                    if (
+                        len(new_hops) >= 2
+                        and hop.target_term_type in target_term_types
+                        and hop.target_term_type != source
+                    ):
+                        key = (source, new_hops)
+                        if key not in seen:
+                            seen.add(key)
+                            paths.append(RecallPath(source_term_type=source, hops=new_hops))
+                    next_frontier.append((hop.target_term_type, new_hops))
+            frontier = next_frontier
+
+    return paths[:_PATH_TOP_K]
+
+
+@dataclass(frozen=True)
 class RecallCandidates:
     term_types: list[str]
     relations: list[AllowedCombination]
     fields: list[tuple[str, str]]  # (term_type, field_name)
+    paths: list[RecallPath]
     entities: list[Term]
 
 
@@ -190,7 +288,23 @@ def recall_ontology_candidates(
         top_k=_ENTITY_TOP_K,
     )
 
-    return RecallCandidates(term_types=term_types, relations=relations, fields=fields, entities=entities)
+    # 多跳路径搜索的起点/终点都取自"已经独立判定为跟这次查询相关"的候选
+    # term_type——source 是候选 term_type 本身；target 在此基础上并上候选
+    # 实体各自的 term_type（比如查询里直接点了"Coca-Cola"这个实体名，但
+    # "公司"这个 term_type 本身没有单独获得足够高的字面相似度分数时，仍然
+    # 能通过它命中的实体反推出目标类型）。source 和 target 用同一个候选
+    # term_type 集合互相查找路径——不要求提前区分"谁是起点谁是终点"，
+    # BFS 本身会两边都试。
+    target_term_types = set(term_types) | {term.term_type for term in entities}
+    paths = _find_multi_hop_paths(
+        source_term_types=term_types,
+        target_term_types=target_term_types,
+        allowed_combinations=allowed_combinations,
+    )
+
+    return RecallCandidates(
+        term_types=term_types, relations=relations, fields=fields, paths=paths, entities=entities,
+    )
 
 
 def format_recall_candidates(candidates: RecallCandidates) -> str:
@@ -202,6 +316,25 @@ def format_recall_candidates(candidates: RecallCandidates) -> str:
         lines.append("可能相关的关系（方向：subject --relation_type--> object）：")
         for combo in candidates.relations:
             lines.append(f"  - {combo.subject_term_type} --{combo.relation_type}--> {combo.object_term_type}")
+    if candidates.paths:
+        # 起点和目标类型之间没有直接关系、要跨一个中间实体类型才能连起来的
+        # 查询（比如"公司有多少个订单"要经过"产品"这个中间类型），最容易
+        # 让深层参数生成 LLM 自己漏掉中间那一跳——这里把完整路径拼好递过去，
+        # 不要求它自己从上面摊平的单跳关系列表里推理拼接。箭头方向跟
+        # constraints.hops[].direction 的取值对应：--relation_type--> 是
+        # outgoing，<--relation_type-- 是 incoming，可以直接照抄。
+        lines.append("可能相关的多跳路径（起点和目标类型之间要跨中间类型才能连上）：")
+        for path in candidates.paths:
+            segments = [path.source_term_type]
+            for hop in path.hops:
+                arrow = (
+                    f"--{hop.relation_type}-->"
+                    if hop.direction == "outgoing"
+                    else f"<--{hop.relation_type}--"
+                )
+                segments.append(arrow)
+                segments.append(hop.target_term_type)
+            lines.append("  - " + " ".join(segments))
     if candidates.fields:
         lines.append("可能相关的字段：")
         for term_type, field_name in candidates.fields:

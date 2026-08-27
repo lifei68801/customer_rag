@@ -2,6 +2,8 @@ from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import ExtraFieldSpec, TermTypeCategory
 from app.graphrag.ontology_constraints import AllowedCombination
 from app.graphrag.ontology_recall import (
+    RecallPath,
+    RecallPathHop,
     format_recall_candidates,
     longest_common_substring_score,
     recall_ontology_candidates,
@@ -144,7 +146,9 @@ def test_format_recall_candidates_includes_relation_direction():
 def test_format_recall_candidates_empty_returns_placeholder_text():
     from app.graphrag.ontology_recall import RecallCandidates
 
-    text = format_recall_candidates(RecallCandidates(term_types=[], relations=[], fields=[], entities=[]))
+    text = format_recall_candidates(
+        RecallCandidates(term_types=[], relations=[], fields=[], paths=[], entities=[])
+    )
     assert text
     assert "候选" in text or "谨慎" in text
 
@@ -162,6 +166,75 @@ def test_recall_ontology_candidates_recalls_long_verbatim_entity_name():
     )
 
     assert long_name_term in candidates.entities
+
+
+def test_recall_ontology_candidates_finds_two_hop_path_across_intermediate_type():
+    # "coke-cola公司有多少个订单"这类问题里，"订单号"和"公司"之间没有直接
+    # 关系，必须经过"产品"这个中间类型才能连起来——回归 2026-08-27 排查
+    # 到的真实案例：深层参数生成 LLM 没能自己推理出这条两跳链路，导致
+    # anchor.term_type="订单号" 却没带任何公司过滤，把全部订单数当成了
+    # 答案。这里钉住"召回结果必须包含这条完整路径"这个前提条件。
+    candidates = recall_ontology_candidates(
+        "coke-cola公司有多少个订单",
+        terms=[_COCA_COLA_TERM],
+        term_type_schema=_TERM_TYPE_SCHEMA,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
+    )
+
+    assert RecallPath(
+        source_term_type="订单号",
+        hops=(
+            RecallPathHop(relation_type="BELONG_TO", direction="outgoing", target_term_type="产品"),
+            RecallPathHop(relation_type="BELONG_TO", direction="outgoing", target_term_type="公司"),
+        ),
+    ) in candidates.paths
+
+
+def test_recall_ontology_candidates_finds_reverse_direction_path():
+    # 反过来从"公司"出发找"订单号"，两跳都要沿关系反方向走
+    # （incoming）——BFS 必须双向都能走，不能只支持 subject->object 这一个
+    # 方向。
+    candidates = recall_ontology_candidates(
+        "公司名下的订单号",
+        terms=[],
+        term_type_schema=_TERM_TYPE_SCHEMA,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
+    )
+
+    assert RecallPath(
+        source_term_type="公司",
+        hops=(
+            RecallPathHop(relation_type="BELONG_TO", direction="incoming", target_term_type="产品"),
+            RecallPathHop(relation_type="BELONG_TO", direction="incoming", target_term_type="订单号"),
+        ),
+    ) in candidates.paths
+
+
+def test_recall_ontology_candidates_paths_exclude_single_hop_reachable_targets():
+    # "产品"从"订单号"出发只需要 1 跳就能到，1 跳关系已经由 candidates.relations
+    # 单独覆盖（见 test_recall_ontology_candidates_relation_matches_on_any_component）
+    # ——不应该在 paths 里重复出现一条同样只有 1 跳的"路径"。
+    candidates = recall_ontology_candidates(
+        "订单号属于哪个产品",
+        terms=[],
+        term_type_schema=_TERM_TYPE_SCHEMA,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
+    )
+
+    assert all(len(path.hops) >= 2 for path in candidates.paths)
+
+
+def test_format_recall_candidates_renders_multi_hop_path_with_arrows():
+    candidates = recall_ontology_candidates(
+        "coke-cola公司有多少个订单",
+        terms=[_COCA_COLA_TERM],
+        term_type_schema=_TERM_TYPE_SCHEMA,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
+    )
+
+    text = format_recall_candidates(candidates)
+
+    assert "订单号 --BELONG_TO--> 产品 --BELONG_TO--> 公司" in text
 
 
 def test_recall_ontology_candidates_handles_large_entity_pool_quickly():

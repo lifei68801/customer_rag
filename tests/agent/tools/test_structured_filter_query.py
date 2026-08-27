@@ -27,9 +27,9 @@ def _manifest_path() -> Path:
 
 def _base_context(*, terms=None, term_type_schema=None, graph_client=None,
                    confirmed_relation_types=None, allowed_combinations=None,
-                   llm_registry=None) -> ToolContext:
+                   llm_registry=None, question="") -> ToolContext:
     return ToolContext(
-        tenant_id="t1", question="",
+        tenant_id="t1", question=question,
         embedding_registry=None, embedding_provider_name="",
         vector_store=None, bm25_index=None,
         llm_registry=llm_registry, llm_provider_name="fake-llm",
@@ -89,6 +89,29 @@ async def test_resolve_arguments_triggers_recall_augmented_call():
     # 再次存在，用断言长期把关，不依赖人工每次检查。
     prompt_content = provider.requests[0].messages[0]["content"]
     assert "constraints.kind=relation" in prompt_content
+
+
+async def test_resolve_arguments_includes_original_question_alongside_planner_intent():
+    # 2026-08-27 真实案例回归：Planner（第一层 LLM，生成 tool_calls 参数）
+    # 会把用户"coke-cola公司有多少个订单"这类问题改写成 query_intent="查询
+    # Coca-Cola 这个产品的信息"，把计数意图丢掉——两次分别在 query_intent 的
+    # schema 描述、trigger_cue 里加"必须保留计数措辞"的指令都没能让 Planner
+    # 稳定照做（见 debug_trace.log 现场记录）。与其赌 Planner 的措辞，深层
+    # 参数生成 prompt 必须始终原样带上 context.question（用户原始问题，
+    # Planner 改写前的原文），让这一层 LLM 有机会从原文里自己发现计数意图，
+    # 不完全依赖 query_intent 这个转述是否忠实。
+    llm_registry = ProviderRegistry()
+    provider = ScriptedLLMProvider([ProviderResult(text='{"anchor": {"term_type": "订单号"}}')])
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+    context = _base_context(llm_registry=llm_registry, question="coke-cola公司有多少个订单")
+
+    await TOOL.resolve_arguments(
+        {"query_intent": "查询 Coca-Cola 这个产品的信息"}, context=context,
+    )
+
+    prompt_content = provider.requests[0].messages[0]["content"]
+    assert "coke-cola公司有多少个订单" in prompt_content
+    assert "用户原始问题" in prompt_content
 
 
 async def test_execute_delegates_to_run_structured_filter_query():
