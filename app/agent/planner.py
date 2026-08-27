@@ -15,6 +15,18 @@ from app.voice.streaming_responder import stream_sentences
 
 logger = logging.getLogger(__name__)
 
+# 2026-08-27 真实案例：_run_final_answer_attempt(_streaming) 不传 tools
+# 参数以为这样模型就"结构上不可能再请求工具调用"——实测这个假设对
+# DeepSeek 不成立：轮次耗尽前的对话历史里已经出现过真实的工具调用，
+# 模型即使这次没被声明 tools，仍然会把工具调用格式当纯文本续写出来
+# （DeepSeek 函数调用协议的专用特殊 token，形如
+# `<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="...">...`），
+# 直接以纯文本形式出现在 result.text / 流式增量里，绕过了"不传 tools
+# 就安全"这个前提，原样泄露给用户。这里按内容特征检测这个标记，命中就
+# 当成这次总结失败处理——跟当前处理"空文本"的方式一致，不是新增一条
+# 单独的失败路径。
+_MALFORMED_TOOL_CALL_MARKER = "｜｜DSML｜｜"
+
 _FINAL_ANSWER_INSTRUCTION = (
     "你已经达到本轮对话可用的工具调用次数上限，不能再调用任何工具了。"
     "请基于你目前已经查询到的全部信息，尽力给用户一个有帮助的回答：如果已经有"
@@ -97,6 +109,12 @@ async def _run_final_answer_attempt(
         return {"planner_gave_up": True}
     if not result.text:
         logger.warning("_run_final_answer_attempt: 最后陈述调用返回空文本")
+        return {"planner_gave_up": True}
+    if _MALFORMED_TOOL_CALL_MARKER in result.text:
+        logger.warning(
+            "_run_final_answer_attempt: 最后陈述调用输出了工具调用格式的特殊 "
+            "token 而不是纯文本总结，视为失败"
+        )
         return {"planner_gave_up": True}
     messages = [*messages, {"role": "assistant", "content": result.text}]
     return {
@@ -204,7 +222,19 @@ async def _run_final_answer_attempt_streaming(
         text_stream = _split_stream_text_and_tool_calls(raw_stream, tool_calls_box, raw_text_parts)
 
         any_sentence_substituted = False
+        malformed_tool_call_detected = False
         async for sentence in stream_sentences(text_stream):
+            if _MALFORMED_TOOL_CALL_MARKER in sentence:
+                logger.warning(
+                    "_run_final_answer_attempt_streaming: 最后陈述流式调用输出了"
+                    "工具调用格式的特殊 token 而不是纯文本总结，视为失败"
+                )
+                safe_sentence = LITE_SAFETY_FALLBACK_SENTENCE
+                any_sentence_substituted = True
+                malformed_tool_call_detected = True
+                await on_answer_chunk(safe_sentence)
+                sent_sentences.append(safe_sentence)
+                break
             safety_result = check_text(sentence, banned_terms=banned_terms, include_email=False)
             if safety_result.is_safe:
                 safe_sentence = sentence
@@ -213,6 +243,11 @@ async def _run_final_answer_attempt_streaming(
                 any_sentence_substituted = True
             await on_answer_chunk(safe_sentence)
             sent_sentences.append(safe_sentence)
+        if malformed_tool_call_detected:
+            return {
+                "planner_gave_up": True,
+                "streamed_round_texts": [*streamed_round_texts, *sent_sentences],
+            }
     except Exception:
         logger.warning(
             "_run_final_answer_attempt_streaming: 最后陈述流式调用中途失败，"

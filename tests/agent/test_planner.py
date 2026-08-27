@@ -291,6 +291,51 @@ async def test_run_planner_turn_gives_up_when_final_answer_attempt_raises():
     assert update == {"planner_gave_up": True}
 
 
+async def test_run_planner_turn_gives_up_when_final_answer_attempt_leaks_malformed_tool_call_tokens():
+    # 2026-08-27 真实案例：_run_final_answer_attempt 不传 tools 参数，文档
+    # 假设这样"模型结构上不可能再请求工具调用"——对 DeepSeek 不成立，
+    # 对话历史里出现过真实工具调用后，即使这次没声明 tools，模型仍然会
+    # 把工具调用协议的专用特殊 token 当纯文本续写出来，原样出现在
+    # result.text 里。命中这个标记必须当成总结失败处理，不能把这段
+    # 内部协议 token 当成正常答案泄露给用户。
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedLLMProvider(
+            [
+                ProviderResult(
+                    text="",
+                    tool_calls=[
+                        ToolCall(id="call_x", name="vector_search_tool", arguments="{}")
+                    ],
+                ),
+                ProviderResult(
+                    text='让我尝试直接查询。\n<｜｜DSML｜｜tool_calls>'
+                    '<｜｜DSML｜｜invoke name="structured_filter_query_tool">'
+                    '<｜｜DSML｜｜parameter name="query_intent" string="true">'
+                    "列出所有订单</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke>"
+                    "</｜｜DSML｜｜tool_calls>",
+                ),
+            ]
+        ),
+    )
+    state = {
+        "planner_messages": [{"role": "user", "content": "问题"}],
+        "tool_call_round": 3,
+    }
+
+    update = await run_planner_turn(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        tool_registry=_full_tool_registry(),
+    )
+
+    assert update == {"planner_gave_up": True}
+
+
 async def test_run_planner_turn_final_answer_attempt_succeeds_when_rounds_exhausted():
     llm_registry = ProviderRegistry()
     llm_registry.register(
@@ -1056,6 +1101,61 @@ async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_als
     assert len(provider.requests) == 2
     assert update == {"planner_gave_up": True}
     assert tool_status_calls == 0
+
+
+async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_leaks_malformed_tool_call_tokens():
+    # 流式版本的同一个真实案例（见 test_run_planner_turn_gives_up_when_
+    # final_answer_attempt_leaks_malformed_tool_call_tokens 的非流式版本）：
+    # 命中标记的这一句要被替换成安全兜底文案再推给用户（不能让内部协议
+    # token 原样出现在流式增量里），整轮总结按失败处理，不落入
+    # planner_messages/answer_text。
+    llm_registry = ProviderRegistry()
+    provider = ScriptedStreamingLLMProvider(
+        [
+            [
+                ProviderStreamChunk(
+                    tool_calls=[ToolCall(id="call_1", name="vector_search_tool", arguments="{}")]
+                )
+            ],
+            [
+                ProviderStreamChunk(
+                    text='让我尝试直接查询。\n<｜｜DSML｜｜tool_calls>'
+                    '<｜｜DSML｜｜invoke name="structured_filter_query_tool">'
+                    '<｜｜DSML｜｜parameter name="query_intent" string="true">'
+                    "列出所有订单</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke>"
+                    "</｜｜DSML｜｜tool_calls>",
+                )
+            ],
+        ]
+    )
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+    state = {
+        "planner_messages": [{"role": "user", "content": "问题"}],
+        "tool_call_round": 3,
+    }
+    sent_chunks: list[str] = []
+
+    async def on_answer_chunk(text: str) -> None:
+        sent_chunks.append(text)
+
+    async def on_tool_status() -> None:
+        pass
+
+    update = await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=None,
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
+    )
+
+    assert update["planner_gave_up"] is True
+    assert "answer_text" not in update
+    assert all("DSML" not in chunk for chunk in sent_chunks)
+    assert LITE_SAFETY_FALLBACK_SENTENCE in sent_chunks
 
 
 async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_raises():
