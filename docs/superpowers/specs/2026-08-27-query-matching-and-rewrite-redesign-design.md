@@ -45,7 +45,7 @@
 - 统一两处实体匹配算法，消除"同一段文本两处给出矛盾结论"的可能性。
 - 把"改写"拆成两层各自处理一个性质不同的子问题：跨轮次指代消解（一次性、稳定）与轮内转述保真（每轮、受工具反馈驱动，但不能丢失当前问题里的显式信息）。
 - 让两个工具（`structured_filter_query_tool`/`vector_search_tool`）共享同一份指代消解结果，不再各自独立改写、可能给出不一致结论。
-- 为"是否改写"引入强制显式决策字段（`is_verbatim`/`depends_on_history`），提高模型对这个判断的注意力——这是提示词层面的手段，不是确定性校验（见"2026-08-28 决策变更"）。
+- 为"是否改写、缺了哪个槽位"引入强制显式决策字段（`is_verbatim`/`rl`+`inherited_slots`），提高模型对这个判断的注意力——这是提示词层面的手段，不是确定性校验（见"2026-08-28 决策变更"）。
 - 顺带解决一个改写统一后才有条件做的相关问题：本轮问题如果和最近历史里已经问过且已回答的问题基本相同，给 Planner 一个可参考、但不强制的复用提示，减少不必要的重复工具调用。
 - 不引入不必要的新基础设施；新增的一次 LLM 调用（历史指代消解）必须在没有可用历史时零成本跳过。
 
@@ -129,23 +129,44 @@ START → input_safety → clarification_check → term_guard → memory_recall
 
 > **2026-08-28 决策变更**：本文档更早版本在这里设计了一个共享的确定性核对模块 `app/qa/counting_intent.py::drops_counting_keywords()`（正则匹配计数关键词，改写后丢失就不采信、回退原文），Layer 1/Layer 2 都用它做"不依赖 LLM 自我报告"的事后校验。复审时确认这个关键词表本身覆盖面太窄（只认"多少/几个/数量/一共/总共/共有"六个词，"有几家""合计多少件"这类同样是计数意图的表达会漏检），且"用更泛化的方式做这件事"（语义相似度阈值、LLM 自评、意图分类器）无一例外都会重新引入某种软判断，跟这道核对存在的意义（不依赖软判断）自相矛盾。讨论后**明确决定去掉这层确定性核对，完全依赖提示词本身**（`is_verbatim`/`depends_on_history` 这类强制显式决策字段 + 精心设计的 schema 描述）。这是一个已知有风险的取舍——本次会话已经验证过两次纯提示词调整对这个模型不够可靠，去掉核对后不再有任何非 LLM 的最后防线；如果上线后复测发现"计数意图丢失"这类问题仍然复现，下一步的候选方向是重新加回某种核对（不一定是关键词匹配），而不是回到反复调整提示词措辞这条已经验证过两次无效的路径。
 
+### 槽位填充：借鉴 swiftagent `get_rewriting_decision_prompt_v2` 的核心机制，不照搬 i/e/t/d
+
+`depends_on_history: true/false` 这种粗粒度二元判断，只能回答"要不要改写"，回答不了"缺的具体是什么、该从历史补哪一部分"——跟 swiftagent 槽位填充机制的核心差距正在这里。customer_rag 场景下的槽位不能照搬 swiftagent 的 i(指标)/e(主体)/t(时间)/d(维度)（那是数据分析场景的划分），改成贴合 `structured_filter_query_tool` 查询结构的三类：
+
+- **`anchor`**——问题在问哪个具体实体或实体类型（"Coca-Cola"、"订单号"）。
+- **`intent_type`**——问题的意图类型（计数/列举/查详情/比较）——直接对应本次会话反复追的"计数意图丢失"这个具体 bug，是最关键的一类槽位。
+- **`constraint`**——问题里的过滤/限定条件（"属于 XX 公司"、"大于 500"）。
+
+**不包含** `relation_path`（多跳关系路径具体怎么走）——那是 Layer 3（`resolve_arguments`）的技术细节，通过 `recall_ontology_candidates`/`_USAGE_GUIDE` 处理，Layer 1 只负责"这句话本身讲没讲清楚"，下沉到关系路径会跟 Layer 3 职责重叠。也不引入 swiftagent 的"时间"槽位/`rl=2`弱改写档——customer_rag 目前没有观察到显著的时间范围查询场景，只保留 `rl=3`（不改写）和 `rl=1`（强改写，补全 `anchor`/`intent_type`/`constraint` 中任意缺失的子集）两档，不为了看起来完整而引入用不上的第三档。
+
 ```python
 @dataclass(frozen=True)
 class ResolvedQuestion:
     resolved_question: str
+    inherited_slots: list[str]  # 实际从历史继承的槽位，anchor/intent_type/constraint 的子集；不依赖历史时为 []
     duplicate_of: str | None  # 命中的历史轮次原文；没命中是 None，供设计 D 使用
 
 
 _RESOLVE_QUESTION_SYSTEM_PROMPT = (
     "你是多轮对话的指代消解助手。给定最近几轮对话历史和用户当前这一句话，"
-    "判断当前这句话是否依赖历史才能独立理解。\n"
-    "默认认为不依赖——只有当前问题包含明确指代（它/这个/上面提到的）或"
-    "存在脱离上下文无法执行的明显省略时，才判定为依赖历史。\n"
-    "只输出 JSON：{\"depends_on_history\": true/false, "
-    "\"resolved_question\": \"...\", \"duplicate_of\": \"...\"}\n"
-    "resolved_question：depends_on_history=false 时必须逐字等于用户当前问题，"
-    "不允许任何改写；=true 时只允许补全缺失的指代对象本身，不概括、不重写"
-    "当前问题里已经出现的其余内容。\n"
+    "判断当前这句话脱离历史后是否仍能独立理解、执行。\n\n"
+    "把问题拆成三类槽位：\n"
+    "- anchor：问的是哪个具体实体或实体类型\n"
+    "- intent_type：问题的意图类型（计数/列举/查详情/比较）\n"
+    "- constraint：过滤/限定条件（属于哪个公司、大于多少等）\n\n"
+    "默认不改写：只有当前问题里某个槽位明显缺失、必须借助历史才能补全"
+    "（比如用指代词'它/这个/上面提到的'代替了 anchor，或者只提到"
+    "constraint 却没交代 intent_type），才判定为依赖历史。当前问题里已经"
+    "显式出现的槽位（尤其是「多少个/数量/一共/共有」这类 intent_type=计数"
+    "的措辞）必须原样保留，禁止被历史覆盖或省略。\n\n"
+    "只输出 JSON：{\"rl\": 1或3, \"resolved_question\": \"...\", "
+    "\"inherited_slots\": [...], \"duplicate_of\": \"...\"}\n"
+    "rl=3（默认）：不依赖历史，resolved_question 必须逐字等于用户当前问题，"
+    "inherited_slots 为空数组。\n"
+    "rl=1：依赖历史，resolved_question 只补全缺失槽位对应的内容，不改写"
+    "当前问题里已经出现的其余内容；inherited_slots 精确列出这次实际从"
+    "历史补全了哪些槽位（anchor/intent_type/constraint 的子集，只填真正"
+    "补全的，当前问题里本来就有的槽位不算继承）。\n"
     "duplicate_of：如果 resolved_question 在语义上跟历史里某一轮用户已经"
     "问过、且已经得到回答的问题基本相同，把那一轮的原始用户提问文本填在"
     "这里；没有这种情况就填空字符串。"
@@ -160,8 +181,8 @@ async def resolve_question(
     llm_provider_name: str,
     timeout_sec: float = 1.5,
 ) -> ResolvedQuestion:
-    """历史指代消解，顺带检测当前问题是否在问一个最近已经问过并回答过的
-    问题（供设计 D 使用，同一次调用产出，不新增 LLM 调用）。
+    """历史指代消解（槽位粒度），顺带检测当前问题是否在问一个最近已经问过
+    并回答过的问题（供设计 D 使用，同一次调用产出，不新增 LLM 调用）。
 
     失败/超时/解析失败均回退"不依赖历史、原样返回、无重复"——这是这个
     函数"下限不比不做这一步差"的保证，跟 rewrite_query() 现有的失败处理
@@ -182,18 +203,22 @@ async def resolve_question(
         )
     except asyncio.TimeoutError:
         logger.info("resolve_question 超时，回退原始问题、无重复标记")
-        return ResolvedQuestion(resolved_question=question, duplicate_of=None)
+        return ResolvedQuestion(resolved_question=question, inherited_slots=[], duplicate_of=None)
     except Exception:
         logger.warning("resolve_question 调用失败，回退原始问题、无重复标记", exc_info=True)
-        return ResolvedQuestion(resolved_question=question, duplicate_of=None)
+        return ResolvedQuestion(resolved_question=question, inherited_slots=[], duplicate_of=None)
     try:
         payload = json.loads(result.text)
         resolved = str(payload.get("resolved_question") or "").strip() or question
+        inherited_slots = [
+            s for s in payload.get("inherited_slots") or []
+            if s in ("anchor", "intent_type", "constraint")
+        ]  # 不信任模型可能填出的其他字符串，只接受这三个已定义的槽位名
         duplicate_of = str(payload.get("duplicate_of") or "").strip() or None
     except json.JSONDecodeError:
         logger.warning("resolve_question 返回内容不是合法 JSON，回退原始问题、无重复标记")
-        return ResolvedQuestion(resolved_question=question, duplicate_of=None)
-    return ResolvedQuestion(resolved_question=resolved, duplicate_of=duplicate_of)
+        return ResolvedQuestion(resolved_question=question, inherited_slots=[], duplicate_of=None)
+    return ResolvedQuestion(resolved_question=resolved, inherited_slots=inherited_slots, duplicate_of=duplicate_of)
 ```
 
 图节点：
@@ -210,6 +235,11 @@ async def resolve_question_node(state: AgentState) -> dict[str, Any]:
         state["question"], history,
         llm_registry=llm_registry, llm_provider_name=llm_provider_name,
     )
+    logger.info(
+        "resolve_question: resolved=%r inherited_slots=%r duplicate_of=%r",
+        result.resolved_question, result.inherited_slots, result.duplicate_of,
+    )  # inherited_slots 目前没有下游消费，只落日志——留作复测时排查"槽位填充
+       # 到底有没有生效、生效在哪个槽位"的可观测性入口，不是无意义的冗余记录。
     return {
         "resolved_question": result.resolved_question,
         "duplicate_of": result.duplicate_of,
@@ -356,7 +386,7 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
 
 - 设计 A：`tests/graphrag/test_term_matcher.py` 全量回归 + 新增"两处匹配结论一致"用例。
 - 设计 B：
-  - `tests/qa/test_query_rewrite.py` 新增 `resolve_question()` 的用例：无历史时零成本跳过（不发起 LLM 调用）；有历史且不依赖时 `resolved_question` 逐字等于原文；依赖历史时正确补全指代；LLM 失败/超时/解析失败时回退原文。**不再测试"关键词丢失时被拦截"这类用例**——已经没有确定性核对逻辑了，`resolved_question` 就是模型返回什么就是什么。
+  - `tests/qa/test_query_rewrite.py` 新增 `resolve_question()` 的用例：无历史时零成本跳过（不发起 LLM 调用，`inherited_slots=[]`）；`rl=3` 时 `resolved_question` 逐字等于原文、`inherited_slots` 为空；`rl=1` 时正确补全缺失槽位、`inherited_slots` 列出实际继承的槽位子集；LLM 返回的 `inherited_slots` 里混入未定义的槽位名（比如模型幻觉输出了 `"time"`）时被过滤掉，只保留 `anchor`/`intent_type`/`constraint` 三者；LLM 失败/超时/解析失败时回退原文、`inherited_slots=[]`。**不测试"改写内容语义上对不对"这类用例**——没有确定性核对逻辑，`resolved_question` 就是模型返回什么就是什么，测试只覆盖结构化解析/异常处理这些确定性行为。
   - `tests/agent/test_graph.py`（或等价文件）新增：`resolve_question_node` 正确写入 `state["resolved_question"]`；`planner_node`/`ToolContext` 构造正确使用 `resolved_question` 而非原始 `question`。
   - `tests/agent/tools/test_structured_filter_query.py` 现有的 `is_verbatim`/关键词核对用例需要删除或改写——不再有"关键词丢失时回退原文"这类可断言的确定性行为，只能测"`is_verbatim`/`query_intent` 字段被正确传递到 prompt 里"这类结构性行为。
 - 设计 C：`tests/qa/test_query_rewrite.py` 新增/补全"原始问题已清晰，不改写"用例；确认 `conversation_context` 参数不再从 `vector_search_tool.execute()` 传入。
