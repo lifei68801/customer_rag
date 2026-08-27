@@ -45,7 +45,7 @@
 - 统一两处实体匹配算法，消除"同一段文本两处给出矛盾结论"的可能性。
 - 把"改写"拆成两层各自处理一个性质不同的子问题：跨轮次指代消解（一次性、稳定）与轮内转述保真（每轮、受工具反馈驱动，但不能丢失当前问题里的显式信息）。
 - 让两个工具（`structured_filter_query_tool`/`vector_search_tool`）共享同一份指代消解结果，不再各自独立改写、可能给出不一致结论。
-- 为"是否改写、改写是否保真"提供不依赖 LLM 自我报告的确定性核对。
+- 为"是否改写"引入强制显式决策字段（`is_verbatim`/`depends_on_history`），提高模型对这个判断的注意力——这是提示词层面的手段，不是确定性校验（见"2026-08-28 决策变更"）。
 - 顺带解决一个改写统一后才有条件做的相关问题：本轮问题如果和最近历史里已经问过且已回答的问题基本相同，给 Planner 一个可参考、但不强制的复用提示，减少不必要的重复工具调用。
 - 不引入不必要的新基础设施；新增的一次 LLM 调用（历史指代消解）必须在没有可用历史时零成本跳过。
 
@@ -127,27 +127,7 @@ START → input_safety → clarification_check → term_guard → memory_recall
 
 新增 `app/qa/query_rewrite.py::resolve_question()`——`app/qa/query_rewrite.py` 本来就是"改写"相关逻辑的落脚点，Layer 1 和收窄后的 `rewrite_query()`（见设计 C）放在同一个文件里，职责上是同一件事的两个阶段。
 
-Layer 1 需要用到跟 Layer 2（`structured_filter_query_tool.resolve_arguments()`）同一份计数关键词核对逻辑——不能像本文档最初版本那样在两处各写一份 `_COUNTING_KEYWORDS`，那正是设计 A 要根治的"两套独立实现容易漂移"同一类问题在这里重演。提取成共享模块 `app/qa/counting_intent.py`：
-
-```python
-# app/qa/counting_intent.py
-import re
-
-_COUNTING_KEYWORDS = re.compile(r"多少|几个|数量|一共|总共|共有")
-
-
-def drops_counting_keywords(original: str, rewritten: str) -> bool:
-    """rewritten 相对 original 是否丢失了计数关键词——Layer 1（历史指代消解）
-    和 Layer 2（structured_filter_query_tool 的 query_intent 保真核对）
-    共用同一份判断，避免各自维护一份容易漂移的正则。"""
-    if original == rewritten:
-        return False
-    original_kw = set(_COUNTING_KEYWORDS.findall(original))
-    rewritten_kw = set(_COUNTING_KEYWORDS.findall(rewritten))
-    return bool(original_kw - rewritten_kw)
-```
-
-`app/agent/tools/structured_filter_query/tool.py` 和 `app/qa/query_rewrite.py` 都从这里导入 `drops_counting_keywords()`，依赖方向是 `agent/tools` 依赖 `qa`（更通用、更底层的一侧被依赖），跟设计 A 里 `term_matcher` 依赖 `ontology_recall` 是同一个"谁更底层、被谁依赖"的原则。
+> **2026-08-28 决策变更**：本文档更早版本在这里设计了一个共享的确定性核对模块 `app/qa/counting_intent.py::drops_counting_keywords()`（正则匹配计数关键词，改写后丢失就不采信、回退原文），Layer 1/Layer 2 都用它做"不依赖 LLM 自我报告"的事后校验。复审时确认这个关键词表本身覆盖面太窄（只认"多少/几个/数量/一共/总共/共有"六个词，"有几家""合计多少件"这类同样是计数意图的表达会漏检），且"用更泛化的方式做这件事"（语义相似度阈值、LLM 自评、意图分类器）无一例外都会重新引入某种软判断，跟这道核对存在的意义（不依赖软判断）自相矛盾。讨论后**明确决定去掉这层确定性核对，完全依赖提示词本身**（`is_verbatim`/`depends_on_history` 这类强制显式决策字段 + 精心设计的 schema 描述）。这是一个已知有风险的取舍——本次会话已经验证过两次纯提示词调整对这个模型不够可靠，去掉核对后不再有任何非 LLM 的最后防线；如果上线后复测发现"计数意图丢失"这类问题仍然复现，下一步的候选方向是重新加回某种核对（不一定是关键词匹配），而不是回到反复调整提示词措辞这条已经验证过两次无效的路径。
 
 ```python
 @dataclass(frozen=True)
@@ -213,12 +193,6 @@ async def resolve_question(
     except json.JSONDecodeError:
         logger.warning("resolve_question 返回内容不是合法 JSON，回退原始问题、无重复标记")
         return ResolvedQuestion(resolved_question=question, duplicate_of=None)
-
-    # 跟 structured_filter_query_tool 的 is_verbatim 核对同一个原则：不信任
-    # depends_on_history/resolved_question 的自我报告本身，只要改写后原文里
-    # 的计数关键词丢了，就不采信这次改写，回退原文。
-    if drops_counting_keywords(question, resolved):
-        resolved = question
     return ResolvedQuestion(resolved_question=resolved, duplicate_of=duplicate_of)
 ```
 
@@ -247,12 +221,12 @@ async def resolve_question_node(state: AgentState) -> dict[str, Any]:
 ### `resolved_question` 的接入点：替换原始问题成为下游的"当前问题"
 
 - `planner_node` 初始化 `planner_messages` 时，`messages.append({"role": "user", "content": state["question"]})` 改成 `state.get("resolved_question", state["question"])`（兜底：Layer 1 未跑过/失败时退回原始问题）。
-- 各处构造 `ToolContext(question=state["question"], ...)` 的地方，改成 `question=state.get("resolved_question", state["question"])`——**设计 B 早前已经写好的 `is_verbatim` + 关键词核对逻辑不需要跟着改代码**，只是它比对的"ground truth"从原始问题自动变成了已消解指代的版本，覆盖面更完整。
+- 各处构造 `ToolContext(question=state["question"], ...)` 的地方，改成 `question=state.get("resolved_question", state["question"])`——`context.question` 从原始问题变成已消解指代的版本，`structured_filter_query_tool` 的 `query_intent`/`is_verbatim` 生成逻辑不需要跟着改代码，只是看到的"当前问题"覆盖面更完整。
 - 确定性检索路径（非 Planner 模式）的 `_PROMPT_TEMPLATE.format(context=context, question=state["question"])` 同样改用 `resolved_question`——这条路径同样有 `memory_context_messages` 注入，指代消解对它同样有价值。
 
-### Layer 2：轮内转述保真（沿用已设计的 `is_verbatim` + 关键词核对，不变）
+### Layer 2：轮内转述保真（`is_verbatim` 强制显式决策，完全依赖提示词）
 
-`structured_filter_query_tool` 的 `query_intent`/`is_verbatim` schema 改动和 `resolve_arguments()` 里的确定性核对逻辑，见下方"Schema 改动"和"代码改动"——内容跟本文档更早版本一致，**唯一的变化是它比对的 `context.question` 现在已经是 Layer 1 消解后的问题**，不需要额外改动这部分代码本身。
+`structured_filter_query_tool` 的 `query_intent`/`is_verbatim` schema 改动，见下方"Schema 改动"和"代码改动"——`context.question` 现在是 Layer 1 消解后的问题，`resolve_arguments()` 本身不做任何确定性校验（见"2026-08-28 决策变更"）。
 
 Layer 2 继续按 Planner 每一轮工具反馈自适应调整（不受 Layer 1 影响）——这是有意保留的行为，不是遗留的 bug：第一次查不到、换个角度再查，属于合理的探索过程，不应该被"锁死成一次性改写"。
 
@@ -286,42 +260,33 @@ parameters_schema:
     - is_verbatim
 ```
 
-### 代码改动：`resolve_arguments()` 里的确定性核对
+### 代码改动：`resolve_arguments()` 完全信任 `query_intent`/`is_verbatim`
 
 `app/agent/tools/structured_filter_query/tool.py`：
 
 ```python
-from app.qa.counting_intent import drops_counting_keywords
-
 class StructuredFilterQueryTool:
     async def resolve_arguments(
         self, raw_arguments: dict[str, Any], *, context: ToolContext
     ) -> dict[str, Any]:
         query_intent = str(raw_arguments.get("query_intent") or "").strip() or context.question
-        # 校验不看 is_verbatim 的值本身——它的价值在于强制模型对"有没有
-        # 改写"做一次显式承诺（借的是 swiftagent 的核心机制），不代表这个
-        # 自我报告就一定可信。只要 query_intent 跟原文不同、且原文里的计数
-        # 关键词在改写后丢了，就不信任这次改写，无论模型自己说 is_verbatim
-        # 是 true 还是 false。
-        if drops_counting_keywords(context.question, query_intent):
-            query_intent = context.question
+        # 不做任何确定性核对——完全依赖 is_verbatim 这个强制显式决策字段
+        # 本身（见下方"2026-08-28 决策变更"）和 query_intent 的 schema
+        # 描述质量。is_verbatim 的值目前不参与任何分支逻辑，纯粹起"强制
+        # 模型对'有没有改写'做一次显式承诺"这个作用——这个字段本身不校验，
+        # 只是通过要求模型显式输出它，提高模型在生成 query_intent 时对
+        # "是否忠实"这件事的注意力（类比 swiftagent `rl` 字段的效果，
+        # 但这里没有配套的事后校验）。
         ...
 ```
 
-**为什么不止步于"改进提示词描述"**：本次会话已经验证过两次纯提示词调整（改字段描述、改 `trigger_cue`）都不能稳定改变这个模型的行为。`is_verbatim` 字段本身是从 swiftagent 的 `rl` 分级机制借来的核心机制（不是措辞技巧）——强制模型对"有没有改写"做一次显式的、可校验的布尔承诺，而不是让这个判断隐藏在自由文本生成的内部过程里。但即便如此，仍然不能完全信任模型自我报告的准确性（`is_verbatim` 本身也可能被错误标注），所以额外加一层不依赖 LLM 判断力的确定性核对——这是防御纵深，不是相信某一层就够了。
+**为什么只靠提示词，还要保留 `is_verbatim` 这个字段**：`is_verbatim` 不是校验机制，是"强制显式决策"这个提示词技巧本身——要求模型在输出 `query_intent` 的同时，必须显式回答"我有没有改写"这个问题，比单纯在 `query_intent` 的描述里写"默认不改写"更容易让模型认真对待这个判断（swiftagent `get_rewriting_decision_prompt_v2` 的核心机制正是"强制输出决策字段"这个动作本身，不是措辞多华丽）。但这终究是提示词层面的手段，不提供任何非 LLM 的确定性保障。
 
-**为什么核对只在文本不同时触发，不是无条件跑**：`drops_counting_keywords()` 内部先判断 `original == rewritten`，逐字相等时直接返回 `False`——不存在"改写后关键词丢失"这件事，核对逻辑本身没有意义，跳过是纯粹的性能优化，不影响正确性。
-
-**范围限制**：`counting_intent.py` 里的关键词集合只覆盖"计数意图丢失"这一类已经确认造成过真实 bug 的关键词，不打算做成覆盖所有可能语义槽位的通用校验框架（YAGNI）——如果未来发现其他类别的信息在改写中丢失且造成了具体故障，再单独评估是否要扩展这个关键词集合或校验维度。
+**已知风险**：本次会话已经验证过两次纯提示词调整（改字段描述、改 `trigger_cue`）对这个模型不够稳定可靠。去掉确定性核对后，`query_intent` 忠实转述这件事完全依赖提示词质量+`is_verbatim` 决策字段的引导效果，没有任何兜底——一旦提示词在某些措辞下仍然失效，"计数意图丢失"这类问题可能复现，且系统不会自动发现/拦截。这是本文档"2026-08-28 决策变更"里已经记录并确认过的取舍，不是遗漏。
 
 ### `_USAGE_GUIDE` 联动调整
 
 `is_verbatim` 字段本身在 `manifest.yaml` 里已经说明了语义，不需要在 `_USAGE_GUIDE`（深层参数生成看到的详细说明）里重复展开——`_USAGE_GUIDE` 面向的是"拿到 query_intent 之后该怎么选 anchor 模式"，跟"query_intent 是怎么产生的"是两个不同阶段的关注点，不应该混在一起。
-
-### 两处范围决策
-
-1. **`is_verbatim=true` 但 `query_intent != context.question` 时，同样强制覆盖。** 理论上 `is_verbatim=true` 应该意味着两者逐字相等；不等就说明模型的自我报告本身不可靠（说了没改写，实际改了）。`drops_counting_keywords()` 不看 `is_verbatim` 的值，只看文本本身——避免实现里出现两条并行、容易漂移的校验路径。`is_verbatim` 字段的价值仍然在于"强制模型做一次显式承诺"这个动作本身（借的是 swiftagent 的核心机制），不在于校验逻辑要不要读它的值。Layer 1 的 `resolve_question()` 同理不看 `depends_on_history` 的值。
-2. **关键词集合只覆盖计数关键词，不覆盖实体名等其他槽位。** 本次会话观察到的具体 bug 只涉及计数关键词丢失，没有直接证据表明实体名会在改写中被丢弃（Planner 转述时基本都保留了实体名，只是把动作/意图部分概括掉了）。当前设计范围只覆盖已验证的失败模式，不做推测性覆盖——YAGNI。
 
 ## 设计 C：`app/qa/query_rewrite.py::rewrite_query()` 职责收窄——只做检索友好化
 
@@ -391,10 +356,9 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
 
 - 设计 A：`tests/graphrag/test_term_matcher.py` 全量回归 + 新增"两处匹配结论一致"用例。
 - 设计 B：
-  - `tests/qa/test_counting_intent.py`（新建）：`drops_counting_keywords()` 的用例——文本相同时返回 `False`；改写后关键词丢失时返回 `True`；改写后关键词保留（哪怕措辞变了）时返回 `False`。这是设计 B/D 共用的基础，独立测，不用在两处调用方测试里重复覆盖这些边界情况。
-  - `tests/qa/test_query_rewrite.py` 新增 `resolve_question()` 的用例：无历史时零成本跳过（不发起 LLM 调用）；有历史且不依赖时 `resolved_question` 逐字等于原文；依赖历史时正确补全指代；LLM 失败/超时/解析失败时回退原文；模型改写后计数关键词丢失时被 `drops_counting_keywords()` 拦截、回退原文。
+  - `tests/qa/test_query_rewrite.py` 新增 `resolve_question()` 的用例：无历史时零成本跳过（不发起 LLM 调用）；有历史且不依赖时 `resolved_question` 逐字等于原文；依赖历史时正确补全指代；LLM 失败/超时/解析失败时回退原文。**不再测试"关键词丢失时被拦截"这类用例**——已经没有确定性核对逻辑了，`resolved_question` 就是模型返回什么就是什么。
   - `tests/agent/test_graph.py`（或等价文件）新增：`resolve_question_node` 正确写入 `state["resolved_question"]`；`planner_node`/`ToolContext` 构造正确使用 `resolved_question` 而非原始 `question`。
-  - `tests/agent/tools/test_structured_filter_query.py` 现有的 `is_verbatim`/关键词核对用例改为断言调用了 `drops_counting_keywords()`（或等价的黑盒行为断言），不再直接依赖 `tool.py` 里自己的正则实现。
+  - `tests/agent/tools/test_structured_filter_query.py` 现有的 `is_verbatim`/关键词核对用例需要删除或改写——不再有"关键词丢失时回退原文"这类可断言的确定性行为，只能测"`is_verbatim`/`query_intent` 字段被正确传递到 prompt 里"这类结构性行为。
 - 设计 C：`tests/qa/test_query_rewrite.py` 新增/补全"原始问题已清晰，不改写"用例；确认 `conversation_context` 参数不再从 `vector_search_tool.execute()` 传入。
 - 设计 D：见上方"设计 D"小节的测试。
 - 全部改动后跑一次全量测试套件确认无回归。
