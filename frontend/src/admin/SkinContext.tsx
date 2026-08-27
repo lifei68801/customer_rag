@@ -28,7 +28,10 @@ const SkinContext = createContext<SkinContextValue | null>(null)
 export function SkinProvider({ children }: { children: ReactNode }) {
   const [skin, setSkinState] = useState<SkinId>(() => {
     const stored = localStorage.getItem(SKIN_STORAGE_KEY)
-    return isSkinId(stored) ? stored : 'default'
+    // 'dark' 是信标方向的本体形态（spec: "信标本体"），'default' 只是给
+    // 无法/不愿意用深色模式的用户的日间版本——没有存过偏好的新用户应该
+    // 直接看到信标本体，而不是先看到日间版本再自己去皮肤切换器里找暗色。
+    return isSkinId(stored) ? stored : 'dark'
   })
 
   // 把当前皮肤同步到 <html data-skin="..."> 上——index.css 里的

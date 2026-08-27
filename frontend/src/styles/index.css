@@ -41,8 +41,8 @@
 /* 下面这批 --color-* 变量必须写成空格分隔的 RGB 三元组（"20 17 17"），不能写 hex
    （"#141111"）——tailwind.config.ts 用 rgb(var(--x) / <alpha-value>) 消费它们才能支持
    bg-x/40 这类透明度修饰符，写成 hex 会让该颜色的所有 Tailwind class（不只是透明度修饰符）
-   静默编译失败。--color-border-subtle / --shadow-color-1 / --shadow-color-2 是例外，它们
-   各自带固定 alpha 通道，以完整 rgba(...) 值直接使用，不走这条转换路径，保持 rgba 写法不变。 */
+   静默编译失败。--color-border-subtle 是例外，它带固定 alpha 通道，以完整 rgba(...)
+   值直接使用，不走这条转换路径，保持 rgba 写法不变。 */
 :root {
   /* default 皮肤：信标的日间版本，浅蓝灰基座，青/铜信号色相不变但加深到
      能在浅底上当前景色用（WCAG AA 校验见计划头部"Font self-hosting：
@@ -61,8 +61,6 @@
   --color-status-error-hover: 244 224 220;
   --color-text-on-accent: 255 255 255;
   --color-border-subtle: rgba(20, 33, 43, 0.14);
-  --shadow-color-1: rgba(20, 33, 43, 0.08);
-  --shadow-color-2: rgba(20, 33, 43, 0.14);
 }
 
 :root[data-skin='dark'] {
@@ -80,14 +78,12 @@
   --color-status-error-hover: 58 30 26;
   --color-text-on-accent: 12 16 21;
   --color-border-subtle: rgba(227, 232, 237, 0.14);
-  --shadow-color-1: rgba(0, 0, 0, 0.35);
-  --shadow-color-2: rgba(0, 0, 0, 0.5);
 }
 
 :root[data-skin='business-blue'] {
   /* business-blue 皮肤：信标语言内的靛蓝信号变体——底色跟 dark 皮肤完全
      一致，只把主信号色从青偏移到靛蓝（WCAG 校验：text-on-accent 在这个
-     靛蓝填充块上 5.37:1，通过）。 */
+     靛蓝填充块上 4.96:1，通过）。 */
   --color-paper: 18 22 28;
   --color-ink: 227 232 237;
   --color-ink-soft: 137 150 163;
@@ -101,8 +97,6 @@
   --color-status-error-hover: 58 30 26;
   --color-text-on-accent: 12 16 21;
   --color-border-subtle: rgba(227, 232, 237, 0.14);
-  --shadow-color-1: rgba(0, 0, 0, 0.35);
-  --shadow-color-2: rgba(0, 0, 0, 0.5);
 }
 
 body {

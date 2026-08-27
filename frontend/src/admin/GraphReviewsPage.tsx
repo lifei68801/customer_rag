@@ -575,7 +575,7 @@ export function GraphReviewsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-bold text-ink">文档抽取（租户：{tenantId}）</h1>
+      <h1 className="font-mono text-xl font-semibold text-ink">文档抽取（租户：{tenantId}）</h1>
 
       <div className="flex gap-2">
         <button
@@ -618,7 +618,7 @@ export function GraphReviewsPage() {
 
       {createDraft && (
         <div
-          className="fixed inset-0 z-20 flex items-center justify-center bg-ink/40 p-4"
+          className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-4"
           // 只在点击落在遮罩本身（不是冒泡自弹窗内部内容）时关闭——同一个
           // preventClose-while-submitting 规则也用在这里，跟 Escape 一致。
           onClick={(event) => {

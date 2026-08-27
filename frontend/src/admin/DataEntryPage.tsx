@@ -8,7 +8,7 @@ const subTabClass = ({ isActive }: { isActive: boolean }) =>
 export function DataEntryPage() {
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-bold text-ink">数据加工</h1>
+      <h1 className="font-mono text-xl font-semibold text-ink">数据加工</h1>
       <div className="flex gap-2">
         <NavLink to="/admin/data-entry/manual" className={subTabClass}>
           实体列表

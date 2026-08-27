@@ -38,7 +38,7 @@ export function LoginPage() {
         onSubmit={handleSubmit}
         className="flex w-full max-w-sm flex-col gap-4 rounded-panel border border-subtle bg-card p-6"
       >
-        <h1 className="text-xl font-bold text-ink">管理后台登录</h1>
+        <h1 className="font-mono text-xl font-semibold text-ink">管理后台登录</h1>
         <label htmlFor="admin-token" className="text-sm font-bold text-ink">
           管理员 token
         </label>

@@ -167,7 +167,7 @@ export function TermsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-bold text-ink">实体列表</h1>
+      <h1 className="font-mono text-xl font-semibold text-ink">实体列表</h1>
 
       <div className="flex items-center gap-2">
         <label htmlFor="source-filter" className="text-sm font-bold text-ink">

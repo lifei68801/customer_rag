@@ -1,7 +1,7 @@
 export function Hero() {
   return (
     <header className="border-b border-subtle px-6 py-10 text-center">
-      <h1 className="text-3xl font-bold text-ink sm:text-4xl">
+      <h1 className="font-mono text-3xl font-semibold text-ink sm:text-4xl">
         企业数字员工
       </h1>
       <p className="mx-auto mt-3 max-w-xl text-ink-soft">

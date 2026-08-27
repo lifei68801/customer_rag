@@ -309,10 +309,10 @@ export function SchemaEtlPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-bold text-ink">表格导入（租户：{tenantId}）</h1>
+      <h1 className="font-mono text-xl font-semibold text-ink">表格导入（租户：{tenantId}）</h1>
 
       {confirmed === false && (
-        <div className="rounded-card border border-subtle bg-accent-secondary px-3 py-2 text-sm text-on-accent">
+        <div className="rounded-card border border-accent-secondary bg-card px-3 py-2 text-sm text-ink">
           该租户本体 schema 尚未确认，请先完成本体 schema 确认后再触发 ETL。
         </div>
       )}
@@ -463,7 +463,7 @@ export function SchemaEtlPage() {
       </div>
 
       <div className="flex flex-col gap-2">
-        <h2 className="font-bold text-ink">历史跑批</h2>
+        <h2 className="font-mono font-semibold text-ink">历史跑批</h2>
         {runs.length === 0 && (
           <p className="text-ink-soft">还没有任何跑批记录。在上方上传数据文件开始第一次运行。</p>
         )}
@@ -503,7 +503,7 @@ export function SchemaEtlPage() {
 
       {selectedRun && (
         <div className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4">
-          <h2 className="font-bold text-ink">跑批详情：{selectedRun.run_id}</h2>
+          <h2 className="font-mono font-semibold text-ink">跑批详情：{selectedRun.run_id}</h2>
           {selectedRun.status === 'failed' && (
             <p role="alert" className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
               失败：{selectedRun.error}
@@ -548,7 +548,7 @@ export function SchemaEtlPage() {
               </div>
               {selectedRun.report.skipped_mappings && selectedRun.report.skipped_mappings.length > 0 && (
                 <div className="flex flex-col gap-2">
-                  <h3 className="font-bold text-ink">
+                  <h3 className="font-mono font-semibold text-ink">
                     映射级跳过（共 {selectedRun.report.skipped_mappings.length} 条）
                   </h3>
                   <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle">
@@ -575,7 +575,7 @@ export function SchemaEtlPage() {
               )}
               {selectedRun.report.skipped_rows && selectedRun.report.skipped_rows.length > 0 && (
                 <div className="flex flex-col gap-2">
-                  <h3 className="font-bold text-ink">
+                  <h3 className="font-mono font-semibold text-ink">
                     跳过明细（预览前 {SKIPPED_ROWS_PREVIEW_LIMIT} 条，共{' '}
                     {selectedRun.report.skipped_rows.length} 条）
                   </h3>

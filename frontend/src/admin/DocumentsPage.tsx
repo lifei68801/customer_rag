@@ -326,7 +326,7 @@ export function DocumentsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-bold text-ink">文档管理（租户：{tenantId}）</h1>
+      <h1 className="font-mono text-xl font-semibold text-ink">文档管理（租户：{tenantId}）</h1>
 
       <form
         onSubmit={handleUpload}
@@ -366,7 +366,7 @@ export function DocumentsPage() {
 
       {pendingJobs.length > 0 && (
         <div className="flex flex-col gap-2">
-          <h2 className="font-bold text-ink">处理中的任务</h2>
+          <h2 className="font-mono font-semibold text-ink">处理中的任务</h2>
           {pendingJobs.map((job) =>
             job.is_stuck ? (
               <div
@@ -402,13 +402,13 @@ export function DocumentsPage() {
             ) : (
               <div
                 key={job.job_id}
-                className={`rounded-card border bg-accent-secondary px-3 py-2 text-sm text-on-accent ${
+                className={`rounded-card border bg-card px-3 py-2 text-sm text-ink ${
                   job.last_error ? 'border-status-error' : 'border-subtle'
                 }`}
               >
                 {displayFileName(job.file_path)}{' '}
                 <TaskStatusBadge tone="active" label="处理中" />
-                {job.last_error && <span className="text-on-accent"> (错误：{job.last_error})</span>}
+                {job.last_error && <span className="text-ink"> (错误：{job.last_error})</span>}
               </div>
             ),
           )}
@@ -417,7 +417,7 @@ export function DocumentsPage() {
 
       {deadJobs.length > 0 && (
         <div className="flex flex-col gap-2">
-          <h2 className="font-bold text-ink">失败任务</h2>
+          <h2 className="font-mono font-semibold text-ink">失败任务</h2>
           {deadJobs.map((job) => (
             <div
               key={job.job_id}
@@ -451,7 +451,7 @@ export function DocumentsPage() {
       )}
 
       <div className="flex flex-col gap-2">
-        <h2 className="font-bold text-ink">已摄取文档</h2>
+        <h2 className="font-mono font-semibold text-ink">已摄取文档</h2>
         {deleteError && (
           <p
             role="alert"

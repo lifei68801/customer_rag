@@ -6,227 +6,206 @@
 
 ## 1. 设计语言
 
-**Neo-brutalism（新粗野主义）**，风格来源于对 `raft.build/zh-cn` 的实测抓取（`getComputedStyle`
-读取真实渲染样式，非主观模仿）。核心特征：米白背景、纯黑硬边框、无模糊硬投影、全局直角、
-糖果色色块、按下有位移触感的微交互。**不是**安静科技感/深色系/圆角卡片风格——如果新增设计
-出现圆角卡片、渐变、模糊阴影，说明偏离了本设计语言，需要重新对齐。
+**信标（Console）**——深色技术感基调，颜色只承担"信号"功能（标状态、标强调），不用来营造
+情绪。核心特征：深蓝黑基座、细边框分层（不用阴影）、收紧的小圆角、等宽字体贯穿标题与数据
+展示、克制的双色信号（青色主信号 + 铜色次信号）。这套语言统一覆盖前台客服聊天页与后台全部
+管理页面，不做区分——设计规格见 `docs/superpowers/specs/2026-08-26-console-visual-identity-design.md`，
+实施计划见 `docs/superpowers/plans/2026-08-26-console-visual-identity.md`。
 
-历史沿革：项目最早的设计文档（`docs/superpowers/specs/2026-08-07-frontend-demo-design.md`）
-基于文本推断得出深色科技风方案，后被 `docs/superpowers/specs/2026-08-07-frontend-raft-visual-redesign-design.md`
-的实测结果推翻并替换。本文档是这次替换后持续演进的**当前状态快照**，比那两份历史设计文档更新、更准确。
+历史沿革：本项目最早的设计语言是米白背景+纯黑硬边框+糖果色块的 Neo-brutalism（新粗野主义，
+实测抓取自 `raft.build/zh-cn`），2026-08-26 的这次全站重设计将其整体替换为"信标"方向。如果
+新增设计出现米白背景、糖果色块、纯直角、硬投影位移，说明还停留在旧设计语言，需要重新对齐。
 
 ## 2. 色彩系统
 
-定义于 `tailwind.config.ts` 的 `theme.extend.colors`：
+定义于 `frontend/src/styles/index.css` 的 CSS 自定义属性（空格分隔 RGB 三元组，供
+`tailwind.config.ts` 用 `rgb(var(--x) / <alpha-value>)` 消费，以支持 `bg-x/40` 这类透明度
+修饰符），按三档"皮肤"（skin）分别取值——三档是同一个信标身份的不同亮度，不是三个不同产品：
 
-| Token | 值 | 用途 |
+| Token | 语义 | 用途 |
 |---|---|---|
-| `paper` | `#FFFAEF` | 页面主背景（米白，不是纯白） |
-| `ink` / `ink-DEFAULT` | `#141111` | 主文字、边框、投影色（近黑，不是纯黑 `#000`） |
-| `ink-soft` | `#5C5750` | 次要文字（说明文字、占位符、时间戳类内容） |
-| `card` | `#FFFFFF` | 卡片/气泡底色，在 `paper` 之上分层用纯白做区分 |
-| `accent-pink` | `#FE7DA8` | 主强调色：主要 CTA 按钮、用户消息气泡 |
-| `accent-yellow` | `#FFD440` | 标签/高亮/导航栏背景（黄色导航栏是首屏识别度的关键色块） |
-| `accent-cyan` | `#27CCF3` | 链接、输入框 focus 态边框 |
-| `accent-green` | `#A9D877` | 成功态（=`status-success`） |
-| `accent-orange` | `#F8A16F` | 备用强调色，暂无固定用途，新增强调场景时按需取用 |
-| `status-error` | `#F97264` | 错误态文字/边框（珊瑚红，不用标准红 `#EF4444`） |
-| `status-success` | `#A9D877` | 成功态，复用 `accent-green` |
+| `paper` | 主背景 | 页面/输入框底色 |
+| `ink` / `ink-DEFAULT` | 主文字 | 正文、标题文字 |
+| `ink-soft` | 次要文字 | 说明文字、占位符、时间戳 |
+| `card` | 卡片/面板表面 | 卡片、弹层、导航栏等分层表面的底色 |
+| `interactive-hover` | 悬浮态表面 | 列表项/导航项 hover 背景 |
+| `accent-primary` | 主信号色（青） | 当前激活/选中态、主操作按钮、链接 |
+| `accent-secondary` | 次信号色（铜） | 告警/需要注意的强调、数据高亮标签 |
+| `status-success` | 成功状态 | 已确认/已通过一类状态徽章 |
+| `status-error` | 错误状态 | 错误边框/文字 |
+| `status-error-strong` | 错误强调 | 确认删除一类高风险按钮 |
+| `status-error-hover` | 错误态悬浮背景 | — |
+| `text-on-accent` | 信号色块上的文字 | 深底浅字块反过来，配合 `bg-accent-*`/`bg-status-success` 使用 |
+| `border-subtle` | 细边框颜色 | 例外——固定 alpha 通道，以完整 `rgba(...)` 值直接使用 |
 
-**取色原则**：新增 UI 元素需要强调色时，从上表中选，不要引入表外新色号。如果确实需要一个
-新语义色（比如"警告态"），先在 `tailwind.config.ts` 里加 token 再用，不要在 className 里
-写字面量十六进制色值。
+三档皮肤的具体取值（通过 `<html data-skin="...">` 切换，机制见 §9）：
 
-未使用的实测色：raft.build 页面里出现过 `#BBAFE6`（紫）但当前项目暂无使用场景，未收录为
-token；如果后续需要第 7 种强调色可以启用它。
+- **`dark`（信标本体，默认）**：深蓝黑基座（`#12161C`）+ 青色主信号（`#47B8D6`）+ 铜色次信号
+  （`#F2A93C`）。新用户没有存过偏好时看到的就是这一档。
+- **`default`（日间版本）**：浅蓝灰基座（`#EEF1F4` 一类），文字/边框反相，信号色相不变但加深
+  到能在浅底上当前景色用（WCAG AA 校验：ink 14.45:1，ink-soft 6.47:1，accent-primary 前景色
+  6.25:1，accent-secondary 前景色 5.22:1，全部通过正文 4.5:1 门槛）。
+- **`business-blue`**：底色跟 `dark` 完全一致，只把主信号色从青偏移到靛蓝（WCAG 校验：
+  `text-on-accent` 在这个靛蓝填充块上 4.96:1，通过）。
+
+**取色原则**：`accent-primary`/`accent-secondary` 只用于真正的"信号"场景（激活/选中态、
+告警强调），不用于纯装饰性的大面积填充（比如一条常驻可见的顶部横条）——信标方向的核心
+主张是颜色只承担信号功能，常年占用一个信号色反而会让"这个颜色代表什么"变得含糊。纯装饰性的
+大面积表面用 `bg-card`（呼应页面既有的深色系统），不要新发明色号。
 
 ## 3. 字体系统
 
-两套字体，都通过 `@fontsource` 本地打包（不发外部网络请求），在 `main.tsx` 引入：
+两套字体，自托管为本地 `.woff2` 文件（不用 Google Fonts CDN，避免生产环境依赖外部字体服务
+可用性），`@font-face` 声明 + 文件都在 `frontend/src/styles/index.css` / `frontend/public/fonts/`，
+`frontend/index.html` 对关键字重做了 `<link rel="preload">`：
 
-```tsx
-import '@fontsource/space-grotesk/400.css'
-import '@fontsource/space-grotesk/700.css'
-import '@fontsource/space-mono/400.css'
-import '@fontsource/space-mono/700.css'
-```
+| Token | 字体栈 | 字重 | 用途 |
+|---|---|---|---|
+| `font-mono` | `"IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace` | 400 / 500 / 600 | 标题/展示——**技术感的核心来源，标题也用等宽字体是信标方向刻意的选择**。页面级/区块级标题（`h1`/`h2`/`h3`、品牌名）统一 `font-mono font-semibold`（600，真实字重，不要用 `font-bold` 700——IBM Plex Mono 没有自托管 700 字重，会被浏览器合成粗体，观感发虚）。也用于全大写+字距拉宽的标签类文字。 |
+| `font-sans`（默认） | `"IBM Plex Sans", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif` | 400 / 500 | 全站默认正文。中文自动 fallback 到系统黑体。 |
 
-对应 `tailwind.config.ts` 的 `fontFamily`：
+**字重规则**：正文保持常规字重（400），强调文字（按钮标签、加粗提示）用 `font-medium`（500，
+Sans 唯二自托管的字重之一）；标题用等宽字体 + `font-semibold`（600，见上表），不要在等宽标题
+上用 `font-bold`。
 
-| Token | 字体栈 | 用途 |
-|---|---|---|
-| `font-sans`（默认） | `"Space Grotesk", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif` | 全站默认正文/标题。西文字符（英文、数字、Logo）落在 Space Grotesk，中文自动 fallback 到系统黑体 |
-| `font-mono` | `"Space Mono", ui-monospace, "SFMono-Regular", monospace` | **仅用于**全大写 + 字距拉宽（`uppercase tracking-widest`）的标签类文字：公告条、footer 分类小标题。不用于正文 |
+## 4. 边框系统（无阴影）
 
-**字重规则**：标题统一 `font-bold`（700）或更粗；正文保持常规字重（400），不要在正文大段文字上用 `font-bold`。
+信标方向不用阴影表达层次，一律用 1px 边框：`border border-subtle`（或语义色边框，如
+`border-status-error`/`border-accent-secondary`）。没有 `shadow-*` 系列 Tailwind 扩展——
+`tailwind.config.ts` 里没有 `boxShadow` 配置，任何 `shadow-soft`/`shadow-brutal` 之类的
+class 都不会解析成任何样式，只会静默失效。
 
-## 4. 边框与投影系统（brutalism 核心）
-
-`tailwind.config.ts` 的 `boxShadow` 扩展：
-
-```ts
-boxShadow: {
-  brutal: '2px 2px 0 0 #141111',
-  'brutal-sm': '1px 1px 0 0 #141111',
-}
-```
-
-配套组合类（写在组件 className 里，非 Tailwind 配置）：
-
-- **静止态**：常规元素用 `border-2 border-ink shadow-brutal`；小元素（标签、次级按钮）用
-  `border border-ink shadow-brutal-sm` 或 `border-2 ... shadow-brutal-sm`。
-- **交互元素按下态**（按钮类必须有）：
-  ```
-  active:translate-x-[2px] active:translate-y-[2px] active:shadow-none
-  ```
-  小尺寸按钮（如 nav 里的次级按钮）用 1px 位移：`active:translate-x-px active:translate-y-px`。
-  阴影方向位移 + 阴影消失，模拟"按下去"的物理触感，这是全站按钮类元素的标志性微交互，**新增
-  任何可点击的按钮都要带这个效果**，不能只做 `:hover` 变色了事。
-- **投影颜色**统一用 `#141111`（即 `ink`），不单独配色；偏移量只有 `brutal`/`brutal-sm` 两档，
-  不要自造第三档。
+弹层的遮罩（modal/dialog 的背景蒙层）例外：不要用 `bg-ink/*`（`ink` 在深色皮肤下是浅色，
+用作遮罩会让遮罩变亮而不是变暗，参见 `ConfirmContext.tsx`/`GraphReviewsPage.tsx` 的教训）。
+遮罩应该在任何皮肤下都读作"变暗"，用固定的 `bg-black/40`，不走皮肤相关的 token。
 
 ## 5. 圆角规则
 
-**全局直角**（`border-radius: 0`），不使用任何自定义圆角 token（历史上删除过 `rounded-card`/
-`rounded-bubble`）。
+收紧的小圆角，`tailwind.config.ts` 的 `borderRadius` 扩展：
 
-例外（允许保留 Tailwind 内置 `rounded-full`）：
-- 纯装饰性的圆形元素，如 `ThinkingIndicator` 的三个跳动点
-- 未来如果加头像类圆形图片，也可以用 `rounded-full`
+| Token | 值 | 用途 |
+|---|---|---|
+| `rounded-chip` / `rounded-control` / `rounded`（DEFAULT） | 2px | 标签、按钮、输入框 |
+| `rounded-card` / `rounded-panel` | 3px | 卡片、面板 |
+| `rounded-modal` / `rounded-container` | 4px | 弹层、大容器 |
 
-卡片、按钮、输入框、标签/徽章**一律直角**，不允许例外。
+不新增自定义圆角档位，按元素类型套用上表已有的 token。
 
 ## 6. 组件模式清单
 
-以下模式已在 `frontend/src/` 落地，新增同类元素时直接复用对应 className 组合，不要另起风格。
+以下模式已在 `frontend/src/` 落地，新增同类元素时直接复用对应 className 组合。
 
-### 6.1 顶部公告条（`ChatPage.tsx`）
-黑底 + 黄字 + 等宽字体，用于放置一句话状态说明：
+### 6.1 顶部公告条 / 品牌横条（`ChatPage.tsx`）
+中性深色系统（`bg-card`），不用信号色做纯装饰性大面积填充（见 §2 取色原则）：
 ```
-border-b-2 border-ink bg-ink px-4 py-2 text-center font-mono text-xs uppercase tracking-widest text-accent-yellow
+border-b border-subtle bg-card px-4 py-2 text-center font-mono text-xs uppercase tracking-widest text-ink-soft
 ```
-内容要求**真实、不夸大**——这是给内部演示环境用的状态条，不是营销 CTA，不写"重磅发布"之类的话术。
+品牌名用 `font-mono font-semibold text-ink`。
 
-### 6.2 导航栏（`ChatPage.tsx`）
-黄色背景 + 黑色底边框，是首屏色彩识别的关键区块：
+### 6.2 主按钮（Primary Button）
+实心信号色 + 细边框，用于最主要的操作：
 ```
-flex items-center justify-between border-b-2 border-ink bg-accent-yellow px-6 py-4
+min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-5 py-2.5 font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}
 ```
-
-### 6.3 主按钮（Primary Button）
-实心强调色 + 硬投影，用于最主要的操作（发送消息）：
-```
-border-2 border-ink bg-accent-pink px-5 py-2.5 font-bold text-ink shadow-brutal
-transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none
-disabled:cursor-not-allowed disabled:opacity-50
-```
+按下反馈是 `active:scale-95 active:opacity-90`（轻微缩放+变淡），不是旧设计语言的位移硬投影。
 参考实现：`ChatInput.tsx` 发送按钮。
 
-### 6.4 次级按钮（Secondary / Outline Button）
-白/米白底 + 黑边框，无强调色填充，用于非主线操作（重置、取消一类）：
+### 6.3 次级按钮（Secondary / Outline Button）
+`bg-paper` 底 + 细边框，无信号色填充，用于非主线操作：
 ```
-min-h-[44px] cursor-pointer border-2 border-ink bg-paper px-3 py-1.5 text-sm font-bold text-ink shadow-brutal-sm
-transition active:translate-x-px active:translate-y-px active:shadow-none
-disabled:cursor-not-allowed disabled:opacity-50
+min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}
 ```
-参考实现：`ChatPage.tsx` 导航栏"重新开始对话"按钮。**判断主/次的原则**：一个界面区域如果同时
-出现两个可点击操作，优先级更高的用主按钮样式，优先级低的用次级样式，不要两个都用实心色块
-（会分不清主次）。`min-h-[44px]` 和 `cursor-pointer` 是所有按钮类元素的强制要求，见第 7 节。
+**判断主/次的原则**：同一区域优先级更高的操作用主按钮样式，优先级低的用次级样式，不要两个
+都用实心信号色（会分不清主次）。`min-h-[44px]`/`cursor-pointer`/`${focusRing}` 是所有按钮类
+元素的强制要求，见第 7 节。
 
-### 6.5 消息气泡（`MessageBubble.tsx`）
-- 用户气泡：`border-ink bg-accent-pink text-ink`（深色字，不用白字——粉底配黑边框语境下白字
-  对比度不够）
-- 助手气泡（正常）：`border-ink bg-card text-ink`
-- 助手气泡（错误态）：`border-status-error bg-card text-ink`（**边框**用 `status-error`
-  标识错误，**文字**仍用 `ink` 不用 `status-error`——`status-error` 压在白色 `card` 上文字
-  对比度只有约 2.7:1，达不到 WCAG AA 正文 4.5:1 门槛。错误态靠边框颜色 + 文案内容传达语义，
-  不靠低对比度的红字，符合"不能只靠颜色传达信息"的可访问性原则）
-- 公共部分：`max-w-[75%] border-2 px-4 py-3 shadow-brutal`
+### 6.4 消息气泡（`MessageBubble.tsx`）
+- 用户气泡：`border-subtle bg-accent-primary text-on-accent`
+- 助手气泡（正常）：`border-subtle bg-card text-ink`
+- 助手气泡（错误态）：`border-status-error bg-card text-ink`（**边框**标识错误，**文字**仍用
+  `ink` 不用 `status-error`——低对比度红字达不到 WCAG AA 正文门槛，错误态靠边框颜色+文案
+  内容传达语义，符合"不能只靠颜色传达信息"的可访问性原则）
+- 公共部分：`max-w-[75%] rounded-card border px-4 py-3`（无阴影）
 
-### 6.6 加载指示器（`ThinkingIndicator`，`MessageBubble.tsx`）
-三个跳动圆点，`bg-ink-soft` + `animate-bounce motion-reduce:animate-none` + 递增
-`animation-delay`，是圆角规则里明确允许的例外。`motion-reduce:animate-none` 是必须的——
-系统开启"减少动态效果"时要降级为静态，不能无条件循环动画。
+### 6.5 状态徽章 / 提示卡片（`TaskStatusBadge.tsx` 及各页面的通知条）
+两种角色，不要混用：
+- **小面积、离散的状态徽章**（如列表行内的状态标签）：实心信号色填充 + `text-on-accent` 是
+  可以接受的（`TaskStatusBadge` 的 `active`/`warning` tone）。
+- **大面积的提示卡片/通知条**（如"该租户 schema 尚未确认"这类横幅）：**不要**用信号色实心
+  填充（会喧宾夺主，且如果卡片内还嵌了别的信号色徽章，会出现"一个节点两种信号色"的冲突）。
+  统一用中性表面 + 语义色边框：`bg-card` + `border-status-error`（错误）或
+  `border-accent-secondary`（警示/待办），文字用普通的 `text-ink`。参考：
+  `DocumentsPage.tsx` 的失败任务卡片、`SchemaEtlPage.tsx` 的 schema 未确认提示。
 
-### 6.7 引用标签 / 徽章（`SourceCitations.tsx`）
-直角小方块，黄底黑字 + 小号硬投影：
+### 6.6 引用标签 / 徽章（`SourceCitations.tsx`）
 ```
-border border-ink bg-accent-yellow px-2.5 py-1 text-xs text-ink shadow-brutal-sm
+rounded-chip border border-subtle bg-accent-secondary px-2.5 py-1 text-xs text-on-accent
 ```
-这是通用的"badge"模式，未来如果要展示状态标签、分类标签，复用这个模式（换背景色即可，
-边框/投影/直角规则不变）。
 
-### 6.8 输入框（`ChatInput.tsx`）
+### 6.7 输入框
 ```
-border-2 border-ink bg-paper px-4 py-2.5 text-ink placeholder:text-ink-soft
-focus:shadow-brutal focus:outline-none disabled:opacity-50
+rounded-control border border-subtle bg-paper px-4 py-2.5 text-ink placeholder:text-ink-soft ${focusRing} disabled:opacity-50
 ```
-focus 态用 `shadow-brutal` 呈现（复用第 4 节的硬投影 token），不用默认的模糊 outline/ring，
-也**不要**用强调色（如 `accent-cyan`）改边框色作为 focus 指示——实测 `accent-cyan` 在
-`paper` 背景上对比度只有约 1.8:1，低于 WCAG 2.2 非文字元素 3:1 的门槛，`shadow-brutal`
-用的是 `ink`，对比度足够且和按下态视觉语言一致。
+focus 态用 `focusRing`（`focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink`，各文件内联定义或模块级常量，写法不统一但值统一），
+不用 `shadow-*`（focus 态如果历史遗留写了 `focus:shadow-soft` 之类的 class，直接删除，不要
+补边框——`${focusRing}` 已经承担了 focus 反馈，重复补偿是错的）。
 
-### 6.9 Footer（`Footer.tsx`）
-黑底 + 60% 透明度黄字，与页面主体的米白背景形成首尾对比：
+### 6.8 Footer（`Footer.tsx`）
+中性深色系统（`bg-card`），不是固定反色（同 §6.1 的取色原则）：
 ```
-border-t-2 border-ink bg-ink px-6 py-8 text-accent-yellow/60
+border-t border-subtle bg-card px-6 py-8 text-ink-soft
 ```
-分类小标题/说明文字用 `font-mono text-xs uppercase tracking-widest`；品牌名本身
-（不透明）用 `text-accent-yellow`（不带 `/60`）以示强调。
+品牌名（不透明）用 `font-mono font-semibold text-ink`；分类小标题/说明文字用
+`font-mono text-xs uppercase tracking-widest`。
 
-### 6.10 管理后台侧边栏导航项（`AdminLayout.tsx`）
+### 6.9 管理后台侧边栏导航项 / 顶部 tab（`AdminLayout.tsx` 等）
 
-未激活态：`border-2 border-ink px-3 py-2.5 text-sm font-bold bg-paper text-ink`；
-激活态（当前路由）：`bg-accent-pink text-ink shadow-brutal-sm`（复用主按钮的强调色，
-不新增颜色 token）。用 react-router 的 `NavLink` 的 `isActive` 判断，不手动比较路径字符串。
+未激活态：`border border-subtle px-3 py-2.5 text-sm font-bold bg-paper text-ink hover:bg-interactive-hover`；
+激活态（当前路由/当前选中项）：`bg-accent-primary text-on-accent`（**统一用 `accent-primary`**，
+不管这个元素历史上是不是用过别的强调色——"当前激活/选中"是同一个语义角色，应该在全站用同
+一个信号色，不要因为某个文件历史上凑巧用了别的颜色就让它跟其它激活态长得不一样）。用
+react-router 的 `NavLink` 的 `isActive` 判断，不手动比较路径字符串。
 
 ## 7. 交互规范
 
-- **按下反馈**：所有按钮类元素必须有 `active:translate-*` + `active:shadow-none` 组合，见第 4 节。
+- **按下反馈**：所有按钮类元素用 `active:scale-95 active:opacity-90`（轻微缩放+变淡）。
 - **禁用态**：统一 `disabled:opacity-50`，可点击元素额外加 `disabled:cursor-not-allowed`。
-- **focus 态**：输入类/按钮类元素用 `focus:shadow-brutal focus:outline-none`（复用硬投影
-  token，见第 6.8 节），不用浏览器默认 outline，也不用 box-shadow 环形 focus ring（那是
-  圆角设计语言的常见做法，和本设计语言的硬边框调性冲突）；**不要**用 `accent-cyan` 之类的
-  强调色改边框色做 focus 指示——糖果色系普遍偏浅，对 `paper` 背景的对比度往往不够（实测
-  `accent-cyan` 只有约 1.8:1，低于 WCAG 3:1 门槛），`ink` 系的硬投影对比度足够且更安全。
-- **触控目标**：所有可点击元素（按钮、链接）最小高度 `min-h-[44px]`，小尺寸按钮也不例外——
-  用 `shadow-brutal-sm`/`py-1.5` 做视觉上的"小"，但可点击区域仍要够 44px。
-- **鼠标指针**：所有可点击元素加 `cursor-pointer`（原生 `<button>` 在部分浏览器默认不是手型）。
-- **过渡**：涉及位移/透明度变化的元素统一加 `transition`（不指定具体 duration/easing，用
-  Tailwind 默认值即可，全站保持一致）。
-- **动效降级**：无限循环/自动播放的动画（如 `animate-bounce`）必须配 `motion-reduce:animate-none`
-  或等效降级，尊重系统"减少动态效果"设置。
-- **视口高度**：需要撑满视口高度的容器用 `min-h-dvh`，不用 `min-h-screen`（`100vh`）——移动
-  浏览器地址栏收起/展开会让 `100vh` 跳动，`dvh`（动态视口高度）不受影响。
+- **focus 态**：`${focusRing}` 统一处理（见 §6.7），不用浏览器默认 outline，也不用
+  `shadow-*`（没有对应的 Tailwind 配置，会静默失效）。
+- **触控目标**：所有可点击元素最小高度 `min-h-[44px]`，小尺寸按钮也不例外——用
+  `text-sm`/`py-1.5` 做视觉上的"小"，但可点击区域仍要够 44px。
+- **鼠标指针**：所有可点击元素加 `cursor-pointer`。
+- **过渡**：涉及缩放/透明度变化的元素统一加 `transition`（不指定具体 duration/easing，用
+  Tailwind 默认值）。
+- **动效降级**：无限循环/自动播放的动画（如 `animate-bounce`）必须配
+  `motion-reduce:animate-none` 或等效降级。
+- **视口高度**：需要撑满视口高度的容器用 `min-h-dvh`，不用 `min-h-screen`。
+- **弹层遮罩**：`bg-black/40`，不用皮肤相关 token（见 §4）。
 
-## 8. 明确不采用的部分
+## 8. 皮肤（skin）机制
 
-以下是 raft.build 原站存在、但本项目**主动排除**的设计元素，新增功能时不要引入，除非有明确
-的新需求驱动并同步更新本文档：
-
-- 深色模式（本站只做一套浅色主题，raft.build 本身也没有深色模式）
-- 像素风格插画/吉祥物贴纸装饰（旋转悬浮的头像类装饰图形）——这是营销落地页的个性化装饰，
-  和"内部客服 demo"的定位不符
-- 首屏左文案右预览卡片的分栏布局、频道列表、成员头像等具体业务场景元素（那些是 raft.build
-  自己产品形态的展示，与本项目无关）
-- 用户评价区域的错落交错卡片布局 + 虚线连接线（当前页面结构没有这类展示型内容区块）
-- FAQ 手风琴、定价分段控制器（Segmented Control）、团队卡片顶部色条——当前页面没有对应
-  内容区块，如果未来加了 FAQ/定价类页面再引入，引入时应更新本文档对应章节
+`SkinContext.tsx`（`SkinProvider`）是站点级个人偏好（前台聊天页 + 后台管理共用，存
+`localStorage`，key 为 `admin_skin`），通过 `<html data-skin="...">` 属性驱动 `index.css`
+里对应的 `:root[data-skin='...']` 覆盖块生效。三档取值见 §2。没有存过偏好的新用户默认落在
+`'dark'`（信标本体），不是 `'default'`——`default` 是给无法/不愿意用深色模式的用户的日间
+版本，不该是大多数用户的第一眼观感。`SkinSwitcher` 组件挂载在 `AdminLayout.tsx` 里，前台
+聊天页目前没有暴露皮肤切换入口（如果要加，逻辑上应该复用同一个 `useAdminSkin()`）。
 
 ## 9. 新增组件/页面时的检查清单
 
-1. 颜色只用第 2 节表格里的 token，不写字面量色值。
-2. 字体默认继承 `font-sans`；只有全大写标签类文字才用 `font-mono`。
-3. 卡片/按钮/输入框全部直角，只有纯装饰圆形元素允许 `rounded-full`。
-4. 有边框的元素配硬投影（`shadow-brutal`/`shadow-brutal-sm`），投影色固定 `ink`。
-5. 可点击元素必须有按下位移反馈；区分主/次操作时用第 6.3/6.4 节的两种按钮样式。
-6. 如果新模式在本文档里没有先例，先想清楚它属于本设计语言的合理扩展、还是该放进第 8 节
-   "明确不采用"，拿不准就参照 raft.build 实测效果（可用 Claude in Chrome 重新抓取确认），
-   不要凭印象猜测。
+1. 颜色只用第 2 节表格里的语义 token，不写字面量色值，不新增装饰性强调色槽位。
+2. 标题（`h1`/`h2`/`h3`、品牌名）用 `font-mono font-semibold`；正文默认继承 `font-sans`。
+3. 卡片/按钮/输入框用第 5 节的圆角 token，不自造新档位。
+4. 层次用边框（`border border-subtle` 或语义色边框），不用阴影——没有 `shadow-*` 配置。
+5. 大面积表面（横条、footer）用中性 `bg-card`，信号色只用于真正的状态/激活场景（见 §2
+   取色原则），提示卡片用"中性底+语义边框"而不是实心信号色填充（见 §6.5）。
+6. 可点击元素必须有 `active:scale-95 active:opacity-90` 按下反馈 + `${focusRing}` + 见第 7 节。
+7. 如果新模式在本文档里没有先例，先看设计规格
+   `docs/superpowers/specs/2026-08-26-console-visual-identity-design.md` 里的设计基调判断，
+   拿不准就参照本文档已有的组件模式类推，不要凭印象猜测。
 
 ## 10. 参考来源
 
-- 实测数据来源：`docs/superpowers/specs/2026-08-07-frontend-raft-visual-redesign-design.md`
-  （首次用 Claude in Chrome 对 raft.build/zh-cn 做 `getComputedStyle` 实测的记录）
-- 实施记录：`docs/superpowers/plans/2026-08-08-frontend-raft-visual-redesign.md`
+- 设计规格：`docs/superpowers/specs/2026-08-26-console-visual-identity-design.md`
+- 实施计划：`docs/superpowers/plans/2026-08-26-console-visual-identity.md`
 - 本文档随代码演进持续更新，如与实际代码不一致，以代码为准并回来修正本文档。

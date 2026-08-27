@@ -63,7 +63,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       {children}
       {pending && (
         <div
-          className="fixed inset-0 z-30 flex items-center justify-center bg-ink/40 p-4"
+          className="fixed inset-0 z-30 flex items-center justify-center bg-black/40 p-4"
           onClick={(event) => {
             if (event.target === event.currentTarget) settle(false)
           }}
