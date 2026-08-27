@@ -4,12 +4,35 @@ from app.retrieval.milvus_store import MilvusVectorStore
 from app.retrieval.vector_store import VectorRecord
 
 
+class FakeQueryIterator:
+    """模拟 pymilvus 的 QueryIterator：next() 按固定批大小分批吐出预置的行，
+    取完后再调用一次 next() 返回空列表表示结束（不是抛异常），跟真实
+    QueryIterator 的终止协议一致——见 MilvusVectorStore._query_all 的用法。"""
+
+    def __init__(self, rows: list[dict], *, batch_size: int = 1) -> None:
+        self._batches = [rows[i : i + batch_size] for i in range(0, len(rows), batch_size)]
+        self._index = 0
+        self.closed = False
+
+    def next(self) -> list[dict]:
+        if self._index >= len(self._batches):
+            return []
+        batch = self._batches[self._index]
+        self._index += 1
+        return batch
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class FakeMilvusClient:
-    def __init__(self) -> None:
+    def __init__(self, *, query_iterator_batch_size: int = 1) -> None:
         self.inserted: dict | None = None
         self.last_search_kwargs: dict | None = None
         self.last_delete_kwargs: dict | None = None
-        self.last_query_kwargs: dict | None = None
+        self.last_query_iterator_kwargs: dict | None = None
+        self.last_iterator: FakeQueryIterator | None = None
+        self._query_iterator_batch_size = query_iterator_batch_size
 
     def insert(self, *, collection_name: str, data: list[dict]) -> None:
         self.inserted = {"collection_name": collection_name, "data": data}
@@ -34,11 +57,11 @@ class FakeMilvusClient:
             ]
         ]
 
-    def query(self, *, collection_name: str, filter: str, **kwargs):
-        self.last_query_kwargs = {"collection_name": collection_name, "filter": filter}
+    def query_iterator(self, *, collection_name: str, filter: str, **kwargs):
+        self.last_query_iterator_kwargs = {"collection_name": collection_name, "filter": filter}
         # For list_by_source calls with a source filter, return chunked data
         if 'source == "faq/network.md"' in filter:
-            return [
+            rows = [
                 {
                     "id": "faq/network.md#1",
                     "text": "第二段",
@@ -52,21 +75,24 @@ class FakeMilvusClient:
                     "source": "faq/network.md",
                 },
             ]
-        # For list_all calls with filter='id != ""', return the original test data
-        return [
-            {
-                "id": "faq/network.md",
-                "text": "网络断开时请先重启路由器。",
-                "tenant_id": "t1",
-                "source": "faq/network.md",
-            },
-            {
-                "id": "faq/login.md",
-                "text": "登录失败请检查账号密码。",
-                "tenant_id": "t1",
-                "source": "faq/login.md",
-            },
-        ]
+        else:
+            # For list_all calls with filter='id != ""', return the original test data
+            rows = [
+                {
+                    "id": "faq/network.md",
+                    "text": "网络断开时请先重启路由器。",
+                    "tenant_id": "t1",
+                    "source": "faq/network.md",
+                },
+                {
+                    "id": "faq/login.md",
+                    "text": "登录失败请检查账号密码。",
+                    "tenant_id": "t1",
+                    "source": "faq/login.md",
+                },
+            ]
+        self.last_iterator = FakeQueryIterator(rows, batch_size=self._query_iterator_batch_size)
+        return self.last_iterator
 
 
 async def test_upsert_sends_records_to_the_configured_collection():
@@ -186,14 +212,29 @@ async def test_list_all_maps_milvus_query_rows_to_vector_records():
     assert network_record.metadata == {"source": "faq/network.md"}
 
 
+async def test_list_all_concatenates_every_batch_from_the_query_iterator():
+    # batch_size=1 跟测试数据的 2 行组合起来，逼着 FakeQueryIterator 至少
+    # 分两批吐出结果——如果 list_all() 只读了 iterator.next() 一次就当
+    # 结束，这里只会拿到 1 条而不是 2 条。这条测试钉住"不管 Milvus 内部
+    # 分几批，list_all() 必须读到耗尽为止"这个行为，而不是像旧的
+    # limit=10000 写法那样只发一次请求、超过上限就静默丢数据。
+    client = FakeMilvusClient(query_iterator_batch_size=1)
+    store = MilvusVectorStore(client=client, collection_name="faq_chunks")
+
+    records = await store.list_all()
+
+    assert len(records) == 2
+    assert client.last_iterator.closed is True
+
+
 async def test_list_by_source_sends_expected_filter_expression():
     client = FakeMilvusClient()
     store = MilvusVectorStore(client=client, collection_name="faq_chunks")
 
     await store.list_by_source(source="faq/network.md", tenant_id="t1")
 
-    assert client.last_query_kwargs["collection_name"] == "faq_chunks"
-    assert client.last_query_kwargs["filter"] == (
+    assert client.last_query_iterator_kwargs["collection_name"] == "faq_chunks"
+    assert client.last_query_iterator_kwargs["filter"] == (
         'tenant_id == "t1" && source == "faq/network.md"'
     )
 
@@ -216,7 +257,7 @@ async def test_list_by_source_escapes_backslashes_and_quotes_in_source():
 
     await store.list_by_source(source=r'data\uploads\weird"path.md', tenant_id="t1")
 
-    assert client.last_query_kwargs["filter"] == (
+    assert client.last_query_iterator_kwargs["filter"] == (
         'tenant_id == "t1" && source == "data\\\\uploads\\\\weird\\"path.md"'
     )
 
