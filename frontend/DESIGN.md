@@ -79,6 +79,12 @@ class 都不会解析成任何样式，只会静默失效。
 用作遮罩会让遮罩变亮而不是变暗，参见 `ConfirmContext.tsx`/`GraphReviewsPage.tsx` 的教训）。
 遮罩应该在任何皮肤下都读作"变暗"，用固定的 `bg-black/40`，不走皮肤相关的 token。
 
+另一个例外是**浮层反色弹出**（`Tooltip.tsx`、`ToastContext.tsx`、`OntologySchemaPage.tsx` 的
+分段控件激活态）：这几处用 `bg-ink text-paper`，是刻意的——`ink`/`paper` 在任何皮肤下都是一对
+互为反色的亮度，`bg-ink text-paper` 因此在任何皮肤下都会渲染成"跟页面主体反色的浮出小块"
+（默认皮肤深底浅字、深色皮肤浅底深字），这是提示气泡/toast 一类瞬时浮层刻意追求的"跳出来"
+效果，跟 §4 里"大面积常驻表面不该固定占用某个亮度"的问题是两回事，不要把这几处当成 bug 改掉。
+
 ## 5. 圆角规则
 
 收紧的小圆角，`tailwind.config.ts` 的 `borderRadius` 扩展：
