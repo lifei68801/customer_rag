@@ -48,7 +48,17 @@ def _settings(**overrides) -> Settings:
         gateway_shared_secret=None,
     )
     defaults.update(overrides)
-    return Settings(**defaults)
+    # _env_file=None：这些测试用固定的 defaults 字典枚举了它们关心的字段，
+    # 对没在 defaults/overrides 里出现的字段（比如 agent_enable_autonomous_
+    # planning）预期落到 Settings 类声明的默认值——但 Settings.model_config
+    # 声明了 env_file=".env"，不加这个覆盖的话，本地开发者 .env 里配置的值
+    # （比如为了手动调试 Planner 而打开的
+    # CUSTOMER_RAG_AGENT_ENABLE_AUTONOMOUS_PLANNING=true）会静默盖过类默认
+    # 值，让这批"假定默认走静态检索路径"的测试在配置了这个开关的开发机上
+    # 悄悄换到完全不同的代码路径，产生一串看起来不相关的断言失败（2026-08-27
+    # 全量测试跑排查到的根因）。_env_file=None 只在这一个 Settings()
+    # 实例化上生效，不影响其他测试文件依赖 .env 提供必填字段的用法。
+    return Settings(_env_file=None, **defaults)
 
 
 class FakeEmbeddingProvider:
