@@ -17,11 +17,6 @@ export default {
         accent: {
           primary: 'rgb(var(--color-accent-primary) / <alpha-value>)',
           secondary: 'rgb(var(--color-accent-secondary) / <alpha-value>)',
-          pink: 'rgb(var(--color-accent-pink) / <alpha-value>)',
-          yellow: 'rgb(var(--color-accent-yellow) / <alpha-value>)',
-          cyan: 'rgb(var(--color-accent-cyan) / <alpha-value>)',
-          green: 'rgb(var(--color-accent-green) / <alpha-value>)',
-          orange: 'rgb(var(--color-accent-orange) / <alpha-value>)',
         },
         status: {
           success: 'rgb(var(--color-status-success) / <alpha-value>)',
