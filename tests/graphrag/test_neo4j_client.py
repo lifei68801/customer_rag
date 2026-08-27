@@ -855,6 +855,29 @@ async def test_execute_structured_filter_query_returns_real_total_count_beyond_l
     assert len(result["rows"]) == 2
 
 
+async def test_execute_structured_filter_query_limit_zero_skips_rows_query():
+    # limit=0 是"只要计数、不要样本"的信号（见 tool.py 的
+    # _PARAMETERS_SCHEMA.limit 说明）——只应该发出一次 .run()（计数查询），
+    # 不应该再额外发出取行查询，session.calls 只有 1 条记录了这一点。
+    from app.graphrag.structured_filter_query import AttributeConstraint, StructuredFilterQueryArgs
+
+    session = FakeSession(call_results=[{"total": 10000}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+    args = StructuredFilterQueryArgs(
+        anchor=TypeAnchor(term_type="订单号"),
+        constraints=[AttributeConstraint(field="standard_name", operator="starts_with", value="0")],
+        expand=None, group_by=None, limit=0,
+    )
+
+    result = await client.execute_structured_filter_query(
+        args, resolved=ResolvedAnchor(term_type="订单号", node_key=None), tenant_id="demo",
+        term_type_schema={},
+    )
+
+    assert result == {"rows": [], "total_count": 10000}
+    assert len(session.calls) == 1
+
+
 async def test_execute_structured_filter_query_name_anchor_matches_by_node_key():
     from app.graphrag.structured_filter_query import StructuredFilterQueryArgs
 

@@ -435,8 +435,14 @@ class Neo4jGraphClient:
             # 调用的既有用法：一些既有测试的 rows= 构造的是"取行查询"该返回的行形状
             # （不带 total 键），会被同一个 FakeSession 原样喂给计数查询这次调用。
             total_count = count_rows[0].get("total", 0) if count_rows else 0
-            rows_result = await session.run(rows_query, rows_params)
-            rows = await rows_result.data()
+            # limit=0 是调用方明确表示"只要计数、不要样本"（见 tool.py 的
+            # _PARAMETERS_SCHEMA.limit 说明）——rows_query 无论如何都只会
+            # 产出 0 行，跳过这次查询本身，省一次不必要的 Neo4j 往返。
+            if args.limit == 0:
+                rows: list[dict[str, Any]] = []
+            else:
+                rows_result = await session.run(rows_query, rows_params)
+                rows = await rows_result.data()
         return {"rows": rows, "total_count": total_count}
 
     async def merge_relation(

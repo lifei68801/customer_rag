@@ -19,8 +19,11 @@ _USAGE_GUIDE = (
     "看到「多少个/数量」等计数意图时，必须以 anchor.term_type + constraints 模式返回的 "
     "matched_count 为准给出确定数字（anchor.name 模式的 matched_count 只表示"
     "「是否找到了这个实体」，是 0 或 1，不是数量答案）——不能仅凭检索到的文档片段或邻居关系"
-    "列表猜测。constraints 里 standard_name 字段的 eq/ne 比较值支持别名/模糊匹配，"
-    "不要求填精确的标准名称。\n"
+    "列表猜测。这类纯计数问题应该把 limit 设为 0：拿到的 matched_count 本身永远是精确、"
+    "完整的计数，跟 limit/truncated 无关；limit 只影响要不要额外返回几条具体样本实体，"
+    "设成 0 就是明确告诉执行层不需要样本，省一次查询，也不会出现容易被误读成"
+    "「matched_count 不准」的 truncated 字段。constraints 里 standard_name 字段的 "
+    "eq/ne 比较值支持别名/模糊匹配，不要求填精确的标准名称。\n"
     "「xx类目/公司下有多少个yy」这类需要先确定xx是什么、再数yy数量的问题，"
     "优先用 anchor.term_type 定位 yy 的类型，配合 constraints.kind=relation"
     "（target_field=standard_name，target_value 直接填 xx 的口语化/别名名称，"
@@ -145,8 +148,10 @@ _PARAMETERS_SCHEMA: dict[str, Any] = {
         },
         "limit": {
             "type": "integer",
-            "description": "返回结果的最大条数，默认20——预期命中数量较多时"
-                           "（如宽泛的数值区间过滤），请设置一个合理的值避免返回过多结果",
+            "description": "返回样本实体的最大条数，默认20。\n"
+                           "仅为计数意图（不需要具体是哪些实体）时，设为 0——\n"
+                           "此时只返回 matched_count，不查询、不返回 anchors 样本，\n"
+                           "也不会出现 truncated 字段。",
         },
     },
     "required": ["anchor"],

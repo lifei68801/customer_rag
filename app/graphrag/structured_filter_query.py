@@ -239,8 +239,11 @@ def parse_structured_filter_query_args(raw: dict) -> StructuredFilterQueryArgs:
     constraints = [_parse_constraint(c) for c in raw_constraints]
     group_by = _parse_group_by(raw.get("group_by"), constraints=constraints)
     limit = raw.get("limit", 20)
-    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
-        raise StructuredFilterQueryError(f"limit 必须是正整数，收到: {limit!r}")
+    # limit=0 是合法的特殊值——表示纯计数意图，不需要具体样本实体，见
+    # execute_structured_filter_query()/run_structured_filter_query() 对 0 的
+    # 处理（跳过样本查询、不附带 truncated 字段）。只拒绝负数。
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+        raise StructuredFilterQueryError(f"limit 必须是非负整数，收到: {limit!r}")
     if expand is not None and group_by is not None:
         raise StructuredFilterQueryError(
             "expand 和 group_by 不能同时使用——group_by 返回的是聚合统计结果，不是具体实体列表，展开邻居没有意义"
@@ -508,6 +511,10 @@ async def run_structured_filter_query(
             for row in rows
         ],
     }
-    if total_count > len(rows):
+    # limit=0 是调用方主动要求"不要样本"，不是样本被截断——只有调用方确实
+    # 要了几条样本（limit>0）却没拿全时，才是真正的截断。见 tool.py 的
+    # _PARAMETERS_SCHEMA.limit 说明：这个区分正是为了避免 matched_count
+    # （从不截断）被 truncated 字段误读成"数字本身不准"。
+    if args.limit > 0 and total_count > len(rows):
         payload["truncated"] = True
     return payload

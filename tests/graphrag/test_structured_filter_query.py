@@ -115,6 +115,26 @@ def test_parse_uses_default_limit_when_omitted():
     assert args.limit == 20
 
 
+def test_parse_accepts_limit_zero_as_count_only_signal():
+    # limit=0 是纯计数意图的合法信号（不要样本），不是"limit 没填"的兜底值——
+    # 见 tool.py 的 _PARAMETERS_SCHEMA.limit 说明。
+    args = parse_structured_filter_query_args({
+        "anchor": {"term_type": "SKU"},
+        "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
+        "limit": 0,
+    })
+    assert args.limit == 0
+
+
+def test_parse_rejects_negative_limit():
+    with pytest.raises(StructuredFilterQueryError):
+        parse_structured_filter_query_args({
+            "anchor": {"term_type": "SKU"},
+            "constraints": [{"kind": "attribute", "field": "numeric_value", "operator": "gt", "value": 500}],
+            "limit": -1,
+        })
+
+
 _SKU_SCHEMA = TermTypeCategory(
     value="SKU", extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
 )
@@ -706,6 +726,29 @@ async def test_run_structured_filter_query_no_truncated_flag_when_total_matches_
         confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
     )
 
+    assert "truncated" not in result
+
+
+async def test_run_structured_filter_query_limit_zero_omits_truncated_even_with_nonzero_total():
+    # limit=0 时真实 Neo4jGraphClient 会跳过取行查询、rows 恒为 []（见
+    # test_neo4j_client.py::test_execute_structured_filter_query_limit_zero_skips_rows_query），
+    # 这里用 fake 直接模拟这个返回形状——total_count(10000) > len(rows)(0) 这个条件
+    # 本身仍然成立，但 truncated 不应该出现：调用方是主动要 0 条样本，不是样本被截断。
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    graph_client = _FakeGraphClient(rows=[], total_count=10000)
+
+    result = await run_structured_filter_query(
+        {"anchor": {"term_type": "订单号"},
+         "constraints": [{"kind": "attribute", "field": "standard_name", "operator": "starts_with", "value": "0"}],
+         "limit": 0},
+        graph_client=graph_client, tenant_id="demo", terms=[],
+        confirmed_relation_types=set(),
+        term_type_schema={"订单号": TermTypeCategory(value="订单号", extra_fields=[])},
+    )
+
+    assert result["matched_count"] == 10000
+    assert result["anchors"] == []
     assert "truncated" not in result
 
 
