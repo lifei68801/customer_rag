@@ -6,7 +6,7 @@ import csv
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Protocol
 
 import aiosqlite
 import xlrd
@@ -16,7 +16,6 @@ from app.config.settings import Settings
 from app.graphrag import provenance
 from app.graphrag.etl_stable_code_registry import ensure_stable_code_registry_schema
 from app.graphrag.factory import build_graph_client_from_settings
-from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.ontology_constraints import list_allowed_combinations
@@ -31,6 +30,28 @@ from app.graphrag.schema_etl_row_processing import (
     convert_field_value,
 )
 from app.graphrag.terms_store import TermNameConflictError, UnknownCategoryError, upsert_term_with_node_key
+
+
+class SchemaEtlGraphProtocol(Protocol):
+    """ETL 引擎实际调用的两个图写方法——独立声明，不继承 admin 路由用的
+    GraphWriteProtocol（neo4j_client.py）或摄取管道用的
+    GraphWriteClientProtocol（normalization.py）：三者是不同消费方，各自
+    只暴露自己真正用到的方法，见 2026-08-27 架构评审对 GraphClientProtocol
+    过宽问题的讨论。"""
+
+    async def merge_relation(
+        self,
+        *,
+        subject_standard_name: str,
+        object_standard_name: str,
+        relation_type: str,
+        source: str,
+        tenant_id: str,
+        provenance: str,
+        recorded_at: datetime,
+    ) -> None: ...
+
+    async def sync_term(self, term: Term) -> None: ...
 
 
 class SchemaETLNotConfirmedError(Exception):
@@ -206,7 +227,7 @@ def _record_skipped_row(
 async def _write_entity_mapping(
     *,
     conn: aiosqlite.Connection,
-    graph_client: Neo4jGraphClient,
+    graph_client: SchemaEtlGraphProtocol,
     tenant_id: str,
     mapping: EntityMapping,
     data_dir: Path,
@@ -259,7 +280,7 @@ async def _write_entity_mapping(
 async def _write_relation_mapping(
     *,
     conn: aiosqlite.Connection,
-    graph_client: Neo4jGraphClient,
+    graph_client: SchemaEtlGraphProtocol,
     tenant_id: str,
     mapping: RelationMapping,
     entity_mappings_by_term_type: dict[str, EntityMapping],
@@ -316,7 +337,7 @@ async def _write_relation_mapping(
 
 
 async def run_schema_etl(
-    *, conn: aiosqlite.Connection, graph_client: Neo4jGraphClient, config: SchemaETLConfig, data_dir: Path
+    *, conn: aiosqlite.Connection, graph_client: SchemaEtlGraphProtocol, config: SchemaETLConfig, data_dir: Path
 ) -> ETLRunReport:
     """按已确认 schema + 列映射配置，把 CSV 源数据确定性写入 Term/Neo4j 双存储。
     见 docs/superpowers/specs/2026-08-16-schema-etl-engine-design.md 第 6 节。

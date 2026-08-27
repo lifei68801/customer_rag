@@ -36,7 +36,7 @@ from app.graphrag.ontology_relations import (
     list_relation_types,
     update_relation_type,
 )
-from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.neo4j_client import GraphWriteProtocol
 from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
 from app.graphrag.terms_store import migrate_term_type
 
@@ -88,7 +88,7 @@ async def create_term_type_category(
     tenant_id: str,
     payload: TermTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> dict:
     try:
         await require_active_tenant(review_conn, tenant_id)
@@ -128,7 +128,7 @@ async def update_term_type_category(
     value: str,
     payload: TermTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> dict:
     try:
         await require_active_tenant(review_conn, tenant_id)
@@ -191,7 +191,7 @@ async def migrate_tenant_term_type(
     tenant_id: str,
     payload: MigrateTermTypeRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> MigrateTermTypeResponse:
     try:
         await require_active_tenant(review_conn, tenant_id)
@@ -322,7 +322,7 @@ async def delete_tenant_relation_type(
 @router.post("/{tenant_id}/relation-types/migrate")
 async def migrate_tenant_relation_type(
     tenant_id: str, payload: MigrateRelationTypeRequest,
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
     try:

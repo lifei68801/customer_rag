@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
+from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.structured_filter_query import (
     AttributeConstraint,
@@ -11,6 +12,9 @@ from app.graphrag.structured_filter_query import (
     ResolvedAnchor,
     StructuredFilterQueryArgs,
 )
+
+if TYPE_CHECKING:
+    from app.graphrag.ontology_categories import ExtraFieldSpec
 
 _RESERVED_FIELD_NAME = "standard_name"
 _CAST_BY_VALUE_TYPE = {"number": "toFloat", "integer": "toInteger"}
@@ -306,3 +310,61 @@ class NeptuneGraphClient:
         for query in _ENSURE_INDEXES_QUERIES:
             await self._client.execute_open_cypher(query)
         await self._client.execute_open_cypher(_BACKFILL_LEGACY_TERM_NODES_QUERY)
+
+    # 以下 7 个方法是 GraphWriteProtocol（neo4j_client.py）声明的后台管理写
+    # 接口——NeptuneGraphClient 尚未实现，显式存根报 NotImplementedError，
+    # 而不是任由调用方撞上一个没有说明的 AttributeError。收窄 GraphWriteProtocol
+    # 本身不会在 CI 里拦住误接的调用（本项目 CI 只跑 pytest，不跑类型检查），
+    # 这几个存根才是运行时真正生效的防线——见
+    # docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md 的
+    # "未决风险"一节，以及 2026-08-27 架构评审的讨论。
+
+    async def sync_term(self, term: Term) -> None:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 sync_term——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
+    async def rename_term_node(
+        self, *, tenant_id: str, node_key: str, new_standard_name: str
+    ) -> None:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 rename_term_node——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
+    async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 delete_term_node——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
+    async def count_relation_edges_for_term(self, *, tenant_id: str, node_key: str) -> int:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 count_relation_edges_for_term——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
+    async def ensure_extra_field_indexes(
+        self, *, tenant_id: str, term_type: str, extra_fields: list["ExtraFieldSpec"]
+    ) -> None:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 ensure_extra_field_indexes——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
+    async def migrate_relation_type_edges(
+        self, *, tenant_id: str, old_type: str, new_type: str
+    ) -> int:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 migrate_relation_type_edges——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
+    async def migrate_term_type_nodes(
+        self, *, tenant_id: str, old_type: str, new_type: str
+    ) -> int:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 migrate_term_type_nodes——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )

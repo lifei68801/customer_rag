@@ -27,11 +27,10 @@ from app.graphrag.etl_runs_store import (
     mark_etl_run_completed,
     mark_etl_run_failed,
 )
-from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.ontology_constraints import list_allowed_combinations
 from app.graphrag.ontology_lifecycle import is_ontology_confirmed
-from app.graphrag.schema_etl import run_schema_etl
+from app.graphrag.schema_etl import SchemaEtlGraphProtocol, run_schema_etl
 from app.graphrag.schema_etl_config import load_schema_etl_config
 from app.graphrag.schema_etl_sample import (
     EmptySchemaError,
@@ -151,7 +150,7 @@ async def get_schema_etl_status(
 async def _run_schema_etl_job(
     *,
     conn: aiosqlite.Connection,
-    graph_client: Neo4jGraphClient,
+    graph_client: SchemaEtlGraphProtocol,
     run_id: str,
     tenant_id: str,
     config_path: Path,
@@ -184,7 +183,7 @@ async def start_schema_etl_run(
     data_files: list[UploadFile] = [],
     upload_dir: Path = Depends(deps.get_upload_dir),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: SchemaEtlGraphProtocol = Depends(deps.get_graph_client),
 ) -> StartRunResponse:
     try:
         await require_active_tenant(review_conn, tenant_id)

@@ -234,6 +234,44 @@ class Neo4jDriverProtocol(Protocol):
     def session(self) -> Neo4jSessionProtocol: ...
 
 
+class GraphWriteProtocol(Protocol):
+    """后台管理路由（本体管理/术语管理/结构化 ETL）需要的写方法集合。
+
+    只覆盖这三个消费方（admin_ontology_routes.py/admin_terms_routes.py/
+    schema_etl.py）实际调用的方法——摄取管道用 GraphWriteClientProtocol
+    （见 normalization.py），审核队列用 ReviewGraphClientProtocol（见
+    review_queue.py），两者是不同的消费场景，故意不并进这里。`Neo4jGraphClient`
+    是目前唯一完整实现这个协议的类；`NeptuneGraphClient` 尚未实现，调用会
+    命中显式的 NotImplementedError 存根（见 neptune_client.py）——收窄这个
+    协议本身不会在 CI 里拦住这类调用（项目 CI 目前只跑 pytest，不跑类型
+    检查），存根才是运行时真正生效的防线。
+    """
+
+    async def sync_term(self, term: Term) -> None: ...
+
+    async def rename_term_node(
+        self, *, tenant_id: str, node_key: str, new_standard_name: str
+    ) -> None: ...
+
+    async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None: ...
+
+    async def count_relation_edges_for_term(
+        self, *, tenant_id: str, node_key: str
+    ) -> int: ...
+
+    async def ensure_extra_field_indexes(
+        self, *, tenant_id: str, term_type: str, extra_fields: list["ExtraFieldSpec"]
+    ) -> None: ...
+
+    async def migrate_relation_type_edges(
+        self, *, tenant_id: str, old_type: str, new_type: str
+    ) -> int: ...
+
+    async def migrate_term_type_nodes(
+        self, *, tenant_id: str, old_type: str, new_type: str
+    ) -> int: ...
+
+
 class Neo4jGraphClient:
     """Neo4j 图查询封装：给定标准术语名，返回与之相关的子图。
 

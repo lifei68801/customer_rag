@@ -1,5 +1,8 @@
+import pytest
+
 from app.graphrag.neptune_client import NeptuneGraphClient
-from app.graphrag.ontology_categories import TermTypeCategory
+from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import ExtraFieldSpec, TermTypeCategory
 from app.graphrag.structured_filter_query import AttributeConstraint, ExpandSpec, ResolvedAnchor, TypeAnchor
 
 
@@ -218,3 +221,66 @@ async def test_execute_structured_filter_query_expand_includes_optional_match_an
     assert rows_query.index("LIMIT $limit") < rows_query.index("OPTIONAL MATCH")
     assert rows_params["limit"] == 5
     assert result["rows"][0]["neighbors"] == []
+
+
+# 后台管理写接口（GraphWriteProtocol，见 neo4j_client.py）在 NeptuneGraphClient
+# 上尚未实现——这 7 个测试确认每个方法都报清晰的 NotImplementedError，而不是
+# 调用方撞上一个没有说明的 AttributeError。见 2026-08-27 架构评审："收窄协议
+# 本身不会在 CI 里拦住这类调用（本项目 CI 只跑 pytest，不跑类型检查），存根
+# 才是运行时真正生效的防线"。
+
+
+async def test_sync_term_raises_not_implemented():
+    client = NeptuneGraphClient(client=FakeNeptuneClient())
+    term = Term(
+        tenant_id="t1", node_key="k1", standard_name="错误码E502",
+        aliases=[], term_type="error_code",
+    )
+
+    with pytest.raises(NotImplementedError, match="sync_term"):
+        await client.sync_term(term)
+
+
+async def test_rename_term_node_raises_not_implemented():
+    client = NeptuneGraphClient(client=FakeNeptuneClient())
+
+    with pytest.raises(NotImplementedError, match="rename_term_node"):
+        await client.rename_term_node(tenant_id="t1", node_key="k1", new_standard_name="新名字")
+
+
+async def test_delete_term_node_raises_not_implemented():
+    client = NeptuneGraphClient(client=FakeNeptuneClient())
+
+    with pytest.raises(NotImplementedError, match="delete_term_node"):
+        await client.delete_term_node(tenant_id="t1", node_key="k1")
+
+
+async def test_count_relation_edges_for_term_raises_not_implemented():
+    client = NeptuneGraphClient(client=FakeNeptuneClient())
+
+    with pytest.raises(NotImplementedError, match="count_relation_edges_for_term"):
+        await client.count_relation_edges_for_term(tenant_id="t1", node_key="k1")
+
+
+async def test_ensure_extra_field_indexes_raises_not_implemented():
+    client = NeptuneGraphClient(client=FakeNeptuneClient())
+
+    with pytest.raises(NotImplementedError, match="ensure_extra_field_indexes"):
+        await client.ensure_extra_field_indexes(
+            tenant_id="t1", term_type="产品",
+            extra_fields=[ExtraFieldSpec(name="price", value_type="number")],
+        )
+
+
+async def test_migrate_relation_type_edges_raises_not_implemented():
+    client = NeptuneGraphClient(client=FakeNeptuneClient())
+
+    with pytest.raises(NotImplementedError, match="migrate_relation_type_edges"):
+        await client.migrate_relation_type_edges(tenant_id="t1", old_type="OLD", new_type="NEW")
+
+
+async def test_migrate_term_type_nodes_raises_not_implemented():
+    client = NeptuneGraphClient(client=FakeNeptuneClient())
+
+    with pytest.raises(NotImplementedError, match="migrate_term_type_nodes"):
+        await client.migrate_term_type_nodes(tenant_id="t1", old_type="旧类型", new_type="新类型")

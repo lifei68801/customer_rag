@@ -10,7 +10,7 @@ import aiosqlite
 
 from app.api import deps
 from app.graphrag.duplicate_detection import find_similar_terms
-from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.neo4j_client import GraphWriteProtocol
 from app.graphrag.ontology import Term
 from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
 from app.graphrag.terms_store import (
@@ -120,7 +120,7 @@ async def create_new_term(
     tenant_id: str,
     payload: TermWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> TermResponse:
     try:
         await require_active_tenant(review_conn, tenant_id)
@@ -186,7 +186,7 @@ async def update_existing_term(
     payload: TermWriteRequest,
     term_type: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> TermResponse:
     try:
         await require_active_tenant(review_conn, tenant_id)
@@ -257,7 +257,7 @@ async def delete_existing_term(
     standard_name: str,
     term_type: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> dict[str, bool]:
     try:
         await require_active_tenant(review_conn, tenant_id)
