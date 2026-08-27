@@ -582,7 +582,7 @@ export function GraphReviewsPage() {
           type="button"
           onClick={() => setTab('pending')}
           className={`min-h-[44px] cursor-pointer rounded-control border border-subtle px-4 py-2 text-sm font-bold transition ${focusRing} ${
-            tab === 'pending' ? 'bg-accent-pink text-on-accent shadow-soft-sm' : 'bg-paper text-ink'
+            tab === 'pending' ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink'
           }`}
         >
           待审核
@@ -591,7 +591,7 @@ export function GraphReviewsPage() {
           type="button"
           onClick={() => setTab('history')}
           className={`min-h-[44px] cursor-pointer rounded-control border border-subtle px-4 py-2 text-sm font-bold transition ${focusRing} ${
-            tab === 'history' ? 'bg-accent-pink text-on-accent shadow-soft-sm' : 'bg-paper text-ink'
+            tab === 'history' ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink'
           }`}
         >
           历史记录
@@ -600,7 +600,7 @@ export function GraphReviewsPage() {
           type="button"
           onClick={() => setTab('duplicates')}
           className={`min-h-[44px] cursor-pointer rounded-control border border-subtle px-4 py-2 text-sm font-bold transition ${focusRing} ${
-            tab === 'duplicates' ? 'bg-accent-pink text-on-accent shadow-soft-sm' : 'bg-paper text-ink'
+            tab === 'duplicates' ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink'
           }`}
         >
           疑似重复术语
@@ -610,7 +610,7 @@ export function GraphReviewsPage() {
       {error && (
         <p
           role="alert"
-          className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink shadow-soft-sm"
+          className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink"
         >
           {error}
         </p>
@@ -631,7 +631,7 @@ export function GraphReviewsPage() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="create-entity-dialog-title"
-            className="flex w-full max-w-md flex-col gap-3 rounded-modal border border-subtle bg-paper p-5 shadow-soft"
+            className="flex w-full max-w-md flex-col gap-3 rounded-modal border border-subtle bg-paper p-5"
           >
             {createDraft.step === 'form' && (
               <>
@@ -646,7 +646,7 @@ export function GraphReviewsPage() {
                     onChange={(event) =>
                       setCreateDraft({ ...createDraft, termType: event.target.value })
                     }
-                    className={`rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:shadow-soft focus:outline-none ${focusRing}`}
+                    className={`rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:outline-none ${focusRing}`}
                   >
                     <option value="">（请选择）</option>
                     {termTypeOptions.map((value) => (
@@ -661,14 +661,14 @@ export function GraphReviewsPage() {
                     type="button"
                     onClick={handleSubmitCreateEntity}
                     disabled={!createDraft.termType}
-                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-on-accent shadow-soft disabled:cursor-not-allowed disabled:opacity-50"
+                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-4 py-2 font-bold text-on-accent disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     下一步
                   </button>
                   <button
                     type="button"
                     onClick={handleCancelCreateEntity}
-                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 font-bold text-ink shadow-soft-sm"
+                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 font-bold text-ink"
                   >
                     取消
                   </button>
@@ -695,7 +695,7 @@ export function GraphReviewsPage() {
                     type="button"
                     onClick={handleSubmitCreateEntity}
                     disabled={createDraft.submitting}
-                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-on-accent shadow-soft disabled:cursor-not-allowed disabled:opacity-50"
+                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-4 py-2 font-bold text-on-accent disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {createDraft.submitting ? '创建中…' : '确认创建'}
                   </button>
@@ -703,7 +703,7 @@ export function GraphReviewsPage() {
                     type="button"
                     onClick={handleCancelCreateEntity}
                     disabled={createDraft.submitting}
-                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 font-bold text-ink shadow-soft-sm disabled:cursor-not-allowed disabled:opacity-50"
+                    className="min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 font-bold text-ink disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     取消
                   </button>
@@ -738,7 +738,7 @@ export function GraphReviewsPage() {
           return (
           <div
             key={review.review_id}
-            className={`flex flex-col gap-3 rounded-card border border-subtle bg-card shadow-soft ${
+            className={`flex flex-col gap-3 rounded-card border border-subtle bg-card ${
               density === 'compact' ? 'p-2.5' : 'p-4'
             }`}
           >
@@ -891,7 +891,7 @@ export function GraphReviewsPage() {
               placeholder="驳回备注（可选，仅驳回时提交）"
               aria-label="驳回备注"
               rows={2}
-              className={`rounded-control border border-subtle bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none ${focusRing}`}
+              className={`rounded-control border border-subtle bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:outline-none ${focusRing}`}
             />
             <div className="flex gap-3">
               <button
@@ -907,7 +907,7 @@ export function GraphReviewsPage() {
                   processingId !== null ||
                   batchProcessing
                 }
-                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-4 py-2 font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
               >
                 {processingId === review.review_id ? '批准中…' : '批准'}
               </button>
@@ -915,7 +915,7 @@ export function GraphReviewsPage() {
                 type="button"
                 onClick={() => handleReject(review.review_id)}
                 disabled={processingId !== null || batchProcessing}
-                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
               >
                 {processingId === review.review_id ? '驳回中…' : '驳回'}
               </button>
@@ -924,7 +924,7 @@ export function GraphReviewsPage() {
           )
         })}
       {tab === 'pending' && (selectedReviews.length > 0 || batchResult) && (
-        <div className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4 shadow-soft">
+        <div className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4">
           {selectedReviews.length > 0 && (
             <>
               <p className="text-sm font-bold text-ink">已选中 {selectedReviews.length} 条</p>
@@ -934,14 +934,14 @@ export function GraphReviewsPage() {
                 placeholder="批量驳回备注（可选，应用到本次选中的所有记录）"
                 aria-label="批量驳回备注"
                 rows={2}
-                className={`rounded-control border border-subtle bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:shadow-soft focus:outline-none ${focusRing}`}
+                className={`rounded-control border border-subtle bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:outline-none ${focusRing}`}
               />
               <div className="flex gap-3">
                 <button
                   type="button"
                   onClick={handleBatchApprove}
                   disabled={!canBatchApprove || batchProcessing || processingId !== null}
-                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-pink px-4 py-2 font-bold text-on-accent shadow-soft transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-4 py-2 font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                 >
                   {batchProcessing ? '批量处理中…' : '批量通过'}
                 </button>
@@ -949,7 +949,7 @@ export function GraphReviewsPage() {
                   type="button"
                   onClick={handleBatchReject}
                   disabled={batchProcessing || processingId !== null}
-                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 font-bold text-ink shadow-soft-sm transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 font-bold text-ink transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                 >
                   {batchProcessing ? '批量处理中…' : '批量驳回'}
                 </button>
@@ -992,7 +992,7 @@ export function GraphReviewsPage() {
               onClick={() => setHistoryFilter(filter)}
               className={`min-h-[44px] cursor-pointer rounded-control border border-subtle px-3 py-1.5 text-sm font-bold transition ${focusRing} ${
                 historyFilter === filter
-                  ? 'bg-accent-pink text-on-accent shadow-soft-sm'
+                  ? 'bg-accent-primary text-on-accent'
                   : 'bg-paper text-ink'
               }`}
             >
@@ -1008,7 +1008,7 @@ export function GraphReviewsPage() {
         history.map((review) => (
           <div
             key={review.review_id}
-            className={`flex flex-col gap-1 rounded-card border border-subtle bg-card shadow-soft-sm ${
+            className={`flex flex-col gap-1 rounded-card border border-subtle bg-card ${
               density === 'compact' ? 'p-2.5' : 'p-4'
             }`}
           >
