@@ -1,10 +1,10 @@
-from app.config.settings import Settings
 from app.eval.runner import main
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
+from tests.settings_factory import build_settings
 
 
 class FakeEmbeddingProvider:
@@ -20,18 +20,8 @@ class ScriptedLLMProvider:
         return ProviderResult(text=self._responses.pop(0))
 
 
-def _settings() -> Settings:
-    return Settings(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=2,
-        milvus_uri="http://localhost:19530",
-        milvus_collection="faq_chunks",
-    )
+def _settings():
+    return build_settings()
 
 
 async def test_main_runs_eval_suite_using_injected_registry_and_store(tmp_path):

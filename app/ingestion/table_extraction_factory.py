@@ -12,10 +12,10 @@ def build_table_extractor_from_settings(settings: Settings) -> TableExtractionFu
     qwen-vl-ocr，实测会完全无视表格结构化提取指令，见
     table_extraction.py 里 _DEFAULT_MODEL 的说明）。
     """
-    if not (settings.ocr_base_url and settings.ocr_api_key and settings.table_extraction_model):
+    if not (settings.ocr.base_url and settings.ocr.api_key and settings.table_extraction.model):
         return None
     return build_table_extractor(
-        base_url=settings.ocr_base_url,
-        api_key=settings.ocr_api_key,
-        model=settings.table_extraction_model,
+        base_url=settings.ocr.base_url,
+        api_key=settings.ocr.api_key,
+        model=settings.table_extraction.model,
     )

@@ -18,7 +18,7 @@ def build_vector_store_from_settings(
     client_factory: Callable[[str], MilvusClientProtocol] | None = None,
 ) -> MilvusVectorStore:
     factory = client_factory or _default_client_factory
-    client = factory(settings.milvus_uri)
+    client = factory(settings.milvus.uri)
     return MilvusVectorStore(
-        client=client, collection_name=settings.milvus_collection
+        client=client, collection_name=settings.milvus.collection
     )

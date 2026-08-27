@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
-from app.config.settings import Settings
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import ensure_review_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
@@ -20,6 +19,7 @@ from app.providers.base import ProviderCapability, ProviderRequest, ProviderResu
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
+from tests.settings_factory import build_settings
 
 
 class FakeEmbeddingProvider:
@@ -129,19 +129,8 @@ def _llm_registry_returning(text: str) -> ProviderRegistry:
     return registry
 
 
-def _settings(**overrides) -> Settings:
-    defaults = dict(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=2,
-        admin_token="tok",
-    )
-    defaults.update(overrides)
-    return Settings(**defaults)
+def _settings(**overrides):
+    return build_settings(**{"admin_token": "tok", **overrides})
 
 
 async def _open_ingestion_conn() -> aiosqlite.Connection:

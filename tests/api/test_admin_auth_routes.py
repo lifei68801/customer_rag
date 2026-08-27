@@ -2,23 +2,12 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
-from app.config.settings import Settings
 from app.main import app
+from tests.settings_factory import build_settings
 
 
-def _settings(**overrides) -> Settings:
-    defaults = dict(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=2,
-        admin_token="correct-token",
-    )
-    defaults.update(overrides)
-    return Settings(**defaults)
+def _settings(**overrides):
+    return build_settings(**{"admin_token": "correct-token", **overrides})
 
 
 def test_login_with_correct_token_returns_session_token():

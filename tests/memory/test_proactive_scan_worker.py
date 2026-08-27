@@ -3,7 +3,6 @@ from datetime import datetime, timedelta
 import aiosqlite
 
 from app.agent.create_ticket_tool import create_ticket
-from app.config.settings import Settings
 from app.memory.delayed_confirmation import (
     ensure_delayed_confirmation_schema,
     schedule_delayed_confirmation,
@@ -16,20 +15,13 @@ from app.providers.base import ProviderCapability, ProviderRequest, ProviderResu
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.factory import DEFAULT_EMBEDDING_PROVIDER_NAME, DEFAULT_LLM_PROVIDER_NAME
 from app.providers.registry import ProviderRegistry
+from tests.settings_factory import build_settings
 
 _STALE_AFTER_HOURS = 72
 
 
-def _settings() -> Settings:
-    return Settings(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=2,
-    )
+def _settings():
+    return build_settings()
 
 
 class ScriptedLLMProvider:

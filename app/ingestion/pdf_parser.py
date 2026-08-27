@@ -16,7 +16,7 @@ _DEFAULT_OCR_RENDER_DPI = 200
 下标大量丢失，200 DPI 能显著改善（见 2026-08-10 的 OCR 精度排查）。
 
 只是 parse_pdf() 的 render_dpi 参数没传时的兜底值；调用方（如
-ingestion_queue.py）应该优先传 Settings.ocr_render_dpi，不同供应商/账号
+ingestion_queue.py）应该优先传 OcrSettings.render_dpi，不同供应商/账号
 需要的分辨率不一定一样。"""
 
 _DEFAULT_OCR_MAX_CONCURRENCY = 8
@@ -34,7 +34,7 @@ _DEFAULT_OCR_MAX_CONCURRENCY = 8
 代码 bug。8 是这几个测试点里最快的，继续往上加并发只会让更多请求
 排到队尾，不会更快。这个"甜蜜点"因账号/供应商而异，换了 OCR 供应商
 或者账号配额调整后需要重新实测，所以只是 parse_pdf() 的 max_concurrency
-参数没传时的兜底值，调用方应该优先传 Settings.ocr_max_concurrency。"""
+参数没传时的兜底值，调用方应该优先传 OcrSettings.max_concurrency。"""
 
 _DEFAULT_TABLE_EXTRACTION_MAX_CONCURRENCY = 40
 """2026-08-10 用真实请求对同一账号做过并发梯度实测（4/8/20/40 对比，每档
@@ -44,7 +44,7 @@ _DEFAULT_TABLE_EXTRACTION_MAX_CONCURRENCY = 40
 不同，这次没有测到拐点。40 是目前测过的最高并发档位，不代表账号真实
 上限就是 40（没有再往上测）。只是 parse_pdf() 的
 table_extraction_max_concurrency 参数没传时的兜底值，调用方应该优先传
-Settings.table_extraction_max_concurrency；换账号/供应商需要重新用同样
+TableExtractionSettings.max_concurrency；换账号/供应商需要重新用同样
 的方法（同一份文档、控制变量对比不同并发数）实测这个端点。"""
 
 
@@ -318,7 +318,7 @@ async def parse_pdf(
     直接跳过该页——不强制要求调用方总是提供 OCR 函数。render_dpi/
     max_concurrency 都有默认值（见 _DEFAULT_OCR_RENDER_DPI/
     _DEFAULT_OCR_MAX_CONCURRENCY），生产调用方（ingestion_queue.py）会
-    传 Settings.ocr_render_dpi/ocr_max_concurrency，不同供应商/账号的
+    传 OcrSettings.render_dpi/ocr_max_concurrency，不同供应商/账号的
     最优值不一定一样。
 
     table_extractor 同样可选：提供时，检测到非空表格的页面会额外发一次

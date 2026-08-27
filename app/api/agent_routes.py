@@ -84,7 +84,7 @@ async def agent_chat_endpoint(
     推送的部分收不回来，这是流式输出的已知代价，已与产品方确认。
 
     Agent 自主规划（见 docs/AGENT_PLANNER_DESIGN.md）由
-    settings.agent_enable_autonomous_planning 总控，但语音请求
+    settings.agent.enable_autonomous_planning 总控，但语音请求
     （voice_response=True）无论这个开关怎么配置都强制走确定性路径——
     Planner 多轮 LLM 往返和语音首包延迟的硬性要求直接冲突，不能让
     Planner 自己判断该不该省时间。
@@ -116,7 +116,7 @@ async def agent_chat_endpoint(
     }
     allowed_combinations = await list_allowed_combinations(review_conn, tenant_id, status="confirmed")
     enable_autonomous_planning = (
-        settings.agent_enable_autonomous_planning and not payload.voice_response
+        settings.agent.enable_autonomous_planning and not payload.voice_response
     )
 
     async def event_stream() -> AsyncIterator[str]:
@@ -165,10 +165,10 @@ async def agent_chat_endpoint(
             graph_client=graph_client,
             memory_conn=memory_conn,
             ticket_conn=memory_conn,
-            memory_recall_use_embedding=settings.memory_recall_use_embedding,
-            min_relevance_score=settings.agent_min_relevance_score,
+            memory_recall_use_embedding=settings.memory.recall_use_embedding,
+            min_relevance_score=settings.agent.min_relevance_score,
             enable_autonomous_planning=enable_autonomous_planning,
-            max_tool_call_rounds=settings.agent_max_tool_call_rounds,
+            max_tool_call_rounds=settings.agent.max_tool_call_rounds,
             on_answer_chunk=on_answer_chunk,
             on_tool_status=on_tool_status if not payload.voice_response else None,
             banned_terms=deps.parse_banned_terms(settings.banned_terms),
@@ -188,7 +188,7 @@ async def agent_chat_endpoint(
                     # 占 2 个节点步骤，留足余量防止状态内轮次计数器万一有 bug 时
                     # 直接被 LangGraph 自身的保护机制拦住，而不是无限循环耗尽资源。
                     config={
-                        "recursion_limit": settings.agent_max_tool_call_rounds * 2 + 20
+                        "recursion_limit": settings.agent.max_tool_call_rounds * 2 + 20
                     },
                 )
             finally:

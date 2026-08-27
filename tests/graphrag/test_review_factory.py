@@ -1,21 +1,12 @@
-from app.config.settings import Settings
 from app.graphrag.ontology_lifecycle import checkout_draft
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.review_factory import build_review_conn_from_settings
 from app.graphrag.review_queue import enqueue_for_review, list_pending_reviews
+from tests.settings_factory import build_settings
 
 
-def _settings(db_path) -> Settings:
-    return Settings(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=1024,
-        graph_review_db_path=str(db_path),
-    )
+def _settings(db_path):
+    return build_settings(graph_review_db_path=str(db_path))
 
 
 async def test_build_review_conn_from_settings_creates_usable_schema(tmp_path):

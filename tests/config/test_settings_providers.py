@@ -3,9 +3,9 @@ import json
 import httpx
 
 from app.api.deps import DEFAULT_LLM_PROVIDER_NAME
-from app.config.settings import Settings
 from app.providers.base import ProviderCapability, ProviderRequest
 from app.providers.factory import build_llm_registry_from_settings
+from tests.settings_factory import build_settings
 
 
 async def test_build_llm_registry_from_settings_uses_configured_endpoint():
@@ -21,7 +21,7 @@ async def test_build_llm_registry_from_settings_uses_configured_endpoint():
         )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    settings = Settings(
+    settings = build_settings(
         llm_base_url="https://api.deepseek.com/v1",
         llm_api_key="settings-key",
         llm_model="deepseek-chat",

@@ -239,11 +239,11 @@ async def upload_document(
         graph_client,
         review_conn,
         ocr,
-        settings.ocr_render_dpi,
-        settings.ocr_max_concurrency,
+        settings.ocr.render_dpi,
+        settings.ocr.max_concurrency,
         table_extractor,
-        settings.table_extraction_max_concurrency,
-        settings.ingestion_job_concurrency,
+        settings.table_extraction.max_concurrency,
+        settings.ingestion.job_concurrency,
     )
     return UploadResponse(job_id=job_id)
 
@@ -391,11 +391,11 @@ async def retry_ingestion_job(
         graph_client,
         review_conn,
         ocr,
-        settings.ocr_render_dpi,
-        settings.ocr_max_concurrency,
+        settings.ocr.render_dpi,
+        settings.ocr.max_concurrency,
         table_extractor,
-        settings.table_extraction_max_concurrency,
-        settings.ingestion_job_concurrency,
+        settings.table_extraction.max_concurrency,
+        settings.ingestion.job_concurrency,
     )
     return RetryJobResponse(retried=True)
 

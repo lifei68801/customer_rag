@@ -1,6 +1,5 @@
 import aiosqlite
 
-from app.config.settings import Settings
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
@@ -9,6 +8,7 @@ from app.providers.base import ProviderCapability, ProviderRequest, ProviderResu
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
 from app.retrieval.vector_store import InMemoryVectorStore
+from tests.settings_factory import build_settings
 
 
 class FakeEmbeddingProvider:
@@ -16,18 +16,8 @@ class FakeEmbeddingProvider:
         return EmbeddingResult(vectors=[[0.1, 0.2] for _ in request.texts])
 
 
-def _settings() -> Settings:
-    return Settings(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=2,
-        milvus_uri="http://localhost:19530",
-        milvus_collection="faq_chunks",
-    )
+def _settings():
+    return build_settings()
 
 
 async def _confirm_default_ontology(conn: aiosqlite.Connection, tenant_id: str = "t1") -> None:

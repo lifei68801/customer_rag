@@ -7,12 +7,12 @@ from app.providers.tts import GenericTTSProvider, TTSProvider
 
 
 def build_asr_provider_from_settings(settings: Settings) -> ASRProvider | None:
-    if not (settings.asr_base_url and settings.asr_api_key and settings.asr_model):
+    if not (settings.asr.base_url and settings.asr.api_key and settings.asr.model):
         return None
     return GenericASRProvider(
-        base_url=settings.asr_base_url,
-        api_key=settings.asr_api_key,
-        model=settings.asr_model,
+        base_url=settings.asr.base_url,
+        api_key=settings.asr.api_key,
+        model=settings.asr.model,
     )
 
 
@@ -22,23 +22,23 @@ def build_tts_provider_from_settings(settings: Settings) -> TTSProvider | None:
     dashscope_tts.py 的说明。
     """
     if (
-        settings.tts_dashscope_websocket_url
-        and settings.tts_dashscope_http_url
-        and settings.tts_dashscope_voice
-        and settings.tts_api_key
-        and settings.tts_model
+        settings.tts.dashscope_websocket_url
+        and settings.tts.dashscope_http_url
+        and settings.tts.dashscope_voice
+        and settings.tts.api_key
+        and settings.tts.model
     ):
         return DashScopeTTSProvider(
-            api_key=settings.tts_api_key,
-            model=settings.tts_model,
-            voice=settings.tts_dashscope_voice,
-            base_websocket_api_url=settings.tts_dashscope_websocket_url,
-            base_http_api_url=settings.tts_dashscope_http_url,
+            api_key=settings.tts.api_key,
+            model=settings.tts.model,
+            voice=settings.tts.dashscope_voice,
+            base_websocket_api_url=settings.tts.dashscope_websocket_url,
+            base_http_api_url=settings.tts.dashscope_http_url,
         )
-    if not (settings.tts_base_url and settings.tts_api_key and settings.tts_model):
+    if not (settings.tts.base_url and settings.tts.api_key and settings.tts.model):
         return None
     return GenericTTSProvider(
-        base_url=settings.tts_base_url,
-        api_key=settings.tts_api_key,
-        model=settings.tts_model,
+        base_url=settings.tts.base_url,
+        api_key=settings.tts.api_key,
+        model=settings.tts.model,
     )

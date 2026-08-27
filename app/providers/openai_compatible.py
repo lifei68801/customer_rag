@@ -44,7 +44,7 @@ class _OpenAICompatibleClient:
 
 
 class OpenAICompatibleChatProvider(_OpenAICompatibleClient):
-    """enable_thinking 见 Settings.llm_enable_thinking 的说明：DeepSeek 一类
+    """enable_thinking 见 LLMSettings.enable_thinking 的说明：DeepSeek 一类
     推理模型请求体里的 thinking.type 参数，False 时显式传 "disabled" 关闭
     隐藏思维链（实测对不支持这个参数的供应商无害，会被当未知字段忽略）；
     True 时不传这个字段，沿用模型自己的默认行为（实测等价于 "enabled"）。

@@ -98,15 +98,15 @@ async def get_gateway_tenant_id(
 ) -> str | None:
     """校验请求是否真的经过了网关，而不是被绕过网关直接访问。
 
-    settings.gateway_shared_secret 未配置时（本地开发默认）直接放行返回
+    settings.gateway.shared_secret 未配置时（本地开发默认）直接放行返回
     None，交给调用方走 resolve_tenant_id() 的请求体/query 兜底路径；一旦
     配置了密钥，缺失或错误的 X-Gateway-Secret 直接 401 拒绝，绝不允许
     静默降级到不受保护的旧路径——否则攻击者只要不带这个头就能绕过校验，
     密钥形同虚设。
     """
-    if not settings.gateway_shared_secret:
+    if not settings.gateway.shared_secret:
         return None
-    if x_gateway_secret != settings.gateway_shared_secret:
+    if x_gateway_secret != settings.gateway.shared_secret:
         raise HTTPException(status_code=401, detail="缺少有效的网关凭证")
     if not x_tenant_id:
         raise HTTPException(status_code=401, detail="网关未声明租户身份")
@@ -296,7 +296,7 @@ async def get_ingestion_conn(
     if _ingestion_conn_cache is None:
         async with _ingestion_conn_lock:
             if _ingestion_conn_cache is None:
-                db_path = Path(settings.ingestion_db_path)
+                db_path = Path(settings.ingestion.db_path)
                 db_path.parent.mkdir(parents=True, exist_ok=True)
                 conn = await aiosqlite.connect(str(db_path))
                 await ensure_tracking_schema(conn)

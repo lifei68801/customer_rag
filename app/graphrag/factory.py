@@ -33,11 +33,11 @@ def build_graph_client_from_settings(
 ) -> Neo4jGraphClient | NeptuneGraphClient:
     if settings.graph_backend == "neptune":
         factory = neptune_client_factory or _default_neptune_client_factory
-        client = factory(settings.neptune_endpoint, port=settings.neptune_port)
+        client = factory(settings.neptune.endpoint, port=settings.neptune.port)
         return NeptuneGraphClient(client=client)
     factory = driver_factory or _default_driver_factory
     driver = factory(
-        settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password)
+        settings.neo4j.uri, auth=(settings.neo4j.user, settings.neo4j.password)
     )
     return Neo4jGraphClient(driver=driver)
 

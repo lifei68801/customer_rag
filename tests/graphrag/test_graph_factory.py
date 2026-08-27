@@ -1,19 +1,7 @@
 import pytest
 
-from app.config.settings import Settings
 from app.graphrag.factory import build_graph_client_from_settings, load_terms_from_settings
-
-
-def _base_kwargs() -> dict:
-    return dict(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=1024,
-    )
+from tests.settings_factory import build_settings
 
 
 def test_build_graph_client_from_settings_uses_configured_uri_and_auth():
@@ -24,8 +12,7 @@ def test_build_graph_client_from_settings_uses_configured_uri_and_auth():
         captured["auth"] = auth
         return object()
 
-    settings = Settings(
-        **_base_kwargs(),
+    settings = build_settings(
         neo4j_uri="bolt://localhost:7687",
         neo4j_user="neo4j",
         neo4j_password="secret",
@@ -46,10 +33,7 @@ def test_load_terms_from_settings_reads_configured_path(tmp_path):
         "    term_type: module\n",
         encoding="utf-8",
     )
-    settings = Settings(
-        **_base_kwargs(),
-        terminology_path=str(terminology_path),
-    )
+    settings = build_settings(terminology_path=str(terminology_path))
 
     terms = load_terms_from_settings(settings)
 
@@ -57,7 +41,7 @@ def test_load_terms_from_settings_reads_configured_path(tmp_path):
 
 
 def test_build_graph_client_from_settings_defaults_to_neo4j():
-    settings = Settings(**_base_kwargs())
+    settings = build_settings()
 
     client = build_graph_client_from_settings(
         settings, driver_factory=lambda uri, *, auth: object()
@@ -75,8 +59,7 @@ def test_build_graph_client_from_settings_selects_neptune_backend():
         captured["port"] = port
         return object()
 
-    settings = Settings(
-        **_base_kwargs(),
+    settings = build_settings(
         graph_backend="neptune",
         neptune_endpoint="neptune.example.com",
         neptune_port=8182,
@@ -99,9 +82,7 @@ def test_build_graph_client_from_settings_neptune_does_not_call_driver_factory()
         driver_factory_called = True
         return object()
 
-    settings = Settings(
-        **_base_kwargs(), graph_backend="neptune", neptune_endpoint="neptune.example.com",
-    )
+    settings = build_settings(graph_backend="neptune", neptune_endpoint="neptune.example.com")
 
     build_graph_client_from_settings(
         settings, driver_factory=fake_driver_factory,
@@ -117,8 +98,7 @@ def test_build_graph_client_from_settings_neptune_without_injected_factory_raise
     # NotImplementedError"这个行为，而不是默默产出一个看似能用、实际连不上 Neptune
     # 的 client。这是本次改动能安全合并（在 Neptune 连通性尚未实测的前提下）的
     # 论据之一，必须有测试钉住，不能只靠代码审查记住这一点。
-    settings = Settings(
-        **_base_kwargs(),
+    settings = build_settings(
         graph_backend="neptune",
         neptune_endpoint="neptune.example.com",
         neptune_port=8182,

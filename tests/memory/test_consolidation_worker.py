@@ -1,26 +1,16 @@
 import aiosqlite
 
-from app.config.settings import Settings
 from app.memory.consolidation_queue import enqueue_consolidation_job, list_pending_jobs
 from app.memory.consolidation_worker import main
 from app.memory.schema import ensure_schema
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
+from tests.settings_factory import build_settings
 
 
-def _settings() -> Settings:
-    return Settings(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=2,
-        milvus_uri="http://localhost:19530",
-        milvus_collection="faq_chunks",
-    )
+def _settings():
+    return build_settings()
 
 
 class ScriptedLLMProvider:

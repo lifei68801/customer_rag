@@ -2,7 +2,6 @@ import aiosqlite
 from fastapi.testclient import TestClient
 
 from app.api import deps
-from app.config.settings import Settings
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
@@ -10,6 +9,7 @@ from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, Embeddi
 from app.providers.registry import ProviderRegistry
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
+from tests.settings_factory import build_settings as _settings
 
 
 class FakeEmbeddingProvider:
@@ -55,19 +55,6 @@ async def _override_get_review_conn() -> aiosqlite.Connection:
     return conn
 
 
-def _settings(**overrides) -> Settings:
-    defaults = dict(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=2,
-        gateway_shared_secret=None,
-    )
-    defaults.update(overrides)
-    return Settings(**defaults)
 
 
 def test_qa_endpoint_returns_answer_and_used_sources():

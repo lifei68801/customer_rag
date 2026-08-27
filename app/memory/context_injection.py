@@ -34,7 +34,7 @@ async def inject_memory_context(
 
     use_embedding_recall=False 时 recall_memory_items 只用 BM25 关键词排名，
     不需要 embedding_registry/embedding_provider_name（可以不传）——见
-    Settings.memory_recall_use_embedding 的说明。
+    MemorySettings.recall_use_embedding 的说明。
     """
     if question is not None and (
         use_embedding_recall is False

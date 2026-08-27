@@ -1,24 +1,12 @@
 from fastapi.testclient import TestClient
 
 from app.api import deps
-from app.config.settings import Settings
 from app.main import app
 from app.providers.asr import ASRRequest, ASRResult
+from tests.settings_factory import build_settings
 
 
-def _settings(**overrides) -> Settings:
-    defaults = dict(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=2,
-        gateway_shared_secret=None,
-    )
-    defaults.update(overrides)
-    return Settings(**defaults)
+_settings = build_settings
 
 
 class FakeASRProvider:

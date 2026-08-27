@@ -22,10 +22,10 @@ def build_llm_registry_from_settings(
         [
             ProviderConfig(
                 name=DEFAULT_LLM_PROVIDER_NAME,
-                base_url=settings.llm_base_url,
-                api_key=settings.llm_api_key,
-                model=settings.llm_model,
-                enable_thinking=settings.llm_enable_thinking,
+                base_url=settings.llm.base_url,
+                api_key=settings.llm.api_key,
+                model=settings.llm.model,
+                enable_thinking=settings.llm.enable_thinking,
             )
         ],
         client=client,
@@ -41,12 +41,12 @@ def build_embedding_registry_from_settings(
     registry.register(
         DEFAULT_EMBEDDING_PROVIDER_NAME,
         OpenAICompatibleEmbeddingProvider(
-            base_url=settings.embedding_base_url,
-            api_key=settings.embedding_api_key,
-            model=settings.embedding_model,
+            base_url=settings.embedding.base_url,
+            api_key=settings.embedding.api_key,
+            model=settings.embedding.model,
             client=client,
-            batch_size=settings.embedding_batch_size,
-            max_concurrency=settings.embedding_max_concurrency,
+            batch_size=settings.embedding.batch_size,
+            max_concurrency=settings.embedding.max_concurrency,
         ),
     )
     return registry

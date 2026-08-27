@@ -244,7 +244,7 @@ def build_agent_graph(
     memory_recall_use_embedding 默认 True（行为不变，长期记忆召回融合
     BM25+embedding 两路语义/关键词排名）；置 False 时 memory_recall_node
     跳过这次 embedding API 调用，只用 BM25 关键词排名，见
-    Settings.memory_recall_use_embedding 的说明——2026-08-12 排查响应延迟
+    MemorySettings.recall_use_embedding 的说明——2026-08-12 排查响应延迟
     时加的临时降级开关。
 
     session_window_store 为可选项：不传（默认）则等价于用

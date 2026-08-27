@@ -389,7 +389,7 @@ async def process_pending_jobs(
     影响同批次其它任务。
 
     job_concurrency 控制这一批任务里最多同时处理几份文档，默认 1（严格
-    串行，和这次改造前完全一致）——见 Settings.ingestion_job_concurrency
+    串行，和这次改造前完全一致）——见 IngestionSettings.job_concurrency
     的说明，提高这个值前必须先做真实的多文档并发负载测试。
     """
     jobs = await list_pending_jobs(conn, limit=limit)
@@ -407,7 +407,7 @@ async def process_pending_jobs(
     )
     # job_concurrency 控制"同时有几份文档在处理"，默认 1 和改造前完全
     # 一致；调大之前需要先实测多文档同时摄取时账号的真实承受能力（见
-    # Settings.ingestion_job_concurrency 的说明）。
+    # IngestionSettings.job_concurrency 的说明）。
     job_semaphore = asyncio.Semaphore(job_concurrency)
 
     async def _process_one_job(job: dict[str, Any]) -> bool:

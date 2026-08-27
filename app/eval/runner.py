@@ -263,7 +263,7 @@ async def compare_planner_modes(
     各跑一遍同一份评测集，用完全相同的打分口径对比两种模式的效果。
 
     这是 docs/AGENT_PLANNER_DESIGN.md 第8步"用真实评测数据决定是否把
-    Settings.agent_enable_autonomous_planning 默认值翻转为 True"的落地
+    AgentSettings.enable_autonomous_planning 默认值翻转为 True"的落地
     入口——两个 graph 除了这一个开关，其余构建参数完全一致，保证对比
     的唯一变量就是 Planner 开关本身。
 
@@ -362,7 +362,7 @@ async def main(
     --compare-planner：不跑 answer_question() 直连路径，改为分别用
     enable_autonomous_planning=False/True 构建两个 Agent graph 各跑一遍，
     输出两组指标供对比——这是决定要不要把
-    Settings.agent_enable_autonomous_planning 默认值翻转为 True 的数据来源。
+    AgentSettings.enable_autonomous_planning 默认值翻转为 True 的数据来源。
     """
     resolved_settings = settings or Settings()
     cases = load_eval_cases(dataset_path)

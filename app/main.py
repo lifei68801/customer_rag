@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     配网关的本地开发环境无法启动。
     """
     settings = Settings()
-    if not settings.gateway_shared_secret:
+    if not settings.gateway.shared_secret:
         logger.warning(
             "gateway_shared_secret 未配置：当前应用信任客户端自报的 "
             "tenant_id，任何调用方都可以伪造租户身份绕过多租户隔离。"

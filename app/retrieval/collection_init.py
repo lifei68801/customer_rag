@@ -59,16 +59,16 @@ def main(
     """
     resolved_settings = settings or Settings()
     factory = client_factory or _default_client_factory
-    client = factory(resolved_settings.milvus_uri)
+    client = factory(resolved_settings.milvus.uri)
     created = ensure_collection(
         client,
-        collection_name=resolved_settings.milvus_collection,
-        dimension=resolved_settings.embedding_dimension,
+        collection_name=resolved_settings.milvus.collection,
+        dimension=resolved_settings.embedding.dimension,
     )
     if created:
-        print(f"已创建 collection: {resolved_settings.milvus_collection}")
+        print(f"已创建 collection: {resolved_settings.milvus.collection}")
     else:
-        print(f"collection 已存在，跳过: {resolved_settings.milvus_collection}")
+        print(f"collection 已存在，跳过: {resolved_settings.milvus.collection}")
     return created
 
 

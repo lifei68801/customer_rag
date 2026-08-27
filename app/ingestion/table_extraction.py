@@ -40,7 +40,7 @@ _PROMPT = """请仔细阅读图片中的表格内容。这张表格可能包含�
 _MIN_CALL_INTERVAL_SECONDS = 0.5
 """跟 dashscope_ocr.py 同款节流，防止连续高频调用触发服务端限流——这个
 具体端点/模型还没有像 OCR 那样做过并发梯度实测，先保守沿用同样的间隔，
-真实并发承受力需要单独实测（见 Settings.table_extraction_max_concurrency
+真实并发承受力需要单独实测（见 TableExtractionSettings.max_concurrency
 的说明，默认并发数保守到 1）。"""
 
 

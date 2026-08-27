@@ -79,7 +79,7 @@ async def main(
     )
     conn = ingestion_conn
     if conn is None:
-        db_path = Path(resolved_settings.ingestion_db_path)
+        db_path = Path(resolved_settings.ingestion.db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = await aiosqlite.connect(str(db_path))
     await ensure_tracking_schema(conn)
@@ -124,11 +124,11 @@ async def main(
         graph_client=resolved_graph_client,
         graph_review_conn=resolved_graph_review_conn,
         ocr=resolved_ocr,
-        ocr_render_dpi=resolved_settings.ocr_render_dpi,
-        ocr_max_concurrency=resolved_settings.ocr_max_concurrency,
+        ocr_render_dpi=resolved_settings.ocr.render_dpi,
+        ocr_max_concurrency=resolved_settings.ocr.max_concurrency,
         table_extractor=resolved_table_extractor,
-        table_extraction_max_concurrency=resolved_settings.table_extraction_max_concurrency,
-        job_concurrency=resolved_settings.ingestion_job_concurrency,
+        table_extraction_max_concurrency=resolved_settings.table_extraction.max_concurrency,
+        job_concurrency=resolved_settings.ingestion.job_concurrency,
         limit=limit,
     )
 

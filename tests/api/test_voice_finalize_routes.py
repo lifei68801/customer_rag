@@ -4,13 +4,13 @@ import aiosqlite
 from fastapi.testclient import TestClient
 
 from app.api import deps
-from app.config.settings import Settings
 from app.graphrag.ontology import Term
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 from app.providers.asr import ASRRequest, ASRResult
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.registry import ProviderRegistry
+from tests.settings_factory import build_settings
 
 
 async def _override_get_review_conn_with_terms(terms: list[Term]) -> aiosqlite.Connection:
@@ -39,19 +39,7 @@ async def _override_get_review_conn_with_terms(terms: list[Term]) -> aiosqlite.C
     return conn
 
 
-def _settings(**overrides) -> Settings:
-    defaults = dict(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=2,
-        gateway_shared_secret=None,
-    )
-    defaults.update(overrides)
-    return Settings(**defaults)
+_settings = build_settings
 
 
 class FakeASRProvider:

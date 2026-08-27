@@ -2,11 +2,11 @@ import aiosqlite
 from fastapi.testclient import TestClient
 
 from app.api import deps
-from app.config.settings import Settings
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 from app.providers.asr import ASRRequest, ASRResult
 from app.providers.registry import ProviderRegistry
+from tests.settings_factory import build_settings as _settings
 
 
 async def _override_get_review_conn() -> aiosqlite.Connection:
@@ -16,21 +16,6 @@ async def _override_get_review_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
     return conn
-
-
-def _settings(**overrides) -> Settings:
-    defaults = dict(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=2,
-        gateway_shared_secret=None,
-    )
-    defaults.update(overrides)
-    return Settings(**defaults)
 
 
 class FakeASRProvider:

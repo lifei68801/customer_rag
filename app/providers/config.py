@@ -15,7 +15,7 @@ class ProviderConfig:
     base_url: str
     api_key: str
     model: str
-    # 见 Settings.llm_enable_thinking 的说明。
+    # 见 LLMSettings.enable_thinking 的说明。
     enable_thinking: bool = False
 
 

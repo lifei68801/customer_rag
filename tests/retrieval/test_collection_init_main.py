@@ -1,5 +1,5 @@
-from app.config.settings import Settings
 from app.retrieval.collection_init import main
+from tests.settings_factory import build_settings
 
 
 class FakeAdminClient:
@@ -14,18 +14,8 @@ class FakeAdminClient:
         self.created_with = {"collection_name": collection_name, **kwargs}
 
 
-def _settings() -> Settings:
-    return Settings(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=1024,
-        milvus_uri="http://localhost:19530",
-        milvus_collection="faq_chunks",
-    )
+def _settings():
+    return build_settings()
 
 
 def test_main_creates_collection_using_settings_dimension_and_name():

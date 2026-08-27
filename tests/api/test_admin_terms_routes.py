@@ -6,27 +6,16 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
-from app.config.settings import Settings
 from app.graphrag.ontology_categories import create_term_type
 from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import create_term, ensure_terms_schema, list_terms, update_term
 from app.main import app
+from tests.settings_factory import build_settings
 
 
-def _settings(**overrides) -> Settings:
-    defaults = dict(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=2,
-        admin_token="tok",
-    )
-    defaults.update(overrides)
-    return Settings(**defaults)
+def _settings(**overrides):
+    return build_settings(**{"admin_token": "tok", **overrides})
 
 
 async def _open_terms_conn() -> aiosqlite.Connection:

@@ -29,7 +29,7 @@ def build_session_window_store_from_settings(
     （读路径迁移留给后续任务），在读路径完成迁移之前，请勿在生产环境
     启用 "redis"。
     """
-    if settings.session_window_backend == "redis":
+    if settings.session_window.backend == "redis":
         if not settings.redis_url:
             raise ValueError(
                 "session_window_backend='redis' 时必须配置 redis_url"

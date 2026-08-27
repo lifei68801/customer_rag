@@ -1,6 +1,6 @@
-from app.config.settings import Settings
 from app.retrieval.factory import build_vector_store_from_settings
 from app.retrieval.vector_store import VectorRecord
+from tests.settings_factory import build_settings
 
 
 class FakeMilvusClient:
@@ -22,17 +22,7 @@ async def test_build_vector_store_from_settings_uses_configured_uri_and_collecti
         captured["client"] = FakeMilvusClient()
         return captured["client"]
 
-    settings = Settings(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=1024,
-        milvus_uri="http://localhost:19530",
-        milvus_collection="faq_chunks",
-    )
+    settings = build_settings()
 
     store = build_vector_store_from_settings(
         settings, client_factory=fake_client_factory

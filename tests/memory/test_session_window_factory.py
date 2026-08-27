@@ -2,26 +2,14 @@ import aiosqlite
 import pytest
 from pydantic import ValidationError
 
-from app.config.settings import Settings
 from app.memory.session_window_factory import build_session_window_store_from_settings
 from app.memory.session_window_store import RedisSessionWindowStore, SQLiteSessionWindowStore
-
-
-def _base_kwargs() -> dict:
-    return dict(
-        llm_base_url="https://api.deepseek.com/v1",
-        llm_api_key="k",
-        llm_model="deepseek-chat",
-        embedding_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        embedding_api_key="k",
-        embedding_model="text-embedding-v3",
-        embedding_dimension=1024,
-    )
+from tests.settings_factory import build_settings
 
 
 async def test_defaults_to_sqlite_backend():
     conn = await aiosqlite.connect(":memory:")
-    settings = Settings(**_base_kwargs())
+    settings = build_settings()
 
     store = build_session_window_store_from_settings(settings, memory_conn=conn)
 
@@ -30,9 +18,7 @@ async def test_defaults_to_sqlite_backend():
 
 async def test_uses_redis_backend_when_configured():
     conn = await aiosqlite.connect(":memory:")
-    settings = Settings(
-        **_base_kwargs(), session_window_backend="redis", redis_url="redis://localhost:6379/0"
-    )
+    settings = build_settings(session_window_backend="redis", redis_url="redis://localhost:6379/0")
 
     store = build_session_window_store_from_settings(settings, memory_conn=conn)
 
@@ -41,7 +27,7 @@ async def test_uses_redis_backend_when_configured():
 
 async def test_raises_immediately_when_redis_backend_missing_url():
     conn = await aiosqlite.connect(":memory:")
-    settings = Settings(**_base_kwargs(), session_window_backend="redis", redis_url=None)
+    settings = build_settings(session_window_backend="redis", redis_url=None)
 
     try:
         build_session_window_store_from_settings(settings, memory_conn=conn)
@@ -56,6 +42,8 @@ def test_rejects_unrecognized_session_window_backend_at_settings_construction():
     session_window_factory.py 里精确匹配 "redis" 的 if 分支悄悄当成
     "非 redis"，静默退化成 sqlite 默认行为——本该在启动时就暴露的配置
     错误被吞掉了。改成 Literal["sqlite", "redis"] 后，pydantic 应该在
-    构造 Settings 时就校验失败。"""
+    构造 SessionWindowSettings 时就校验失败（ValidationError 从
+    build_settings() 内部的子模型构造往上抛，跟改造前直接构造 Settings()
+    报的是同一种异常类型）。"""
     with pytest.raises(ValidationError):
-        Settings(**_base_kwargs(), session_window_backend="redsi")
+        build_settings(session_window_backend="redsi")
