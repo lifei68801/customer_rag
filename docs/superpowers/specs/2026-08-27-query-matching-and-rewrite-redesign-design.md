@@ -153,31 +153,36 @@ def matched_length(a: str, b: str, *, interval: int = _DEFAULT_INTERVAL) -> int:
     的 get_common_str.py::_get_max_sequence（那里是 token 级 interval=3，
     这里按字符级、取 2）。
 
-    dp[i][j] = a 前 i 个字符与 b 前 j 个字符能匹配的最大长度；
-    last[i][j] = 取得该最大长度时，最后一个匹配字符在 a 中的下标——间隔
-    约束需要知道"上一个匹配落在哪"，所以必须跟着 dp 一起转移。
+    dp[i][j] = 「x[i-1] 与 y[j-1] 配对、且这是最后一个匹配」时的最大匹配数。
+    "最后一个匹配落在哪"必须编进状态本身。2026-08-28 实现时踩过的坑：写成
+    dp[i][j]=前i前j的最大匹配数、另用一张 last[i][j] 记位置，不是合法的 DP
+    ——在某个 (i,j) 上贪心取最大长度可能留下对后续间隔检查更不利的 last，
+    整体反而更差。反例 matched_length("bbbbbbba", "baba", interval=2) 在那种
+    写法下返回 2，真实最优是 3（brute-force 交叉验证）。
     """
     x, y = a.lower(), b.lower()
     if not x or not y:
         return 0
     n, m = len(x), len(y)
-    NEG = -1
     dp = [[0] * (m + 1) for _ in range(n + 1)]
-    last = [[NEG] * (m + 1) for _ in range(n + 1)]
+    # prefix_best[i][j] = max(dp[i][1..j])，用于 O(1) 查"上一个匹配落在 x 的
+    # 第 i 个字符、只用掉 y 的前 j 个字符"这族状态的最好成绩。
+    prefix_best = [[0] * (m + 1) for _ in range(n + 1)]
+    answer = 0
     for i in range(1, n + 1):
         for j in range(1, m + 1):
-            best, best_last = dp[i - 1][j], last[i - 1][j]
-            if dp[i][j - 1] > best:
-                best, best_last = dp[i][j - 1], last[i][j - 1]
             if x[i - 1] == y[j - 1]:
-                prev_len, prev_last = dp[i - 1][j - 1], last[i - 1][j - 1]
-                within_interval = (
-                    prev_last == NEG or (i - 1) - prev_last - 1 <= interval
-                )
-                if within_interval and prev_len + 1 >= best:
-                    best, best_last = prev_len + 1, i - 1
-            dp[i][j], last[i][j] = best, best_last
-    return dp[n][m]
+                # 间隔约束 (i-1)-(i2-1)-1 <= interval 化简成
+                # i2 >= i-interval-1，往回只看 interval+1 个位置。
+                prev = 0
+                for i2 in range(max(1, i - interval - 1), i):
+                    if prefix_best[i2][j - 1] > prev:
+                        prev = prefix_best[i2][j - 1]
+                dp[i][j] = prev + 1
+                if dp[i][j] > answer:
+                    answer = dp[i][j]
+            prefix_best[i][j] = max(prefix_best[i][j - 1], dp[i][j])
+    return answer
 ```
 
 **`term_matcher._has_fuzzy_match()` 改用它**（阈值 0.75 保持不变）：
