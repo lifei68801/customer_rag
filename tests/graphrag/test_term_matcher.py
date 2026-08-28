@@ -187,3 +187,38 @@ def test_matched_length_is_case_insensitive():
 def test_matched_length_returns_zero_for_empty_input():
     assert matched_length("", "abc") == 0
     assert matched_length("abc", "") == 0
+
+
+def test_matched_length_agrees_with_brute_force_on_repeated_characters():
+    # 2026-08-28：第一版实现用 dp[i][j]=前i前j最大匹配数 + 另一张 last[i][j]
+    # 记录位置，在重复字符上会少数——贪心取最大长度可能留下对后续间隔检查
+    # 更不利的 last。手挑的例子看不出这类错误（原有 5 条测试全过），只有跟
+    # 穷举参考实现对拍才能锁住，所以这条测试用属性测试而不是固定用例。
+    import itertools
+    import random
+
+    def brute_force(a: str, b: str, interval: int) -> int:
+        a, b = a.lower(), b.lower()
+        for size in range(min(len(a), len(b)), 0, -1):
+            for combo in itertools.combinations(range(len(a)), size):
+                picked = "".join(a[i] for i in combo)
+                remaining = iter(b)
+                if not all(ch in remaining for ch in picked):
+                    continue
+                if all(
+                    combo[k + 1] - combo[k] - 1 <= interval
+                    for k in range(len(combo) - 1)
+                ):
+                    return size
+        return 0
+
+    assert matched_length("bbbbbbba", "baba", interval=2) == 3
+
+    random.seed(20260828)
+    for _ in range(200):
+        a = "".join(random.choice("ab") for _ in range(random.randint(3, 9)))
+        b = "".join(random.choice("ab") for _ in range(random.randint(2, 6)))
+        for interval in (0, 1, 2, 3):
+            assert matched_length(a, b, interval=interval) == brute_force(a, b, interval), (
+                f"a={a!r} b={b!r} interval={interval}"
+            )
