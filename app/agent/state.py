@@ -14,6 +14,16 @@ class AgentState(TypedDict, total=False):
     input_unsafe_terms: list[str]
     term_guard_context: str | None
     memory_context_messages: list[dict[str, str]]
+    # Layer 1（app/qa/query_rewrite.py::resolve_question）消解指代之后的问题。
+    # 下游 planner/ToolContext/确定性检索路径都用这个而不是原始 question，
+    # 这样跨轮次指代只在一处解决一次，不用每个下游各自去猜。resolve_question
+    # 节点没跑过或失败时不写这个字段，读取方用 state.get(...) 兜底回原始
+    # question。
+    resolved_question: str
+    # 当前问题（消解指代后）跟历史里某一轮已经问过并回答过的问题基本相同时，
+    # 记录那一轮的原始提问文本，供 planner_node 生成一条"这可能是重复提问"
+    # 的软提示；没命中时不写这个字段。
+    duplicate_of: str | None
     retrieved_records: list[VectorRecord]
     used_sources: list[str]
     answer_text: str

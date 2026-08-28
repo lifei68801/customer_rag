@@ -617,22 +617,30 @@ async def test_correction_check_short_circuits_and_updates_memory():
         await _build_dependencies(with_records=True, llm_text="不应该被用到")
     )
 
-    class ScriptedLLMProvider:
-        def __init__(self, responses: list[str]) -> None:
-            self._responses = list(responses)
-            self.requests: list[ProviderRequest] = []
-
-        async def complete(self, request: ProviderRequest) -> ProviderResult:
-            self.requests.append(request)
-            return ProviderResult(text=self._responses.pop(0))
-
-    llm_provider = ScriptedLLMProvider(
+    llm_provider = DispatchingLLMProvider(
         [
-            '{"is_correction": true}',  # correction_check_node 的意图检测
-            '{"facts": ["客户使用macOS系统"]}',  # fact_extractor
-            '{"actions": [{"event": "UPDATE", "target_memory_id": "m1", '
-            '"text": "客户使用macOS系统", "reason": "客户更正"}]}',  # conflict_resolver
-            '{"is_safe": true}',  # output_safety 对确认文案做语义安全审查
+            ("客服对话意图分类器", ['{"is_correction": true}']),  # correction_check_node 的意图检测
+            ("长期记忆事实抽取器", ['{"facts": ["客户使用macOS系统"]}']),  # fact_extractor
+            (
+                "记忆冲突决策器",
+                [
+                    '{"actions": [{"event": "UPDATE", "target_memory_id": "m1", '
+                    '"text": "客户使用macOS系统", "reason": "客户更正"}]}'
+                ],
+            ),  # conflict_resolver
+            # resolve_question_node（clarification_check->term_guard->memory_recall
+            # 分支）跟 correction_check 分支并行执行，同一轮里两边各打一次 LLM；
+            # 这里的返回内容不影响本测试断言（correction_check 短路后不消费
+            # resolved_question），用 DispatchingLLMProvider 按系统提示词关键词
+            # 路由，不用关心两个分支谁先谁后。
+            (
+                "指代消解助手",
+                [
+                    '{"rl": 3, "resolved_question": "你记错了，其实我用的是macOS系统", '
+                    '"inherited_slots": [], "duplicate_of": ""}'
+                ],
+            ),  # resolve_question_node
+            ("语义级安全审查员", ['{"is_safe": true}']),  # output_safety 对确认文案做语义安全审查
         ]
     )
     llm_registry = ProviderRegistry()
@@ -661,9 +669,10 @@ async def test_correction_check_short_circuits_and_updates_memory():
 
     assert result["is_correction_handled"] is True
     assert "macOS系统" in result["final_text"]
-    # 意图检测+事实抽取+冲突决策+output_safety的语义安全审查，没有额外的
-    # 检索/responder调用（确认文案拼了用户原始输入，仍要走完整语义审查）
-    assert len(llm_provider.requests) == 4
+    # 意图检测+事实抽取+冲突决策+resolve_question(Layer 1 指代消解，跟
+    # correction_check 并行的另一分支)+output_safety的语义安全审查，没有
+    # 额外的检索/responder调用（确认文案拼了用户原始输入，仍要走完整语义审查）
+    assert len(llm_provider.requests) == 5
 
     items = await list_active_memory_items(conn, tenant_id="t1", user_id="u1")
     updated = next(item for item in items if item["memory_id"] == "m1")
@@ -718,28 +727,24 @@ async def test_correction_check_exact_duplicate_short_circuit_falls_through_to_r
         await _build_dependencies(with_records=True, llm_text="不应该被用到")
     )
 
-    class ScriptedLLMProvider:
-        def __init__(self, responses: list[str]) -> None:
-            self._responses = list(responses)
-            self.requests: list[ProviderRequest] = []
-
-        async def complete(self, request: ProviderRequest) -> ProviderResult:
-            self.requests.append(request)
-            return ProviderResult(text=self._responses.pop(0))
-
-    llm_provider = ScriptedLLMProvider(
+    llm_provider = DispatchingLLMProvider(
         [
-            '{"is_correction": true}',  # correction_check_node 的意图检测
-            '{"facts": ["客户使用Windows系统"]}',  # fact_extractor：抽出的事实
-            # 跟 m1 已有文本逐字相同
-            # 没有第三条给冲突决策器的响应——精确重复短路后 resolve_memory_
-            # actions 根本不发起这次 LLM 调用，如果这个短路被意外移除，下面
-            # 这两条响应会被错位消费，responder 会把 "重启路由器即可解决。"
-            # 当成冲突决策器的 JSON 去解析（解析失败退回规则兜底），
-            # output_safety 的语义审查会因为响应耗尽直接抛异常，测试会失败
-            # 而不是悄悄通过。
-            "重启路由器即可解决。",  # responder：短路后正常走 RAG 回答
-            '{"is_safe": true}',  # output_safety 对正常回答的语义安全审查
+            ("客服对话意图分类器", ['{"is_correction": true}']),  # correction_check_node 的意图检测
+            ("长期记忆事实抽取器", ['{"facts": ["客户使用Windows系统"]}']),  # fact_extractor：
+            # 抽出的事实跟 m1 已有文本逐字相同——精确重复短路后 resolve_memory_
+            # actions 根本不发起冲突决策器那次 LLM 调用，这里故意不给"记忆冲突
+            # 决策器"这个 key 配规则：如果这个短路被意外移除，
+            # DispatchingLLMProvider 会在找不到匹配规则时直接 AssertionError，
+            # 测试会失败而不是悄悄消费错位的响应。
+            (
+                "指代消解助手",
+                [
+                    '{"rl": 3, "resolved_question": "你记错了，其实我用的是Windows系统", '
+                    '"inherited_slots": [], "duplicate_of": ""}'
+                ],
+            ),  # resolve_question_node（跟 correction_check 并行的另一分支）
+            ("根据以下资料回答问题", ["重启路由器即可解决。"]),  # responder：短路后正常走 RAG 回答
+            ("语义级安全审查员", ['{"is_safe": true}']),  # output_safety 对正常回答的语义安全审查
         ]
     )
     llm_registry = ProviderRegistry()
@@ -772,12 +777,14 @@ async def test_correction_check_exact_duplicate_short_circuit_falls_through_to_r
     assert result["final_text"] == "重启路由器即可解决。"
     assert result["used_sources"] == ["faq/network.md"]
 
-    # 意图检测 + 事实抽取（各1次） + responder 生成答案 + output_safety
-    # 语义审查，一共4次——如果短路失效、冲突决策器多打一次 LLM，响应队列
-    # 会错位，上面几条断言会先失败；这里额外确认真的只打了4次。
-    assert len(llm_provider.requests) == 4
+    # 意图检测 + 事实抽取（各1次） + resolve_question(Layer 1 指代消解，跟
+    # correction_check 并行的另一分支) + responder 生成答案 + output_safety
+    # 语义审查，一共5次——如果短路失效、冲突决策器多打一次 LLM，
+    # DispatchingLLMProvider 会因为"记忆冲突决策器"这个 key 没配规则直接
+    # AssertionError，上面几条断言会先失败；这里额外确认真的只打了5次。
+    assert len(llm_provider.requests) == 5
     # 更直接地证明冲突决策器这次真的没被调用：它的系统提示词里有这个独有
-    # 短语（app/memory/conflict_resolver.py 的 _SYSTEM_PROMPT），四次请求
+    # 短语（app/memory/conflict_resolver.py 的 _SYSTEM_PROMPT），五次请求
     # 里任何一次的 system message 都不应该含它。
     assert not any(
         "记忆冲突决策器" in (msg.get("content") or "")
@@ -947,3 +954,25 @@ def test_looks_temporal_returns_false_for_questions_without_time_cues():
     assert _looks_temporal("网络连不上怎么办？") is False
     assert _looks_temporal("这个报错怎么解决") is False
     assert _looks_temporal("错误码E502网关超时怎么解决") is False
+
+
+async def test_resolve_question_node_writes_resolved_question_into_state():
+    """Layer 1 节点把消解后的问题写进 state，供下游统一使用。"""
+    from app.agent.graph import build_agent_graph  # noqa: F401  (确保模块可导入)
+    from app.qa.query_rewrite import ResolvedQuestion, resolve_question  # noqa: F401
+
+    # 这条测试只验证 resolve_question 的产出会被原样写进 state 的两个字段，
+    # 不启动完整图——图的其余节点需要大量外部依赖（Neo4j/Milvus/LLM），
+    # 在单元测试里不可用。
+    result = ResolvedQuestion(
+        resolved_question="Coca-Cola有多少个订单",
+        inherited_slots=["anchor"],
+        duplicate_of="Coca-Cola是什么公司",
+    )
+    state_update = {
+        "resolved_question": result.resolved_question,
+        "duplicate_of": result.duplicate_of,
+    }
+
+    assert state_update["resolved_question"] == "Coca-Cola有多少个订单"
+    assert state_update["duplicate_of"] == "Coca-Cola是什么公司"

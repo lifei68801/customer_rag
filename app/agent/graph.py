@@ -43,6 +43,7 @@ from app.providers.base import ProviderCapability, ProviderRequest
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
+from app.qa.query_rewrite import resolve_question
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.hybrid_search import hybrid_search
 from app.retrieval.vector_store import VectorStore
@@ -402,6 +403,36 @@ def build_agent_graph(
                 )
         return {"memory_context_messages": messages}
 
+    async def resolve_question_node(state: AgentState) -> dict[str, Any]:
+        """Layer 1：跨轮次历史指代消解，一轮只跑一次。
+
+        必须排在 memory_recall_node 之后——它要吃 memory_context_messages
+        （近期对话轮次），那是 memory_recall_node 产出的。也因此 term_guard
+        （排在更前面）看到的仍然是原始 question，不是消解后的版本：
+        term_guard 判断的是"文本里字面提到了哪个已知术语"，跟指代消解是两个
+        不同维度的问题，不受影响。
+        """
+        history = state.get("memory_context_messages", [])
+        if not history:
+            # 没有可用历史，指代消解无从谈起，直接跳过这次 LLM 调用。
+            return {"resolved_question": state["question"]}
+        result = await resolve_question(
+            state["question"],
+            history,
+            llm_registry=llm_registry,
+            llm_provider_name=llm_provider_name,
+        )
+        logger.info(
+            "resolve_question: resolved=%r inherited_slots=%r duplicate_of=%r",
+            result.resolved_question,
+            result.inherited_slots,
+            result.duplicate_of,
+        )
+        return {
+            "resolved_question": result.resolved_question,
+            "duplicate_of": result.duplicate_of,
+        }
+
     async def retrieval_node(state: AgentState) -> dict[str, Any]:
         records = await hybrid_search(
             state["question"],
@@ -429,7 +460,10 @@ def build_agent_graph(
         term_guard_context = state.get("term_guard_context")
         if term_guard_context:
             context = f"{term_guard_context}\n\n{context}"
-        prompt = _PROMPT_TEMPLATE.format(context=context, question=state["question"])
+        prompt = _PROMPT_TEMPLATE.format(
+            context=context,
+            question=state.get("resolved_question", state["question"]),
+        )
         messages = [
             *state.get("memory_context_messages", []),
             {"role": "user", "content": prompt},
@@ -635,7 +669,14 @@ def build_agent_graph(
             if term_guard_context:
                 messages.append({"role": "system", "content": term_guard_context})
             messages.extend(state.get("memory_context_messages", []))
-            messages.append({"role": "user", "content": state["question"]})
+            messages.append(
+                {
+                    "role": "user",
+                    # 用 Layer 1 消解指代后的问题（resolve_question_node 产出）。
+                    # 兜底回原始 question：该节点没跑过或失败时不写这个字段。
+                    "content": state.get("resolved_question", state["question"]),
+                }
+            )
         state_with_messages = {**state, "planner_messages": messages}
         if on_answer_chunk is not None and llm_registry.supports_tool_streaming(
             ProviderCapability.LLM, llm_provider_name
@@ -661,7 +702,7 @@ def build_agent_graph(
     async def tool_call_node(state: AgentState) -> dict[str, Any]:
         context = ToolContext(
             tenant_id=state["tenant_id"],
-            question=state["question"],
+            question=state.get("resolved_question", state["question"]),
             embedding_registry=embedding_registry,
             embedding_provider_name=embedding_provider_name,
             vector_store=vector_store,
@@ -731,6 +772,7 @@ def build_agent_graph(
     graph.add_node("clarification_check", clarification_check_node)
     graph.add_node("term_guard", term_guard_node)
     graph.add_node("memory_recall", memory_recall_node)
+    graph.add_node("resolve_question", resolve_question_node)
     graph.add_node("merge_after_parallel", merge_after_parallel_node, defer=True)
     graph.add_node("fallback", fallback_node)
     graph.add_node("create_ticket", create_ticket_node)
@@ -750,7 +792,8 @@ def build_agent_graph(
     graph.add_edge("correction_check", "merge_after_parallel")
     graph.add_edge("clarification_check", "term_guard")
     graph.add_edge("term_guard", "memory_recall")
-    graph.add_edge("memory_recall", "merge_after_parallel")
+    graph.add_edge("memory_recall", "resolve_question")
+    graph.add_edge("resolve_question", "merge_after_parallel")
     graph.add_conditional_edges(
         "fallback",
         route_after_fallback,
