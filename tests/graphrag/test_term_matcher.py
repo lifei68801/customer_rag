@@ -222,3 +222,37 @@ def test_matched_length_agrees_with_brute_force_on_repeated_characters():
             assert matched_length(a, b, interval=interval) == brute_force(a, b, interval), (
                 f"a={a!r} b={b!r} interval={interval}"
             )
+
+
+def test_match_terms_and_recall_agree_on_the_coke_cola_case():
+    """两处匹配逻辑对同一段文本必须给出一致结论——这是"统一实体匹配"这个
+    设计目标的直接回归锚点。
+
+    2026-08-27 的真实 bug：同一句 "coke-cola公司有多少个订单"，term_guard
+    只匹配到产品 Cola（漏掉公司 Coca-Cola）、把错误实体的图谱上下文强制
+    注入，而召回侧其实两个都能召回——两处结论矛盾，且系统里没有任何一处
+    会发现这种矛盾。
+    """
+    from app.graphrag.ontology_categories import TermTypeCategory
+    from app.graphrag.ontology_recall import recall_ontology_candidates
+
+    terms = [
+        Term(tenant_id="demo", node_key="公司:Coca-Cola", standard_name="Coca-Cola",
+             aliases=[], term_type="公司"),
+        Term(tenant_id="demo", node_key="产品:Cola", standard_name="Cola",
+             aliases=[], term_type="产品"),
+    ]
+    question = "coke-cola公司有多少个订单"
+
+    guard_hits = {t.standard_name for t in match_terms(question, terms)}
+    recalled = {t.standard_name for t in recall_ontology_candidates(
+        question, terms=terms,
+        term_type_schema={
+            "公司": TermTypeCategory(value="公司", extra_fields=[]),
+            "产品": TermTypeCategory(value="产品", extra_fields=[]),
+        },
+        allowed_combinations=[],
+    ).entities}
+
+    assert "Coca-Cola" in guard_hits
+    assert "Coca-Cola" in recalled
