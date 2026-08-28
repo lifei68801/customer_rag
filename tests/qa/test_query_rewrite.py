@@ -217,3 +217,38 @@ async def test_resolve_question_falls_back_to_original_on_malformed_json():
 
     assert result.resolved_question == "它有多少个订单"
     assert result.inherited_slots == []
+
+
+async def test_resolve_question_falls_back_when_json_is_not_an_object():
+    # 合法 JSON 但不是对象（数组/标量）——模型偶尔会直接吐一个列表或数字。
+    # payload.get(...) 在这种值上会 AttributeError，所以必须在解析后、取字段前
+    # 就挡住，不能只靠 json.JSONDecodeError。
+    from app.qa.query_rewrite import resolve_question
+
+    for malformed in ("[1, 2, 3]", '"just a string"', "42"):
+        result = await resolve_question(
+            "它有多少个订单", [{"role": "user", "content": "历史"}],
+            llm_registry=_registry(FixedLLMProvider(malformed)),
+            llm_provider_name="llm",
+        )
+
+        assert result.resolved_question == "它有多少个订单"
+        assert result.inherited_slots == []
+        assert result.duplicate_of is None
+
+
+async def test_resolve_question_ignores_non_list_inherited_slots():
+    # inherited_slots 该是数组，模型可能给成字符串。白名单过滤前的
+    # isinstance 检查负责这个，否则 `for s in "anchor"` 会按字符遍历。
+    from app.qa.query_rewrite import resolve_question
+
+    provider = FixedLLMProvider(
+        '{"rl": 1, "resolved_question": "改写后的问题", '
+        '"inherited_slots": "anchor", "duplicate_of": ""}'
+    )
+    result = await resolve_question(
+        "原问题", [{"role": "user", "content": "历史"}],
+        llm_registry=_registry(provider), llm_provider_name="llm",
+    )
+
+    assert result.inherited_slots == []
