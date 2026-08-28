@@ -264,3 +264,43 @@ def test_recall_ontology_candidates_handles_large_entity_pool_quickly():
 
     assert elapsed < 2.0, f"recall took {elapsed:.2f}s over 5000 unrelated terms, expected well under 2s"
     assert target_term in candidates.entities
+
+
+def test_fbeta_match_score_ranks_full_company_name_above_short_product_name():
+    # 2026-08-27 真实 bug 的核心成因：`Cola`(4字) 是 `Coca-Cola`(9字) 的子串，
+    # 任何单向的"匹配长度/len(name)"公式，Cola 都拿满分 1.0 碾压 Coca-Cola，
+    # 导致召回把错误的产品实体排在正确的公司实体前面。F-beta 的 R 项
+    # （匹配长度/len(query)）惩罚"query 很长却只匹配上一小段"的短候选名，
+    # 把这个排序扭转过来。
+    from app.graphrag.ontology_recall import fbeta_match_score
+
+    query = "coke-cola公司有多少个订单"
+    assert fbeta_match_score(query, "Coca-Cola") > fbeta_match_score(query, "Cola")
+
+
+def test_fbeta_match_score_gives_zero_for_unrelated_name():
+    from app.graphrag.ontology_recall import fbeta_match_score
+
+    assert fbeta_match_score("coke-cola公司有多少个订单", "服务器连接超时") == 0.0
+
+
+def test_fbeta_match_score_treats_whole_name_containment_as_full_match():
+    # 候选名整段出现在 query 里时按满额匹配算（保留现有 _best_score 的
+    # containment 快速路径语义），此时 precision 应该是 1.0，最终分只受
+    # recall 项影响、不应该被间隔约束打折。
+    from app.graphrag.ontology_recall import fbeta_match_score
+
+    assert fbeta_match_score("我想查 Coca-Cola 的订单", "Coca-Cola") > 0.5
+
+
+def test_short_term_type_labels_are_not_penalised_by_query_length():
+    # 本体词汇（term_type/relation/field）的名字天生就短，不能套用实体名那套
+    # F-beta——recall 项会因为 query 长就把"订单号"这类正确标签打到及格线以下。
+    # 2026-08-28 实测：F-beta 下"订单号"对这句 query 得 0.2857 < _MIN_SCORE(0.3)，
+    # 而它显然是相关类型；precision-only 得 0.6667。
+    from app.graphrag.ontology_recall import _MIN_SCORE as _MIN_SCORE_FOR_TEST
+    from app.graphrag.ontology_recall import fbeta_match_score, precision_match_score
+
+    query = "查询Coca-Cola这家公司名下有多少个订单"
+    assert precision_match_score(query, "订单号") >= _MIN_SCORE_FOR_TEST
+    assert fbeta_match_score(query, "订单号") < _MIN_SCORE_FOR_TEST
