@@ -976,3 +976,14 @@ async def test_resolve_question_node_writes_resolved_question_into_state():
 
     assert state_update["resolved_question"] == "Coca-Cola有多少个订单"
     assert state_update["duplicate_of"] == "Coca-Cola是什么公司"
+
+
+def test_duplicate_hint_text_never_forces_answer_reuse():
+    """重复提问只能是软提示——提示词必须同时给出"可以复用"和"不确定就
+    重新查"两条路，把决定权留给 Planner。一次误判的重复检测如果直接短路
+    工具调用，用户会拿到一个可能过时的答案且系统不会重新核实。"""
+    from app.agent.graph import _DUPLICATE_QUESTION_HINT
+
+    hint = _DUPLICATE_QUESTION_HINT.format(duplicate_of="之前问过的问题")
+    assert "可以直接复用" in hint
+    assert "仍然应该重新查询确认" in hint

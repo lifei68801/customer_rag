@@ -69,6 +69,12 @@ _PROMPT_TEMPLATE = (
     "资料：\n{context}\n\n问题：{question}"
 )
 _FALLBACK_MESSAGE = "抱歉，暂时没有找到确切答案，已为您转接人工客服处理。"
+_DUPLICATE_QUESTION_HINT = (
+    "提示：当前问题跟历史里已经问过的『{duplicate_of}』可能是同一个问题。"
+    "如果确实相同、历史对话里已经给出过明确答案，可以直接复用那个答案，"
+    "不需要重新调用工具查询；如果不确定是否完全相同，仍然应该重新查询确认，"
+    "不要仅凭这条提示就给出可能过时或不准确的答案。"
+)
 _FUTURE_TIME_CLARIFICATION_PROMPT = (
     "您提到的时间似乎是将来的日期，我们暂时没有对应的记录。"
     "请问您想查询的是哪一个具体的历史日期呢？"
@@ -669,6 +675,19 @@ def build_agent_graph(
             if term_guard_context:
                 messages.append({"role": "system", "content": term_guard_context})
             messages.extend(state.get("memory_context_messages", []))
+            duplicate_of = state.get("duplicate_of")
+            if duplicate_of:
+                # 软提示，不是硬短路：是否复用历史答案由 Planner 自己判断。
+                # 重复检测来自 Layer 1（resolve_question）的同一次 LLM 调用，
+                # 会有误判，直接跳过工具调用的风险不可控。
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": _DUPLICATE_QUESTION_HINT.format(
+                            duplicate_of=duplicate_of
+                        ),
+                    }
+                )
             messages.append(
                 {
                     "role": "user",
