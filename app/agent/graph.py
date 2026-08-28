@@ -441,7 +441,11 @@ def build_agent_graph(
 
     async def retrieval_node(state: AgentState) -> dict[str, Any]:
         records = await hybrid_search(
-            state["question"],
+            # 检索本身也必须用 Layer 1 消解指代后的问题，不能只在下面
+            # responder_node 的提示词里换：拿"它还剩多少个"去做向量/BM25
+            # 检索，捞回来的上下文大概率跟用户真正问的实体无关，后面再拿
+            # 消解后的问题去问 LLM 也无从答起。
+            state.get("resolved_question", state["question"]),
             embedding_registry=embedding_registry,
             embedding_provider_name=embedding_provider_name,
             vector_store=vector_store,

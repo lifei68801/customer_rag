@@ -156,7 +156,13 @@ async def resolve_question(
 
     try:
         payload = json.loads(result.text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
+        # TypeError 也要接住：provider 违反 ProviderResult.text 的 str 类型
+        # 契约、给出 None 时，json.loads(None) 抛的是 TypeError 而不是
+        # JSONDecodeError。这个函数没有外层 try/except（调用方
+        # graph.py::resolve_question_node 直接 await 它），漏接会把整轮对话
+        # 打挂，而不只是这一步消解失败——违背"失败就退回原问题、绝不影响
+        # 主链路"这条设计前提。
         logger.warning("resolve_question 返回内容不是合法 JSON，回退原始问题")
         return fallback
     if not isinstance(payload, dict):

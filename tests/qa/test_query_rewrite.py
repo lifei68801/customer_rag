@@ -219,6 +219,24 @@ async def test_resolve_question_falls_back_to_original_on_malformed_json():
     assert result.inherited_slots == []
 
 
+async def test_resolve_question_falls_back_when_provider_returns_none_text():
+    # provider 违反 ProviderResult.text 的 str 类型契约、给出 None 时，
+    # json.loads(None) 抛的是 TypeError 而不是 JSONDecodeError。这个函数
+    # 没有外层 try/except（graph.py::resolve_question_node 直接 await 它），
+    # 漏接会把整轮对话打挂，而不只是这一步消解失败。
+    from app.qa.query_rewrite import resolve_question
+
+    result = await resolve_question(
+        "它有多少个订单", [{"role": "user", "content": "历史"}],
+        llm_registry=_registry(FixedLLMProvider(None)),
+        llm_provider_name="llm",
+    )
+
+    assert result.resolved_question == "它有多少个订单"
+    assert result.inherited_slots == []
+    assert result.duplicate_of is None
+
+
 async def test_resolve_question_falls_back_when_json_is_not_an_object():
     # 合法 JSON 但不是对象（数组/标量）——模型偶尔会直接吐一个列表或数字。
     # payload.get(...) 在这种值上会 AttributeError，所以必须在解析后、取字段前

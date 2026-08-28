@@ -987,3 +987,87 @@ def test_duplicate_hint_text_never_forces_answer_reuse():
     hint = _DUPLICATE_QUESTION_HINT.format(duplicate_of="之前问过的问题")
     assert "可以直接复用" in hint
     assert "仍然应该重新查询确认" in hint
+
+
+async def test_retrieval_runs_on_the_resolved_question_not_the_raw_one():
+    """确定性检索路径的检索查询也必须用 Layer 1 消解指代后的问题。
+
+    2026-08-28 final review 发现的缺口：当时只把 responder_node 的提示词换成了
+    resolved_question，retrieval_node 里的 hybrid_search 仍然拿原始问题去检索。
+    结果是用"它还剩多少个"这种含糊原文去做向量/BM25 检索，捞回来的上下文跟
+    用户真正问的实体无关，后面再拿消解后的问题去问 LLM 也无从答起——两半只
+    兑现了一半。这条测试钉住检索侧那一半。
+    """
+    from datetime import datetime
+
+    import aiosqlite
+
+    from app.memory.chat_sessions import touch_session
+    from app.memory.clarification import ensure_clarification_schema
+    from app.memory.schema import ensure_schema
+    from app.memory.session_window import append_turn
+
+    seen_texts: list[str] = []
+
+    class RecordingEmbeddingProvider:
+        async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
+            seen_texts.extend(request.texts)
+            return EmbeddingResult(vectors=[[1.0, 0.0] for _ in request.texts])
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", RecordingEmbeddingProvider())
+
+    vector_store = InMemoryVectorStore()
+    bm25_index = BM25Index()
+    records = [
+        VectorRecord(id="faq/coke.md", vector=[1.0, 0.0],
+                     text="Coca-Cola 公司的订单记录。", tenant_id="t1", metadata={}),
+    ]
+    await vector_store.upsert(records)
+    bm25_index.index(records)
+
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+    await ensure_clarification_schema(conn)
+    # 造出一轮历史，好让 resolve_question_node 真的去调 LLM（没有历史时它
+    # 会短路、直接原样返回，测不出这个差异）。
+    await touch_session(conn, tenant_id="t1", session_id="s1", user_id="u1",
+                        first_message="Coca-Cola 是什么公司", now=datetime.now())
+    await append_turn(conn, tenant_id="t1", session_id="s1", user_id="u1",
+                      role="user", content="Coca-Cola 是什么公司")
+
+    llm_provider = DispatchingLLMProvider(
+        [
+            ("指代消解助手", [
+                '{"rl": 1, "resolved_question": "Coca-Cola有多少个订单", '
+                '"inherited_slots": ["anchor"], "duplicate_of": ""}'
+            ]),
+            ("客服对话意图分类器", ['{"is_correction": false}']),
+            ("语义级安全审查员", ['{"is_safe": true}']),
+            ("根据以下资料回答问题", ["Coca-Cola 的订单在资料里。"]),
+        ]
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+    )
+
+    await graph.ainvoke(
+        {"question": "它有多少个订单", "tenant_id": "t1",
+         "session_id": "s1", "user_id": "u1"}
+    )
+    await conn.close()
+
+    # 检索用的文本必须是消解后的，不能是含指代的原文。
+    assert "Coca-Cola有多少个订单" in seen_texts
+    assert "它有多少个订单" not in seen_texts

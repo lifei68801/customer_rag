@@ -40,9 +40,11 @@ async def hybrid_search(
     精排结果而不是向量检索阶段的原始相似度。未配置 rerank_provider 时
     score 保持融合前的原始值不变。
 
-    conversation_context 为可选项：传入近期对话轮次时，query 改写这一步
-    能看到"用户之前说了什么"来补全模糊指代（"这个报错"），见
-    app/qa/query_rewrite.py；不传则只看孤立的当前问题，行为不变。
+    conversation_context 为可选项，传给 query 改写这一步作为参考上下文。
+    注意它【不再】负责补全模糊指代——2026-08-28 起指代消解统一由更上游的
+    Layer 1（app/qa/query_rewrite.py::resolve_question，在 LangGraph 里是
+    resolve_question_node）每轮做一次，rewrite_query 的提示词已收窄成只做
+    "把口语化说法改写得更利于文档检索匹配"。不传则只看孤立的当前问题。
 
     query_texts（原始问题 + 可能的改写问题）各自的向量检索用 asyncio.gather
     并发执行。bm25 检索（同步、无 IO 等待，纯 CPU 计算）用 asyncio.to_thread
