@@ -240,6 +240,28 @@ def fbeta_match_score(query: str, name: str, *, beta: float = _FBETA) -> float:
 `_best_score()` 内的 n-gram 循环 + bigram 预过滤**保留**（性能优化，实测 5000 候选
 110.1ms vs 现状 107.3ms 基本持平），只把其中的打分函数换掉。
 
+**F-beta 只用于实体召回，不用于本体词汇召回**（2026-08-28 实现时发现并修正）：
+`_best_score()` 服务四类候选，但它们的统计特性不同——
+
+| 候选类型 | 例子 | 名字短意味着 |
+|---|---|---|
+| `term_types` | 订单号、公司、产品 | **正常**：本体标签天生就短 |
+| `relations` | 上述标签组成的三元组 | **正常** |
+| `fields` | 字段名 | **正常** |
+| `entities` | Coca-Cola、Cola | **就是 bug**：短名字盖过正确的长名字 |
+
+F-beta 的 recall 项（`匹配/len(query)`）专治"短候选名只覆盖长 query 的一小片却拿高分"，
+这对实体名是对的，对本体词汇是错的——后者无论 query 多长都该是短的。实测 query
+`"查询Coca-Cola这家公司名下有多少个订单"`：F-beta 给"订单号" 0.2857（低于 `_MIN_SCORE`
+0.3，被错误丢弃）、"用户名" 0.1429；precision-only 给 0.6667 / 0.3333。反过来在实体侧
+F-beta 不可替代——precision-only 下 `Cola` 得 1.0 压过 `Coca-Cola` 的 0.7778，正是要修的
+那个 bug。
+
+所以另设一个 `precision_match_score(query, name)`（只算 `匹配长度/len(name)`，单向），
+通过 `_best_score(..., score_fn=...)` 参数切换：`term_types`/`relations`/`fields` 用
+默认的 `precision_match_score`，只有 `entities` 传 `score_fn=fbeta_match_score`。
+`_MIN_SCORE`（0.3）和 `_FBETA`（0.5）都不改。
+
 ### 已实测验证的结果
 
 - `term_matcher` 侧：`tests/graphrag/test_term_matcher.py` **现有 12 条测试全部通过**，
