@@ -78,37 +78,181 @@
       return overlap / len(b)
   ```
 
+### 2026-08-28 方案重定：原"统一到 longest_common_substring_score"被实测推翻
+
+本文档最初版本主张把 `term_matcher._has_fuzzy_match()` 的 `difflib.SequenceMatcher` 换成
+`ontology_recall.longest_common_substring_score()`。转实现计划前做实测，**这个方案被证伪，不能实施**：
+
+| 用例 | LCS(最长连续子串) | SequenceMatcher |
+|---|---|---|
+| 错1字（"服务器**链**接超时"）**应命中** | 0.4286 | 0.8571 |
+| 错2字（"服务器**网络**超时"）**不应命中** | 0.4286 | 0.7143 |
+| coke-cola → **Coca-Cola**（正确·公司） | 0.5556 | 0.7778 |
+| coke-cola → Cola（错误·产品） | 1.0000 | 1.0000 |
+
+两个硬伤：
+
+1. **LCS 数学上无法区分"该命中"和"不该命中"**——两者得分完全相同（都 0.4286），不存在任何阈值能同时满足这两条现有测试。原因是 LCS 只保留**单个最长连续片段**（两例都是`服务器`=3），后面的`接超时`因为被错字隔断成另一段，直接丢弃；SequenceMatcher 计的是**总匹配字符数**（6 vs 5），所以能区分。
+2. **会让 coke-cola bug 复发**——`Coca-Cola` 从 0.7778（过 0.75 阈值）掉到 0.5556（不过），于是只有错误的 `Cola` 命中，正是提交 `d3336f0` 修好的那个原始 bug。实测确认当前实现返回 `['Coca-Cola', 'Cola']`，换 LCS 后只剩 `['Cola']`。
+
+真正修好 coke-cola 的是**大小写不敏感**那个改动（已提交），不是算法选择。
+
+### 重定方案：借鉴 swiftagent 2.7.5 召回算法的融合设计
+
+参考 `swiftagent`（`dev/2.7.5`）`plugin/utils/get_common_str.py::get_common_str_and_score()`，
+其召回阶段字符匹配有四层机制：token 化 → **带 `interval=3` 间隔约束**的回溯最长顺序子序列
+（`_get_max_sequence`）→ **F-beta 双向评分**（`P=匹配/len(short)`、`R=匹配/len(query)`，β=0.2）
+→ 另一路 Damerau-Levenshtein 分数做一致性融合。
+
+对照本项目实测，确定三个融合点：
+
+**融合点1：`interval` 间隔约束**——纯最长公共子序列（LCSubseq）有致命误匹配问题：
+"服务里有个器件，连着接口，超过时限了" 对 "服务器连接超时" 得 **0.9430**（7个字散落各处全被匹配上）。
+加 interval 约束后：`interval=3`（swiftagent 默认）仍是 0.9430 太松；**`interval=2` 压到 0.2694**；
+`interval=1` 虽然也是 0.2694 但误伤正确用例（Coca-Cola 崩到 0.2149）。**取 `interval=2`**。
+
+**融合点2：F-beta 双向评分**——解决本项目的核心痛点"短候选名虚高"。`Cola`(4字) 是 `Coca-Cola`(9字)
+的子串，任何单向 `匹配/len(name)` 公式 Cola 都拿满分碾压：
+
+| β | Coca-Cola（正确） | Cola（错误） | 结果 |
+|---|---|---|---|
+| 0.2（swiftagent 默认） | 0.7521 | 0.8889 | ✗ 短名字仍赢 |
+| **0.5（本项目取值）** | **0.6604** | 0.6061 | ✓ 扭转 |
+| 1.0 | 0.5385 | 0.3810 | ✓ 差距更大 |
+
+swiftagent 用 β=0.2 是因为其指标召回场景更怕漏召；本项目这个痛点需要更高的 β，取 **β=0.5**。
+
+**融合点3（结构性）：两侧不能共用同一个分数公式，只共用"匹配长度"计算**——
+关键发现：`term_matcher` 的滑动窗口长度**恰好等于候选名长度**，因此 `P` 恒等于 `R`，
+F-beta 数学上退化成 `P`，**β 在这一侧完全不起作用**。所以：
+
+- **`term_matcher` 侧**：滑动窗口已天然保证局部性且 P=R → 只需 `interval + LCSubseq`，不引入 β
+- **`ontology_recall` 侧**：全 query 远长于 name，R<P → β 才是解决短名虚高的关键
+
+共享的是**底层匹配长度计算**，不是最终分数公式。
+
 ### 改动
 
-在 `app/graphrag/term_matcher.py` 里，把 `_has_fuzzy_match()` 的打分算法从 `difflib.SequenceMatcher` 换成 `ontology_recall.py` 已有的 `longest_common_substring_score()`——`term_matcher.py` 改为依赖 `ontology_recall.py` 暴露这个函数（`ontology_recall.py` 是更晚加入的模块，`term_matcher.py` 更早存在；依赖方向定为 `term_matcher` 依赖 `ontology_recall`，因为后者的算法本次选定为统一后的标准实现，改动 `term_matcher.py` 一处即可，不用同时改两处保持同步）。
+**新增共享底层函数**，放在 `app/graphrag/term_matcher.py`（`ontology_recall.py` 反向依赖它，
+方向与现状相反——`term_matcher.py` 不 import `ontology_recall.py`，避免循环依赖）：
 
 ```python
 # app/graphrag/term_matcher.py
-from app.graphrag.ontology_recall import longest_common_substring_score
+_DEFAULT_INTERVAL = 2
 
+
+def matched_length(a: str, b: str, *, interval: int = _DEFAULT_INTERVAL) -> int:
+    """b 的字符按顺序在 a 里最多能匹配上多少个，且相邻两个匹配字符在 a 中
+    跨越的字符数不超过 interval。大小写不敏感。
+
+    这是"最长公共子序列"加了间隔约束的版本——不加约束时，长文本里散落
+    各处的字符也能被全部匹配上（实测："服务里有个器件，连着接口，超过时限了"
+    对"服务器连接超时"得 0.9430），interval 把匹配限制在局部连贯的区域内。
+    间隔取 2 是实测甜点：3 太松压不掉上面那个误匹配，1 太紧会误伤
+    "coke-cola"→"Coca-Cola" 这类正常变体。机制借鉴 swiftagent dev/2.7.5
+    的 get_common_str.py::_get_max_sequence（那里是 token 级 interval=3，
+    这里按字符级、取 2）。
+
+    dp[i][j] = a 前 i 个字符与 b 前 j 个字符能匹配的最大长度；
+    last[i][j] = 取得该最大长度时，最后一个匹配字符在 a 中的下标——间隔
+    约束需要知道"上一个匹配落在哪"，所以必须跟着 dp 一起转移。
+    """
+    x, y = a.lower(), b.lower()
+    if not x or not y:
+        return 0
+    n, m = len(x), len(y)
+    NEG = -1
+    dp = [[0] * (m + 1) for _ in range(n + 1)]
+    last = [[NEG] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            best, best_last = dp[i - 1][j], last[i - 1][j]
+            if dp[i][j - 1] > best:
+                best, best_last = dp[i][j - 1], last[i][j - 1]
+            if x[i - 1] == y[j - 1]:
+                prev_len, prev_last = dp[i - 1][j - 1], last[i - 1][j - 1]
+                within_interval = (
+                    prev_last == NEG or (i - 1) - prev_last - 1 <= interval
+                )
+                if within_interval and prev_len + 1 >= best:
+                    best, best_last = prev_len + 1, i - 1
+            dp[i][j], last[i][j] = best, best_last
+    return dp[n][m]
+```
+
+**`term_matcher._has_fuzzy_match()` 改用它**（阈值 0.75 保持不变）：
+
+```python
 def _has_fuzzy_match(text: str, candidate: str, *, threshold: float) -> bool:
     window = len(candidate)
     if window == 0 or len(text) < window:
         return False
     for i in range(len(text) - window + 1):
-        span = text[i : i + window]
-        # longest_common_substring_score 内部按候选长度归一化，
-        # 语义上跟这里的 window==len(candidate) 天然对齐。
-        if longest_common_substring_score(span, candidate) >= threshold:
+        # 窗口长度 == 候选名长度，所以这里的 P 恒等于 R，不需要 F-beta，
+        # 直接用匹配长度占候选名长度的比例即可。
+        if matched_length(text[i : i + window], candidate) / window >= threshold:
             return True
     return False
 ```
 
-`longest_common_substring_score()` 已经是大小写不敏感的实现（本次会话验证过），不需要额外改动。`match_terms()` 的精确匹配分支（`candidate.lower() in text_lower`）不受影响，继续保留。
+`match_terms()` 的精确匹配分支（`candidate.lower() in text_lower`）完全不动。
 
-**已知代价的迁移**：`term_matcher.py` 现有测试 `test_match_terms_known_false_positive_for_similar_short_error_codes`（E502/E503 在 0.75 阈值下误判为模糊命中）记录的是 `SequenceMatcher` 算法下的具体分数（0.75 恰好持平）。换算法后这条已知代价的具体数值可能变化（`longest_common_substring_score` 对短候选词的行为特性不同），需要重新计算 E502 相对 E503 的实际得分，更新测试注释和断言，不能直接照搬旧数值。
+**`ontology_recall` 侧改用 F-beta**——`_ngram_score_prelowered`/`longest_common_substring_score`
+的 LCS 打分换成 `matched_length` + F-beta：
 
-**阈值是否需要调整**：`_MIN_OVERLAP_LENGTH`（`ontology_recall.py` 内部常量）和 `fuzzy_threshold=0.75`（`term_matcher.py` 的默认参数）是两套独立的调节旋钮，服务不同目的——前者防止极短重叠虚高，后者是"整体多相似算命中"的总阈值。换算法后需要用现有测试用例（`tests/graphrag/test_term_matcher.py` 全部用例，含本次会话新增的 `coke-cola` 大小写场景）跑一遍回归，确认 0.75 这个阈值在新算法下是否仍然让所有既有场景保持预期行为；如果不行，允许调整默认阈值，但要在改动说明里写清楚新阈值下每条既有测试用例的实际得分，不能只改到测试变绿就停。
+```python
+# app/graphrag/ontology_recall.py
+from app.graphrag.term_matcher import matched_length
+
+_FBETA = 0.5  # <1 偏向精确率P，但要大到足以让 R 惩罚"短候选名虚高"
+
+
+def fbeta_match_score(query: str, name: str, *, beta: float = _FBETA) -> float:
+    """query 与候选名 name 的匹配分。P=匹配长度/len(name)（匹配了候选名多少
+    内容），R=匹配长度/len(query)（匹配占 query 多大比例）。
+
+    必须用双向的 F-beta 而不是单向的 P：`Cola`(4字) 是 `Coca-Cola`(9字) 的
+    子串，只看 P 的话 Cola 永远拿满分 1.0 碾压 Coca-Cola——这正是
+    2026-08-27 "coke-cola公司有多少个订单" 召回到错误实体的成因之一。
+    R 项让"query 很长却只匹配上一小段"的短候选名掉分。β=0.5 是实测取值
+    （β=0.2 时 Cola 0.8889 仍高于 Coca-Cola 0.7521；β=0.5 时 Coca-Cola
+    0.6604 反超 Cola 0.6061）。
+    """
+    if not name or not query:
+        return 0.0
+    if name.lower() in query.lower():
+        matched = len(name)          # 整段包含：满额匹配，保留现有快速路径语义
+    else:
+        matched = matched_length(query, name)
+    if matched == 0:
+        return 0.0
+    precision = matched / len(name)
+    recall = matched / len(query)
+    b2 = beta * beta
+    return (1 + b2) * precision * recall / (b2 * precision + recall)
+```
+
+`_best_score()` 内的 n-gram 循环 + bigram 预过滤**保留**（性能优化，实测 5000 候选
+110.1ms vs 现状 107.3ms 基本持平），只把其中的打分函数换掉。
+
+### 已实测验证的结果
+
+- `term_matcher` 侧：`tests/graphrag/test_term_matcher.py` **现有 12 条测试全部通过**，
+  阈值 0.75 无需调整，`test_match_terms_known_false_positive_for_similar_short_error_codes`
+  记录的 E502/E503 已知误报行为也保持不变（新算法下同样是 0.75 压线）。
+- `ontology_recall` 侧：β=0.5 时 `Coca-Cola`(0.6604) 正确排在 `Cola`(0.6061) 之前。
 
 ### 测试
 
-- `tests/graphrag/test_term_matcher.py` 全量跑一遍，确认所有现有场景（含本次会话新增的大小写测试）行为不回归；`test_match_terms_known_false_positive_for_similar_short_error_codes` 按新算法下的实际得分重写断言和注释。
-- 新增一条测试：用同一段文本（"coke-cola公司有多少个订单"）分别调用 `match_terms()` 和 `recall_ontology_candidates()`，断言两者对"Coca-Cola"这个实体的匹配结论一致（都命中或都不命中），作为"两处不再矛盾"这个设计目标的直接回归锚点。
+- `tests/graphrag/test_term_matcher.py` 全量回归，确认 12 条现有用例行为不变。
+- 新增 `matched_length()` 的直接单元测试：无间隔超限时等于普通最长公共子序列长度；
+  间隔超限时被截断（用"服务里有个器件，连着接口，超过时限了" vs "服务器连接超时"，
+  断言 `interval=2` 的结果显著小于 `interval=None` 的等价值）；大小写不敏感；空串返回 0。
+- 新增 `fbeta_match_score()` 单元测试：断言 `fbeta_match_score(q, "Coca-Cola") >
+  fbeta_match_score(q, "Cola")`（q="coke-cola公司有多少个订单"）——直接钉住"短候选名
+  虚高"这个痛点被修复。
+- 新增跨模块一致性测试：同一段文本 "coke-cola公司有多少个订单" 分别过 `match_terms()`
+  和 `recall_ontology_candidates()`，断言两者都能召回 `Coca-Cola`（不再一个命中一个不命中）。
 
 ## 设计 B：两层改写架构——历史指代消解（Layer 1）+ 轮内转述保真（Layer 2）
 
