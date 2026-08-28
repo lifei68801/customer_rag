@@ -41,9 +41,13 @@ def _base_context(*, terms=None, term_type_schema=None, graph_client=None,
     )
 
 
-def test_manifest_schema_only_exposes_query_intent():
+def test_manifest_schema_exposes_query_intent_and_is_verbatim():
     raw = yaml.safe_load(_manifest_path().read_text(encoding="utf-8"))
-    assert set(raw["parameters_schema"]["properties"]) == {"query_intent"}
+    assert set(raw["parameters_schema"]["properties"]) == {"query_intent", "is_verbatim"}
+    assert set(raw["parameters_schema"]["required"]) == {"query_intent", "is_verbatim"}
+    # 深层机制（anchor/constraints/hops/matched_count）仍然不能出现在这份
+    # 常驻 schema 里——渐进式披露的核心约束，见
+    # docs/superpowers/specs/2026-08-25-progressive-disclosure-recall-augmented-params-design.md
     for forbidden in ("anchor", "constraints", "hops", "matched_count"):
         assert forbidden not in raw["description"]
 
@@ -65,11 +69,19 @@ def test_manifest_description_trigger_cue_and_query_intent_match_content_exactly
         "不能仅凭检索到的文档片段猜测，也不能因为一次调用没查到就直接放弃。"
     )
     assert raw["parameters_schema"]["properties"]["query_intent"]["description"] == (
-        "用自然语言描述这次想查询/筛选的内容：想找什么类型的实体、"
-        "有什么筛选条件、涉及哪些已知的名字。写得越具体、越自包含"
-        "（把'它''这个'之类的指代词换成前面已经了解到的具体名字）"
-        "越好——这句话会被用来检索本体里相关的术语和关系作为参考，"
-        "帮你把接下来的实际查询参数填对。"
+        "默认原样填入用户当前问题的原文。只有当用户问题依赖前文指代"
+        "（「它」「这个」「上面提到的」）或存在明显省略、脱离上下文无法独立"
+        "执行时，才允许做最小改写——仅补全缺失的指代对象本身，不改写、"
+        "不概括、不重新组织其余内容。补全后的句子必须完整保留用户当前"
+        "问题里所有显式出现的措辞（尤其是「多少个/数量/一共/共有」这类"
+        "计数用词、具体实体名、数值条件），禁止为了「更清楚」而概括或"
+        "简化它们。如果当前问题本身已经完整、不依赖任何指代，直接原样"
+        "返回，不要改写。"
+    )
+    assert raw["parameters_schema"]["properties"]["is_verbatim"]["description"] == (
+        "true 表示 query_intent 就是用户当前问题的原文，未做任何改写；"
+        "false 表示做了指代补全式的最小改写。默认应该是 true——只有当前"
+        "问题确实依赖前文指代、脱离上下文无法独立执行时，才允许 false。"
     )
 
 
