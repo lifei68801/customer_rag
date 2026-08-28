@@ -238,13 +238,16 @@ async def test_resolve_question_falls_back_when_json_is_not_an_object():
 
 
 async def test_resolve_question_ignores_non_list_inherited_slots():
-    # inherited_slots 该是数组，模型可能给成字符串。白名单过滤前的
-    # isinstance 检查负责这个，否则 `for s in "anchor"` 会按字符遍历。
+    # inherited_slots 该是数组，模型可能给成对象。这里必须用 dict 而不是
+    # 字符串来构造：字符串 "anchor" 迭代出来是单个字符，每个字符都不在
+    # _SLOT_NAMES 里，去掉 isinstance 守卫后结果同样是 []，那样的测试证明
+    # 不了守卫的存在。dict 迭代出来是键名 "anchor"，它确实在白名单里——
+    # 守卫在场得 []，守卫缺席得 ["anchor"]，这才有区分度。
     from app.qa.query_rewrite import resolve_question
 
     provider = FixedLLMProvider(
         '{"rl": 1, "resolved_question": "改写后的问题", '
-        '"inherited_slots": "anchor", "duplicate_of": ""}'
+        '"inherited_slots": {"anchor": true}, "duplicate_of": ""}'
     )
     result = await resolve_question(
         "原问题", [{"role": "user", "content": "历史"}],
