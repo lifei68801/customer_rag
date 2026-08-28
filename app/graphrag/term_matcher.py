@@ -5,6 +5,57 @@ import difflib
 from app.graphrag.ontology import Term
 
 
+_DEFAULT_INTERVAL = 2
+
+
+def matched_length(a: str, b: str, *, interval: int = _DEFAULT_INTERVAL) -> int:
+    """b 的字符按顺序在 a 里最多能匹配上多少个，且相邻两个匹配字符在 a 中
+    跨越的字符数不超过 interval。大小写不敏感。
+
+    这是"最长公共子序列"加了间隔约束的版本。不加约束时，长文本里散落各处
+    的字符也能被全部匹配上——实测"服务里有个器件，连着接口，超过时限了"
+    对"服务器连接超时"能匹配满 7 个字，是纯子序列算法的致命误匹配来源；
+    interval 把匹配限制在局部连贯的区域内。
+
+    间隔取 2 是实测甜点：取 3 太松，压不掉上面那个散落误匹配；取 1 太紧，
+    会误伤 "coke-cola"→"Coca-Cola" 这类正常拼写变体。机制借鉴 swiftagent
+    dev/2.7.5 的 get_common_str.py::_get_max_sequence（那里是 token 级
+    interval=3，这里按字符级、取 2）。
+
+    为什么不用 difflib.SequenceMatcher 或最长公共【子串】：
+    - 最长公共子串只保留单个最长连续片段，"服务器链接超时"和"服务器网络
+      超时"对"服务器连接超时"都只能数出「服务器」=3，无法区分错1字和错2字。
+    - SequenceMatcher 能区分，但它是 term_guard 侧的老实现，没有间隔约束
+      这个旋钮，也无法被召回侧复用（召回侧要的是"匹配了多少个字符"这个
+      原始量，好在上层套 F-beta，而不是一个已经归一化死的比值）。
+
+    dp[i][j] = a 前 i 个字符与 b 前 j 个字符能匹配的最大长度；
+    last[i][j] = 取得该最大长度时最后一个匹配字符在 a 中的下标——间隔约束
+    需要知道"上一个匹配落在哪"，所以 last 必须跟着 dp 一起转移。
+    """
+    x, y = a.lower(), b.lower()
+    if not x or not y:
+        return 0
+    n, m = len(x), len(y)
+    no_match = -1
+    dp = [[0] * (m + 1) for _ in range(n + 1)]
+    last = [[no_match] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            best, best_last = dp[i - 1][j], last[i - 1][j]
+            if dp[i][j - 1] > best:
+                best, best_last = dp[i][j - 1], last[i][j - 1]
+            if x[i - 1] == y[j - 1]:
+                prev_len, prev_last = dp[i - 1][j - 1], last[i - 1][j - 1]
+                within_interval = (
+                    prev_last == no_match or (i - 1) - prev_last - 1 <= interval
+                )
+                if within_interval and prev_len + 1 >= best:
+                    best, best_last = prev_len + 1, i - 1
+            dp[i][j], last[i][j] = best, best_last
+    return dp[n][m]
+
+
 def _has_fuzzy_match(text: str, candidate: str, *, threshold: float) -> bool:
     """滑动窗口 + difflib 相似度，判断 candidate 是否在 text 里有足够相似的片段。
 

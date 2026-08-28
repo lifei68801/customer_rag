@@ -1,5 +1,5 @@
 from app.graphrag.ontology import Term
-from app.graphrag.term_matcher import match_terms
+from app.graphrag.term_matcher import matched_length, match_terms
 
 _TERMS = [
     Term(
@@ -149,3 +149,41 @@ def test_match_terms_respects_custom_fuzzy_threshold():
     )
 
     assert matches == []
+
+
+def test_matched_length_counts_in_order_characters_skipping_one_typo():
+    # "服务器链接超时" 相对 "服务器连接超时" 只错了「连→链」一个字，
+    # 按顺序能匹配上其余 6 个字（服务器+接超时）。最长公共【子串】只能
+    # 数出「服务器」=3（后面的「接超时」被错字隔断成另一段而丢弃），
+    # 这正是这个函数要解决的问题。
+    assert matched_length("服务器链接超时", "服务器连接超时") == 6
+
+
+def test_matched_length_distinguishes_one_typo_from_two():
+    # 错1字能匹配6个，错2字只能匹配5个——这个差异是 term_guard 判定
+    # "该不该命中" 的全部依据，必须被保留下来。
+    one_typo = matched_length("服务器链接超时", "服务器连接超时")
+    two_typos = matched_length("服务器网络超时", "服务器连接超时")
+    assert one_typo == 6
+    assert two_typos == 5
+    assert one_typo > two_typos
+
+
+def test_matched_length_interval_blocks_characters_scattered_across_text():
+    # 「服务器连接超时」这 7 个字确实全部按顺序出现在这句无关的话里
+    # （服-务-...-器-...-连-...-接-...-超-...-时），不加间隔约束的话
+    # 会被判成完全匹配（7），这是纯最长公共子序列的致命误匹配。
+    # interval=2 要求相邻两个匹配字符之间最多只能跨 2 个字符，把这种
+    # 散落匹配切断。
+    decoy = "服务里有个器件，连着接口，超过时限了"
+    assert matched_length(decoy, "服务器连接超时", interval=99) == 7
+    assert matched_length(decoy, "服务器连接超时", interval=2) < 7
+
+
+def test_matched_length_is_case_insensitive():
+    assert matched_length("COKE-COLA", "coke-cola") == 9
+
+
+def test_matched_length_returns_zero_for_empty_input():
+    assert matched_length("", "abc") == 0
+    assert matched_length("abc", "") == 0
