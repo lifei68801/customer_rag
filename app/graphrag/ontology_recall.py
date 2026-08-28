@@ -1,24 +1,25 @@
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Callable
 
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.ontology_constraints import AllowedCombination
 from app.graphrag.term_matcher import matched_length
 
-# 跟 app/retrieval/bm25.py 的 _TOKEN_PATTERN 用同一套规则（英文按
-# [a-z0-9_]+ 整段切、中文按字切），这里复制这一行正则常量而不是跨模块
-# import 一个下划线开头的私有名字——两边各自独立维护同一份简单规则，
-# 比引入模块间私有耦合更清晰。
-_TOKEN_PATTERN = re.compile(r"[a-z0-9_]+|[一-鿿]")
-
 _MIN_SCORE = 0.3
+# 实体召回单独用更高的 precision 门槛。_MIN_SCORE 的 0.3 是给旧的"最长连续
+# 公共子串 + 最小重叠2字符"打分器定的——那时候要拿到 0.3 得有一段连续覆盖
+# 候选名 30% 的子串。换成带间隔约束的子序列打分后，0.3 靠巧合就能达到：
+# 实测 query "查询Coca-Cola这家公司名下有多少个订单" 下，无关人名
+# Alice 拿 0.4000、Paul Cole 0.4444、Nicole Le 0.3333（都是在 "coca-cola"
+# 里凑到一两个字符），而真正被提到的实体是 1.0000，打错字的
+# coke-cola->Coca-Cola 也有 0.7778。0.6 落在这两群中间。
+# 本体词汇（term_type/relation/field）仍然用 _MIN_SCORE：那些名字短、
+# 候选池小，0.3 在那里没有这个问题（实测"订单号" 0.6667、"公司" 1.0）。
+_ENTITY_MIN_SCORE = 0.6
 _MIN_OVERLAP_LENGTH = 2
-_NGRAM_MAX_LEN = 4
 _TERM_TYPE_TOP_K = 10
 _RELATION_TOP_K = 10
 _FIELD_TOP_K = 10
@@ -31,26 +32,9 @@ _PATH_TOP_K = 10
 _FBETA = 0.5
 
 
-def _tokenize_ngrams(text: str, *, max_len: int = _NGRAM_MAX_LEN) -> list[str]:
-    """把 query 文本切成 token，再拼出 1~max_len 个 token 长的滑动窗口
-    n-gram，作为跟候选名字比对的基本单位。用 dict.fromkeys 去重（保留
-    顺序）——很多滑动窗口会拼出同一个子串，尤其是短/重复度高的
-    query，去重能省掉后面重复的打分工作。"""
-    tokens = _TOKEN_PATTERN.findall(text.lower())
-    ngrams: list[str] = []
-    for start in range(len(tokens)):
-        for length in range(1, max_len + 1):
-            end = start + length
-            if end > len(tokens):
-                break
-            ngrams.append("".join(tokens[start:end]))
-    return list(dict.fromkeys(ngrams))
-
-
 def _longest_common_substring_length_prelowered(a: str, b: str) -> int:
     """跟 _longest_common_substring_length 逻辑完全一致，但假定调用方已经
-    把 a/b 转成小写——热路径（_best_score 内层循环，可能对数万个候选
-    各跑一遍）用这个版本跳过重复的 .lower() 调用；公开的
+    把 a/b 转成小写，省掉重复的 .lower() 调用；公开的
     longest_common_substring_score 仍然用会自己转小写的版本，签名/行为
     不变。"""
     best = 0
@@ -80,33 +64,43 @@ def longest_common_substring_score(a: str, b: str) -> float:
     return overlap / len(b)
 
 
-def fbeta_match_score(query: str, name: str, *, beta: float = _FBETA) -> float:
-    """query 与候选名 name 的匹配分，用 F-beta 融合两个方向的比例：
-    P（精确率）= 匹配长度/len(name)，衡量"匹配覆盖了候选名多少内容"；
-    R（召回率）= 匹配长度/len(query)，衡量"匹配占 query 多大比例"。
+def _matched_chars(query: str, name: str) -> int:
+    """候选名 name 的字符按顺序在 query 里能匹配上多少个。
 
-    必须用双向 F-beta 而不是单向的 P：`Cola`(4字) 是 `Coca-Cola`(9字) 的
-    子串，只看 P 的话 Cola 永远拿满分 1.0 碾压 Coca-Cola——这正是
-    2026-08-27 "coke-cola公司有多少个订单" 召回到错误实体（产品 Cola 而
-    不是公司 Coca-Cola）的成因之一。R 项让"query 很长却只匹配上一小段"的
-    短候选名掉分。
-
-    beta=0.5 是实测取值：beta<1 仍然偏向精确率（这是召回场景该有的倾向），
-    但要大到足以让 R 惩罚生效——实测 beta=0.2（swiftagent dev/2.7.5 的
-    默认值，见 get_common_str.py::_get_match_score）时 Cola 0.8889 仍然
-    高于 Coca-Cola 0.7521；beta=0.5 时 Coca-Cola 0.6604 反超 Cola 0.6061。
-
-    候选名整段出现在 query 里时直接按满额匹配计算，跳过间隔约束——这段
-    保留 _best_score 原有的 containment 快速路径语义：整段命中是最强的
-    信号，不该因为候选名内部字符间隔而被打折。
+    整段包含时直接按满额算——整段命中是最强的信号，不该因为候选名内部
+    字符间隔而被 matched_length 的间隔约束打折。
     """
     if not name or not query:
-        return 0.0
+        return 0
     if name.lower() in query.lower():
-        matched = len(name)
-    else:
-        matched = matched_length(query, name)
-    if matched == 0:
+        return len(name)
+    return matched_length(query, name)
+
+
+def precision_match_score(query: str, name: str) -> float:
+    """候选名被 query 覆盖了多少（单向精确率）。跟 query 长度无关，所以这是
+    绝对及格线 _MIN_SCORE 唯一合适的判据——见 fbeta_match_score 的说明。"""
+    matched = _matched_chars(query, name)
+    return matched / len(name) if matched else 0.0
+
+
+def fbeta_match_score(query: str, name: str, *, beta: float = _FBETA) -> float:
+    """双向 F-beta：P=匹配长度/len(name)，R=匹配长度/len(query)。
+
+    只用于【排序】，绝不用于绝对及格线。R 项带着 len(query)，所以同一个
+    实体会随 query 变长而掉分——实测整段命中的情况下，len(query) 超过
+    12.67*len(name) 就会跌破 _MIN_SCORE(0.3)，而生产调用方拼出来的
+    query_text 常有 60-120 字符，足以让 4 字实体整个消失。排序是相对的，
+    这个长度敏感性无害；及格线是绝对的，就致命。
+
+    存在的理由仍然是"短候选名虚高"：`Cola`(4字) 是 `Coca-Cola`(9字) 的子串，
+    只看 P 的话 Cola 永远拿满分压过 Coca-Cola——这正是 2026-08-27
+    "coke-cola公司有多少个订单" 召回到错误实体的成因。beta=0.5 实测：
+    beta=0.2 时 Cola 0.8889 仍高于 Coca-Cola 0.7521；beta=0.5 时
+    Coca-Cola 0.6604 反超 Cola 0.6061。
+    """
+    matched = _matched_chars(query, name)
+    if not matched:
         return 0.0
     precision = matched / len(name)
     recall = matched / len(query)
@@ -114,84 +108,50 @@ def fbeta_match_score(query: str, name: str, *, beta: float = _FBETA) -> float:
     return (1 + b2) * precision * recall / (b2 * precision + recall)
 
 
-def precision_match_score(query: str, name: str) -> float:
-    """候选名被 query 覆盖了多少（单向精确率），不看匹配占 query 的比例。
+def _best_scores(
+    query_text: str, query_chars: set[str], *names: str, use_fbeta: bool = False
+) -> tuple[float, float]:
+    """对多个候选名（比如一个关系三元组的三个组成部分）分别打分，各取最好的
+    一个，返回 (gate_score, rank_score)——命中任意一个组成部分就算相关。
 
-    用于 term_type / relation / field 这三类"本体词汇"候选：它们的名字天生
-    就短（"公司""订单号""产品"），query 再长也不该因此被判为不相关。
-    fbeta_match_score 的 recall 项专治"短候选名虚高"，那是实体名召回的问题
-    （Cola 盖过 Coca-Cola），套到本体词汇上会反过来把正确的短标签打到及格线
-    以下——实测 query "查询Coca-Cola这家公司名下有多少个订单" 下"订单号"
-    得 0.2857 < _MIN_SCORE，而它显然是这次查询相关的类型。
+    gate_score 恒为 precision，用于跟绝对及格线 _MIN_SCORE 比较；rank_score
+    用于排序，实体召回传 use_fbeta=True。两者必须分开：F-beta 的 recall 项
+    带 len(query)，拿它当绝对及格线会让实体随 query 变长而整个消失
+    （见 fbeta_match_score 的说明）。
+
+    字符集预过滤：候选名和 query 没有任何公共字符时，_matched_chars 必然
+    返回 0，可以直接跳过后面 O(|query|*|name|) 的 DP。这个判据对当前的
+    子序列打分是严格成立的（匹配上一个字符就至少需要一个公共字符），不像
+    之前的 bigram 预过滤——那是给"最长连续公共子串+最小重叠2字符"设计的，
+    对间隔约束子序列并不成立，实测 "订购单据编号是多少" 对 "订单号" 的
+    bigram 交集为空却有 precision 1.0，会被错误跳过。
     """
-    if not name or not query:
-        return 0.0
-    if name.lower() in query.lower():
-        matched = len(name)
-    else:
-        matched = matched_length(query, name)
-    if matched == 0:
-        return 0.0
-    return matched / len(name)
-
-
-def _ngram_score_prelowered(ngram: str, lowered_name: str) -> float:
-    """跟 longest_common_substring_score 打分逻辑一致，但假定 ngram/name
-    已经是小写（_tokenize_ngrams 产出的 ngram 本来就已经小写，调用方对
-    name 只转一次小写而不是对每个 ngram 都转一次）——_best_score 内层
-    热循环专用。"""
-    if not lowered_name:
-        return 0.0
-    overlap = _longest_common_substring_length_prelowered(ngram, lowered_name)
-    if overlap < _MIN_OVERLAP_LENGTH:
-        return 0.0
-    return overlap / len(lowered_name)
-
-
-def _best_score(
-    query_text: str,
-    ngrams: list[str],
-    query_bigrams: set[str],
-    *names: str,
-    score_fn: Callable[[str, str], float] = precision_match_score,
-) -> float:
-    """对多个候选名字（比如一个关系三元组的三个组成部分）分别打分，取最高
-    的一个——命中任意一个组成部分就算这个候选跟 query 相关，不要求全部命中。
-
-    打分委托给 score_fn，默认是 precision_match_score（单向精确率，见那里
-    的说明：为什么本体词汇——term_type/relation/field——候选不能套用双向
-    F-beta）。实体名召回（recall_ontology_candidates 里的 entities 分支）
-    改传 score_fn=fbeta_match_score——只有实体名这个候选群体会出现"短名字
-    盖过长名字"的问题（Cola 盖过 Coca-Cola），才需要 F-beta 的 recall 项来
-    纠偏；term_type/relation/field 这些本体词汇天生就短，套用 F-beta 反而
-    会把正确的短标签打到 _MIN_SCORE 以下（详见 fbeta_match_score /
-    precision_match_score 各自的 docstring）。两个打分函数都已经内含
-    "候选名整段出现在 query 里"的快速路径，所以这里不再单独做 containment
-    检查。
-
-    bigram 预过滤保留：两个字符串如果没有任何公共的 2 字符子串，匹配长度
-    必然很小、不可能打出及格分，可以直接跳过后面 O(|query|·|name|) 的 DP。
-    这个预过滤只是性能优化，不改变任何能及格的候选的得分。ngrams 参数不再
-    参与打分（两个打分函数都直接吃完整 query，间隔约束替代了 n-gram 切分
-    原本承担的"限制匹配局部性"作用），保留在签名里是为了不改动全部调用方；
-    query_bigrams 仍然用于预过滤。
-    """
-    if not names:
-        return 0.0
-    best = 0.0
+    best_gate = best_rank = 0.0
     for name in names:
-        lowered_name = name.lower()
-        name_bigrams = {lowered_name[i : i + 2] for i in range(len(lowered_name) - 1)}
-        if name_bigrams and name_bigrams.isdisjoint(query_bigrams):
+        if not name or set(name.lower()).isdisjoint(query_chars):
             continue
-        score = score_fn(query_text, name)
-        if score > best:
-            best = score
-    return best
+        matched = _matched_chars(query_text, name)
+        if not matched:
+            continue
+        gate = matched / len(name)
+        if use_fbeta:
+            recall = matched / len(query_text)
+            b2 = _FBETA * _FBETA
+            rank = (1 + b2) * gate * recall / (b2 * gate + recall)
+        else:
+            rank = gate
+        best_gate = max(best_gate, gate)
+        best_rank = max(best_rank, rank)
+    return best_gate, best_rank
 
 
-def _rank(scored: list[tuple[float, object]], *, top_k: int) -> list[object]:
-    kept = [(score, payload) for score, payload in scored if score >= _MIN_SCORE]
+def _rank(
+    scored: list[tuple[float, float, object]], *, top_k: int, min_score: float = _MIN_SCORE
+) -> list[object]:
+    """scored 是 (gate_score, rank_score, payload) 三元组：按 gate_score 过
+    及格线，按 rank_score 排序。实体召回传更高的 min_score，见
+    _ENTITY_MIN_SCORE 的说明。"""
+    kept = [(rank, payload) for gate, rank, payload in scored if gate >= min_score]
     kept.sort(key=lambda item: item[0], reverse=True)
     return [payload for _, payload in kept[:top_k]]
 
@@ -307,24 +267,21 @@ def recall_ontology_candidates(
     参数生成调用参考——term_type/relation 三元组/字段名池子通常很小，
     召回时会把自己基本全部召回回来；实体名池子可能很大（数万条），
     真正需要靠打分+截断收窄候选范围。"""
-    ngrams = _tokenize_ngrams(query_text)
-    # 所有 ngram 里出现过的 2 字符子串的并集。任何候选名字如果跟某个
-    # ngram 的最长公共子串 >= _MIN_OVERLAP_LENGTH(2)，那两者一定共享至少
-    # 一个 2 字符子串，而这个子串必然是该 ngram 的一个 2-gram、因而必然
-    # 落在这个并集里——所以用它对候选名字做 isdisjoint 预过滤，绝不会
-    # 漏掉任何原本能在 n-gram 路径上打分及格的候选，只是提前排除掉注定
-    # 打不出及格分的大多数候选，跳过后面昂贵的双重循环。
-    query_bigrams = {ngram[i : i + 2] for ngram in ngrams for i in range(len(ngram) - 1)}
+    # 字符集预过滤的可靠性说明见 _best_scores 的 docstring。
+    query_chars = set(query_text.lower())
 
     term_types = _rank(
-        [(_best_score(query_text, ngrams, query_bigrams, name), name) for name in term_type_schema],
+        [
+            (*_best_scores(query_text, query_chars, name), name)
+            for name in term_type_schema
+        ],
         top_k=_TERM_TYPE_TOP_K,
     )
     relations = _rank(
         [
             (
-                _best_score(
-                    query_text, ngrams, query_bigrams,
+                *_best_scores(
+                    query_text, query_chars,
                     combo.subject_term_type, combo.relation_type, combo.object_term_type,
                 ),
                 combo,
@@ -335,7 +292,7 @@ def recall_ontology_candidates(
     )
     fields = _rank(
         [
-            (_best_score(query_text, ngrams, query_bigrams, field.name), (term_type, field.name))
+            (*_best_scores(query_text, query_chars, field.name), (term_type, field.name))
             for term_type, category in term_type_schema.items()
             for field in category.extra_fields
         ],
@@ -344,15 +301,15 @@ def recall_ontology_candidates(
     entities = _rank(
         [
             (
-                _best_score(
-                    query_text, ngrams, query_bigrams, term.standard_name,
-                    score_fn=fbeta_match_score,
+                *_best_scores(
+                    query_text, query_chars, term.standard_name, use_fbeta=True,
                 ),
                 term,
             )
             for term in terms
         ],
         top_k=_ENTITY_TOP_K,
+        min_score=_ENTITY_MIN_SCORE,
     )
 
     # 多跳路径搜索的起点/终点都取自"已经独立判定为跟这次查询相关"的候选

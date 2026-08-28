@@ -177,7 +177,7 @@ def test_matched_length_interval_blocks_characters_scattered_across_text():
     # 散落匹配切断。
     decoy = "服务里有个器件，连着接口，超过时限了"
     assert matched_length(decoy, "服务器连接超时", interval=99) == 7
-    assert matched_length(decoy, "服务器连接超时", interval=2) < 7
+    assert matched_length(decoy, "服务器连接超时", interval=2) == 5
 
 
 def test_matched_length_is_case_insensitive():
@@ -216,8 +216,8 @@ def test_matched_length_agrees_with_brute_force_on_repeated_characters():
 
     random.seed(20260828)
     for _ in range(200):
-        a = "".join(random.choice("ab") for _ in range(random.randint(3, 9)))
-        b = "".join(random.choice("ab") for _ in range(random.randint(2, 6)))
+        a = "".join(random.choice("abc") for _ in range(random.randint(3, 9)))
+        b = "".join(random.choice("abc") for _ in range(random.randint(2, 6)))
         for interval in (0, 1, 2, 3):
             assert matched_length(a, b, interval=interval) == brute_force(a, b, interval), (
                 f"a={a!r} b={b!r} interval={interval}"

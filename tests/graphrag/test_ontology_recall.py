@@ -293,6 +293,61 @@ def test_fbeta_match_score_treats_whole_name_containment_as_full_match():
     assert fbeta_match_score("我想查 Coca-Cola 的订单", "Coca-Cola") > 0.5
 
 
+def test_entity_recall_survives_a_long_query():
+    # 回归 2026-08-28 final review 的 Critical：_MIN_SCORE 是绝对及格线，
+    # 而 fbeta 的 recall 项带 len(query)——拿 fbeta 当及格线判据时，同一个
+    # 实体会因为 query 变长而整个消失。实测整段命中下 len(query) 超过
+    # 12.67*len(name) 就跌破 0.3，而生产调用方拼出的 query_text 常有
+    # 60-120 字符。gate 必须用 precision（跟 query 长度无关）。
+    long_query = (
+        "查询可口可乐这家公司名下的订单数量，可口可乐是我们的重点客户，"
+        "需要重点关注它今年的整体经营情况和后续合作计划"
+    )
+    coke = Term(tenant_id="demo", node_key="公司:可口可乐",
+                standard_name="可口可乐", aliases=[], term_type="公司")
+    candidates = recall_ontology_candidates(
+        long_query, terms=[coke], term_type_schema={}, allowed_combinations=[],
+    )
+    assert coke in candidates.entities
+
+
+def test_entity_recall_rejects_coincidental_short_matches():
+    # 回归 2026-08-28 final-fix 轮次发现的问题：把实体 gate 放在 _MIN_SCORE(0.3)
+    # 上时，无关人名靠在 "coca-cola" 里凑一两个字符就能进候选——实测
+    # Alice 0.4000、Paul Cole 0.4444。0.3 这个值是给旧的连续子串打分器定的，
+    # 对子序列打分太松，所以实体单独用 _ENTITY_MIN_SCORE。
+    query = "查询Coca-Cola这家公司名下有多少个订单"
+    coke = Term(tenant_id="demo", node_key="公司:Coca-Cola",
+                standard_name="Coca-Cola", aliases=[], term_type="公司")
+    alice = Term(tenant_id="demo", node_key="用户名:Alice",
+                 standard_name="Alice", aliases=[], term_type="用户名")
+
+    candidates = recall_ontology_candidates(
+        query, terms=[coke, alice], term_type_schema={}, allowed_combinations=[],
+    )
+
+    assert coke in candidates.entities
+    assert alice not in candidates.entities
+
+
+def test_character_set_prefilter_does_not_drop_a_fully_matched_candidate():
+    # 回归 final review 的 Important：旧的 bigram 预过滤是给"最长连续公共
+    # 子串 + 最小重叠2字符"设计的，对间隔约束子序列打分不成立。
+    # "订购单据编号是多少" 和 "订单号" 的 bigram 交集为空，但 订/单/号
+    # 按顺序都在、间隔都没超限，真实 precision 是 1.0，不该被跳过。
+    from app.graphrag.ontology_recall import precision_match_score
+
+    assert precision_match_score("订购单据编号是多少", "订单号") == 1.0
+
+    candidates = recall_ontology_candidates(
+        "订购单据编号是多少",
+        terms=[],
+        term_type_schema={"订单号": TermTypeCategory(value="订单号", extra_fields=[])},
+        allowed_combinations=[],
+    )
+    assert "订单号" in candidates.term_types
+
+
 def test_short_term_type_labels_are_not_penalised_by_query_length():
     # 本体词汇（term_type/relation/field）的名字天生就短，不能套用实体名那套
     # F-beta——recall 项会因为 query 长就把"订单号"这类正确标签打到及格线以下。
