@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.graphrag.ontology import Term, resolve_term
 from app.graphrag.ontology_categories import TermTypeCategory
+from app.graphrag.ontology_recall import precision_match_score
 
 if TYPE_CHECKING:
     from app.graphrag.neo4j_client import Neo4jGraphClient
@@ -354,11 +355,58 @@ def _should_fuzzy_resolve(
     return category is not None and category.standard_name_value_type == "string"
 
 
+# 精确匹配落空后走模糊兜底的两个门槛。最高分要过 _MIN_SCORE，且要比第二名
+# 高出 _MIN_MARGIN——分数接近时宁可报错也不猜：猜错会把整条查询悄悄导向错误
+# 实体，用户拿到一个看起来正常、其实答非所问的数字，比直接失败更糟。
+_CONSTRAINT_FUZZY_MIN_SCORE = 0.6
+_CONSTRAINT_FUZZY_MIN_MARGIN = 0.15
+
+
+def _best_fuzzy_term_name(value: str, *, term_type: str, terms: list[Term]) -> str | None:
+    """在指定 term_type 的候选里，按字符匹配度找最像 value 的那个标准名。
+
+    只在 resolve_term 精确匹配（standard_name/别名字面相等）落空后才调用。
+    打分复用 ontology_recall.precision_match_score（"候选名被 value 覆盖了
+    多少"），跟召回侧、term_guard 侧共用同一套字符匹配原语。
+    """
+    best_name: str | None = None
+    best = second = 0.0
+    for term in terms:
+        if term.term_type != term_type:
+            continue
+        score = max(
+            precision_match_score(value, candidate)
+            for candidate in (term.standard_name, *term.aliases)
+            if candidate
+        )
+        if score > best:
+            best, second, best_name = score, best, term.standard_name
+        elif score > second:
+            second = score
+    if best < _CONSTRAINT_FUZZY_MIN_SCORE or best - second < _CONSTRAINT_FUZZY_MIN_MARGIN:
+        return None
+    return best_name
+
+
 def _resolve_or_raise(value: object, *, term_type: str, terms: list[Term]) -> str:
+    """把约束值解析成术语表里的标准名：先精确匹配，落空则模糊兜底。
+
+    模糊兜底这一层是 2026-08-28 补的。在那之前这里只有 resolve_term 的精确
+    匹配，但工具的 _USAGE_GUIDE 一直向 LLM 承诺"standard_name 的 eq/ne 比较
+    值支持别名/模糊匹配，不要求填精确的标准名称"，函数名也叫
+    _resolve_fuzzy_constraint_values——承诺和实现对不上。以前没暴露，是因为
+    深层参数生成 LLM 通常会自己把用户的口语说法换成标准名；Layer 2 引入
+    is_verbatim、要求"完整保留用户原话措辞"之后，它开始把用户的错拼原样带
+    进 target_value（实测 "coke-cola" 而不是 "Coca-Cola"），整条查询就以
+    "约束值无法解析" 失败了。
+    """
     if isinstance(value, str):
         term = resolve_term(value, terms, term_type_hint=term_type)
         if term is not None and term.term_type == term_type:
             return term.standard_name
+        fuzzy_name = _best_fuzzy_term_name(value, term_type=term_type, terms=terms)
+        if fuzzy_name is not None:
+            return fuzzy_name
     raise StructuredFilterQueryError(
         f"约束值 {value!r} 无法在术语表里解析成已确认的 {term_type!r} 类型实体，"
         f"请检查拼写，或先用 anchor.name 消歧确认准确的标准名称"
@@ -494,6 +542,21 @@ async def run_structured_filter_query(
 
     rows = result["rows"]
     total_count = result["total_count"]
+    if args.limit == 0:
+        # 纯计数场景：不能返回 "anchors": [] ——2026-08-28 实测，Planner 会把
+        # 空列表读成"没有匹配到任何实体"，进而认定 matched_count 不可信，
+        # 明明拿到了精确答案却回复"无法给出确定数字"。这里改成不给 anchors
+        # 键、并附一句自描述说明：Planner 看不到工具的 _USAGE_GUIDE（那是
+        # 渐进式披露里只给深层参数生成看的），观察结果必须自己解释自己。
+        return {
+            "matched_count": total_count,
+            "note": (
+                "本次只做计数（limit=0），未返回样本实体。matched_count 是"
+                "精确完整的计数，不是上限值、也不是截断值，可以直接作为"
+                "确定数字回答用户。"
+            ),
+        }
+
     payload: dict[str, Any] = {
         "matched_count": total_count,
         "anchors": [
@@ -511,10 +574,8 @@ async def run_structured_filter_query(
             for row in rows
         ],
     }
-    # limit=0 是调用方主动要求"不要样本"，不是样本被截断——只有调用方确实
-    # 要了几条样本（limit>0）却没拿全时，才是真正的截断。见 tool.py 的
-    # _PARAMETERS_SCHEMA.limit 说明：这个区分正是为了避免 matched_count
-    # （从不截断）被 truncated 字段误读成"数字本身不准"。
-    if args.limit > 0 and total_count > len(rows):
+    # 走到这里 limit 必然 > 0（limit==0 已在上面提前返回），所以"总数比拿到的
+    # 样本多"就是真正的截断。见 tool.py 的 _PARAMETERS_SCHEMA.limit 说明。
+    if total_count > len(rows):
         payload["truncated"] = True
     return payload

@@ -748,8 +748,12 @@ async def test_run_structured_filter_query_limit_zero_omits_truncated_even_with_
     )
 
     assert result["matched_count"] == 10000
-    assert result["anchors"] == []
     assert "truncated" not in result
+    # 不能返回 anchors: []——Planner 会把空列表读成"没有匹配到任何实体"，
+    # 从而不信任 matched_count（2026-08-28 线上实测过这个误读）。改成不给
+    # anchors 键、并附一句自描述说明。
+    assert "anchors" not in result
+    assert "精确完整的计数" in result["note"]
 
 
 _COKE_TERM = Term(
@@ -1266,3 +1270,58 @@ async def test_run_structured_filter_query_name_anchor_constraints_also_resolve_
     )
 
     assert graph_client.last_args.constraints[0].value == "Coca-Cola"
+
+
+def test_resolve_or_raise_falls_back_to_fuzzy_when_exact_match_fails():
+    """约束值解析在精确匹配落空时要能模糊兜底。
+
+    2026-08-28 真实回归：Layer 2 的 query_intent/is_verbatim 要求"完整保留
+    用户原话措辞"之后，深层参数生成 LLM 开始把用户的错拼原样带进
+    target_value（"coke-cola" 而不是 "Coca-Cola"）。这个函数当时只有精确
+    匹配（resolve_term 比对 standard_name/aliases 字面相等），于是整条查询
+    以 "约束值无法解析" 失败——而工具自己的 _USAGE_GUIDE 明明向 LLM 承诺
+    "standard_name 的 eq/ne 比较值支持别名/模糊匹配，不要求填精确的标准名称"，
+    函数名也叫 _resolve_fuzzy_constraint_values。承诺和实现对不上。
+    """
+    from app.graphrag.structured_filter_query import _resolve_or_raise
+
+    companies = [
+        Term(tenant_id="demo", node_key="公司:Coca-Cola", standard_name="Coca-Cola",
+             aliases=[], term_type="公司"),
+        Term(tenant_id="demo", node_key="公司:Pepsi", standard_name="Pepsi",
+             aliases=[], term_type="公司"),
+        Term(tenant_id="demo", node_key="公司:Dr. Pepper", standard_name="Dr. Pepper",
+             aliases=[], term_type="公司"),
+    ]
+
+    assert _resolve_or_raise("coke-cola", term_type="公司", terms=companies) == "Coca-Cola"
+
+
+def test_resolve_or_raise_still_rejects_a_value_matching_nothing():
+    # 模糊兜底不能变成"随便挑一个最像的"——完全对不上的值仍然要报错，
+    # 否则 LLM 拼错成一个不存在的实体时会被静默解析到无关实体上。
+    from app.graphrag.structured_filter_query import _resolve_or_raise
+
+    companies = [
+        Term(tenant_id="demo", node_key="公司:Coca-Cola", standard_name="Coca-Cola",
+             aliases=[], term_type="公司"),
+    ]
+
+    with pytest.raises(StructuredFilterQueryError):
+        _resolve_or_raise("完全不相干的名字", term_type="公司", terms=companies)
+
+
+def test_resolve_or_raise_refuses_to_guess_between_equally_similar_terms():
+    # 两个候选分数接近时宁可报错也不猜——猜错会把整条查询悄悄导向错误实体，
+    # 比直接失败更糟（用户拿到一个看起来正常、其实答非所问的数字）。
+    from app.graphrag.structured_filter_query import _resolve_or_raise
+
+    twins = [
+        Term(tenant_id="demo", node_key="公司:AlphaCorp", standard_name="AlphaCorp",
+             aliases=[], term_type="公司"),
+        Term(tenant_id="demo", node_key="公司:AlphaCorp2", standard_name="AlphaCorp2",
+             aliases=[], term_type="公司"),
+    ]
+
+    with pytest.raises(StructuredFilterQueryError):
+        _resolve_or_raise("AlphaCorpX", term_type="公司", terms=twins)
