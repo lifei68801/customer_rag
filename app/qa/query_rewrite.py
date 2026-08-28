@@ -12,9 +12,10 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "你是客服问答检索的 query 改写助手。"
-    "请把用户的口语化提问改写为更利于文档检索的表达："
-    "结合此前的对话历史（如果提供）补全模糊指代（比如“这个报错”指代的具体错误码/模块），"
-    "尽量使用规范术语。"
+    "如果用户的问题已经清晰、具体，直接原样返回，不要改写。"
+    "只有当问题用词过于口语化、不利于文档检索匹配时，才改写成更规范的术语表达。"
+    "改写后的句子必须保留原始问题里所有具体词语和限定条件，"
+    "不能为了检索友好而丢弃或概括它们。"
     "只输出改写后的一句话，不要解释。"
 )
 
@@ -29,10 +30,10 @@ async def rewrite_query(
 ) -> str:
     """尝试用 LLM 改写检索 query；失败/超时/空结果均回退原始 question，不阻塞主链路。
 
-    conversation_context 为可选项：传入近期对话轮次（如
-    app/memory/context_injection.py 组装的 memory_context_messages）时，
-    改写 LLM 能看到"用户之前说了什么"来补全"这个报错""刚才那个"之类的
-    模糊指代；不传则只看孤立的当前问题，行为与之前完全一致。
+    conversation_context 为可选项，保留是为了向后兼容既有调用方
+    （app/qa/answer.py 的确定性路径）。Planner/Agent 路径不再需要传它：
+    跨轮次指代消解已经统一由 Layer 1（resolve_question）在更上游解决一次，
+    这里不再重复承担这个职责，只负责把口语化表达改写得更利于文档检索匹配。
     """
     messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
     if conversation_context:

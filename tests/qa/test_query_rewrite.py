@@ -255,3 +255,13 @@ async def test_resolve_question_ignores_non_list_inherited_slots():
     )
 
     assert result.inherited_slots == []
+
+
+async def test_rewrite_query_system_prompt_no_longer_mentions_history():
+    """Layer 1 统一接管了指代消解，rewrite_query 的职责收窄成只做检索友好化，
+    提示词里不该再让它自己去"结合对话历史补全指代"——那会变成两处各自
+    独立做同一件事，正是这次重构要消除的模式。"""
+    from app.qa.query_rewrite import _SYSTEM_PROMPT
+
+    assert "对话历史" not in _SYSTEM_PROMPT
+    assert "原样返回" in _SYSTEM_PROMPT
