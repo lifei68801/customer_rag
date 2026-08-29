@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -11,6 +12,8 @@ from app.graphrag.ontology_recall import precision_match_score
 
 if TYPE_CHECKING:
     from app.graphrag.neo4j_client import Neo4jGraphClient
+
+logger = logging.getLogger(__name__)
 
 # 与 neo4j_client.py::_RELATION_TYPE_NAME_PATTERN 保持同一份格式约束（有意重复定义，
 # 不做跨模块导入——两处校验的是同一条注入防线契约，但分属"解析请求参数"和"拼
@@ -506,53 +509,67 @@ async def _probe_fanout_warning(
 ) -> dict[str, Any] | None:
     """计数场景下检查路径上有没有扇出陷阱，有就返回一份警告，没有返回 None。
 
-    只检查【第一跳之后】的跳：第一跳是被计数实体自身的关系，它的多对多性质
-    正是查询语义的一部分（"Coca-Cola 卖多少种产品"走一跳 产品→公司，那条边
-    确实是多对多，但结果是对的），探测它会误报。第二跳起就不一样了——路径
-    A→B→C 只有在 B→C 是函数关系时才保得住 A 对 C 的归属，B→C 是多对多时，
-    路径会凭空捏造归属：2026-08-29 实测 订单号→产品→公司 让每一笔订单都能
-    走到每一家公司，三家公司的计数全都等于订单总数 10000，真实值是
-    3353/3330/3317。
+    只在路径有 2 跳及以上时才探测，且探测【每一跳，包括第一跳】：单跳路径是
+    数据直接断言的事实——没有复合，没有借助中间节点向第三方传递归属这一步，
+    天然安全（"Coca-Cola 卖多少种产品"走一跳 产品→公司，那条边本身是多对多，
+    但结果是对的，因为压根不存在"传递"）。两跳及以上就不一样了：路径
+    A→B→C 只有在每一跳都是（沿探测方向的）函数关系（N:1）时才保得住 A 对 C
+    的归属，只要其中任意一跳是多对多，路径就会凭空捏造归属——第一跳同样可以
+    是那个多对多的元凶，不能因为它挨着锚点就当成安全的：2026-08-29 实测
+    订单号 --CONTAINS--> 产品 --BELONG_TO--> 公司，第一跳本身就是多对多
+    （一笔订单包含多件产品），第二跳才是函数关系，结果依然是让每一笔订单都能
+    走到它名下每一件产品所属的公司，按公司分组的计数加总数倍于订单总数。
 
     见 docs/superpowers/specs/2026-08-29-fan-trap-detection-design.md。
 
-    _MAX_HOPS 目前是 2，所以实际上每个约束至多探测一跳；写成循环是为了上限
-    调整时无需改这里的逻辑。命中第一个扇出跳就返回，不继续探测。
+    _MAX_HOPS 目前是 2，所以每个约束至多探测两跳；写成循环是为了上限调整时
+    无需改这里的逻辑。命中第一个扇出跳就返回，不继续探测。
+
+    探测本身是建议性的旁路检查，不是主查询——探测失败（Neo4j 超时、两次
+    往返之间连接被重置、Neptune 5xx 等瞬时故障）不能连累已经拿到的正确
+    total_count 一起报废成一次失败的工具调用，所以这里整体兜一层
+    except Exception，降级为"没有警告"，只在日志里留痕，跟
+    run_structured_filter_query 主查询那层 except Exception 是同一个道理。
     """
-    for constraint in constraints:
-        if not isinstance(constraint, RelationConstraint):
-            continue
-        current_term_type = anchor_term_type
-        for index, hop in enumerate(constraint.hops):
-            if index == 0:
-                current_term_type = hop.target_term_type
+    try:
+        for constraint in constraints:
+            if not isinstance(constraint, RelationConstraint):
                 continue
-            fanout = await graph_client.probe_relation_fanout(
-                tenant_id=tenant_id,
-                relation_type=hop.relation_type,
-                from_term_type=current_term_type,
-                to_term_type=hop.target_term_type,
-                direction=hop.direction,
-            )
-            if fanout > 1:
-                arrow = (
-                    f"--{hop.relation_type}-->"
-                    if hop.direction == "outgoing"
-                    else f"<--{hop.relation_type}--"
+            if len(constraint.hops) < 2:
+                continue
+            current_term_type = anchor_term_type
+            for index, hop in enumerate(constraint.hops):
+                fanout = await graph_client.probe_relation_fanout(
+                    tenant_id=tenant_id,
+                    relation_type=hop.relation_type,
+                    from_term_type=current_term_type,
+                    to_term_type=hop.target_term_type,
+                    direction=hop.direction,
                 )
-                hop_label = f"{current_term_type} {arrow} {hop.target_term_type}"
-                return {
-                    "hop": hop_label,
-                    "fanout": fanout,
-                    "note": _FANOUT_WARNING_NOTE.format(
-                        hop_index=index + 1,
-                        hop=hop_label,
-                        from_term_type=current_term_type,
-                        to_term_type=hop.target_term_type,
-                        fanout=fanout,
-                    ),
-                }
-            current_term_type = hop.target_term_type
+                if fanout > 1:
+                    arrow = (
+                        f"--{hop.relation_type}-->"
+                        if hop.direction == "outgoing"
+                        else f"<--{hop.relation_type}--"
+                    )
+                    hop_label = f"{current_term_type} {arrow} {hop.target_term_type}"
+                    return {
+                        "hop": hop_label,
+                        "fanout": fanout,
+                        "note": _FANOUT_WARNING_NOTE.format(
+                            hop_index=index + 1,
+                            hop=hop_label,
+                            from_term_type=current_term_type,
+                            to_term_type=hop.target_term_type,
+                            fanout=fanout,
+                        ),
+                    }
+                current_term_type = hop.target_term_type
+    except Exception:
+        logger.warning(
+            "_probe_fanout_warning: 扇出探测失败，降级为不发出警告", exc_info=True,
+        )
+        return None
     return None
 
 

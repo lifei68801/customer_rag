@@ -23,6 +23,11 @@ class GraphClientProtocol(Protocol):
         term_type_schema: dict[str, TermTypeCategory],
     ) -> dict[str, Any]: ...
 
+    async def probe_relation_fanout(
+        self, *, tenant_id: str, relation_type: str,
+        from_term_type: str, to_term_type: str, direction: str,
+    ) -> int: ...
+
 
 _MAX_NEIGHBORS_PER_TERM = 20
 

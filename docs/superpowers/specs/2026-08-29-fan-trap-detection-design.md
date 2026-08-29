@@ -179,7 +179,7 @@ RETURN max(k) AS fanout
 | `app/agent/tools/structured_filter_query/tool.py` | 改 `_USAGE_GUIDE` 措辞（见下节）。 |
 | `app/graphrag/ontology_recall.py` | 改 `format_recall_candidates` 里那条把出问题的查询当正面示例的注释。 |
 
-`term_guard.py::GraphClientProtocol` 不需要动——它只用 `query_subgraph`/`execute_structured_filter_query`。新方法加在具体客户端和 `structured_filter_query` 用的协议上。
+`term_guard.py::GraphClientProtocol` 也要加 `probe_relation_fanout`：`ToolContext.graph_client` 就是按这份协议标注类型的，`run_structured_filter_query` 现在会在这个对象上调用该方法，协议不声明的话，未来一个满足协议但没实现该方法的第三个后端会在每次多跳计数上 `AttributeError`——今天两个后端都实现了，只是靠 `probe_relation_fanout` 参数标注的具体类型 `"Neo4jGraphClient"` 掩盖了这个缺口。
 
 ## 独立子项：修掉主动引导走错路径的文案
 

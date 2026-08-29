@@ -549,12 +549,17 @@ def test_validate_error_on_unconfirmed_relation_type_lists_available_relation_ty
 
 class _FakeGraphClient:
     def __init__(self, *, rows=None, group_result=None, error=None, total_count=None,
-                 fanout=1) -> None:
+                 fanout=1, fanout_error=None) -> None:
         self._rows = rows if rows is not None else []
         self._group_result = group_result
         self._error = error
         self._total_count = total_count if total_count is not None else len(self._rows)
+        # fanout 既可以是一个整数（每次探测都返回同一个值），也可以是一个列表
+        # （按探测发生的先后顺序逐个消费）——后者用来构造"第一跳扇出、第二跳
+        # 不扇出"这类跳与跳之间不同的场景，单个整数做不到这一点。
         self._fanout = fanout
+        self._fanout_error = fanout_error
+        self._fanout_call_count = 0
         self.last_args = None
         self.last_resolved = None
         self.last_tenant_id = None
@@ -577,6 +582,12 @@ class _FakeGraphClient:
             "from_term_type": from_term_type, "to_term_type": to_term_type,
             "direction": direction,
         })
+        if self._fanout_error is not None:
+            raise self._fanout_error
+        if isinstance(self._fanout, list):
+            value = self._fanout[self._fanout_call_count]
+            self._fanout_call_count += 1
+            return value
         return self._fanout
 
 
@@ -1464,10 +1475,17 @@ _TWO_HOP_COUNT_ARGS = {
 async def test_two_hop_count_warns_when_the_second_hop_fans_out():
     """2026-08-29 真实事故回归：订单号→产品→公司 两跳计数返回 10000，而
     产品→公司 是多对多（10 个产品各自都被 3 家公司卖过），真实值是 3353。
-    见 docs/superpowers/specs/2026-08-29-fan-trap-detection-design.md。"""
+    见 docs/superpowers/specs/2026-08-29-fan-trap-detection-design.md。
+
+    第一跳 订单号→产品 用 fanout=1（不扇出），第二跳 产品→公司 用
+    fanout=3（扇出）——两跳分开取值，是因为现在两跳都会被探测（见下方
+    fanout_probes 断言），如果两跳共用同一个 fanout=3，第一跳就会先命中，
+    这个测试就验证不到"第二跳扇出"这个场景了（那个场景由下面
+    test_two_hop_count_warns_when_the_first_hop_fans_out_on_its_own 单独覆盖）。
+    """
     from app.graphrag.structured_filter_query import run_structured_filter_query
 
-    client = _FakeGraphClient(total_count=10000, fanout=3)
+    client = _FakeGraphClient(total_count=10000, fanout=[1, 3])
 
     result = await run_structured_filter_query(
         _TWO_HOP_COUNT_ARGS,
@@ -1482,12 +1500,67 @@ async def test_two_hop_count_warns_when_the_second_hop_fans_out():
     # 肯定语气的原 note 必须消失——两条矛盾措辞并存会让模型无所适从。
     assert "note" not in result
 
-    # 只探测第一跳之后的跳：第一跳 订单号→产品 是被计数实体自己的关系，
-    # 它的多对多性质是查询语义的一部分，探测它会误报。
+    # 两跳路径现在每一跳都探测，包括第一跳——第一跳不扇出所以没有命中
+    # 警告，但探测确实发生了；第二跳扇出，命中警告后停止，不再往下探测
+    # （这里只有两跳，所以也没有"下一跳"可探测）。
     assert client.fanout_probes == [
         {"tenant_id": "demo", "relation_type": "BELONG_TO",
-         "from_term_type": "产品", "to_term_type": "公司", "direction": "outgoing"}
+         "from_term_type": "订单号", "to_term_type": "产品", "direction": "outgoing"},
+        {"tenant_id": "demo", "relation_type": "BELONG_TO",
+         "from_term_type": "产品", "to_term_type": "公司", "direction": "outgoing"},
     ]
+
+
+async def test_two_hop_count_warns_when_the_first_hop_fans_out_on_its_own():
+    """2026-08-29 复审发现：旧实现无条件跳过第一跳，会漏掉"第一跳本身就是
+    扇出元凶"的情形——订单号--CONTAINS-->产品--BELONG_TO-->公司，一笔订单
+    包含多件产品（第一跳多对多），每件产品只属于一家公司（第二跳函数关系）。
+    旧代码只探测第二跳（fanout==1，不命中），于是把凭空捏造的归属计数当成
+    "精确完整的计数"交给 Planner。第一跳必须被探测到、并且能单独触发警告。
+    """
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    client = _FakeGraphClient(total_count=10000, fanout=[3, 1])
+
+    result = await run_structured_filter_query(
+        _TWO_HOP_COUNT_ARGS,
+        graph_client=client, tenant_id="demo", terms=[_COCA_COLA_TERM],
+        confirmed_relation_types={"BELONG_TO"}, term_type_schema=_FANOUT_SCHEMA,
+    )
+
+    assert result["matched_count"] == 10000
+    assert result["fanout_warning"]["fanout"] == 3
+    assert result["fanout_warning"]["hop"] == "订单号 --BELONG_TO--> 产品"
+    assert "note" not in result
+
+    # 第一跳一命中就返回，第二跳（不扇出）根本没被探测到。
+    assert client.fanout_probes == [
+        {"tenant_id": "demo", "relation_type": "BELONG_TO",
+         "from_term_type": "订单号", "to_term_type": "产品", "direction": "outgoing"},
+    ]
+
+
+async def test_fanout_probe_failure_degrades_to_no_warning_not_a_failed_call():
+    """探测是建议性的旁路检查，不是主查询——探测失败（Neo4j 超时/连接被重置/
+    Neptune 5xx 等瞬时故障）不能把已经拿到的正确 total_count 也搭进去，变成
+    一次失败的工具调用（返回裸的 {"error": ...}，Planner 连正确的数字都
+    看不到）。修复前 _probe_fanout_warning 没有 try/except，这个场景没有
+    测试覆盖，是漏掉的地方。
+    """
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    client = _FakeGraphClient(total_count=3353, fanout_error=RuntimeError("probe timeout"))
+
+    result = await run_structured_filter_query(
+        _TWO_HOP_COUNT_ARGS,
+        graph_client=client, tenant_id="demo", terms=[_COCA_COLA_TERM],
+        confirmed_relation_types={"BELONG_TO"}, term_type_schema=_FANOUT_SCHEMA,
+    )
+
+    assert "error" not in result
+    assert result["matched_count"] == 3353
+    assert "fanout_warning" not in result
+    assert "精确完整的计数" in result["note"]
 
 
 async def test_two_hop_count_keeps_the_plain_note_when_no_hop_fans_out():
@@ -1573,3 +1646,11 @@ async def test_group_by_result_also_carries_the_fanout_warning():
 
     assert result["groups"] == [{"value": "Coca-Cola", "count": 10000}]
     assert result["fanout_warning"]["fanout"] == 3
+    # 两跳都用同一个 fanout=3，第一跳一探测就命中并返回——如果 group_by
+    # 分支探测错了跳（比如又退回旧实现只探测第二跳），这里的 hop 断言和
+    # fanout_probes 断言都会失败。
+    assert result["fanout_warning"]["hop"] == "订单号 --BELONG_TO--> 产品"
+    assert client.fanout_probes == [
+        {"tenant_id": "demo", "relation_type": "BELONG_TO",
+         "from_term_type": "订单号", "to_term_type": "产品", "direction": "outgoing"},
+    ]
