@@ -70,6 +70,19 @@ def _has_fuzzy_match(text: str, candidate: str, *, threshold: float) -> bool:
     这里的"匹配长度/窗口长度"和"匹配长度/候选名长度"是同一个值——也就是
     precision 恒等于 recall，所以不需要像召回侧（ontology_recall.
     fbeta_match_score）那样引入 F-beta 双向评分，直接用比例即可。
+
+    窗口这一层不要拿掉——它不是 interval=2 的冗余重复，而是更紧的第二层
+    局部性约束。interval=2 只限制【相邻】两个匹配字符最多跨 2 个字符，n 个
+    字符的候选名整体跨度可以到 3n-2；窗口把整体跨度钉在 n。2026-08-29 在真实
+    术语表（26298 个候选名）上量过去掉窗口、直接改用召回侧
+    precision_match_score 的效果：候选名字符被 1~3 个 filler 打散进长句时
+    34/150（23%）的样本上全局命中而窗口不命中，模板化问句语料 9600 次比较
+    里也有 84 次分歧；反方向 0 次。也就是说去掉窗口是【单向放松】，只新增
+    误命中、挽不回任何漏命中，而 TermGuard 的误命中会把错误实体的图谱邻居
+    强制注入到 Planner 第一次推理之前（见 build_term_guard_context 的
+    _MAX_NEIGHBORS_PER_TERM 注释里那个真实事故）。回归锚点见
+    tests/graphrag/test_term_matcher.py::
+    test_sliding_window_rejects_scatter_that_global_precision_accepts。
     """
     window = len(candidate)
     if window == 0 or len(text) < window:

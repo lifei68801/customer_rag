@@ -256,3 +256,38 @@ def test_match_terms_and_recall_agree_on_the_coke_cola_case():
 
     assert "Coca-Cola" in guard_hits
     assert "Coca-Cola" in recalled
+
+
+def test_sliding_window_rejects_scatter_that_global_precision_accepts():
+    """滑动窗口不是 interval=2 的冗余重复——它是更紧的第二层局部性约束。
+
+    2026-08-29 提出过一个"清理"设想：既然 matched_length 已经有 interval=2
+    这个局部性约束，_has_fuzzy_match 外面那层滑动窗口是不是多余的？去掉它
+    TermGuard 就能直接复用召回侧的 precision_match_score，两边合成一个打分
+    函数。实测否决了这个设想。
+
+    原因是两层约束管的跨度不同：interval=2 只限制【相邻】两个匹配字符最多
+    跨 2 个字符，n 个字符的候选名整体跨度可以到 3n-2；窗口把整体跨度死死钉
+    在 n。所以 filler 长度 1~2 的散落文本能穿过 interval=2，穿不过窗口。
+
+    在真实术语表（26298 个候选名）上量过：候选名字符被 1~3 个 filler 打散
+    进长句时，34/150（23%）的样本上全局打分命中而窗口不命中；模板化问句
+    语料 9600 次比较里也有 84 次（0.9%）分歧，全部是短数字码在双 typo 之后。
+    反方向（窗口命中而全局不命中）是 0——去掉窗口是【单向放松】，只会新增
+    误命中，不会挽回任何漏命中。
+
+    对 TermGuard 来说误命中的代价不是零：命中就会把那个实体的图谱邻居强制
+    注入到 Planner 第一次推理之前的上下文里，8-27 已经实测过这样能把模型
+    锚死在错误实体上。所以窗口保留。
+    """
+    from app.graphrag.ontology_recall import precision_match_score
+    from app.graphrag.term_matcher import _has_fuzzy_match
+
+    candidate = "服务器连接超时"
+    # 7 个字全部按顺序出现，每两个之间只隔 1 个字——穿得过 interval=2。
+    scattered = "服务的器件连的接口超的时限"
+
+    assert precision_match_score(scattered, candidate) == 1.0
+    assert _has_fuzzy_match(scattered, candidate, threshold=0.75) is False
+    # 正常表述仍然命中，说明窗口挡掉的确实是散落匹配、不是把功能挡死了。
+    assert _has_fuzzy_match("我的服务器连接超时了", candidate, threshold=0.75) is True
