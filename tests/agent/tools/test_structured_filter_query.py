@@ -172,3 +172,32 @@ async def test_execute_resolves_name_anchor():
     assert result["matched_count"] == 1
     assert result["anchors"][0]["standard_name"] == "示例错误码E502"
     assert records == []
+
+
+async def test_usage_guide_prefers_a_direct_hop_over_multi_hop_for_counting():
+    """计数场景必须优先找直连的一跳关系，多跳只是没有直连路径时的退路。
+
+    2026-08-29 发现的引导缺陷：_USAGE_GUIDE 原本用"必须把那条路径的每一跳
+    原样抄进 constraints.hops"的强制语气推荐多跳路径，没有任何"先看有没有
+    直连"的前置条件。真实后果是 "coke-cola公司有多少个订单" 走了
+    订单号→产品→公司 两跳，而 产品→公司 是多对多（10 个产品各自都被 3 家
+    公司卖过），每一笔订单因此都能走到每一家公司，三家公司的计数全都等于
+    订单总数 10000，真实值是 3353/3330/3317。
+
+    见 docs/superpowers/specs/2026-08-29-fan-trap-detection-design.md。
+    """
+    llm_registry = ProviderRegistry()
+    provider = ScriptedLLMProvider([ProviderResult(text='{"anchor": {"term_type": "订单号"}}')])
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+    context = _base_context(llm_registry=llm_registry)
+
+    await TOOL.resolve_arguments({"query_intent": "查一下订单号有多少个"}, context=context)
+
+    prompt_content = provider.requests[0].messages[0]["content"]
+    # 直连优先
+    assert "优先" in prompt_content and "一跳" in prompt_content
+    # 多跳计数的结果要被明确标注成"推导"而非精确归属
+    assert "推导" in prompt_content
+    # 原有约束不能在改写中丢失
+    assert "constraints.kind=relation" in prompt_content
+    assert "只抄第一跳" in prompt_content

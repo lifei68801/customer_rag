@@ -342,9 +342,19 @@ def format_recall_candidates(candidates: RecallCandidates) -> str:
             lines.append(f"  - {combo.subject_term_type} --{combo.relation_type}--> {combo.object_term_type}")
     if candidates.paths:
         # 起点和目标类型之间没有直接关系、要跨一个中间实体类型才能连起来的
-        # 查询（比如"公司有多少个订单"要经过"产品"这个中间类型），最容易
-        # 让深层参数生成 LLM 自己漏掉中间那一跳——这里把完整路径拼好递过去，
-        # 不要求它自己从上面摊平的单跳关系列表里推理拼接。箭头方向跟
+        # 查询（比如"这个类目下的产品分别属于哪些公司"要经过"产品"这个中间
+        # 类型），最容易让深层参数生成 LLM 自己漏掉中间那一跳——这里把完整
+        # 路径拼好递过去，不要求它自己从上面摊平的单跳关系列表里推理拼接。
+        #
+        # 注意这里给出的多跳路径【不适合直接用来计数】：中间类型和终点类型
+        # 之间只要是多对多，沿路径计数就会把归属放大（2026-08-29 实测："公司
+        # 有多少个订单"走 订单号→产品→公司，而每个产品都被 3 家公司卖过，
+        # 三家公司的计数全都等于订单总数 10000，真实值是 3353/3330/3317）。
+        # 这条注释原本就是拿"公司有多少个订单"当正面示例的，那是个反面例子，
+        # 已换掉。计数场景的正确引导在 tool.py 的 _USAGE_GUIDE 里（优先找直连
+        # 一跳，多跳只是退路且结果要标注成推导值），检测机制见
+        # docs/superpowers/specs/2026-08-29-fan-trap-detection-design.md。
+        # 箭头方向跟
         # constraints.hops[].direction 的取值对应：--relation_type--> 是
         # outgoing，<--relation_type-- 是 incoming，可以直接照抄。
         lines.append("可能相关的多跳路径（起点和目标类型之间要跨中间类型才能连上）：")
