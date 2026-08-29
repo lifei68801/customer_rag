@@ -1071,3 +1071,89 @@ async def test_retrieval_runs_on_the_resolved_question_not_the_raw_one():
     # 检索用的文本必须是消解后的，不能是含指代的原文。
     assert "Coca-Cola有多少个订单" in seen_texts
     assert "它有多少个订单" not in seen_texts
+
+
+class _RecordingTermGuardGraphClient:
+    def __init__(self) -> None:
+        self.queried_node_keys: list[str] = []
+
+    async def query_subgraph(self, node_key: str, *, tenant_id: str) -> list[dict]:
+        self.queried_node_keys.append(node_key)
+        return []
+
+
+async def test_term_guard_runs_on_the_resolved_question_not_the_raw_one():
+    """TermGuard 必须看 Layer 1 消解指代后的问题。
+
+    2026-08-29 发现的顺序缺陷：term_guard 节点原本排在 memory_recall/
+    resolve_question 之前，拿到的是含指代的原始 question。用户说"它有多少个
+    订单"时，术语表里没有任何名字字面出现在这句话里，match_terms 返回空，
+    强制注入直接哑火——恰恰是最需要这层安全网的场景（问题本身不含实体名，
+    模型更依赖注入的图谱上下文来定位实体）。
+    """
+    from datetime import datetime
+
+    import aiosqlite
+
+    from app.memory.chat_sessions import touch_session
+    from app.memory.clarification import ensure_clarification_schema
+    from app.memory.schema import ensure_schema
+    from app.memory.session_window import append_turn
+
+    embedding_registry, vector_store, bm25_index, _, _ = await _build_dependencies(
+        with_records=True, llm_text="unused"
+    )
+
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+    await ensure_clarification_schema(conn)
+    await touch_session(conn, tenant_id="t1", session_id="s1", user_id="u1",
+                        first_message="Coca-Cola 是什么公司", now=datetime.now())
+    await append_turn(conn, tenant_id="t1", session_id="s1", user_id="u1",
+                      role="user", content="Coca-Cola 是什么公司")
+
+    llm_provider = DispatchingLLMProvider(
+        [
+            ("指代消解助手", [
+                '{"rl": 1, "resolved_question": "Coca-Cola有多少个订单", '
+                '"inherited_slots": ["anchor"], "duplicate_of": ""}'
+            ]),
+            ("客服对话意图分类器", ['{"is_correction": false}']),
+            ("语义级安全审查员", ['{"is_safe": true}']),
+            ("根据以下资料回答问题", ["Coca-Cola 的订单在资料里。"]),
+        ]
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", llm_provider)
+
+    terms = [
+        Term(
+            tenant_id="t1",
+            node_key="公司:Coca-Cola",
+            standard_name="Coca-Cola",
+            aliases=[],
+            term_type="公司",
+        )
+    ]
+    graph_client = _RecordingTermGuardGraphClient()
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
+        query_rewrite_enabled=False,
+        memory_conn=conn,
+        terms=terms,
+        graph_client=graph_client,
+    )
+
+    await graph.ainvoke(
+        {"question": "它有多少个订单", "tenant_id": "t1",
+         "session_id": "s1", "user_id": "u1"}
+    )
+    await conn.close()
+
+    assert graph_client.queried_node_keys == ["公司:Coca-Cola"]

@@ -349,7 +349,9 @@ def build_agent_graph(
         if not (terms and graph_client is not None):
             return {"term_guard_context": None}
         context = await build_term_guard_context(
-            state["question"],
+            # 用 Layer 1 消解指代后的问题（resolve_question_node 产出）。
+            # 兜底回原始 question：该节点没跑过或失败时不写这个字段。
+            state.get("resolved_question", state["question"]),
             terms=terms,
             tenant_id=state["tenant_id"],
             graph_client=graph_client,
@@ -413,10 +415,11 @@ def build_agent_graph(
         """Layer 1：跨轮次历史指代消解，一轮只跑一次。
 
         必须排在 memory_recall_node 之后——它要吃 memory_context_messages
-        （近期对话轮次），那是 memory_recall_node 产出的。也因此 term_guard
-        （排在更前面）看到的仍然是原始 question，不是消解后的版本：
-        term_guard 判断的是"文本里字面提到了哪个已知术语"，跟指代消解是两个
-        不同维度的问题，不受影响。
+        （近期对话轮次），那是 memory_recall_node 产出的。term_guard_node 反过来
+        排在本节点之后，吃本节点产出的 resolved_question：2026-08-29 之前
+        term_guard 排在最前面、看的是原始 question，而它匹配的恰恰是"文本里
+        字面提到了哪个已知术语"——含指代的原文里根本没有实体名，匹配必然落空、
+        强制注入哑火，偏偏那正是最需要这层安全网的场景。
         """
         history = state.get("memory_context_messages", [])
         if not history:
@@ -813,10 +816,16 @@ def build_agent_graph(
         },
     )
     graph.add_edge("correction_check", "merge_after_parallel")
-    graph.add_edge("clarification_check", "term_guard")
-    graph.add_edge("term_guard", "memory_recall")
+    # term_guard 必须排在 resolve_question 之后：它匹配的是"文本里字面提到
+    # 了哪个已知术语"，含指代的原文（"它有多少个订单"）里根本没有实体名，
+    # 匹配必然落空、强制注入哑火。而 resolve_question 又必须排在
+    # memory_recall 之后（要吃它产出的 memory_context_messages 当历史），
+    # 所以整条链是 memory_recall → resolve_question → term_guard。
+    # 三个节点本来就是串行的，重排不改变这条分支的总延迟。
+    graph.add_edge("clarification_check", "memory_recall")
     graph.add_edge("memory_recall", "resolve_question")
-    graph.add_edge("resolve_question", "merge_after_parallel")
+    graph.add_edge("resolve_question", "term_guard")
+    graph.add_edge("term_guard", "merge_after_parallel")
     graph.add_conditional_edges(
         "fallback",
         route_after_fallback,
