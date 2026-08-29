@@ -1057,3 +1057,48 @@ async def test_execute_structured_filter_query_no_expand_rows_have_no_neighbors_
     )
 
     assert "neighbors" not in result["rows"][0]
+
+
+async def test_probe_relation_fanout_returns_max_distinct_targets():
+    session = FakeSession(rows=[{"fanout": 3}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    fanout = await client.probe_relation_fanout(
+        tenant_id="demo", relation_type="BELONG_TO",
+        from_term_type="产品", to_term_type="公司", direction="outgoing",
+    )
+
+    assert fanout == 3
+    assert session.last_parameters == {
+        "tenant_id": "demo", "from_term_type": "产品", "to_term_type": "公司",
+    }
+    # relation_type 只能插值（Cypher 不支持参数化关系类型），term_type 必须参数化。
+    assert "[r:BELONG_TO]" in session.last_query
+    assert "$from_term_type" in session.last_query
+    assert "(a:Term)-[r:BELONG_TO]->(b:Term)" in session.last_query
+    # 关系边本身也要按租户过滤，跟 query_subgraph 的 WHERE r.tenant_id 一致。
+    assert "r.tenant_id = $tenant_id" in session.last_query
+
+
+async def test_probe_relation_fanout_flips_the_pattern_for_incoming():
+    session = FakeSession(rows=[{"fanout": 1}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.probe_relation_fanout(
+        tenant_id="demo", relation_type="BELONG_TO",
+        from_term_type="公司", to_term_type="产品", direction="incoming",
+    )
+
+    assert "(a:Term)<-[r:BELONG_TO]-(b:Term)" in session.last_query
+
+
+async def test_probe_relation_fanout_returns_zero_when_no_edges_match():
+    # 没有任何匹配边时，WITH 阶段产出 0 行，max() 在空输入上返回 null——
+    # Cypher 仍然会给出一行、fanout 为 None，不能直接返回 None。
+    session = FakeSession(rows=[{"fanout": None}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    assert await client.probe_relation_fanout(
+        tenant_id="demo", relation_type="BELONG_TO",
+        from_term_type="产品", to_term_type="公司", direction="outgoing",
+    ) == 0

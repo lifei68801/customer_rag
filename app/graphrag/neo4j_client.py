@@ -198,6 +198,24 @@ DETACH DELETE t, a
 # MATCH 让"没有别名"的术语也能正常匹配到 t（DELETE 一个 null 值是
 # Cypher 里的合法操作，不会报错）。
 
+_FANOUT_QUERY_TEMPLATE = """
+MATCH (a:Term){arrow_left}[r:{relation_type}]{arrow_right}(b:Term)
+WHERE a.tenant_id = $tenant_id AND a.type = $from_term_type
+  AND b.tenant_id = $tenant_id AND b.type = $to_term_type
+  AND r.tenant_id = $tenant_id
+WITH a, count(DISTINCT b) AS k
+RETURN max(k) AS fanout
+"""
+# 扇出探测：单个 from 节点最多能走到几个不同的 to 节点。fanout > 1 说明这一跳
+# 不是函数关系，沿它做计数聚合会把归属放大——见 docs/superpowers/specs/
+# 2026-08-29-fan-trap-detection-design.md。
+#
+# relation_type 走 str.format 插值（Cypher 无法参数化关系类型），安全性依赖
+# 调用方已跑过 validate_structured_filter_query 的格式正则 + 已确认成员校验，
+# 跟 execute_structured_filter_query 的插值理由完全一致。term_type 是普通
+# 属性值，一律参数化，并且走 (tenant_id, type) 复合索引
+# term_tenant_term_type_idx（见 _ENSURE_INDEXES_QUERIES）。
+
 _ENSURE_INDEXES_QUERIES = [
     "CREATE INDEX term_tenant_node_key_idx IF NOT EXISTS FOR (t:Term) ON (t.tenant_id, t.node_key)",
     "CREATE INDEX term_tenant_term_type_idx IF NOT EXISTS FOR (t:Term) ON (t.tenant_id, t.type)",
@@ -575,6 +593,42 @@ class Neo4jGraphClient:
             )
             rows = await result.data()
             return rows[0]["edge_count"] if rows else 0
+
+    async def probe_relation_fanout(
+        self,
+        *,
+        tenant_id: str,
+        relation_type: str,
+        from_term_type: str,
+        to_term_type: str,
+        direction: str,
+    ) -> int:
+        """单个 from_term_type 节点沿这条关系最多能走到几个不同的
+        to_term_type 节点。返回 > 1 表示这一跳不是函数关系。
+
+        direction="outgoing" 表示边从 from 指向 to，"incoming" 表示反向——
+        跟 structured_filter_query.Hop.direction 的取值一致。
+
+        没有任何匹配边时返回 0：Cypher 的 max() 在空输入上返回 null，仍然会
+        给出一行，不能把 None 直接透出去。
+        """
+        arrow_left, arrow_right = ("-", "->") if direction == "outgoing" else ("<-", "-")
+        query = _FANOUT_QUERY_TEMPLATE.format(
+            arrow_left=arrow_left, arrow_right=arrow_right, relation_type=relation_type,
+        )
+        async with self._driver.session() as session:
+            result = await session.run(
+                query,
+                {
+                    "tenant_id": tenant_id,
+                    "from_term_type": from_term_type,
+                    "to_term_type": to_term_type,
+                },
+            )
+            rows = await result.data()
+        if not rows:
+            return 0
+        return rows[0]["fanout"] or 0
 
     async def rename_term_node(
         self, *, tenant_id: str, node_key: str, new_standard_name: str
