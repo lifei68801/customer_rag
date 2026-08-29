@@ -235,6 +235,7 @@ class StructuredFilterQueryTool:
             tenant_id=context.tenant_id,
             confirmed_relation_types=context.confirmed_relation_types,
             term_type_schema=context.term_type_schema,
+            allowed_combinations=context.allowed_combinations,
         )
         return observation, []
 

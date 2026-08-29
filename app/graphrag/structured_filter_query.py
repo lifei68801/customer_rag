@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.graphrag.ontology import Term, resolve_term
 from app.graphrag.ontology_categories import TermTypeCategory
+from app.graphrag.ontology_constraints import AllowedCombination
 from app.graphrag.ontology_recall import precision_match_score
 
 if TYPE_CHECKING:
@@ -444,6 +445,50 @@ def _maybe_resolve_relation_constraint(
     return replace(constraint, target_value=resolved_value)
 
 
+def _correct_hop_directions(
+    constraint: RelationConstraint,
+    *,
+    start_term_type: str,
+    allowed_combinations: list[AllowedCombination],
+) -> RelationConstraint:
+    """把 hops 里方向填反的跳纠正过来。
+
+    direction=outgoing 表示沿 (当前类型 --R--> 目标类型) 正向走，前提是存在
+    AllowedCombination(subject=当前, relation=R, object=目标)；incoming 表示
+    沿反向边走，前提是存在 (subject=目标, relation=R, object=当前)。
+
+    2026-08-28 实测动机：同一个问题"coke-cola公司有多少个订单"跑 6 次，
+    query_intent 完全相同的情况下，5 次生成 outgoing/outgoing（正确，返回
+    10000），1 次生成 incoming/incoming（返回 0，Planner 于是如实回答"0 个
+    订单"）。差别只在方向，不在意图理解——hop 的 direction 是纯机械的图
+    遍历细节，不是 LLM 想表达的语义，而它到底该往哪边走完全可以拿已声明的
+    组合确定性地判出来，不用猜。
+
+    只在"给定方向没有任何已声明组合支持、而反方向有"时才翻转：这时候唯一
+    合法的解释就是反方向。两个方向都合法时不动（那时方向确实是 LLM 要表达
+    的语义）；两个方向都不合法时也不动，让它自然查出空结果，而不是替它编
+    一条不存在的路径。allowed_combinations 为空（调用方没提供判据）时整个
+    纠正逻辑跳过。
+    """
+    if not allowed_combinations:
+        return constraint
+    declared = {
+        (c.subject_term_type, c.relation_type, c.object_term_type)
+        for c in allowed_combinations
+    }
+    corrected: list[Hop] = []
+    current_term_type = start_term_type
+    for hop in constraint.hops:
+        forward = (current_term_type, hop.relation_type, hop.target_term_type) in declared
+        backward = (hop.target_term_type, hop.relation_type, current_term_type) in declared
+        if forward != backward:
+            corrected.append(replace(hop, direction="outgoing" if forward else "incoming"))
+        else:
+            corrected.append(hop)
+        current_term_type = hop.target_term_type
+    return replace(constraint, hops=corrected)
+
+
 def _resolve_fuzzy_constraint_values(
     constraints: list[AttributeConstraint | RelationConstraint],
     *,
@@ -491,6 +536,7 @@ async def run_structured_filter_query(
     terms: list[Term],
     confirmed_relation_types: set[str],
     term_type_schema: dict[str, TermTypeCategory],
+    allowed_combinations: list[AllowedCombination] | None = None,
 ) -> dict[str, Any]:
     """structured_filter_query_tool 的执行体调用的编排入口：解析→（NameAnchor 时）
     消歧解析→校验→执行→格式化。"""
@@ -514,6 +560,17 @@ async def run_structured_filter_query(
         )
     except StructuredFilterQueryError as exc:
         return {"error": str(exc)}
+
+    # 先纠正 hop 方向、再解析约束值：方向纠正只看 term_type 之间的已声明
+    # 组合，跟约束值本身无关，两步互不影响，这个顺序只是把"结构性纠错"排在
+    # "取值解析"前面，读起来更顺。
+    args = replace(args, constraints=[
+        _correct_hop_directions(
+            c, start_term_type=resolved.term_type, allowed_combinations=allowed_combinations or [],
+        )
+        if isinstance(c, RelationConstraint) else c
+        for c in args.constraints
+    ])
 
     try:
         resolved_constraints = _resolve_fuzzy_constraint_values(

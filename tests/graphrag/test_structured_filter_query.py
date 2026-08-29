@@ -4,6 +4,7 @@ import pytest
 
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import ExtraFieldSpec, TermTypeCategory
+from app.graphrag.ontology_constraints import AllowedCombination
 from app.graphrag.structured_filter_query import (
     AttributeConstraint,
     ExpandSpec,
@@ -1325,3 +1326,92 @@ def test_resolve_or_raise_refuses_to_guess_between_equally_similar_terms():
 
     with pytest.raises(StructuredFilterQueryError):
         _resolve_or_raise("AlphaCorpX", term_type="公司", terms=twins)
+
+
+_ORDER_COMBOS = [
+    AllowedCombination(subject_term_type="订单号", relation_type="BELONG_TO", object_term_type="产品"),
+    AllowedCombination(subject_term_type="产品", relation_type="BELONG_TO", object_term_type="公司"),
+]
+
+
+def test_corrects_a_hop_direction_that_no_declared_edge_supports():
+    """深层参数生成 LLM 有时会把 hop 的 direction 填反，查询就静默返回 0。
+
+    2026-08-28 实测：同一个问题跑 6 次，5 次生成 outgoing/outgoing（正确、
+    返回 10000），1 次生成 incoming/incoming（返回 0，然后 Planner 如实
+    回答"0 个订单"）。query_intent 完全相同，差别只在方向——所以这不是
+    意图理解问题，是纯机械的图遍历方向填错。
+
+    图里的边是 订单号 --BELONG_TO--> 产品 --BELONG_TO--> 公司。从 订单号
+    出发只能沿正向走；incoming 要求存在反向的已声明组合，而它不存在。
+    这一点可以拿 allowed_combinations 确定性地判出来，不用猜。
+    """
+    from app.graphrag.structured_filter_query import _correct_hop_directions
+
+    reversed_constraint = RelationConstraint(
+        hops=[
+            Hop(relation_type="BELONG_TO", direction="incoming", target_term_type="产品"),
+            Hop(relation_type="BELONG_TO", direction="incoming", target_term_type="公司"),
+        ],
+        target_field="standard_name", target_operator="eq", target_value="Coca-Cola",
+    )
+
+    corrected = _correct_hop_directions(
+        reversed_constraint, start_term_type="订单号", allowed_combinations=_ORDER_COMBOS,
+    )
+
+    assert [h.direction for h in corrected.hops] == ["outgoing", "outgoing"]
+
+
+def test_leaves_a_correct_hop_direction_untouched():
+    from app.graphrag.structured_filter_query import _correct_hop_directions
+
+    correct = RelationConstraint(
+        hops=[
+            Hop(relation_type="BELONG_TO", direction="outgoing", target_term_type="产品"),
+            Hop(relation_type="BELONG_TO", direction="outgoing", target_term_type="公司"),
+        ],
+        target_field="standard_name", target_operator="eq", target_value="Coca-Cola",
+    )
+
+    corrected = _correct_hop_directions(
+        correct, start_term_type="订单号", allowed_combinations=_ORDER_COMBOS,
+    )
+
+    assert corrected == correct
+
+
+def test_does_not_flip_when_both_directions_are_declared():
+    # 两个方向都有已声明组合时，方向是 LLM 真正要表达的语义，不能替它改。
+    from app.graphrag.structured_filter_query import _correct_hop_directions
+
+    symmetric = [
+        AllowedCombination(subject_term_type="A", relation_type="LINKED", object_term_type="B"),
+        AllowedCombination(subject_term_type="B", relation_type="LINKED", object_term_type="A"),
+    ]
+    constraint = RelationConstraint(
+        hops=[Hop(relation_type="LINKED", direction="incoming", target_term_type="B")],
+        target_field="standard_name", target_operator="eq", target_value="x",
+    )
+
+    corrected = _correct_hop_directions(
+        constraint, start_term_type="A", allowed_combinations=symmetric,
+    )
+
+    assert corrected.hops[0].direction == "incoming"
+
+
+def test_skips_correction_when_no_combinations_are_declared():
+    # 没有已声明组合可依据时不做任何纠正——没有判据就不该猜。
+    from app.graphrag.structured_filter_query import _correct_hop_directions
+
+    constraint = RelationConstraint(
+        hops=[Hop(relation_type="BELONG_TO", direction="incoming", target_term_type="产品")],
+        target_field="standard_name", target_operator="eq", target_value="x",
+    )
+
+    corrected = _correct_hop_directions(
+        constraint, start_term_type="订单号", allowed_combinations=[],
+    )
+
+    assert corrected == constraint
