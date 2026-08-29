@@ -22,19 +22,31 @@ _SYSTEM_PROMPT = (
 def _find_fuzzy_candidates(
     text: str, terms: list[Term], *, threshold: float
 ) -> list[tuple[str, str]]:
-    """滑动窗口 + difflib 相似度，找出"疑似专有名词但未精确命中"的片段。"""
+    """滑动窗口 + difflib 相似度，找出"疑似专有名词但未精确命中"的片段。
+
+    比较一律在小写归一后进行——ASR 转写出的英文大小写本来就不可靠，用
+    大小写差异去扣相似度分没有任何意义，只会让 "COCA-COLA" 这种全大写
+    转写既过不了"整段已命中"的短路（`alias in text`），又在 difflib 上
+    掉到阈值以下，两头都不命中。这跟项目里其余字符匹配环节
+    （term_matcher、ontology_recall、ontology.resolve_term）保持一致。
+
+    返回的 span 保留原文大小写：调用方 correct_asr_terms 拿它做字面
+    `text.replace(span, standard_name)`，归一化过的 span 会 replace 不中。
+    """
+    text_lower = text.lower()
     candidates: list[tuple[str, str]] = []
     seen_spans: set[str] = set()
     for term in terms:
         for alias in [term.standard_name, *term.aliases]:
-            if not alias or alias in text:
+            if not alias or alias.lower() in text_lower:
                 continue
+            alias_lower = alias.lower()
             window = len(alias)
             for i in range(len(text) - window + 1):
                 span = text[i : i + window]
                 if span in seen_spans:
                     continue
-                ratio = difflib.SequenceMatcher(None, span, alias).ratio()
+                ratio = difflib.SequenceMatcher(None, span.lower(), alias_lower).ratio()
                 if ratio >= threshold:
                     candidates.append((span, term.standard_name))
                     seen_spans.add(span)

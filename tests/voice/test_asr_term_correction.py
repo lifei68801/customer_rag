@@ -74,3 +74,36 @@ async def test_no_change_when_no_fuzzy_candidates_found():
     )
 
     assert corrected == text
+
+
+_ENGLISH_TERMS = [
+    Term(
+        tenant_id="t1",
+        node_key="公司:Coca-Cola",
+        standard_name="Coca-Cola",
+        aliases=["Coke"],
+        term_type="公司",
+    ),
+]
+
+
+def test_find_fuzzy_candidates_skips_exact_hit_case_insensitively():
+    """整段已经字面命中（只差大小写）时不该再当成"疑似误识别"送去 LLM。"""
+    from app.voice.asr_term_correction import _find_fuzzy_candidates
+
+    candidates = _find_fuzzy_candidates(
+        "我要查 coca-cola 的订单", _ENGLISH_TERMS, threshold=0.6
+    )
+
+    assert candidates == []
+
+
+def test_find_fuzzy_candidates_keeps_original_case_in_span():
+    """span 之后要拿去做字面 replace，必须保留原文大小写，不能被归一化掉。"""
+    from app.voice.asr_term_correction import _find_fuzzy_candidates
+
+    candidates = _find_fuzzy_candidates(
+        "我要查 COCA-CALA 的订单", _ENGLISH_TERMS, threshold=0.6
+    )
+
+    assert ("COCA-CALA", "Coca-Cola") in candidates

@@ -658,3 +658,25 @@ async def test_normalize_and_write_relations_does_not_crash_when_alias_match_own
     assert written == 1
     assert graph_client.written[0]["subject"] == "term_a_node_key"
     assert graph_client.written[0]["object"] == "登录模块"
+
+
+_ENGLISH_TERMS = [
+    Term(
+        tenant_id="t1",
+        node_key="公司:Coca-Cola",
+        standard_name="Coca-Cola",
+        aliases=["Coke"],
+        term_type="公司",
+    ),
+]
+
+
+def test_find_fuzzy_candidate_standard_name_scores_case_insensitively():
+    # LLM 抽出的名字全小写、只差大小写时，相似度该按 1.0 算而不是被大小写
+    # 差异拉到阈值以下——归一化前 difflib("coca-cola", "Coca-Cola") 只有
+    # 0.7778，卡在默认阈值 0.75 之上纯属巧合，"COCA-COLA" 就是 0.0。
+    assert find_fuzzy_candidate_standard_name("COCA-COLA", _ENGLISH_TERMS) == "Coca-Cola"
+
+
+def test_find_fuzzy_candidate_standard_name_scores_alias_case_insensitively():
+    assert find_fuzzy_candidate_standard_name("COKE", _ENGLISH_TERMS) == "Coca-Cola"

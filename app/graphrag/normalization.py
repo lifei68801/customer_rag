@@ -82,13 +82,19 @@ def find_fuzzy_candidate_standard_name(
     candidates = terms if term_type_hint is None else [
         t for t in terms if t.term_type == term_type_hint
     ]
+    # 比较前统一小写：大小写差异不该参与相似度打分。归一化前
+    # difflib("coca-cola", "Coca-Cola") 只有 0.7778（勉强过 0.75 纯属
+    # 巧合），"COCA-COLA" 直接是 0.0——同一个名字在召回阶段能匹配上、
+    # 到这里却给不出对齐建议。跟 ontology.resolve_term 的
+    # _name_matches、term_matcher、ontology_recall 保持同一条归一化约定。
+    name_lower = name.lower()
     best_name: str | None = None
     best_ratio = 0.0
     for term in candidates:
         for candidate in [term.standard_name, *term.aliases]:
             if not candidate:
                 continue
-            ratio = difflib.SequenceMatcher(None, name, candidate).ratio()
+            ratio = difflib.SequenceMatcher(None, name_lower, candidate.lower()).ratio()
             if ratio >= threshold and ratio > best_ratio:
                 best_ratio = ratio
                 best_name = term.standard_name
