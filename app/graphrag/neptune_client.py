@@ -19,6 +19,26 @@ if TYPE_CHECKING:
 _RESERVED_FIELD_NAME = "standard_name"
 _CAST_BY_VALUE_TYPE = {"number": "toFloat", "integer": "toInteger"}
 
+_FANOUT_QUERY_TEMPLATE = """
+MATCH (a:Term){arrow_left}[r:{relation_type}]{arrow_right}(b:Term)
+WHERE a.tenant_id = $tenant_id AND a.type = $from_term_type
+  AND b.tenant_id = $tenant_id AND b.type = $to_term_type
+  AND r.tenant_id = $tenant_id
+WITH a, count(DISTINCT b) AS k
+RETURN max(k) AS fanout
+"""
+# 扇出探测：单个 from 节点最多能走到几个不同的 to 节点。fanout > 1 说明这一跳
+# 不是函数关系，沿它做计数聚合会把归属放大——见 docs/superpowers/specs/
+# 2026-08-29-fan-trap-detection-design.md。
+#
+# 查询文本跟 neo4j_client 的同名常量高度相似，这是刻意的重复而不是应该抽取的
+# 公共部分——见 NeptuneGraphClient 的 class docstring：两个后端实现完全独立，
+# 等真的接入 Neptune 环境实测确认语义一致之后再谈重构。
+#
+# relation_type 走 str.format 插值（openCypher 无法参数化关系类型），安全性
+# 依赖调用方已跑过 validate_structured_filter_query 的格式正则 + 已确认成员
+# 校验，跟 execute_structured_filter_query 的插值理由完全一致。
+
 # 独立于 neo4j_client.py 维护的一份查询文本——语义上跟 Neo4j 那边几乎相同
 # （Neptune 从 2021 年起原生支持 openCypher），但刻意不 import 共享，见
 # 本计划 Global Constraints 的说明。
@@ -344,6 +364,42 @@ class NeptuneGraphClient:
             "NeptuneGraphClient 尚未实现 count_relation_edges_for_term——见 "
             "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
         )
+
+    async def probe_relation_fanout(
+        self,
+        *,
+        tenant_id: str,
+        relation_type: str,
+        from_term_type: str,
+        to_term_type: str,
+        direction: str,
+    ) -> int:
+        """单个 from_term_type 节点沿这条关系最多能走到几个不同的
+        to_term_type 节点。返回 > 1 表示这一跳不是函数关系。
+
+        这个方法在查询主链路上（run_structured_filter_query 的计数分支会调
+        它），所以必须真实实现，不能像本类其它管理后台方法那样抛
+        NotImplementedError——那会让 graph_backend="neptune" 时所有多跳计数
+        直接崩溃。
+
+        direction="outgoing" 表示边从 from 指向 to，"incoming" 表示反向。
+        没有任何匹配边时返回 0：openCypher 的 max() 在空输入上返回 null。
+        """
+        arrow_left, arrow_right = ("-", "->") if direction == "outgoing" else ("<-", "-")
+        query = _FANOUT_QUERY_TEMPLATE.format(
+            arrow_left=arrow_left, arrow_right=arrow_right, relation_type=relation_type,
+        )
+        rows = await self._client.execute_open_cypher(
+            query,
+            {
+                "tenant_id": tenant_id,
+                "from_term_type": from_term_type,
+                "to_term_type": to_term_type,
+            },
+        )
+        if not rows:
+            return 0
+        return rows[0]["fanout"] or 0
 
     async def ensure_extra_field_indexes(
         self, *, tenant_id: str, term_type: str, extra_fields: list["ExtraFieldSpec"]

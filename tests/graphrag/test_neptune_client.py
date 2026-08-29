@@ -284,3 +284,43 @@ async def test_migrate_term_type_nodes_raises_not_implemented():
 
     with pytest.raises(NotImplementedError, match="migrate_term_type_nodes"):
         await client.migrate_term_type_nodes(tenant_id="t1", old_type="旧类型", new_type="新类型")
+
+
+async def test_probe_relation_fanout_returns_max_distinct_targets():
+    client_stub = FakeNeptuneClient(rows=[{"fanout": 3}])
+    client = NeptuneGraphClient(client=client_stub)
+
+    fanout = await client.probe_relation_fanout(
+        tenant_id="demo", relation_type="BELONG_TO",
+        from_term_type="产品", to_term_type="公司", direction="outgoing",
+    )
+
+    assert fanout == 3
+    assert client_stub.last_parameters == {
+        "tenant_id": "demo", "from_term_type": "产品", "to_term_type": "公司",
+    }
+    assert "(a:Term)-[r:BELONG_TO]->(b:Term)" in client_stub.last_query
+    assert "$from_term_type" in client_stub.last_query
+    assert "r.tenant_id = $tenant_id" in client_stub.last_query
+
+
+async def test_probe_relation_fanout_flips_the_pattern_for_incoming():
+    client_stub = FakeNeptuneClient(rows=[{"fanout": 1}])
+    client = NeptuneGraphClient(client=client_stub)
+
+    await client.probe_relation_fanout(
+        tenant_id="demo", relation_type="BELONG_TO",
+        from_term_type="公司", to_term_type="产品", direction="incoming",
+    )
+
+    assert "(a:Term)<-[r:BELONG_TO]-(b:Term)" in client_stub.last_query
+
+
+async def test_probe_relation_fanout_returns_zero_when_no_edges_match():
+    client_stub = FakeNeptuneClient(rows=[{"fanout": None}])
+    client = NeptuneGraphClient(client=client_stub)
+
+    assert await client.probe_relation_fanout(
+        tenant_id="demo", relation_type="BELONG_TO",
+        from_term_type="产品", to_term_type="公司", direction="outgoing",
+    ) == 0
