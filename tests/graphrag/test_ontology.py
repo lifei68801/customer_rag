@@ -134,3 +134,36 @@ def test_load_terminology_parses_terms_with_aliases(tmp_path):
             term_type="error_code",
         )
     ]
+
+
+def test_resolve_term_matches_standard_name_case_insensitively():
+    terms = [_term("Coca-Cola", "公司")]
+
+    result = resolve_term(terms=terms, name="coca-cola", term_type_hint="公司")
+
+    assert result is not None
+    assert result.standard_name == "Coca-Cola"
+
+
+def test_resolve_term_matches_alias_case_insensitively():
+    terms = [_term("拿铁", "产品", aliases=["Latte"])]
+
+    result = resolve_term(terms=terms, name="LATTE", term_type_hint=None)
+
+    assert result is not None
+    assert result.standard_name == "拿铁"
+
+
+def test_resolve_term_returns_none_when_case_variants_collide():
+    """大小写归一后原本"不同名"的两条变成同名——按既有的"唯一一条才算解析
+    成功"策略返回 None，而不是从两条里随便选一条。"""
+    terms = [_term("Cola", "产品"), _term("COLA", "类目")]
+
+    assert resolve_term(terms=terms, name="cola", term_type_hint=None) is None
+
+
+def test_find_candidate_term_types_matches_case_insensitively():
+    terms = [_term("Coffee", "产品"), _term("拿铁", "类目", aliases=["Latte"])]
+
+    assert find_candidate_term_types("COFFEE", terms) == ["产品"]
+    assert find_candidate_term_types("latte", terms) == ["类目"]

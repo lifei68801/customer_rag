@@ -17,6 +17,32 @@ class Term:
     source: str = "unknown"
 
 
+def _name_matches(name: str, term: Term) -> bool:
+    """候选名是否字面命中这个 Term 的 standard_name 或某个 alias——大小写
+    不敏感。
+
+    2026-08-29 补的大小写归一。在那之前这里是纯 == 比较，"coca-cola" 命
+    中不了 "Coca-Cola"，"LATTE" 命中不了别名 "Latte"。项目里其余所有字符
+    匹配环节（term_matcher.matched_length、ontology_recall 的
+    precision/F-beta 打分、term_guard 的模糊层）早就统一在比较前转小写了，
+    只有这条"精确匹配"路径没跟上，导致同一个名字在召回阶段能匹配上、到了
+    解析阶段反而解析不出来。
+
+    structured_filter_query 的约束值路径有模糊兜底
+    （_best_fuzzy_term_name）会掩盖这个差异，但 anchor.name 路径、
+    normalization.py 的 ETL 归一化、review_queue.py 的人工审核批准都直接
+    依赖这里的返回值，大小写不一致在那几条路径上是硬失败。
+
+    归一化后如果两条不同的 Term 撞名（比如 "Cola" 和 "COLA"），命中数会从
+    1 变成 2，按既有的"唯一一条才算解析成功"策略返回 None——这是有意的，
+    不会因为归一化就放松消歧策略、从多条里随便选一条。
+    """
+    lowered = name.lower()
+    return lowered == term.standard_name.lower() or any(
+        lowered == alias.lower() for alias in term.aliases
+    )
+
+
 def resolve_term(
     name: str, terms: list[Term], *, term_type_hint: str | None = None
 ) -> Term | None:
@@ -59,13 +85,13 @@ def resolve_term(
     if term_type_hint:
         hinted = [
             t for t in terms
-            if t.term_type == term_type_hint and (name == t.standard_name or name in t.aliases)
+            if t.term_type == term_type_hint and _name_matches(name, t)
         ]
         if len(hinted) == 1:
             return hinted[0]
         if len(hinted) > 1:
             return None
-    matches = [t for t in terms if name == t.standard_name or name in t.aliases]
+    matches = [t for t in terms if _name_matches(name, t)]
     if len(matches) == 1:
         return matches[0]
     return None
@@ -82,7 +108,7 @@ def find_candidate_term_types(name: str, terms: list[Term]) -> list[str]:
     区分来生成更准确的错误提示，而不是笼统地说"不在术语表中"。
     """
     return sorted({
-        t.term_type for t in terms if name == t.standard_name or name in t.aliases
+        t.term_type for t in terms if _name_matches(name, t)
     })
 
 
