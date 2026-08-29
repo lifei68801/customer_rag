@@ -548,14 +548,17 @@ def test_validate_error_on_unconfirmed_relation_type_lists_available_relation_ty
 
 
 class _FakeGraphClient:
-    def __init__(self, *, rows=None, group_result=None, error=None, total_count=None) -> None:
+    def __init__(self, *, rows=None, group_result=None, error=None, total_count=None,
+                 fanout=1) -> None:
         self._rows = rows if rows is not None else []
         self._group_result = group_result
         self._error = error
         self._total_count = total_count if total_count is not None else len(self._rows)
+        self._fanout = fanout
         self.last_args = None
         self.last_resolved = None
         self.last_tenant_id = None
+        self.fanout_probes: list[dict] = []
 
     async def execute_structured_filter_query(self, args, *, resolved, tenant_id, term_type_schema):
         self.last_args = args
@@ -566,6 +569,15 @@ class _FakeGraphClient:
         if self._group_result is not None:
             return self._group_result
         return {"rows": self._rows, "total_count": self._total_count}
+
+    async def probe_relation_fanout(self, *, tenant_id, relation_type,
+                                    from_term_type, to_term_type, direction):
+        self.fanout_probes.append({
+            "tenant_id": tenant_id, "relation_type": relation_type,
+            "from_term_type": from_term_type, "to_term_type": to_term_type,
+            "direction": direction,
+        })
+        return self._fanout
 
 
 async def test_run_structured_filter_query_returns_error_on_invalid_args():
@@ -1415,3 +1427,149 @@ def test_skips_correction_when_no_combinations_are_declared():
     )
 
     assert corrected == constraint
+
+
+_COCA_COLA_TERM = Term(
+    tenant_id="demo",
+    node_key="公司:Coca-Cola",
+    standard_name="Coca-Cola",
+    aliases=[],
+    term_type="公司",
+)
+
+_FANOUT_SCHEMA = {
+    "订单号": TermTypeCategory(value="订单号", extra_fields=[]),
+    "产品": TermTypeCategory(value="产品", extra_fields=[]),
+    "公司": TermTypeCategory(value="公司", extra_fields=[]),
+}
+
+_TWO_HOP_COUNT_ARGS = {
+    "anchor": {"term_type": "订单号"},
+    "constraints": [
+        {
+            "kind": "relation",
+            "hops": [
+                {"relation_type": "BELONG_TO", "direction": "outgoing", "target_term_type": "产品"},
+                {"relation_type": "BELONG_TO", "direction": "outgoing", "target_term_type": "公司"},
+            ],
+            "target_field": "standard_name",
+            "target_operator": "eq",
+            "target_value": "Coca-Cola",
+        }
+    ],
+    "limit": 0,
+}
+
+
+async def test_two_hop_count_warns_when_the_second_hop_fans_out():
+    """2026-08-29 真实事故回归：订单号→产品→公司 两跳计数返回 10000，而
+    产品→公司 是多对多（10 个产品各自都被 3 家公司卖过），真实值是 3353。
+    见 docs/superpowers/specs/2026-08-29-fan-trap-detection-design.md。"""
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    client = _FakeGraphClient(total_count=10000, fanout=3)
+
+    result = await run_structured_filter_query(
+        _TWO_HOP_COUNT_ARGS,
+        graph_client=client, tenant_id="demo", terms=[_COCA_COLA_TERM],
+        confirmed_relation_types={"BELONG_TO"}, term_type_schema=_FANOUT_SCHEMA,
+    )
+
+    assert result["matched_count"] == 10000
+    assert result["fanout_warning"]["fanout"] == 3
+    assert result["fanout_warning"]["hop"] == "产品 --BELONG_TO--> 公司"
+    assert "推导" in result["fanout_warning"]["note"]
+    # 肯定语气的原 note 必须消失——两条矛盾措辞并存会让模型无所适从。
+    assert "note" not in result
+
+    # 只探测第一跳之后的跳：第一跳 订单号→产品 是被计数实体自己的关系，
+    # 它的多对多性质是查询语义的一部分，探测它会误报。
+    assert client.fanout_probes == [
+        {"tenant_id": "demo", "relation_type": "BELONG_TO",
+         "from_term_type": "产品", "to_term_type": "公司", "direction": "outgoing"}
+    ]
+
+
+async def test_two_hop_count_keeps_the_plain_note_when_no_hop_fans_out():
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    client = _FakeGraphClient(total_count=3353, fanout=1)
+
+    result = await run_structured_filter_query(
+        _TWO_HOP_COUNT_ARGS,
+        graph_client=client, tenant_id="demo", terms=[_COCA_COLA_TERM],
+        confirmed_relation_types={"BELONG_TO"}, term_type_schema=_FANOUT_SCHEMA,
+    )
+
+    assert result["matched_count"] == 3353
+    assert "fanout_warning" not in result
+    assert "精确完整的计数" in result["note"]
+
+
+async def test_single_hop_count_never_probes_fanout():
+    """"Coca-Cola 卖多少种产品"——被计数实体就是多对多边的起点，一跳，
+    结果正确，不能误报。"""
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    client = _FakeGraphClient(total_count=10, fanout=3)
+
+    result = await run_structured_filter_query(
+        {
+            "anchor": {"term_type": "产品"},
+            "constraints": [
+                {
+                    "kind": "relation",
+                    "hops": [{"relation_type": "BELONG_TO", "direction": "outgoing",
+                              "target_term_type": "公司"}],
+                    "target_field": "standard_name",
+                    "target_operator": "eq",
+                    "target_value": "Coca-Cola",
+                }
+            ],
+            "limit": 0,
+        },
+        graph_client=client, tenant_id="demo", terms=[_COCA_COLA_TERM],
+        confirmed_relation_types={"BELONG_TO"}, term_type_schema=_FANOUT_SCHEMA,
+    )
+
+    assert result["matched_count"] == 10
+    assert "fanout_warning" not in result
+    assert client.fanout_probes == []
+
+
+async def test_listing_query_never_probes_fanout():
+    """limit > 0 的列举查询不触发探测：扇出会让结果里出现重复实体，但这些
+    关联真实存在，只是"经中转推导"而非直接归属，不属于伪造数字的范畴。"""
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    client = _FakeGraphClient(
+        rows=[{"standard_name": "1-143-51064-X", "node_key": "1-143-51064-X",
+               "term_type": "订单号", "all_properties": {}}],
+        total_count=1, fanout=3,
+    )
+
+    result = await run_structured_filter_query(
+        {**_TWO_HOP_COUNT_ARGS, "limit": 20},
+        graph_client=client, tenant_id="demo", terms=[_COCA_COLA_TERM],
+        confirmed_relation_types={"BELONG_TO"}, term_type_schema=_FANOUT_SCHEMA,
+    )
+
+    assert "fanout_warning" not in result
+    assert client.fanout_probes == []
+
+
+async def test_group_by_result_also_carries_the_fanout_warning():
+    """group_by 也是聚合语义，同样受扇出影响。"""
+    from app.graphrag.structured_filter_query import run_structured_filter_query
+
+    client = _FakeGraphClient(group_result={"groups": [{"value": "Coca-Cola", "count": 10000}]},
+                              fanout=3)
+
+    result = await run_structured_filter_query(
+        {**_TWO_HOP_COUNT_ARGS, "limit": 20, "group_by": {"constraint_index": 0}},
+        graph_client=client, tenant_id="demo", terms=[_COCA_COLA_TERM],
+        confirmed_relation_types={"BELONG_TO"}, term_type_schema=_FANOUT_SCHEMA,
+    )
+
+    assert result["groups"] == [{"value": "Coca-Cola", "count": 10000}]
+    assert result["fanout_warning"]["fanout"] == 3

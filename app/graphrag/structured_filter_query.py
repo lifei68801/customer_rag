@@ -362,6 +362,14 @@ def _should_fuzzy_resolve(
 _CONSTRAINT_FUZZY_MIN_SCORE = 0.6
 _CONSTRAINT_FUZZY_MIN_MARGIN = 0.15
 
+_FANOUT_WARNING_NOTE = (
+    "这条路径的第 {hop_index} 跳「{hop}」是多对多关系（单个「{from_term_type}」"
+    "最多关联 {fanout} 个「{to_term_type}」），计数经过它中转后会把归属放大："
+    "matched_count 不是「{to_term_type}」名下的真实数量，最多可能被放大到 "
+    "{fanout} 倍。回答时必须说明这个数字是经中转推导出的关联数、不是精确归属"
+    "计数，不要把它当作确定答案给出。"
+)
+
 
 def _best_fuzzy_term_name(value: str, *, term_type: str, terms: list[Term]) -> str | None:
     """在指定 term_type 的候选里，按字符匹配度找最像 value 的那个标准名。
@@ -489,6 +497,65 @@ def _correct_hop_directions(
     return replace(constraint, hops=corrected)
 
 
+async def _probe_fanout_warning(
+    constraints: list[AttributeConstraint | RelationConstraint],
+    *,
+    graph_client: "Neo4jGraphClient",
+    tenant_id: str,
+    anchor_term_type: str,
+) -> dict[str, Any] | None:
+    """计数场景下检查路径上有没有扇出陷阱，有就返回一份警告，没有返回 None。
+
+    只检查【第一跳之后】的跳：第一跳是被计数实体自身的关系，它的多对多性质
+    正是查询语义的一部分（"Coca-Cola 卖多少种产品"走一跳 产品→公司，那条边
+    确实是多对多，但结果是对的），探测它会误报。第二跳起就不一样了——路径
+    A→B→C 只有在 B→C 是函数关系时才保得住 A 对 C 的归属，B→C 是多对多时，
+    路径会凭空捏造归属：2026-08-29 实测 订单号→产品→公司 让每一笔订单都能
+    走到每一家公司，三家公司的计数全都等于订单总数 10000，真实值是
+    3353/3330/3317。
+
+    见 docs/superpowers/specs/2026-08-29-fan-trap-detection-design.md。
+
+    _MAX_HOPS 目前是 2，所以实际上每个约束至多探测一跳；写成循环是为了上限
+    调整时无需改这里的逻辑。命中第一个扇出跳就返回，不继续探测。
+    """
+    for constraint in constraints:
+        if not isinstance(constraint, RelationConstraint):
+            continue
+        current_term_type = anchor_term_type
+        for index, hop in enumerate(constraint.hops):
+            if index == 0:
+                current_term_type = hop.target_term_type
+                continue
+            fanout = await graph_client.probe_relation_fanout(
+                tenant_id=tenant_id,
+                relation_type=hop.relation_type,
+                from_term_type=current_term_type,
+                to_term_type=hop.target_term_type,
+                direction=hop.direction,
+            )
+            if fanout > 1:
+                arrow = (
+                    f"--{hop.relation_type}-->"
+                    if hop.direction == "outgoing"
+                    else f"<--{hop.relation_type}--"
+                )
+                hop_label = f"{current_term_type} {arrow} {hop.target_term_type}"
+                return {
+                    "hop": hop_label,
+                    "fanout": fanout,
+                    "note": _FANOUT_WARNING_NOTE.format(
+                        hop_index=index + 1,
+                        hop=hop_label,
+                        from_term_type=current_term_type,
+                        to_term_type=hop.target_term_type,
+                        fanout=fanout,
+                    ),
+                }
+            current_term_type = hop.target_term_type
+    return None
+
+
 def _resolve_fuzzy_constraint_values(
     constraints: list[AttributeConstraint | RelationConstraint],
     *,
@@ -595,7 +662,12 @@ async def run_structured_filter_query(
         return {"error": f"图谱查询执行失败：{exc}"}
 
     if "groups" in result:
-        return result  # group_by 分支：{"groups": [...]}
+        # group_by 分支：{"groups": [...]}。它也是聚合语义，同样受扇出影响。
+        warning = await _probe_fanout_warning(
+            args.constraints, graph_client=graph_client,
+            tenant_id=tenant_id, anchor_term_type=resolved.term_type,
+        )
+        return {**result, "fanout_warning": warning} if warning else result
 
     rows = result["rows"]
     total_count = result["total_count"]
@@ -605,6 +677,16 @@ async def run_structured_filter_query(
         # 明明拿到了精确答案却回复"无法给出确定数字"。这里改成不给 anchors
         # 键、并附一句自描述说明：Planner 看不到工具的 _USAGE_GUIDE（那是
         # 渐进式披露里只给深层参数生成看的），观察结果必须自己解释自己。
+        #
+        # 但这句自描述只有在路径确实没有扇出陷阱时才成立。命中扇出时换成
+        # fanout_warning，且【不能同时保留】原来这句肯定语气的说明——两条
+        # 互相矛盾的措辞并存会让模型无所适从。
+        warning = await _probe_fanout_warning(
+            args.constraints, graph_client=graph_client,
+            tenant_id=tenant_id, anchor_term_type=resolved.term_type,
+        )
+        if warning is not None:
+            return {"matched_count": total_count, "fanout_warning": warning}
         return {
             "matched_count": total_count,
             "note": (
