@@ -25,7 +25,7 @@ class AllocatedCodeNodeKeyPart:
 class EntityMapping:
     term_type: str
     source_file: str
-    standard_name_column: str
+    standard_name_parts: list[str]
     node_key_parts: list[ColumnNodeKeyPart | AllocatedCodeNodeKeyPart]
     field_mappings: dict[str, str]
 
@@ -71,10 +71,29 @@ def _parse_entity_mapping(raw: dict) -> EntityMapping:
             raise InvalidSchemaETLConfigError(
                 f"实体类型 {raw.get('term_type')!r} 的 node_key_parts 不能为空"
             )
+        # standard_name_column（单列）是 standard_name_parts（多列）的语法糖，
+        # 归一化成单元素列表。多列写法把判别列拼进展示名，让同名不同实体在
+        # 管理界面上可区分——standard_name 的唯一索引取消之后（2026-08-30），
+        # 两个 William Jackson 都能落库，但展示名一样就没法人工操作了。
+        parts_raw = raw.get("standard_name_parts")
+        if parts_raw is None:
+            column = raw.get("standard_name_column")
+            if not column:
+                raise InvalidSchemaETLConfigError(
+                    f"实体类型 {raw.get('term_type')!r} 必须声明 "
+                    f"standard_name_column（单列）或 standard_name_parts（多列）"
+                )
+            parts = [column]
+        else:
+            parts = list(parts_raw)
+            if not parts:
+                raise InvalidSchemaETLConfigError(
+                    f"实体类型 {raw.get('term_type')!r} 的 standard_name_parts 不能为空"
+                )
         return EntityMapping(
             term_type=raw["term_type"],
             source_file=raw["source_file"],
-            standard_name_column=raw["standard_name_column"],
+            standard_name_parts=parts,
             node_key_parts=[_parse_node_key_part(part) for part in node_key_parts_raw],
             field_mappings=dict(raw.get("field_mappings") or {}),
         )

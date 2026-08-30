@@ -240,9 +240,14 @@ async def _write_entity_mapping(
                 conn, tenant_id=tenant_id, term_type=mapping.term_type,
                 node_key_parts=mapping.node_key_parts, row=row,
             )
-            if not row.get(mapping.standard_name_column):
-                raise RowProcessingError(f"standard_name 需要的列 {mapping.standard_name_column!r} 不存在或为空")
-            standard_name = row[mapping.standard_name_column]
+            missing = [c for c in mapping.standard_name_parts if not row.get(c)]
+            if missing:
+                raise RowProcessingError(
+                    f"standard_name 需要的列 {missing!r} 不存在或为空"
+                )
+            # 用 " / " 连接，不用冒号——冒号是 node_key 的分隔符，展示名里
+            # 再用一次会让两者在日志和界面上难以区分。
+            standard_name = " / ".join(row[c] for c in mapping.standard_name_parts)
             extra_properties = {
                 field_name: convert_field_value(
                     extra_field_specs=extra_field_specs, field_name=field_name,

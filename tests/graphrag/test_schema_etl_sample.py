@@ -162,7 +162,7 @@ def test_config_yaml_round_trips_through_load_schema_etl_config(tmp_path):
     assert [e.term_type for e in config.entities] == ["商品", "品类"]
     product_mapping = config.entities[0]
     assert product_mapping.source_file == "商品.csv"
-    assert product_mapping.standard_name_column == "商品名称"
+    assert product_mapping.standard_name_parts == ["商品名称"]
     assert product_mapping.field_mappings == {"价格": "价格列"}
     assert len(config.relations) == 1
     assert config.relations[0].source_file == "商品_BELONG_TO_品类.csv"
