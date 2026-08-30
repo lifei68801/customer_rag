@@ -8,6 +8,10 @@ export interface GraphTerm {
 
 export interface TermRecord extends GraphTerm {
   source: string
+  // 属性值。写入时这个字段是可选的，语义由后端定义（admin_terms_routes.py
+  // 的 TermWriteRequest）：字段缺席=保留原值，传 {} 才是清空。所以只提交
+  // 名字和别名的编辑请求可以安全地不带它，不会把属性值抹掉。
+  extra_properties?: Record<string, unknown>
 }
 
 export async function fetchGraphTerms(sessionToken: string, tenantId: string): Promise<GraphTerm[]> {

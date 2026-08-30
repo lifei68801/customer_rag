@@ -18,10 +18,27 @@ type SourceFilter = 'all' | 'manual' | 'etl' | 'review' | 'unknown'
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
+interface ExtraFieldSpec {
+  name: string
+  value_type: string
+}
+
 interface TermDraft {
   standard_name: string
   aliases: string
   term_type: string
+  // 表单里一律按字符串持有，提交时才按声明的 value_type 转换——受控 input
+  // 的值本来就是字符串，过早转成 number 会让"正在输入的 12."这类中间态无法
+  // 表达（转换结果 NaN 会把用户刚敲的字符吞掉）。
+  extra_properties: Record<string, string>
+}
+
+function extraPropertiesToDraft(term: TermRecord): Record<string, string> {
+  const draft: Record<string, string> = {}
+  for (const [name, value] of Object.entries(term.extra_properties ?? {})) {
+    draft[name] = Array.isArray(value) ? value.join('; ') : String(value)
+  }
+  return draft
 }
 
 function toDraft(term: TermRecord): TermDraft {
@@ -29,6 +46,7 @@ function toDraft(term: TermRecord): TermDraft {
     standard_name: term.standard_name,
     aliases: term.aliases.join(', '),
     term_type: term.term_type,
+    extra_properties: extraPropertiesToDraft(term),
   }
 }
 
@@ -36,8 +54,47 @@ function termKey(term: { term_type: string; standard_name: string }): string {
   return `${term.term_type}::${term.standard_name}`
 }
 
-function draftToRecord(draft: TermDraft): TermRecord {
+/** 按本体声明的 value_type 把表单字符串转回后端要的类型。转换规则跟
+ * app/graphrag/schema_etl_row_processing.py::convert_field_value 保持一致，
+ * 否则同一份数据经 ETL 写入和经这个表单编辑会得到不同的类型，后端的
+ * InvalidExtraPropertyTypeError 校验只在其中一条路径上通过。
+ * 空输入返回 undefined，调用方据此整个略去这个键——传 "" 会被后端按类型
+ * 校验拒掉，而用户清空一个输入框的意图是"这个属性没有值"。 */
+function coerceExtraProperty(raw: string, valueType: string): unknown {
+  const trimmed = raw.trim()
+  if (trimmed === '') return undefined
+  if (valueType === 'number' || valueType === 'integer') {
+    const parsed = Number(trimmed)
+    // 转不动就原样回传字符串，让后端的类型校验给出明确的 400，而不是在
+    // 前端悄悄变成 NaN 再序列化成 null。
+    return Number.isNaN(parsed) ? trimmed : parsed
+  }
+  if (valueType === 'number[]') {
+    return trimmed
+      .split(';')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+      .map((item) => {
+        const parsed = Number(item)
+        return Number.isNaN(parsed) ? item : parsed
+      })
+  }
+  return trimmed
+}
+
+function draftToRecord(draft: TermDraft, specs: ExtraFieldSpec[]): TermRecord {
+  const extraProperties: Record<string, unknown> = {}
+  for (const spec of specs) {
+    const coerced = coerceExtraProperty(draft.extra_properties[spec.name] ?? '', spec.value_type)
+    if (coerced !== undefined) extraProperties[spec.name] = coerced
+  }
+  // 该类型没有声明任何属性字段时整个略去这个键，走后端的"缺席=保留"语义。
+  // 不能传 {}：那是显式清空，会抹掉历史遗留的属性值——_validate_categories
+  // 的 existing_extra_property_keys 允许术语携带类型未声明的旧字段，这个
+  // 表单看不见它们，也就不该替用户决定删掉它们。
+  const extraPropertiesPatch = specs.length > 0 ? { extra_properties: extraProperties } : {}
   return {
+    ...extraPropertiesPatch,
     standard_name: draft.standard_name.trim(),
     aliases: draft.aliases
       .split(',')
@@ -58,6 +115,7 @@ export function TermsPage() {
   const showToast = useToast()
   const { density } = useAdminDensity()
   const [termTypeOptions, setTermTypeOptions] = useState<string[]>([])
+  const [extraFieldsByType, setExtraFieldsByType] = useState<Record<string, ExtraFieldSpec[]>>({})
   const [optionsLoaded, setOptionsLoaded] = useState(false)
 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
@@ -76,9 +134,12 @@ export function TermsPage() {
     setOptionsLoaded(false)
     adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=confirmed`, sessionToken)
       .then((res) => res.json())
-      .then((data: { term_types: { value: string }[] }) =>
-        setTermTypeOptions(data.term_types.map((t) => t.value)),
-      )
+      .then((data: { term_types: { value: string; extra_fields?: ExtraFieldSpec[] }[] }) => {
+        setTermTypeOptions(data.term_types.map((t) => t.value))
+        setExtraFieldsByType(
+          Object.fromEntries(data.term_types.map((t) => [t.value, t.extra_fields ?? []])),
+        )
+      })
       .catch((err) => {
         console.error('加载实体类型枚举失败', err)
         return null
@@ -135,7 +196,9 @@ export function TermsPage() {
     try {
       await updateTerm(
         sessionToken, tenantId, originalTerm.standard_name, originalTerm.term_type,
-        draftToRecord(editDraft),
+        // 按编辑后选中的类型取字段声明——这次编辑可能同时改了 term_type，
+        // 属性值该按新类型的声明来转换和取舍，不是按原类型。
+        draftToRecord(editDraft, extraFieldsByType[editDraft.term_type] ?? []),
       )
       showToast('已保存')
       setEditingKey(null)
@@ -247,6 +310,18 @@ export function TermsPage() {
                   </div>
                 </div>
               )}
+              {!isEditing && Object.keys(term.extra_properties ?? {}).length > 0 && (
+                <dl className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                  {Object.entries(term.extra_properties ?? {}).map(([name, value]) => (
+                    <div key={name} className="flex gap-1">
+                      <dt className="text-ink-soft">{name}</dt>
+                      <dd className="font-bold text-ink">
+                        {Array.isArray(value) ? value.join('; ') : String(value)}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
               {isEditing && editDraft && (
                 <>
                   <div className="flex flex-wrap gap-3">
@@ -289,6 +364,37 @@ export function TermsPage() {
                       ))}
                     </select>
                   </div>
+                  {(extraFieldsByType[editDraft.term_type] ?? []).length > 0 && (
+                    <div className="flex flex-wrap gap-3">
+                      {(extraFieldsByType[editDraft.term_type] ?? []).map((spec) => (
+                        <label key={spec.name} className="flex min-w-[10rem] flex-1 flex-col gap-1">
+                          <span className="text-sm text-ink-soft">
+                            {spec.name}
+                            <span className="ml-1 text-xs">({spec.value_type})</span>
+                          </span>
+                          <input
+                            value={editDraft.extra_properties[spec.name] ?? ''}
+                            onChange={(event) =>
+                              setEditDraft((prev) =>
+                                prev
+                                  ? {
+                                      ...prev,
+                                      extra_properties: {
+                                        ...prev.extra_properties,
+                                        [spec.name]: event.target.value,
+                                      },
+                                    }
+                                  : prev,
+                              )
+                            }
+                            placeholder={spec.value_type === 'number[]' ? '分号分隔，如 1.5; 2.0' : ''}
+                            aria-label={`${spec.name}（${term.standard_name}）`}
+                            className={`rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:outline-none ${focusRing}`}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex gap-2">
                     <button
                       type="button"

@@ -50,7 +50,13 @@ class TermWriteRequest(BaseModel):
     standard_name: str
     aliases: list[str]
     term_type: str
-    extra_properties: dict[str, Any] = {}
+    # None（字段缺席）和 {}（显式传空对象）在更新路径上语义不同：缺席表示
+    # "这次请求不涉及属性值，保留原样"，空对象才是"把属性值清空"。PUT 的
+    # 全量替换语义对 standard_name/aliases 是对的，但对属性值太危险——只提交
+    # 名字和别名的编辑表单会静默抹掉整条术语的属性值，而 ETL 建模把度量列
+    # （金额、数量、日期）放在属性字段里，那等于一次编辑丢掉一整行业务数据。
+    # 新增路径上两者没有区别，都落成空属性。
+    extra_properties: dict[str, Any] | None = None
     source: Literal["manual", "etl", "review", "unknown"] = "manual"
 
     @field_validator("standard_name")
@@ -164,7 +170,7 @@ async def create_new_term(
         standard_name=payload.standard_name,
         aliases=payload.aliases,
         term_type=payload.term_type,
-        extra_properties=payload.extra_properties,
+        extra_properties=payload.extra_properties or {},
         source=payload.source,
     )
     # 新增成功后立即同步进图谱（属性+别名节点），不留图谱异步落后的窗口。
@@ -194,6 +200,13 @@ async def update_existing_term(
         raise HTTPException(status_code=404, detail="租户不存在或未启用")
     try:
         existing_before_update = await get_term(review_conn, tenant_id, standard_name, term_type)
+        # 解析一次，三处写入（SQLite、响应体、图谱镜像）共用同一个值——
+        # 漏掉任何一处都会让两个存储之间出现只有属性值不一致的静默偏差。
+        effective_extra_properties = (
+            existing_before_update.extra_properties
+            if payload.extra_properties is None
+            else payload.extra_properties
+        )
         await update_term(
             review_conn,
             tenant_id=tenant_id,
@@ -201,7 +214,7 @@ async def update_existing_term(
             new_standard_name=payload.standard_name,
             aliases=payload.aliases,
             term_type=payload.term_type,
-            extra_properties=payload.extra_properties,
+            extra_properties=effective_extra_properties,
             current_term_type=term_type,
         )
     except TermNotFoundError:
@@ -237,7 +250,7 @@ async def update_existing_term(
         standard_name=payload.standard_name,
         aliases=payload.aliases,
         term_type=payload.term_type,
-        extra_properties=payload.extra_properties,
+        extra_properties=effective_extra_properties,
         source=existing_before_update.source,
     )
     try:

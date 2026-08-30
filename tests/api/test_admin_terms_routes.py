@@ -88,6 +88,7 @@ class SpyGraphClient:
                 "standard_name": term.standard_name,
                 "aliases": term.aliases,
                 "term_type": term.term_type,
+                "extra_properties": term.extra_properties,
             }
         )
 
@@ -826,6 +827,133 @@ def test_update_term_preserves_source_regardless_of_payload(terms_conn):
 
     assert response.status_code == 200
     assert response.json()["source"] == "etl"
+
+
+def test_update_term_without_extra_properties_preserves_existing_values(terms_conn):
+    """请求体里没有 extra_properties 时，术语已有的属性值必须原样保留。
+
+    PUT 的全量替换语义对 standard_name/aliases 是对的，但对属性值太危险：
+    管理界面的术语编辑表单只提交名字和别名，一次改名就会把这条术语的全部
+    属性值静默抹掉——ETL 建模把度量列（金额、数量、日期）放进属性字段之后，
+    这等于一次编辑丢掉一整行业务数据。语义因此对齐同一个文件里
+    test_update_term_preserves_source_regardless_of_payload 已经确立的
+    "更新时保留"约定：字段缺席 = 保留，显式传 {} 才是清空。
+    """
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
+    asyncio.run(
+        create_term_type(
+            terms_conn, tenant_id="t1", value="订单号",
+            extra_fields=[ExtraFieldSpec(name="revenue", value_type="number")],
+        )
+    )
+    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(
+        create_term(
+            terms_conn, tenant_id="t1", standard_name="1-143-51064-X", aliases=[],
+            term_type="订单号", extra_properties={"revenue": 2141.0},
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.put(
+            "/api/admin/t1/terms/1-143-51064-X?term_type=订单号",
+            json={"standard_name": "1-143-51064-X", "aliases": ["首单"], "term_type": "订单号"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["extra_properties"] == {"revenue": 2141.0}
+
+
+def test_update_term_without_extra_properties_preserves_them_in_graph_too(terms_conn):
+    """保留必须同时发生在图谱镜像上，不能只保住 SQLite。
+
+    结构化查询走的是 Neo4j 上的属性，不是 SQLite——如果只有响应体和 SQLite
+    保住了值而 sync_term 收到 {}，属性值会从图谱上被抹掉，两个存储之间出现
+    只有属性值不一致的静默偏差，而查询结果会先坏掉。
+    """
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
+    asyncio.run(
+        create_term_type(
+            terms_conn, tenant_id="t1", value="订单号",
+            extra_fields=[ExtraFieldSpec(name="revenue", value_type="number")],
+        )
+    )
+    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(
+        create_term(
+            terms_conn, tenant_id="t1", standard_name="1-143-51064-X", aliases=[],
+            term_type="订单号", extra_properties={"revenue": 2141.0},
+        )
+    )
+    session_store = AdminSessionStore()
+    graph_client = SpyGraphClient()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        response = client.put(
+            "/api/admin/t1/terms/1-143-51064-X?term_type=订单号",
+            json={"standard_name": "1-143-51064-X", "aliases": ["首单"], "term_type": "订单号"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert len(graph_client.synced) == 1
+    assert graph_client.synced[0]["extra_properties"] == {"revenue": 2141.0}
+
+
+def test_update_term_with_empty_extra_properties_clears_them(terms_conn):
+    """显式传 {} 是"清空属性值"，不能和字段缺席混为一谈。
+
+    没有这条区分，"保留"就退化成"永远无法清空"——属性值一旦写进去就再也
+    删不掉了。这是上一个测试的另一半：缺席=保留，{}=清空。
+    """
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
+    asyncio.run(
+        create_term_type(
+            terms_conn, tenant_id="t1", value="订单号",
+            extra_fields=[ExtraFieldSpec(name="revenue", value_type="number")],
+        )
+    )
+    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(
+        create_term(
+            terms_conn, tenant_id="t1", standard_name="1-143-51064-X", aliases=[],
+            term_type="订单号", extra_properties={"revenue": 2141.0},
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.put(
+            "/api/admin/t1/terms/1-143-51064-X?term_type=订单号",
+            json={
+                "standard_name": "1-143-51064-X", "aliases": [], "term_type": "订单号",
+                "extra_properties": {},
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["extra_properties"] == {}
 
 
 def test_update_term_requires_term_type_query_param(terms_conn):
