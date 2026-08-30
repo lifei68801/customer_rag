@@ -20,7 +20,7 @@ import aiosqlite
 
 from app.graphrag.etl_staging import read_table_rows
 from app.graphrag.ontology_categories import ExtraFieldSpec
-from app.graphrag.schema_etl_config import EntityMapping
+from app.graphrag.schema_etl_config import EntityMapping, RelationMapping
 from app.graphrag.schema_etl_row_processing import (
     RowProcessingError,
     compute_node_key,
@@ -40,6 +40,17 @@ class ProjectedRow:
     node_key: str
     standard_name: str
     extra_properties: dict[str, object]
+
+
+@dataclass(frozen=True)
+class ProjectedRelationRow:
+    """一行源数据算出的两个端点键。关系边的真实含义是"这两个值在某一行里
+    同时出现过"——projection 只负责把这两个键算出来，端点在不在术语表里
+    是写入层的判断。"""
+
+    row_number: int
+    subject_node_key: str
+    object_node_key: str
 
 
 @dataclass(frozen=True)
@@ -145,6 +156,42 @@ async def project_entity_rows(
         yield ProjectedRow(
             row_number=row_number, node_key=node_key,
             standard_name=standard_name, extra_properties=extra_properties,
+        )
+
+
+async def project_relation_rows(
+    conn: aiosqlite.Connection,
+    *,
+    tenant_id: str,
+    mapping: RelationMapping,
+    subject_entity: EntityMapping,
+    object_entity: EntityMapping,
+    data_dir: Path,
+) -> AsyncIterator[ProjectedRelationRow | RowFailure]:
+    """关系侧的 projection：流式算出每一行的两个端点键。
+
+    两端都用 allow_allocation=False——关系路径不该分配新的稳定码，见
+    compute_node_key 的说明。未命中已有分配时 compute_node_key 抛
+    RowProcessingError，在这里转成 RowFailure。
+
+    这一层没有查重：边是 MERGE 的，同一条边从多行产生是合法的，不像实体
+    主键重复那样意味着配置错了。
+    """
+    for row_number, row in enumerate(read_table_rows(data_dir / mapping.source_file), start=2):
+        try:
+            subject_key = await compute_node_key(
+                conn, tenant_id=tenant_id, term_type=mapping.subject_term_type,
+                node_key_parts=subject_entity.node_key_parts, row=row, allow_allocation=False,
+            )
+            object_key = await compute_node_key(
+                conn, tenant_id=tenant_id, term_type=mapping.object_term_type,
+                node_key_parts=object_entity.node_key_parts, row=row, allow_allocation=False,
+            )
+        except RowProcessingError as exc:
+            yield RowFailure(row_number=row_number, reason=str(exc))
+            continue
+        yield ProjectedRelationRow(
+            row_number=row_number, subject_node_key=subject_key, object_node_key=object_key,
         )
 
 

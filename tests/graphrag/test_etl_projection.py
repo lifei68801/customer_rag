@@ -6,14 +6,21 @@ import aiosqlite
 import pytest
 
 from app.graphrag.etl_projection import (
+    ProjectedRelationRow,
     ProjectedRow,
     RowFailure,
     project_entity_rows,
+    project_relation_rows,
     scan_entity_node_keys,
 )
 from app.graphrag.etl_stable_code_registry import ensure_stable_code_registry_schema
 from app.graphrag.ontology_categories import ExtraFieldSpec
-from app.graphrag.schema_etl_config import ColumnNodeKeyPart, EntityMapping
+from app.graphrag.schema_etl_config import (
+    AllocatedCodeNodeKeyPart,
+    ColumnNodeKeyPart,
+    EntityMapping,
+    RelationMapping,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -159,3 +166,71 @@ async def test_project_reports_missing_standard_name_column_as_row_failure(tmp_p
 
     assert len(rows) == 1
     assert isinstance(rows[0], RowFailure)
+
+
+async def test_project_relation_rows_computes_both_endpoint_keys(tmp_path: Path):
+    _write_csv(tmp_path / "orders.csv", [
+        "order_id,name,zip",
+        "O1,张三,100",
+    ])
+    conn = await _conn()
+    subject = EntityMapping(
+        term_type="订单", source_file="orders.csv",
+        standard_name_parts=["order_id"],
+        node_key_parts=[ColumnNodeKeyPart(column="order_id")],
+        field_mappings={},
+    )
+    obj = _mapping()
+    relation = RelationMapping(
+        relation_type="ORDER_BY", source_file="orders.csv",
+        subject_term_type="订单", object_term_type="客户",
+    )
+
+    rows = [
+        r async for r in project_relation_rows(
+            conn, tenant_id="t1", mapping=relation,
+            subject_entity=subject, object_entity=obj, data_dir=tmp_path,
+        )
+    ]
+
+    assert rows == [
+        ProjectedRelationRow(row_number=2, subject_node_key="订单:O1", object_node_key="客户:张三:100")
+    ]
+
+
+async def test_project_relation_rows_never_allocates_new_stable_codes(tmp_path: Path):
+    """关系路径必须 allow_allocation=False：这一行引用的实体值如果从没真正
+    写入过，不该在关系这一步凭空产生一个新的稳定码、MERGE 出没有对应
+    Term 记录的幽灵节点。未命中已有分配 → RowFailure，不是新分配。"""
+    _write_csv(tmp_path / "orders.csv", [
+        "order_id,name,zip,color",
+        "O1,张三,100,红",
+    ])
+    conn = await _conn()
+    subject = EntityMapping(
+        term_type="订单", source_file="orders.csv",
+        standard_name_parts=["order_id"],
+        node_key_parts=[ColumnNodeKeyPart(column="order_id")],
+        field_mappings={},
+    )
+    obj = EntityMapping(
+        term_type="颜色", source_file="orders.csv",
+        standard_name_parts=["color"],
+        node_key_parts=[AllocatedCodeNodeKeyPart(scope_columns=[], raw_value_column="color")],
+        field_mappings={},
+    )
+    relation = RelationMapping(
+        relation_type="HAS_COLOR", source_file="orders.csv",
+        subject_term_type="订单", object_term_type="颜色",
+    )
+
+    rows = [
+        r async for r in project_relation_rows(
+            conn, tenant_id="t1", mapping=relation,
+            subject_entity=subject, object_entity=obj, data_dir=tmp_path,
+        )
+    ]
+
+    assert len(rows) == 1
+    assert isinstance(rows[0], RowFailure)
+    assert "稳定码尚未分配" in rows[0].reason

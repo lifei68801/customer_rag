@@ -11,9 +11,8 @@ import aiosqlite
 
 from app.config.settings import Settings
 from app.graphrag import provenance
-from app.graphrag.etl_projection import RowFailure, project_entity_rows
+from app.graphrag.etl_projection import RowFailure, project_entity_rows, project_relation_rows
 from app.graphrag.etl_stable_code_registry import ensure_stable_code_registry_schema
-from app.graphrag.etl_staging import read_table_rows
 from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.ontology import Term
 from app.graphrag.relation_writer import RelationWriterProtocol
@@ -23,7 +22,7 @@ from app.graphrag.ontology_lifecycle import is_ontology_confirmed
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.ontology_store import open_ontology_store_conn
 from app.graphrag.schema_etl_config import EntityMapping, RelationMapping, SchemaETLConfig, load_schema_etl_config
-from app.graphrag.schema_etl_row_processing import RowProcessingError, compute_node_key
+from app.graphrag.schema_etl_row_processing import RowProcessingError
 from app.graphrag.terms_store import (
     TermNameConflictError,
     UnknownCategoryError,
@@ -191,19 +190,28 @@ async def _write_relation_mapping(
         conn, tenant_id, mapping.object_term_type
     )
 
-    for row_number, row in enumerate(read_table_rows(data_dir / mapping.source_file), start=2):
+    # 这一层不再自己读文件、不再自己算键——那两件事已经在 projection 层
+    # 做完了（见 etl_projection.py）。这里只负责端点存在性校验和写入。
+    async for projected in project_relation_rows(
+        conn, tenant_id=tenant_id, mapping=mapping,
+        subject_entity=subject_entity, object_entity=object_entity, data_dir=data_dir,
+    ):
+        if isinstance(projected, RowFailure):
+            report.relations_skipped += 1
+            _record_skipped_row(
+                report, label=mapping.relation_type, source_file=mapping.source_file,
+                row_number=projected.row_number, reason=projected.reason,
+            )
+            continue
         try:
-            subject_key = await compute_node_key(
-                conn, tenant_id=tenant_id, term_type=mapping.subject_term_type,
-                node_key_parts=subject_entity.node_key_parts, row=row, allow_allocation=False,
-            )
-            object_key = await compute_node_key(
-                conn, tenant_id=tenant_id, term_type=mapping.object_term_type,
-                node_key_parts=object_entity.node_key_parts, row=row, allow_allocation=False,
-            )
+            # 端点存在性守卫留在写入层：它需要预取的 node_key 集合，而且
+            # 语义是"写入时刻这个端点在不在术语表里"，不是 projection 能
+            # 回答的。守卫本身一字未改——merge_relation 的两端都是 MERGE，
+            # node_key 对不上任何已有节点时不会报错，而是凭空建出一个只有
+            # tenant_id/node_key 的幽灵节点。
             for key, known_keys, term_type in (
-                (subject_key, subject_node_keys, mapping.subject_term_type),
-                (object_key, object_node_keys, mapping.object_term_type),
+                (projected.subject_node_key, subject_node_keys, mapping.subject_term_type),
+                (projected.object_node_key, object_node_keys, mapping.object_term_type),
             ):
                 if key not in known_keys:
                     raise RowProcessingError(
@@ -211,7 +219,8 @@ async def _write_relation_mapping(
                         f"（{term_type!r} 的实体行可能被跳过或尚未写入）"
                     )
             await graph_client.merge_relation(
-                subject_standard_name=subject_key, object_standard_name=object_key,
+                subject_standard_name=projected.subject_node_key,
+                object_standard_name=projected.object_node_key,
                 relation_type=mapping.relation_type, source=mapping.source_file,
                 tenant_id=tenant_id, provenance=provenance.ETL, recorded_at=recorded_at,
             )
@@ -221,7 +230,7 @@ async def _write_relation_mapping(
             report.relations_skipped += 1
             _record_skipped_row(
                 report, label=mapping.relation_type, source_file=mapping.source_file,
-                row_number=row_number, reason=str(exc),
+                row_number=projected.row_number, reason=str(exc),
             )
 
 
