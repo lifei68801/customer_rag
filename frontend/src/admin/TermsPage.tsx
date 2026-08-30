@@ -50,8 +50,12 @@ function toDraft(term: TermRecord): TermDraft {
   }
 }
 
-function termKey(term: { term_type: string; standard_name: string }): string {
-  return `${term.term_type}::${term.standard_name}`
+// 用 node_key 而不是 `term_type::standard_name` 拼接：标准名在同一 term_type
+// 下已经允许重复（2026-08-30），拼接键会撞车——两条同名同类型的术语会共享
+// 同一个 key，导致 editingKey/savingKey/deletingKey 同时命中两行，React 列表
+// key 也会重复。node_key 是后端保证的身份键，不存在这个问题。
+function termKey(term: { node_key: string }): string {
+  return term.node_key
 }
 
 /** 按本体声明的 value_type 把表单字符串转回后端要的类型。转换规则跟
@@ -198,8 +202,10 @@ export function TermsPage() {
         sessionToken, tenantId, originalTerm.node_key,
         // 按编辑后选中的类型取字段声明——这次编辑可能同时改了 term_type，
         // 属性值该按新类型的声明来转换和取舍，不是按原类型。
-        // node_key 不随这次编辑变化：它是身份键，仅在这里从原记录带出用于
-        // 寻址，不进请求体（请求体类型已排除它）。
+        // node_key 确实进了请求体（updateTerm 的 term 参数类型是完整的
+        // TermRecord，这里补上是为了满足那个类型）。后端不看它：寻址靠 URL
+        // 路径，TermWriteRequest 没有 node_key 字段，多余的键会被 Pydantic v2
+        // 忽略。
         { ...draftToRecord(editDraft, extraFieldsByType[editDraft.term_type] ?? []), node_key: originalTerm.node_key },
       )
       showToast('已保存')
