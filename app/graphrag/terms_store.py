@@ -560,32 +560,33 @@ async def update_term(
     conn: aiosqlite.Connection,
     *,
     tenant_id: str,
-    standard_name: str,
+    node_key: str,
     new_standard_name: str,
     aliases: list[str],
     term_type: str,
     extra_properties: dict[str, object] | None = None,
-    current_term_type: str | None = None,
 ) -> None:
-    """standard_name 是当前（改名前）的名字，配合 current_term_type
-    （改名前的类型，可选，不传时保持旧的不按类型区分的定位行为——见
-    get_term 的同名参数说明）一起定位这条记录；new_standard_name 是
-    提交的新名字，允许和 standard_name 相同（即不改名）；term_type 是
-    改名后要写入的目标类型（可能与 current_term_type 不同，即这次编辑
-    同时改了类型），用于校验新名字在目标类型下是否冲突。
+    """node_key 是这条记录的身份键，必须精确定位到唯一一行——不能再像
+    2026-08-30 之前那样按 standard_name 用 get_term()（内部 fetchone()）
+    查回来：那次改造之后同一 term_type 下允许同名多条，按名字查回来的
+    是哪一条完全由 SQLite 内部行序决定，管理员编辑 A 有可能实际改到了
+    同名的 B（见该缺陷的调查记录）。new_standard_name 是提交的新名字，
+    允许和当前名字相同（即不改名）；term_type 是改名后要写入的目标类型
+    （可能与这条记录改之前的类型不同，即这次编辑同时改了类型），用于
+    校验新名字在目标类型下是否冲突。
 
-    node_key 不受影响，UPDATE 语句不写这一列——ADR-0003 的核心断言：
-    身份键创建后永不改变。如果这次编辑同时改了 term_type，这条术语的
-    node_key（如果是 2026-08-22 之后创建、带类型前缀的）里的类型前缀会
-    跟新的 term_type 不一致——这是已知、可接受的行为，node_key 前缀只
-    反映创建时的类型，不是实时准确的。
+    node_key 本身不受这次调用影响，UPDATE 语句不写这一列——ADR-0003 的
+    核心断言：身份键创建后永不改变。如果这次编辑同时改了 term_type，这条
+    术语的 node_key（如果是 2026-08-22 之后创建、带类型前缀的）里的类型
+    前缀会跟新的 term_type 不一致——这是已知、可接受的行为，node_key 前缀
+    只反映创建时的类型，不是实时准确的。
 
     UPDATE 语句不写 source 列——这是刻意的：source 只记录创建时的渠道，
     人工编辑（无论改名、改别名还是改属性）都不改变它，见
     docs/superpowers/specs/2026-08-19-data-entry-unification-design.md 决策 C.4。
     """
     extra_properties = extra_properties or {}
-    existing_term = await get_term(conn, tenant_id, standard_name, current_term_type)
+    existing_term = await get_term_by_node_key(conn, tenant_id, node_key)
     await _validate_categories(
         conn, tenant_id=tenant_id, term_type=term_type,
         extra_properties=extra_properties,
@@ -594,7 +595,7 @@ async def update_term(
     await _check_name_conflict(
         conn, tenant_id=tenant_id, term_type=term_type,
         standard_name=new_standard_name, aliases=aliases,
-        exclude_node_key=existing_term.node_key,
+        exclude_node_key=node_key,
     )
     try:
         await conn.execute(
@@ -606,7 +607,7 @@ async def update_term(
                 term_type,
                 json.dumps(extra_properties, ensure_ascii=False),
                 tenant_id,
-                existing_term.node_key,
+                node_key,
             ),
         )
     except aiosqlite.IntegrityError:
@@ -619,16 +620,14 @@ async def update_term(
 async def delete_term(
     conn: aiosqlite.Connection,
     tenant_id: str,
-    standard_name: str,
-    term_type: str | None = None,
+    node_key: str,
 ) -> None:
-    """term_type 不传时保持旧的定位方式（见 get_term），但无论是否传
-    term_type，实际的 DELETE 语句都按 get_term 查出来的 node_key 定位，
-    只删这一条记录——不能像 2026-08-22 之前那样直接
-    "DELETE ... WHERE standard_name=?"，一旦两个不同类型的术语共享同一
-    个 standard_name，那样会把两条都删掉（见该 bug 的调查记录）。
+    """按 (tenant_id, node_key) 精确定位并删除这一条记录——不能再按
+    standard_name 查（见 update_term 的同一段说明）：2026-08-30 之后同一
+    term_type 下允许同名多条，按名字查回来的是哪一条不确定，删错一条会
+    绕过路由层按图谱边数做的 409 安全检查，在 Neo4j 留下孤儿边。
     """
-    term = await get_term(conn, tenant_id, standard_name, term_type)
+    term = await get_term_by_node_key(conn, tenant_id, node_key)
     await conn.execute(
         "DELETE FROM terms WHERE tenant_id=? AND node_key=?", (tenant_id, term.node_key)
     )
@@ -800,12 +799,11 @@ async def merge_terms(
     await update_term(
         conn,
         tenant_id=tenant_id,
-        standard_name=merged_term.standard_name,
+        node_key=merged_term.node_key,
         new_standard_name=_tombstone_name(merged_term.node_key),
         aliases=[],
         term_type=merged_term.term_type,
         extra_properties=merged_term.extra_properties,
-        current_term_type=merged_term.term_type,
     )
 
     # Step 2: 把 merged 那条合并前的 standard_name/aliases 追加到 keep 那条。
@@ -816,24 +814,22 @@ async def merge_terms(
         await update_term(
             conn,
             tenant_id=tenant_id,
-            standard_name=keep_term.standard_name,
+            node_key=keep_term.node_key,
             new_standard_name=keep_term.standard_name,
             aliases=merged_aliases,
             term_type=keep_term.term_type,
             extra_properties=keep_term.extra_properties,
-            current_term_type=keep_term.term_type,
         )
     except Exception as append_exc:
         try:
             await update_term(
                 conn,
                 tenant_id=tenant_id,
-                standard_name=_tombstone_name(merged_term.node_key),
+                node_key=merged_term.node_key,
                 new_standard_name=merged_original_standard_name,
                 aliases=merged_original_aliases,
                 term_type=merged_term.term_type,
                 extra_properties=merged_term.extra_properties,
-                current_term_type=merged_term.term_type,
             )
         except Exception as compensation_exc:
             logger.error(

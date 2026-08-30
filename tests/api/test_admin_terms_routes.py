@@ -1102,9 +1102,9 @@ def test_create_term_excludes_tombstoned_terms_from_similar_terms_hint(terms_con
     )
     asyncio.run(
         update_term(
-            terms_conn, tenant_id="t1", standard_name="可口可乐股份",
+            terms_conn, tenant_id="t1", node_key="t:可口可乐股份",
             new_standard_name="[已合并] t:可口可乐股份", aliases=[],
-            term_type="t", current_term_type="t",
+            term_type="t",
         )
     )
     session_store = AdminSessionStore()

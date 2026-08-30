@@ -142,9 +142,9 @@ async def test_main_excludes_tombstoned_terms_from_candidates(conn):
     # 标记（走真实的 update_term，不是直接改数据库行，保证格式跟生产
     # 代码一致）。
     await update_term(
-        conn, tenant_id="t1", standard_name="可口可乐股份",
+        conn, tenant_id="t1", node_key="公司:可口可乐股份",
         new_standard_name="[已合并] 公司:可口可乐股份", aliases=[],
-        term_type="公司", current_term_type="公司",
+        term_type="公司",
     )
 
     processed = await main(review_conn=conn, tenant_id="t1")

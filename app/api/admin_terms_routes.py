@@ -205,12 +205,11 @@ async def update_existing_term(
         await update_term(
             review_conn,
             tenant_id=tenant_id,
-            standard_name=existing_before_update.standard_name,
+            node_key=existing_before_update.node_key,
             new_standard_name=payload.standard_name,
             aliases=payload.aliases,
             term_type=payload.term_type,
             extra_properties=effective_extra_properties,
-            current_term_type=existing_before_update.term_type,
         )
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
@@ -282,7 +281,7 @@ async def delete_existing_term(
     )
     if edge_count > 0:
         raise HTTPException(status_code=409, detail="该术语已在图谱中使用，无法删除")
-    await delete_term(review_conn, tenant_id, term.standard_name, term.term_type)
+    await delete_term(review_conn, tenant_id, term.node_key)
     try:
         await graph_client.delete_term_node(tenant_id=tenant_id, node_key=term.node_key)
     except Exception:

@@ -198,7 +198,7 @@ async def test_update_term_rename_keeps_node_key_stable():
     original = await get_term(conn, tenant_id="t1", standard_name="错误码E502")
 
     await update_term(
-        conn, tenant_id="t1", standard_name="错误码E502",
+        conn, tenant_id="t1", node_key=original.node_key,
         new_standard_name="错误码E502v2", aliases=[], term_type="t",
     )
 
@@ -240,8 +240,9 @@ async def test_delete_term_scoped_to_tenant():
     await create_term(
         conn, tenant_id="t1", standard_name="待删除", aliases=[], term_type="t",
     )
+    to_delete = await get_term(conn, tenant_id="t1", standard_name="待删除")
 
-    await delete_term(conn, "t1", "待删除")
+    await delete_term(conn, "t1", to_delete.node_key)
 
     with pytest.raises(TermNotFoundError):
         await get_term(conn, tenant_id="t1", standard_name="待删除")
@@ -403,9 +404,10 @@ async def test_update_term_without_rename_changes_fields_in_place():
         conn, tenant_id="default", standard_name="错误码E502", aliases=["网关超时"],
         term_type="error_code",
     )
+    existing = await get_term(conn, tenant_id="default", standard_name="错误码E502")
 
     await update_term(
-        conn, tenant_id="default", standard_name="错误码E502", new_standard_name="错误码E502",
+        conn, tenant_id="default", node_key=existing.node_key, new_standard_name="错误码E502",
         aliases=["网关超时", "502错误"], term_type="error_code",
     )
 
@@ -419,9 +421,10 @@ async def test_update_term_with_rename_moves_to_new_standard_name():
         conn, tenant_id="default", standard_name="旧名字", aliases=[],
         term_type="t",
     )
+    existing = await get_term(conn, tenant_id="default", standard_name="旧名字")
 
     await update_term(
-        conn, tenant_id="default", standard_name="旧名字", new_standard_name="新名字",
+        conn, tenant_id="default", node_key=existing.node_key, new_standard_name="新名字",
         aliases=[], term_type="t",
     )
 
@@ -435,10 +438,11 @@ async def test_update_term_rejects_rename_into_an_existing_name():
     conn = await _connect()
     await create_term(conn, tenant_id="default", standard_name="A", aliases=[], term_type="t")
     await create_term(conn, tenant_id="default", standard_name="B", aliases=[], term_type="t")
+    term_a = await get_term(conn, tenant_id="default", standard_name="A")
 
     with pytest.raises(TermNameConflictError):
         await update_term(
-            conn, tenant_id="default", standard_name="A", new_standard_name="B",
+            conn, tenant_id="default", node_key=term_a.node_key, new_standard_name="B",
             aliases=[], term_type="t",
         )
 
@@ -448,7 +452,7 @@ async def test_update_term_raises_when_not_found():
 
     with pytest.raises(TermNotFoundError):
         await update_term(
-            conn, tenant_id="default", standard_name="不存在", new_standard_name="不存在",
+            conn, tenant_id="default", node_key="不存在", new_standard_name="不存在",
             aliases=[], term_type="t",
         )
 
@@ -456,8 +460,9 @@ async def test_update_term_raises_when_not_found():
 async def test_delete_term_removes_it():
     conn = await _connect()
     await create_term(conn, tenant_id="default", standard_name="待删除", aliases=[], term_type="t")
+    to_delete = await get_term(conn, tenant_id="default", standard_name="待删除")
 
-    await delete_term(conn, "default", "待删除")
+    await delete_term(conn, "default", to_delete.node_key)
 
     assert await list_terms(conn, tenant_id="default") == []
 
@@ -541,6 +546,7 @@ async def test_update_term_resubmitting_undeclared_but_already_stored_key_succee
         conn, tenant_id="default", standard_name="大床房", aliases=[], term_type="房型",
         extra_properties={"area": "30"},
     )
+    existing = await get_term(conn, tenant_id="default", standard_name="大床房")
 
     # 业务把"area"从房型的声明字段里移除——update_term_type 只操作草稿行，
     # 确认之后草稿已清空，需要先检出一份新草稿；改完再确认一次，让
@@ -552,7 +558,7 @@ async def test_update_term_resubmitting_undeclared_but_already_stored_key_succee
 
     # 重新保存这条术语，提交里仍然带着这个已经被去掉声明的字段——不应该报错
     await update_term(
-        conn, tenant_id="default", standard_name="大床房", new_standard_name="大床房",
+        conn, tenant_id="default", node_key=existing.node_key, new_standard_name="大床房",
         aliases=["豪华大床房"], term_type="房型",
         extra_properties={"area": "30"},
     )
@@ -572,10 +578,11 @@ async def test_update_term_rejects_genuinely_new_undeclared_key():
         conn, tenant_id="default", standard_name="大床房", aliases=[], term_type="房型",
         extra_properties={},
     )
+    existing = await get_term(conn, tenant_id="default", standard_name="大床房")
 
     with pytest.raises(UnknownCategoryError):
         await update_term(
-            conn, tenant_id="default", standard_name="大床房", new_standard_name="大床房",
+            conn, tenant_id="default", node_key=existing.node_key, new_standard_name="大床房",
             aliases=[], term_type="房型",
             extra_properties={"从未出现过的字段": "值"},
         )
@@ -679,6 +686,7 @@ async def test_update_term_grandfathered_field_skips_type_check():
         term_type="VariantValue",
         extra_properties={"numeric_value": 750},
     )
+    existing = await get_term(conn, tenant_id="t1", standard_name="X")
     await checkout_draft(conn, "t1")
     await update_term_type(
         conn, tenant_id="t1", value="VariantValue", new_value="VariantValue",
@@ -688,7 +696,7 @@ async def test_update_term_grandfathered_field_skips_type_check():
 
     # 不应该抛 InvalidExtraPropertyTypeError 或 UnknownCategoryError
     await update_term(
-        conn, tenant_id="t1", standard_name="X", new_standard_name="X",
+        conn, tenant_id="t1", node_key=existing.node_key, new_standard_name="X",
         aliases=[], term_type="VariantValue",
         extra_properties={"numeric_value": 750},
     )
@@ -938,8 +946,9 @@ async def test_update_term_does_not_change_source():
         conn, tenant_id="default", standard_name="term-d", aliases=[],
         term_type="t", source="etl",
     )
+    existing = await get_term(conn, "default", "term-d")
     await update_term(
-        conn, tenant_id="default", standard_name="term-d", new_standard_name="term-d-renamed",
+        conn, tenant_id="default", node_key=existing.node_key, new_standard_name="term-d-renamed",
         aliases=["alias"], term_type="t",
     )
     term = await get_term(conn, "default", "term-d-renamed")
@@ -1088,8 +1097,9 @@ async def test_delete_term_removes_only_the_matching_type_not_the_other():
     conn = await _connect_t1_with_product_category_types()
     await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="产品")
     await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="类目")
+    product = await get_term(conn, "t1", "Coffee", "产品")
 
-    await delete_term(conn, "t1", "Coffee", "产品")
+    await delete_term(conn, "t1", product.node_key)
 
     remaining = await list_terms(conn, tenant_id="t1")
     assert len(remaining) == 1
@@ -1100,10 +1110,11 @@ async def test_update_term_rename_does_not_conflict_with_other_type_same_name():
     conn = await _connect_t1_with_product_category_types()
     await create_term(conn, tenant_id="t1", standard_name="拿铁", aliases=[], term_type="产品")
     await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="类目")
+    latte = await get_term(conn, "t1", "拿铁", "产品")
 
     await update_term(
-        conn, tenant_id="t1", standard_name="拿铁", new_standard_name="Coffee",
-        aliases=[], term_type="产品", current_term_type="产品",
+        conn, tenant_id="t1", node_key=latte.node_key, new_standard_name="Coffee",
+        aliases=[], term_type="产品",
     )
 
     product = await get_term(conn, "t1", "Coffee", "产品")
@@ -1119,11 +1130,12 @@ async def test_update_term_rename_still_rejects_conflict_within_same_type():
     conn = await _connect_t1_with_product_category_types()
     await create_term(conn, tenant_id="t1", standard_name="拿铁", aliases=[], term_type="产品")
     await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="产品")
+    latte = await get_term(conn, "t1", "拿铁", "产品")
 
     with pytest.raises(TermNameConflictError):
         await update_term(
-            conn, tenant_id="t1", standard_name="拿铁", new_standard_name="Coffee",
-            aliases=[], term_type="产品", current_term_type="产品",
+            conn, tenant_id="t1", node_key=latte.node_key, new_standard_name="Coffee",
+            aliases=[], term_type="产品",
         )
 
 
@@ -1144,11 +1156,12 @@ async def test_update_term_rename_and_retype_in_one_call_still_detects_conflict_
     conn = await _connect_t1_with_product_category_types()
     await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=["拿铁"], term_type="产品")
     await create_term(conn, tenant_id="t1", standard_name="Coffee", aliases=[], term_type="类目")
+    product_coffee = await get_term(conn, "t1", "Coffee", "产品")
 
     with pytest.raises(TermNameConflictError):
         await update_term(
-            conn, tenant_id="t1", standard_name="Coffee", new_standard_name="拿铁",
-            aliases=["Coffee"], term_type="类目", current_term_type="产品",
+            conn, tenant_id="t1", node_key=product_coffee.node_key, new_standard_name="拿铁",
+            aliases=["Coffee"], term_type="类目",
         )
 
     # 冲突检查必须发生在写入之前——两条记录都应该保持编辑前的原状。
@@ -1384,3 +1397,53 @@ async def test_get_term_by_node_key_raises_when_absent():
     conn = await _connect()
     with pytest.raises(TermNotFoundError):
         await get_term_by_node_key(conn, "default", "t:不存在:000")
+
+
+async def test_update_term_by_node_key_only_touches_the_matching_row_among_same_names():
+    """回归测试（2026-08-30 终审缺陷）：同一 tenant + 同一 term_type 下存在两条
+    同名术语（node_key 不同）时，update_term 必须精确按 node_key 定位，只改
+    命中的那一条，另一条必须纹丝未动。旧实现按 standard_name 用 fetchone()
+    把记录查回来，命中哪条由 SQLite 内部行序决定，管理员编辑 A 有可能改到
+    B——见 get_term 的同名参数说明和 get_term_by_node_key 的引入动机。"""
+    conn = await _connect()
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:张三:100", standard_name="张三",
+        aliases=["老张"], term_type="t", extra_properties={},
+    )
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:张三:200", standard_name="张三",
+        aliases=["小张"], term_type="t", extra_properties={},
+    )
+
+    await update_term(
+        conn, tenant_id="default", node_key="t:张三:100",
+        new_standard_name="张三改名了", aliases=["老张"], term_type="t",
+    )
+
+    updated = await get_term_by_node_key(conn, "default", "t:张三:100")
+    untouched = await get_term_by_node_key(conn, "default", "t:张三:200")
+    assert updated.standard_name == "张三改名了"
+    assert updated.aliases == ["老张"]
+    assert untouched.standard_name == "张三"
+    assert untouched.aliases == ["小张"]
+
+
+async def test_delete_term_by_node_key_only_deletes_the_matching_row_among_same_names():
+    """回归测试（2026-08-30 终审缺陷）：同名多条时，delete_term 必须精确按
+    node_key 定位删除，不能误删另一条同名记录。"""
+    conn = await _connect()
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:李四:100", standard_name="李四",
+        aliases=[], term_type="t", extra_properties={},
+    )
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:李四:200", standard_name="李四",
+        aliases=[], term_type="t", extra_properties={},
+    )
+
+    await delete_term(conn, "default", "t:李四:100")
+
+    with pytest.raises(TermNotFoundError):
+        await get_term_by_node_key(conn, "default", "t:李四:100")
+    remaining = await get_term_by_node_key(conn, "default", "t:李四:200")
+    assert remaining.standard_name == "李四"
