@@ -12,6 +12,7 @@ docs/superpowers/specs/2026-08-30-etl-layered-pipeline-design.md。
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator
@@ -26,6 +27,8 @@ from app.graphrag.schema_etl_row_processing import (
     compute_node_key,
     convert_field_value,
 )
+
+logger = logging.getLogger(__name__)
 
 # DuplicateNodeKeyError 的消息里最多列出多少条冲突样例——18 万行的表可能
 # 有上万处冲突，全列出来会把日志和界面刷爆。
@@ -202,6 +205,14 @@ def format_duplicate_key_error(
 
     最多列出 _MAX_DUPLICATE_SAMPLES 条样例并注明总数——18 万行的表可能有
     上万处冲突，全列出来会把管理后台的失败详情刷爆。
+
+    这次失败发生在 run_schema_etl 创建 ETLRunReport 之前（预检阶段），
+    根本不会有运行报告产出——admin_schema_etl_routes.py 的失败分支只把
+    异常消息写进 error 字段，report_json 留空。所以超过展示上限的那部分
+    冲突绝不能说"见运行报告"，那是个不存在的东西：改为把每个超限的
+    term_type 的完整清单用 logger.error 记进服务端日志，运维能照着日志
+    定位到每一个冲突的 node_key 和它的源文件行号。没超过展示上限时
+    消息本身已经列全了，不重复刷日志。
     """
     lines: list[str] = []
     for term_type, duplicates in duplicates_by_term_type.items():
@@ -216,5 +227,16 @@ def format_duplicate_key_error(
             rows_text = ", ".join(str(n) for n in row_numbers)
             lines.append(f"  {node_key}  ← 源文件第 {rows_text} 行")
         if total > _MAX_DUPLICATE_SAMPLES:
-            lines.append(f"  ...（另有 {total - _MAX_DUPLICATE_SAMPLES} 处，完整清单见运行报告）")
+            lines.append(
+                f"  ...仅展示前 {_MAX_DUPLICATE_SAMPLES} 处，实际共 {total} 处重复，"
+                "完整清单已记入服务端日志。"
+            )
+            full_list = "\n".join(
+                f"  {node_key}  ← 源文件第 {', '.join(str(n) for n in row_numbers)} 行"
+                for node_key, row_numbers in duplicates.items()
+            )
+            logger.error(
+                "实体类型 %r 的 node_key 重复完整清单（共 %d 处，失败消息只展示了前 %d 条）：\n%s",
+                term_type, total, _MAX_DUPLICATE_SAMPLES, full_list,
+            )
     return "\n".join(lines)

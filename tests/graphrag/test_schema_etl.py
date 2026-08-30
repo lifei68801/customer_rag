@@ -375,6 +375,45 @@ async def test_run_schema_etl_unregistered_term_type_skips_only_that_mapping(tmp
     assert report.skipped_mappings[0].source_file == "unknown.csv"
 
 
+async def test_run_schema_etl_unregistered_term_type_with_allocated_code_key_allocates_no_orphan_code(tmp_path):
+    """预检要先看一眼 term_type 在不在已确认 schema 里，跳过不在里面的
+    mapping、不去扫它的键：scan_entity_node_keys 内部的
+    compute_node_key(allow_allocation=True) 会为 AllocatedCodeNodeKeyPart
+    真实分配并持久化稳定码，它不检查 term_type 合不合法。重构前 term_type
+    校验在 _write_entity_mapping 的行循环之前，打错字的 mapping 从不触发
+    compute_node_key；如果预检不加这层判断，即便整次运行完全成功，一个
+    term_type 打错字的 mapping 也会往 etl_stable_code_registry 里写入
+    永远不会被业务数据引用的孤儿码——这是相对重构前的真实行为倒退。
+    term_type 非法本身仍然只由 _write_entity_mapping 判定、记进
+    skipped_mappings，预检不抢先 raise，语义不变。"""
+    conn = await _confirmed_conn()
+    (tmp_path / "unknown.csv").write_text("code,name\nX1,未知类型\n", encoding="utf-8")
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="NotRegistered", source_file="unknown.csv",
+                standard_name_parts=["name"],
+                node_key_parts=[
+                    AllocatedCodeNodeKeyPart(scope_columns=[], raw_value_column="code")
+                ],
+                field_mappings={},
+            ),
+        ],
+        relations=[],
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert len(report.skipped_mappings) == 1
+    assert report.skipped_mappings[0].label == "NotRegistered"
+    assert await lookup_stable_code(
+        conn, tenant_id="muji", scope="NotRegistered", raw_value="X1"
+    ) is None
+
+
 async def test_run_schema_etl_relation_endpoint_never_written_is_skipped_not_ghost_merged(tmp_path):
     """关系文件引用了一个实体文件里从来没出现过的原始值时，必须跳过这一行——
     绝不能顺手给它分配一个新的稳定码、MERGE 出一个没有对应 Term 记录的幽灵节点。"""

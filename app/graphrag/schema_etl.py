@@ -265,10 +265,23 @@ async def run_schema_etl(
     # 会让配置变对。部分写入反而留下一个"看起来成功了、实际缺了一部分"的
     # 图谱，比失败更难发现。见 2026-08-30-etl-layered-pipeline-design.md。
     #
-    # 这一遍不做 term_type 的 schema 校验——那件事仍然由 _write_entity_mapping
-    # 负责，失败仍然记进 skipped_mappings。预检只关心键。
+    # 这一遍不「校验」term_type——term_type 打错字仍然只由 _write_entity_mapping
+    # 负责判定，失败仍然记进 skipped_mappings，预检不会替它抢先 raise。但预检
+    # 必须先看一眼 term_type 在不在已确认 schema 里，跳过不在里面的 mapping、
+    # 不去扫它的键：scan_entity_node_keys 内部的 compute_node_key
+    # (allow_allocation=True) 会为 AllocatedCodeNodeKeyPart 真实分配并持久化
+    # 稳定码，它不关心 term_type 合不合法。重构前 term_type 校验在
+    # _write_entity_mapping 的行循环之前，打错字的 mapping 从不触发
+    # compute_node_key；现在预检抢在它之前扫了一遍键，如果不加这层判断，
+    # 一个 term_type 打错字的 mapping 就会往 etl_stable_code_registry 里
+    # 写入永远不会被业务数据引用的孤儿码——这是相对重构前的真实行为倒退。
+    confirmed_term_type_values = {
+        t.value for t in await list_term_types(conn, config.tenant_id, status="confirmed")
+    }
     duplicates_by_term_type: dict[str, dict[str, list[int]]] = {}
     for entity_mapping in config.entities:
+        if entity_mapping.term_type not in confirmed_term_type_values:
+            continue
         try:
             scan = await scan_entity_node_keys(
                 conn, tenant_id=config.tenant_id, mapping=entity_mapping, data_dir=data_dir,

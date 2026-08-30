@@ -505,7 +505,7 @@ export function SchemaEtlPage() {
         <div className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4">
           <h2 className="font-mono font-semibold text-ink">跑批详情：{selectedRun.run_id}</h2>
           {selectedRun.status === 'failed' && (
-            <p role="alert" className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
+            <p role="alert" className="whitespace-pre-wrap rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
               失败：{selectedRun.error}
             </p>
           )}

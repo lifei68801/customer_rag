@@ -9,6 +9,7 @@ from app.graphrag.etl_projection import (
     ProjectedRelationRow,
     ProjectedRow,
     RowFailure,
+    format_duplicate_key_error,
     project_entity_rows,
     project_relation_rows,
     scan_entity_node_keys,
@@ -234,3 +235,19 @@ async def test_project_relation_rows_never_allocates_new_stable_codes(tmp_path: 
     assert len(rows) == 1
     assert isinstance(rows[0], RowFailure)
     assert "稳定码尚未分配" in rows[0].reason
+
+
+def test_format_duplicate_key_error_does_not_point_at_a_nonexistent_run_report():
+    """这次失败发生在 ETLRunReport 创建之前，根本不会有运行报告——旧措辞
+    "完整清单见运行报告" 指向一个不存在的东西。超过展示上限时，消息必须
+    准确说明"只展示了前 N 条、总共多少处"，不再提"运行报告"，且样例仍然
+    只列 _MAX_DUPLICATE_SAMPLES（20）条。"""
+    duplicates = {str(i): [2, 3] for i in range(25)}
+
+    message = format_duplicate_key_error({"客户": duplicates})
+
+    assert "运行报告" not in message
+    assert "共 25 处" in message
+    assert "仅展示前 20 处" in message
+    sample_lines = [line for line in message.splitlines() if "← 源文件第" in line]
+    assert len(sample_lines) == 20
