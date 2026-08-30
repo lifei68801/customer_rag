@@ -21,7 +21,7 @@ from app.graphrag.terms_store import (
     count_terms,
     create_term,
     delete_term,
-    get_term,
+    get_term_by_node_key,
     is_tombstoned,
     list_terms,
     update_term,
@@ -33,6 +33,7 @@ router = APIRouter(prefix="/api/admin/{tenant_id}/terms", dependencies=[Depends(
 
 
 class TermResponse(BaseModel):
+    node_key: str
     standard_name: str
     aliases: list[str]
     term_type: str
@@ -85,6 +86,7 @@ class TermWriteRequest(BaseModel):
 
 def _to_response(term: Term, *, similar_terms: list[dict[str, Any]] | None = None) -> TermResponse:
     return TermResponse(
+        node_key=term.node_key,
         standard_name=term.standard_name,
         aliases=term.aliases,
         term_type=term.term_type,
@@ -182,18 +184,17 @@ async def create_new_term(
     return _to_response(term, similar_terms=similar_terms_payload)
 
 
-@router.put("/{standard_name}", response_model=TermResponse)
+@router.put("/{node_key}", response_model=TermResponse)
 async def update_existing_term(
     tenant_id: str,
-    standard_name: str,
+    node_key: str,
     payload: TermWriteRequest,
-    term_type: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> TermResponse:
     await require_active_tenant_or_404(review_conn, tenant_id)
     try:
-        existing_before_update = await get_term(review_conn, tenant_id, standard_name, term_type)
+        existing_before_update = await get_term_by_node_key(review_conn, tenant_id, node_key)
         # 解析一次，三处写入（SQLite、响应体、图谱镜像）共用同一个值——
         # 漏掉任何一处都会让两个存储之间出现只有属性值不一致的静默偏差。
         effective_extra_properties = (
@@ -204,12 +205,12 @@ async def update_existing_term(
         await update_term(
             review_conn,
             tenant_id=tenant_id,
-            standard_name=standard_name,
+            standard_name=existing_before_update.standard_name,
             new_standard_name=payload.standard_name,
             aliases=payload.aliases,
             term_type=payload.term_type,
             extra_properties=effective_extra_properties,
-            current_term_type=term_type,
+            current_term_type=existing_before_update.term_type,
         )
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
@@ -220,7 +221,7 @@ async def update_existing_term(
     except InvalidExtraPropertyTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     node_key = existing_before_update.node_key
-    if payload.standard_name != standard_name:
+    if payload.standard_name != existing_before_update.standard_name:
         # 改名：先对同一个图节点做属性级联更新（保留已有关系边），再用
         # sync_term 刷新 type/别名。sync_term 现在按
         # {tenant_id, node_key}（创建时固定的身份键，改名后不变——
@@ -235,7 +236,7 @@ async def update_existing_term(
         except Exception:
             logger.exception(
                 "术语 %r 重命名为 %r（租户 %r）已写入 SQLite 但图谱改名失败——两侧数据已不一致，需要人工核对",
-                standard_name, payload.standard_name, tenant_id,
+                existing_before_update.standard_name, payload.standard_name, tenant_id,
             )
             raise
     term = Term(
@@ -258,11 +259,10 @@ async def update_existing_term(
     return _to_response(term)
 
 
-@router.delete("/{standard_name}")
+@router.delete("/{node_key}")
 async def delete_existing_term(
     tenant_id: str,
-    standard_name: str,
-    term_type: str,
+    node_key: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> dict[str, bool]:
@@ -274,7 +274,7 @@ async def delete_existing_term(
     # 一致状态——这一步必须在 delete_term() 之前，不能删完 SQLite 记录
     # 才发现图谱不允许删。
     try:
-        term = await get_term(review_conn, tenant_id, standard_name, term_type)
+        term = await get_term_by_node_key(review_conn, tenant_id, node_key)
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
     edge_count = await graph_client.count_relation_edges_for_term(
@@ -282,14 +282,14 @@ async def delete_existing_term(
     )
     if edge_count > 0:
         raise HTTPException(status_code=409, detail="该术语已在图谱中使用，无法删除")
-    await delete_term(review_conn, tenant_id, standard_name, term_type)
+    await delete_term(review_conn, tenant_id, term.standard_name, term.term_type)
     try:
         await graph_client.delete_term_node(tenant_id=tenant_id, node_key=term.node_key)
     except Exception:
         logger.exception(
             "术语 %r（租户 %r）已从 SQLite 删除，但图谱节点删除失败——SQLite 记录已不存在，"
             "图谱节点仍然存在且对管理后台不可见，需要人工核对",
-            standard_name, tenant_id,
+            term.standard_name, tenant_id,
         )
         raise
     return {"deleted": True}

@@ -19,6 +19,7 @@ from app.graphrag.terms_store import (
     delete_term,
     ensure_terms_schema,
     get_term,
+    get_term_by_node_key,
     is_tombstoned,
     list_terms,
     merge_terms,
@@ -1360,3 +1361,26 @@ async def test_manual_create_still_rejects_a_duplicate_name():
         await create_term(
             conn, tenant_id="default", standard_name="重复的名字", aliases=[], term_type="t",
         )
+
+
+async def test_get_term_by_node_key_picks_the_right_one_among_same_names():
+    """同名多条时，按 node_key 能精确定位——按名字则不能。"""
+    conn = await _connect()
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:张三:100", standard_name="张三",
+        aliases=[], term_type="t", extra_properties={},
+    )
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:张三:200", standard_name="张三",
+        aliases=[], term_type="t", extra_properties={},
+    )
+
+    term = await get_term_by_node_key(conn, "default", "t:张三:200")
+
+    assert term.node_key == "t:张三:200"
+
+
+async def test_get_term_by_node_key_raises_when_absent():
+    conn = await _connect()
+    with pytest.raises(TermNotFoundError):
+        await get_term_by_node_key(conn, "default", "t:不存在:000")

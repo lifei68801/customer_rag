@@ -406,6 +406,27 @@ async def get_term(
     return _row_to_term(row)
 
 
+async def get_term_by_node_key(
+    conn: aiosqlite.Connection, tenant_id: str, node_key: str
+) -> Term:
+    """按 (tenant_id, node_key) 精确定位一条术语。
+
+    node_key 是主键，永远唯一；get_term 按 standard_name 定位，在
+    standard_name 唯一索引降级之后（2026-08-30）已经不再能唯一确定一条
+    记录。所有"定位某一条具体术语"的调用都应该用这个函数。
+    """
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute(
+        "SELECT tenant_id, node_key, standard_name, aliases, term_type, "
+        "extra_properties, source FROM terms WHERE tenant_id = ? AND node_key = ?",
+        (tenant_id, node_key),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise TermNotFoundError(f"术语不存在: node_key={node_key!r}")
+    return _row_to_term(row)
+
+
 async def _check_name_conflict(
     conn: aiosqlite.Connection,
     *,

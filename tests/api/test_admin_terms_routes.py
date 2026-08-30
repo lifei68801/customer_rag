@@ -123,6 +123,9 @@ def test_list_terms_returns_all_terms(terms_conn):
     assert response.status_code == 200
     assert response.json()["terms"] == [
         {
+            # Task 3：TermResponse 新增 node_key 字段——addressing 改成走
+            # node_key 之后响应体里必须带上它，这里更新期望值以匹配新 schema。
+            "node_key": "error_code:错误码E502",
             "standard_name": "错误码E502", "aliases": ["网关超时"],
             "term_type": "error_code",
             "extra_properties": {}, "source": "manual",
@@ -313,7 +316,7 @@ def test_update_term_without_rename_syncs_to_graph_client(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/术语A?term_type=t",
+            "/api/admin/t1/terms/t:术语A",
             json={
                 "standard_name": "术语A", "aliases": ["新别名"],
                 "term_type": "t2",
@@ -342,7 +345,7 @@ def test_update_term_with_rename_calls_rename_then_sync(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/旧名字?term_type=t",
+            "/api/admin/t1/terms/t:旧名字",
             json={"standard_name": "新名字", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
@@ -366,7 +369,7 @@ def test_update_term_rename_into_existing_name_returns_400(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/A?term_type=t",
+            "/api/admin/t1/terms/t:A",
             json={"standard_name": "B", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
@@ -385,7 +388,7 @@ def test_update_nonexistent_term_returns_404(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/不存在?term_type=t",
+            "/api/admin/t1/terms/t:不存在",
             json={"standard_name": "不存在", "aliases": [], "term_type": "t"},
             headers=_authed_headers(session_store),
         )
@@ -408,7 +411,7 @@ def test_delete_term_without_graph_edges_succeeds(terms_conn):
     try:
         client = TestClient(app)
         response = client.delete(
-            "/api/admin/t1/terms/待删除?term_type=t", headers=_authed_headers(session_store)
+            "/api/admin/t1/terms/t:待删除", headers=_authed_headers(session_store)
         )
     finally:
         app.dependency_overrides.clear()
@@ -431,7 +434,7 @@ def test_delete_nonexistent_term_returns_404_even_when_graph_has_edges(terms_con
     try:
         client = TestClient(app)
         response = client.delete(
-            "/api/admin/t1/terms/不存在?term_type=t", headers=_authed_headers(session_store)
+            "/api/admin/t1/terms/t:不存在", headers=_authed_headers(session_store)
         )
     finally:
         app.dependency_overrides.clear()
@@ -452,7 +455,7 @@ def test_delete_term_with_graph_edges_returns_409(terms_conn):
     try:
         client = TestClient(app)
         response = client.delete(
-            "/api/admin/t1/terms/使用中?term_type=t", headers=_authed_headers(session_store)
+            "/api/admin/t1/terms/t:使用中", headers=_authed_headers(session_store)
         )
     finally:
         app.dependency_overrides.clear()
@@ -562,7 +565,7 @@ def test_update_term_drops_blank_aliases(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/术语A?term_type=t",
+            "/api/admin/t1/terms/t:术语A",
             json={
                 "standard_name": "术语A",
                 "aliases": ["  别名1  ", "", "   "],
@@ -815,7 +818,7 @@ def test_update_term_preserves_source_regardless_of_payload(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/术语B?term_type=t",
+            "/api/admin/t1/terms/t:术语B",
             json={
                 "standard_name": "术语B", "aliases": [], "term_type": "t",
                 "source": "manual",
@@ -861,7 +864,7 @@ def test_update_term_without_extra_properties_preserves_existing_values(terms_co
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/1-143-51064-X?term_type=订单号",
+            "/api/admin/t1/terms/订单号:1-143-51064-X",
             json={"standard_name": "1-143-51064-X", "aliases": ["首单"], "term_type": "订单号"},
             headers=_authed_headers(session_store),
         )
@@ -902,7 +905,7 @@ def test_update_term_without_extra_properties_preserves_them_in_graph_too(terms_
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/1-143-51064-X?term_type=订单号",
+            "/api/admin/t1/terms/订单号:1-143-51064-X",
             json={"standard_name": "1-143-51064-X", "aliases": ["首单"], "term_type": "订单号"},
             headers=_authed_headers(session_store),
         )
@@ -942,7 +945,7 @@ def test_update_term_with_empty_extra_properties_clears_them(terms_conn):
     try:
         client = TestClient(app)
         response = client.put(
-            "/api/admin/t1/terms/1-143-51064-X?term_type=订单号",
+            "/api/admin/t1/terms/订单号:1-143-51064-X",
             json={
                 "standard_name": "1-143-51064-X", "aliases": [], "term_type": "订单号",
                 "extra_properties": {},
@@ -956,66 +959,21 @@ def test_update_term_with_empty_extra_properties_clears_them(terms_conn):
     assert response.json()["extra_properties"] == {}
 
 
-def test_update_term_requires_term_type_query_param(terms_conn):
-    session_store = AdminSessionStore()
-    app.dependency_overrides[deps.get_settings] = lambda: _settings()
-    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
-    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
-    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
-    try:
-        client = TestClient(app)
-        create_response = client.post(
-            "/api/admin/t1/terms",
-            json={
-                "standard_name": "Coffee", "aliases": [], "term_type": "t",
-                "extra_properties": {}, "source": "manual",
-            },
-            headers=_authed_headers(session_store),
-        )
-        assert create_response.status_code == 200
-
-        response = client.put(
-            "/api/admin/t1/terms/Coffee",
-            json={
-                "standard_name": "拿铁", "aliases": [], "term_type": "t",
-                "extra_properties": {}, "source": "manual",
-            },
-            headers=_authed_headers(session_store),
-        )
-
-        assert response.status_code == 422
-    finally:
-        app.dependency_overrides.clear()
+# Task 3：test_update_term_requires_term_type_query_param 和
+# test_delete_term_requires_term_type_query_param（曾经断言 PUT/DELETE
+# 缺少 term_type query 参数时返回 422）在这个任务里被删除，不是转换成
+# node_key 形式——它们测的行为本身（"term_type 是必填 query 参数"）随着
+# 寻址方式改成 node_key 一起被移除了：PUT/DELETE 的路由签名里已经没有
+# term_type 这个参数，FastAPI 对未声明的多余 query 参数从不报错，所以
+# "缺 term_type 时 422" 这个断言不再对应任何真实校验路径——旧路径下的
+# "/Coffee"（不带 node_key 前缀）现在会被当成字面 node_key 去查、查不到
+# 返回 404，而不是 422。没有等价的新行为可以顶替这两条用例，同名多条时
+# 必须用 node_key 精确寻址这件事已经由
+# test_update_term_addresses_by_node_key（tests/api/test_admin_terms_routes.py）
+# 和下面重写后的 test_update_and_delete_term_disambiguate_by_node_key 覆盖。
 
 
-def test_delete_term_requires_term_type_query_param(terms_conn):
-    session_store = AdminSessionStore()
-    app.dependency_overrides[deps.get_settings] = lambda: _settings()
-    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
-    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
-    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
-    try:
-        client = TestClient(app)
-        create_response = client.post(
-            "/api/admin/t1/terms",
-            json={
-                "standard_name": "Coffee", "aliases": [], "term_type": "t",
-                "extra_properties": {}, "source": "manual",
-            },
-            headers=_authed_headers(session_store),
-        )
-        assert create_response.status_code == 200
-
-        response = client.delete(
-            "/api/admin/t1/terms/Coffee", headers=_authed_headers(session_store)
-        )
-
-        assert response.status_code == 422
-    finally:
-        app.dependency_overrides.clear()
-
-
-def test_update_and_delete_term_disambiguate_by_term_type(terms_conn):
+def test_update_and_delete_term_disambiguate_by_node_key(terms_conn):
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -1041,7 +999,7 @@ def test_update_and_delete_term_disambiguate_by_term_type(terms_conn):
         )
 
         update_response = client.put(
-            "/api/admin/t1/terms/Coffee?term_type=t",
+            "/api/admin/t1/terms/t:Coffee",
             json={
                 "standard_name": "拿铁", "aliases": [], "term_type": "t",
                 "extra_properties": {}, "source": "manual",
@@ -1052,7 +1010,7 @@ def test_update_and_delete_term_disambiguate_by_term_type(terms_conn):
         assert update_response.json()["standard_name"] == "拿铁"
 
         delete_response = client.delete(
-            "/api/admin/t1/terms/Coffee?term_type=t2", headers=_authed_headers(session_store)
+            "/api/admin/t1/terms/t2:Coffee", headers=_authed_headers(session_store)
         )
         assert delete_response.status_code == 200
 
@@ -1198,3 +1156,32 @@ def test_create_term_rejects_bool_inside_number_array_via_http(terms_conn):
         assert response.status_code == 400
     finally:
         app.dependency_overrides.clear()
+
+
+def test_update_term_addresses_by_node_key(terms_conn):
+    """PUT 用 node_key 寻址——同名多条时按名字寻址无法确定改哪一条。"""
+    from app.graphrag.terms_store import upsert_term_with_node_key
+    asyncio.run(
+        upsert_term_with_node_key(
+            terms_conn, tenant_id="t1", node_key="t:张三:200", standard_name="张三",
+            aliases=[], term_type="t", extra_properties={},
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.put(
+            "/api/admin/t1/terms/t:张三:200",
+            json={"standard_name": "张三改", "aliases": [], "term_type": "t"},
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["standard_name"] == "张三改"
+    assert response.json()["node_key"] == "t:张三:200"
