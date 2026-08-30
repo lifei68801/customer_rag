@@ -9,10 +9,10 @@ from pydantic import BaseModel, field_validator
 import aiosqlite
 
 from app.api import deps
+from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.duplicate_detection import find_similar_terms
 from app.graphrag.neo4j_client import GraphWriteProtocol
 from app.graphrag.ontology import Term
-from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
 from app.graphrag.terms_store import (
     InvalidExtraPropertyTypeError,
     TermNameConflictError,
@@ -128,10 +128,7 @@ async def create_new_term(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> TermResponse:
-    try:
-        await require_active_tenant(review_conn, tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, tenant_id)
     # 创建前先跟同租户、同类型的现有术语比一遍相似度，供管理员在提交后
     # 直接看到"这个新名字是不是已经有一个很像的术语了"——查询范围限定在
     # 同 term_type，避免不同类型之间凑巧撞名字的噪声提示。
@@ -194,10 +191,7 @@ async def update_existing_term(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> TermResponse:
-    try:
-        await require_active_tenant(review_conn, tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, tenant_id)
     try:
         existing_before_update = await get_term(review_conn, tenant_id, standard_name, term_type)
         # 解析一次，三处写入（SQLite、响应体、图谱镜像）共用同一个值——
@@ -272,10 +266,7 @@ async def delete_existing_term(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> dict[str, bool]:
-    try:
-        await require_active_tenant(review_conn, tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, tenant_id)
     # 先确认术语本身存在——404 的优先级要在 409 之前：一个根本不存在的
     # 名字不该因为图谱里凑巧有同名孤儿边就返回"已在图谱中使用"这种
     # 误导性的错误。确认存在之后再查图谱：这个术语已经被真实关系边

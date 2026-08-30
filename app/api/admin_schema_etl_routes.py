@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api import deps
+from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.etl_runs_store import (
     EtlRunAlreadyRunningError,
     EtlRunNotFoundError,
@@ -37,7 +38,6 @@ from app.graphrag.schema_etl_sample import (
     SampleFile,
     generate_schema_etl_sample_files,
 )
-from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -185,10 +185,7 @@ async def start_schema_etl_run(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: SchemaEtlGraphProtocol = Depends(deps.get_graph_client),
 ) -> StartRunResponse:
-    try:
-        await require_active_tenant(review_conn, tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, tenant_id)
     if not await is_ontology_confirmed(review_conn, tenant_id):
         raise HTTPException(status_code=400, detail=f"租户 {tenant_id!r} 的本体 schema 还没有确认")
 

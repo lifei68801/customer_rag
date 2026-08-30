@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import aiosqlite
 
 from app.api import deps
+from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.duplicate_review_queue import (
     DuplicateReviewAlreadyResolvedError,
     DuplicateReviewNotFoundError,
@@ -14,7 +15,6 @@ from app.graphrag.duplicate_review_queue import (
     list_pending_duplicate_suggestions,
     reject_duplicate_suggestion,
 )
-from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
 from app.graphrag.terms_store import (
     InvalidExtraPropertyTypeError,
     TermNameConflictError,
@@ -62,10 +62,7 @@ async def approve(
     payload: ApproveDuplicateRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict[str, bool]:
-    try:
-        await require_active_tenant(review_conn, payload.tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, payload.tenant_id)
     try:
         await approve_duplicate_suggestion(
             review_conn,
@@ -106,10 +103,7 @@ async def reject(
     payload: RejectDuplicateRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict[str, bool]:
-    try:
-        await require_active_tenant(review_conn, payload.tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, payload.tenant_id)
     try:
         await reject_duplicate_suggestion(
             review_conn, review_id=review_id, tenant_id=payload.tenant_id, note=payload.note

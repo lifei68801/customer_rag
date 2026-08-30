@@ -20,10 +20,10 @@ from pydantic import BaseModel
 import aiosqlite
 
 from app.api import deps
+from app.api.tenant_guard import require_active_tenant_or_404
 from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
-from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
 from app.graphrag.terms_store import list_terms
 from app.ingestion.ingestion_queue import (
     SUPPORTED_SUFFIXES,
@@ -201,10 +201,7 @@ async def upload_document(
     # （见 Task 8 DocumentsPage.tsx），不标 Form(...) 会导致后端读到 422。
     _reject_oversized_by_content_length(request)
     _validate_tenant_id(tenant_id)
-    try:
-        await require_active_tenant(review_conn, tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, tenant_id)
     _validate_upload_suffix(file.filename)
     # 这个路由自己已经有权威的 tenant_id（Form 字段），不用 deps.get_terms
     # 那套独立的 gateway_tenant_id 解析——两者在这条请求里可能不是同一个
@@ -317,10 +314,7 @@ async def delete_document(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict[str, bool]:
     _validate_tenant_id(tenant_id)
-    try:
-        await require_active_tenant(review_conn, tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, tenant_id)
     try:
         await vector_store.delete_by_source(source=file_path, tenant_id=tenant_id)
     except Exception as exc:  # noqa: BLE001 - 转成对前端有意义的错误，不裸抛 500
@@ -366,10 +360,7 @@ async def retry_ingestion_job(
     settings: Settings = Depends(deps.get_settings),
 ) -> RetryJobResponse:
     _validate_tenant_id(tenant_id)
-    try:
-        await require_active_tenant(review_conn, tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, tenant_id)
     # 同上（upload_document）：用本路由自己的权威 tenant_id（路径/查询参数）
     # 加载术语表，不经 deps.get_terms 的独立 gateway_tenant_id 解析。
     terms: list[Term] = await list_terms(review_conn, tenant_id)
@@ -410,10 +401,7 @@ async def delete_ingestion_job(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> DeleteJobResponse:
     _validate_tenant_id(tenant_id)
-    try:
-        await require_active_tenant(review_conn, tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, tenant_id)
     try:
         file_path = await delete_job(ingestion_conn, job_id, tenant_id=tenant_id)
     except JobNotFoundError:

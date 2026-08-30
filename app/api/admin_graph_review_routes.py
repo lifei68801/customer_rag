@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import aiosqlite
 
 from app.api import deps
+from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_constraints import list_allowed_combinations
@@ -24,7 +25,6 @@ from app.graphrag.review_queue import (
     list_resolved_reviews,
     reject_review,
 )
-from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
 from app.graphrag.terms_store import list_terms
 
 router = APIRouter(
@@ -89,10 +89,7 @@ async def approve(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> dict[str, bool]:
-    try:
-        await require_active_tenant(review_conn, payload.tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, payload.tenant_id)
     # 这个路由自己的权威 tenant_id 是 payload.tenant_id，不用 deps.get_terms
     # 那套独立的 gateway_tenant_id 解析——两者在这条请求里可能不是同一个
     # 值，直接按 payload.tenant_id 加载术语表，避免跨租户读到错的术语表。
@@ -143,10 +140,7 @@ async def reject(
     payload: RejectRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict[str, bool]:
-    try:
-        await require_active_tenant(review_conn, payload.tenant_id)
-    except TenantNotFoundError:
-        raise HTTPException(status_code=404, detail="租户不存在或未启用")
+    await require_active_tenant_or_404(review_conn, payload.tenant_id)
     try:
         await reject_review(
             review_conn, review_id=review_id, tenant_id=payload.tenant_id, note=payload.note
