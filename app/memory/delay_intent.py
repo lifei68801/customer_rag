@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 
-from app.providers.base import ProviderCapability, ProviderRequest
+from app.memory.llm_call import run_llm_text
+from app.providers.base import ProviderRequest
 from app.providers.registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -32,29 +32,24 @@ async def detect_delay_intent(
     """判断这句话是不是"稍后自己先试试、之后需要跟进确认"的意图；LLM
     失败/超时/解析失败时降级为关键词规则兜底。
     """
-    try:
-        result = await asyncio.wait_for(
-            llm_registry.run(
-                ProviderCapability.LLM,
-                ProviderRequest(
-                    messages=[
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user", "content": text},
-                    ]
-                ),
-                provider_name=llm_provider_name,
-            ),
-            timeout=timeout_sec,
-        )
-    except asyncio.TimeoutError:
-        logger.info("延迟意图检测超时，回退规则判断")
-        return _looks_like_delay_by_rule(text)
-    except Exception:
-        logger.warning("延迟意图检测失败，回退规则判断", exc_info=True)
+    response_text = await run_llm_text(
+        llm_registry=llm_registry,
+        request=ProviderRequest(
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ]
+        ),
+        provider_name=llm_provider_name,
+        timeout_sec=timeout_sec,
+        label="延迟意图检测",
+        fallback_label="回退规则判断",
+    )
+    if response_text is None:
         return _looks_like_delay_by_rule(text)
 
     try:
-        payload = json.loads(result.text)
+        payload = json.loads(response_text)
         return bool(payload.get("is_delay", False))
     except (json.JSONDecodeError, AttributeError, TypeError):
         return _looks_like_delay_by_rule(text)

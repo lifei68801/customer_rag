@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
 
-from app.providers.base import ProviderCapability, ProviderRequest
+from app.memory.llm_call import run_llm_text
+from app.providers.base import ProviderRequest
 from app.providers.registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -59,29 +59,24 @@ async def detect_correction_intent(
     """
     if not _looks_like_possible_correction(text):
         return False
-    try:
-        result = await asyncio.wait_for(
-            llm_registry.run(
-                ProviderCapability.LLM,
-                ProviderRequest(
-                    messages=[
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user", "content": text},
-                    ]
-                ),
-                provider_name=llm_provider_name,
-            ),
-            timeout=timeout_sec,
-        )
-    except asyncio.TimeoutError:
-        logger.info("纠错意图检测超时，回退规则判断")
-        return _looks_like_correction_by_rule(text)
-    except Exception:
-        logger.warning("纠错意图检测失败，回退规则判断", exc_info=True)
+    response_text = await run_llm_text(
+        llm_registry=llm_registry,
+        request=ProviderRequest(
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ]
+        ),
+        provider_name=llm_provider_name,
+        timeout_sec=timeout_sec,
+        label="纠错意图检测",
+        fallback_label="回退规则判断",
+    )
+    if response_text is None:
         return _looks_like_correction_by_rule(text)
 
     try:
-        payload = json.loads(result.text)
+        payload = json.loads(response_text)
         return bool(payload.get("is_correction", False))
     except (json.JSONDecodeError, AttributeError, TypeError):
         return _looks_like_correction_by_rule(text)

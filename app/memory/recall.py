@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import aiosqlite
@@ -10,15 +9,8 @@ from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.vector_store import VectorRecord
+from app.retrieval.vector_math import cosine_similarity
 
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(y * y for y in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
 
 
 def _recency_weights(items: list[dict[str, Any]]) -> dict[str, float]:
@@ -50,7 +42,7 @@ def _mmr_select(
             if selected:
                 max_sim = max(
                     (
-                        _cosine_similarity(item["embedding"], other["embedding"])
+                        cosine_similarity(item["embedding"], other["embedding"])
                         if item.get("embedding") is not None
                         and other.get("embedding") is not None
                         else 0.0
@@ -131,7 +123,7 @@ async def recall_memory_items(
         )
         query_vector = embed_result.vectors[0]
         semantic_scored = [
-            (item["memory_id"], _cosine_similarity(query_vector, item["embedding"]))
+            (item["memory_id"], cosine_similarity(query_vector, item["embedding"]))
             for item in items
             if item.get("embedding") is not None
         ]

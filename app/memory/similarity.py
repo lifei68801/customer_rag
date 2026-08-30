@@ -1,20 +1,12 @@
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import aiosqlite
 
 from app.memory.memory_store import list_active_memory_items
+from app.retrieval.vector_math import cosine_similarity
 
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(y * y for y in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
 
 
 async def find_similar_memory_items(
@@ -36,7 +28,7 @@ async def find_similar_memory_items(
     """
     items = await list_active_memory_items(conn, tenant_id=tenant_id, user_id=user_id)
     scored = [
-        (_cosine_similarity(query_vector, item["embedding"]), item)
+        (cosine_similarity(query_vector, item["embedding"]), item)
         for item in items
         if item.get("embedding") is not None
     ]

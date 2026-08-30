@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -8,7 +7,8 @@ from typing import Any
 
 from app.memory.delivery_policy import can_send_now, compute_delivery_policy
 from app.memory.proactive_channel import ProactiveDeliveryChannel
-from app.providers.base import ProviderCapability, ProviderRequest
+from app.memory.llm_call import run_llm_text
+from app.providers.base import ProviderRequest
 from app.providers.registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -57,36 +57,31 @@ async def generate_followup_message(
     （按触发原因分类，不是一个万能模板），保证"发不出个性化文案"不等于
     "完全不跟进"。
     """
-    try:
-        result = await asyncio.wait_for(
-            llm_registry.run(
-                ProviderCapability.LLM,
-                ProviderRequest(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": _SYSTEM_PROMPT_TEMPLATE.format(
-                                reason=trigger.reason,
-                                communication_style=profile.get(
-                                    "communication_style", "formal"
-                                ),
-                            ),
-                        },
-                        {"role": "user", "content": trigger.context},
-                    ]
-                ),
-                provider_name=llm_provider_name,
-            ),
-            timeout=timeout_sec,
-        )
-    except asyncio.TimeoutError:
-        logger.info("跟进文案生成超时，回退固定模板")
-        return _fallback_message(trigger)
-    except Exception:
-        logger.warning("跟进文案生成失败，回退固定模板", exc_info=True)
+    response_text = await run_llm_text(
+        llm_registry=llm_registry,
+        request=ProviderRequest(
+            messages=[
+                {
+                    "role": "system",
+                    "content": _SYSTEM_PROMPT_TEMPLATE.format(
+                        reason=trigger.reason,
+                        communication_style=profile.get(
+                            "communication_style", "formal"
+                        ),
+                    ),
+                },
+                {"role": "user", "content": trigger.context},
+            ]
+        ),
+        provider_name=llm_provider_name,
+        timeout_sec=timeout_sec,
+        label="跟进文案生成",
+        fallback_label="回退固定模板",
+    )
+    if response_text is None:
         return _fallback_message(trigger)
 
-    text = result.text.strip()
+    text = response_text.strip()
     return text or _fallback_message(trigger)
 
 

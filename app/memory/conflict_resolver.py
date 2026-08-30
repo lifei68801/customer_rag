@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any
 
-from app.providers.base import ProviderCapability, ProviderRequest
+from app.memory.llm_call import run_llm_text
+from app.providers.base import ProviderRequest
 from app.providers.registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -68,37 +68,32 @@ async def resolve_memory_actions(
     if not llm_facts:
         return short_circuit_actions
 
-    try:
-        result = await asyncio.wait_for(
-            llm_registry.run(
-                ProviderCapability.LLM,
-                ProviderRequest(
-                    messages=[
-                        {"role": "system", "content": _SYSTEM_PROMPT},
+    response_text = await run_llm_text(
+        llm_registry=llm_registry,
+        request=ProviderRequest(
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
                         {
-                            "role": "user",
-                            "content": json.dumps(
-                                {
-                                    "new_facts": llm_facts,
-                                    "existing_memories": existing_memories,
-                                },
-                                ensure_ascii=False,
-                            ),
+                            "new_facts": llm_facts,
+                            "existing_memories": existing_memories,
                         },
-                    ]
-                ),
-                provider_name=llm_provider_name,
-            ),
-            timeout=timeout_sec,
-        )
-    except asyncio.TimeoutError:
-        logger.info("记忆冲突决策超时，降级规则模式")
-        return short_circuit_actions + _fallback_actions(llm_facts, existing_memories)
-    except Exception:
-        logger.warning("记忆冲突决策失败，降级规则模式", exc_info=True)
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+        ),
+        provider_name=llm_provider_name,
+        timeout_sec=timeout_sec,
+        label="记忆冲突决策",
+        fallback_label="降级规则模式",
+    )
+    if response_text is None:
         return short_circuit_actions + _fallback_actions(llm_facts, existing_memories)
 
-    actions = _parse_actions(result.text)
+    actions = _parse_actions(response_text)
     if not actions:
         actions = _fallback_actions(llm_facts, existing_memories)
     return short_circuit_actions + actions

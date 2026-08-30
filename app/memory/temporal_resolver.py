@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from app.providers.base import ProviderCapability, ProviderRequest
+from app.memory.llm_call import run_llm_text
+from app.providers.base import ProviderRequest
 from app.providers.registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -114,34 +114,29 @@ async def _resolve_by_llm(
     reference_time: datetime,
     timeout_sec: float,
 ) -> TimeWindowResult | None:
-    try:
-        result = await asyncio.wait_for(
-            llm_registry.run(
-                ProviderCapability.LLM,
-                ProviderRequest(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": _SYSTEM_PROMPT_TEMPLATE.format(
-                                reference_time=reference_time.isoformat()
-                            ),
-                        },
-                        {"role": "user", "content": text},
-                    ]
-                ),
-                provider_name=llm_provider_name,
-            ),
-            timeout=timeout_sec,
-        )
-    except asyncio.TimeoutError:
-        logger.info("时间表达式解析超时，回退规则引擎")
-        return None
-    except Exception:
-        logger.warning("时间表达式解析失败，回退规则引擎", exc_info=True)
+    response_text = await run_llm_text(
+        llm_registry=llm_registry,
+        request=ProviderRequest(
+            messages=[
+                {
+                    "role": "system",
+                    "content": _SYSTEM_PROMPT_TEMPLATE.format(
+                        reference_time=reference_time.isoformat()
+                    ),
+                },
+                {"role": "user", "content": text},
+            ]
+        ),
+        provider_name=llm_provider_name,
+        timeout_sec=timeout_sec,
+        label="时间表达式解析",
+        fallback_label="回退规则引擎",
+    )
+    if response_text is None:
         return None
 
     try:
-        payload = json.loads(result.text)
+        payload = json.loads(response_text)
         # reference_time 是 naive 本地时间（无 tz 后缀）传给 LLM 的，但 LLM 有时会自行
         # 在返回的 ISO8601 里加上 Z/+00:00 之类的时区后缀——这个后缀没有实际依据（LLM并不
         # 知道本地时区是什么），直接丢弃 tzinfo 而不做时区换算，保持和 reference_time

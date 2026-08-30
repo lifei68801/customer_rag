@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 
-from app.providers.base import ProviderCapability, ProviderRequest
+from app.memory.llm_call import run_llm_text
+from app.providers.base import ProviderRequest
 from app.providers.registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -26,32 +26,27 @@ async def extract_facts(
     timeout_sec: float = 2.0,
 ) -> list[str]:
     """从一轮对话抽取长期记忆事实；失败/超时/JSON 解析失败均回退空列表。"""
-    try:
-        result = await asyncio.wait_for(
-            llm_registry.run(
-                ProviderCapability.LLM,
-                ProviderRequest(
-                    messages=[
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {
-                            "role": "user",
-                            "content": f"用户：{user_input}\n助手：{assistant_output}",
-                        },
-                    ]
-                ),
-                provider_name=llm_provider_name,
-            ),
-            timeout=timeout_sec,
-        )
-    except asyncio.TimeoutError:
-        logger.info("事实抽取超时，回退空列表")
-        return []
-    except Exception:
-        logger.warning("事实抽取失败，回退空列表", exc_info=True)
+    response_text = await run_llm_text(
+        llm_registry=llm_registry,
+        request=ProviderRequest(
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"用户：{user_input}\n助手：{assistant_output}",
+                },
+            ]
+        ),
+        provider_name=llm_provider_name,
+        timeout_sec=timeout_sec,
+        label="事实抽取",
+        fallback_label="回退空列表",
+    )
+    if response_text is None:
         return []
 
     try:
-        payload = json.loads(result.text)
+        payload = json.loads(response_text)
     except json.JSONDecodeError:
         logger.warning("事实抽取返回非 JSON，回退空列表")
         return []

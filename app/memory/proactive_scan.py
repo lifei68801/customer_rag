@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import math
 from datetime import datetime, timedelta
 
 import aiosqlite
@@ -30,6 +29,7 @@ from app.memory.ticket_fix_notifications import (
 )
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest
 from app.providers.registry import ProviderRegistry
+from app.retrieval.vector_math import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -104,14 +104,6 @@ async def scan_and_send_ticket_followups(
     return sent_count
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(y * y for y in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
 
 async def scan_and_send_known_fix_followups(
     conn: aiosqlite.Connection,
@@ -185,7 +177,7 @@ async def scan_and_send_known_fix_followups(
             vector = await _embedding_for_ticket(ticket)
             if vector is None:
                 continue
-            similarity = _cosine_similarity(vector, fix["embedding"])
+            similarity = cosine_similarity(vector, fix["embedding"])
             if similarity < similarity_threshold:
                 continue
 

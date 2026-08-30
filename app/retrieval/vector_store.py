@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
-import math
+from app.retrieval.vector_math import cosine_similarity
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -35,14 +35,6 @@ class VectorStore(Protocol):
 
     async def delete_by_source(self, *, source: str, tenant_id: str) -> None: ...
 
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(y * y for y in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
 
 
 def chunk_index_from_id(record_id: str) -> int:
@@ -79,7 +71,7 @@ class InMemoryVectorStore:
         self, query_vector: list[float], *, top_k: int, tenant_id: str
     ) -> list[VectorRecord]:
         scored = [
-            (_cosine_similarity(query_vector, record.vector), record)
+            (cosine_similarity(query_vector, record.vector), record)
             for record in self._records
             if record.tenant_id == tenant_id
         ]
