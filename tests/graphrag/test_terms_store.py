@@ -735,7 +735,13 @@ async def test_upsert_term_with_node_key_updates_existing_row_by_node_key():
     assert all_terms[0].node_key == "Product:1001"
 
 
-async def test_upsert_term_with_node_key_rejects_duplicate_standard_name_different_node_key():
+async def test_upsert_term_with_node_key_allows_duplicate_standard_name_different_node_key():
+    """2026-08-30 起 standard_name 的唯一索引降级为普通索引，唯一性下沉到
+    node_key——本用例原先断言第二次 upsert 会因为 standard_name 撞车抛
+    TermNameConflictError，那正是本任务要拿掉的行为（复合 node_key 场景下，
+    两个真实存在、同名的不同实体必须都能落库，见
+    docs/superpowers/specs/2026-08-30-name-uniqueness-to-node-key-design.md）。
+    改成断言两条 node_key 不同的记录都成功写入。"""
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
     await ensure_ontology_schema(conn)
@@ -747,11 +753,14 @@ async def test_upsert_term_with_node_key_rejects_duplicate_standard_name_differe
         aliases=[], term_type="Product",
     )
 
-    with pytest.raises(TermNameConflictError):
-        await upsert_term_with_node_key(
-            conn, tenant_id="muji", node_key="Product:1002", standard_name="圆角收纳盒",
-            aliases=[], term_type="Product",
-        )
+    await upsert_term_with_node_key(
+        conn, tenant_id="muji", node_key="Product:1002", standard_name="圆角收纳盒",
+        aliases=[], term_type="Product",
+    )
+
+    all_terms = await list_terms(conn, tenant_id="muji")
+    same_name = [t for t in all_terms if t.standard_name == "圆角收纳盒"]
+    assert {t.node_key for t in same_name} == {"Product:1001", "Product:1002"}
 
 
 async def test_upsert_term_with_node_key_typed_extra_properties():
@@ -1307,3 +1316,47 @@ async def test_merge_terms_logs_and_reraises_original_error_when_compensation_al
     assert "可口可乐股份" in message
     assert "可乐" in message
     assert "simulated concurrent write stole the name back" in message
+
+
+async def test_same_standard_name_allowed_when_node_key_differs():
+    """同 term_type 下同名不同 node_key 必须都能写进去。
+
+    这是 2026-08-30 那次事故的直接复现：用户名的复合节点键
+    (姓名+邮编) 让两个 William Jackson 有了不同的 node_key，但
+    standard_name 都是 "William Jackson"，第二条被唯一索引拒掉，
+    10000 行只落库 9335 条，665 笔订单因此失去客户边。
+    """
+    conn = await _connect()
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:William Jackson:72848",
+        standard_name="William Jackson", aliases=[], term_type="t",
+        extra_properties={},
+    )
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:William Jackson:68046",
+        standard_name="William Jackson", aliases=[], term_type="t",
+        extra_properties={},
+    )
+
+    terms = await list_terms(conn, "default")
+    same_name = [t for t in terms if t.standard_name == "William Jackson"]
+    assert {t.node_key for t in same_name} == {
+        "t:William Jackson:72848", "t:William Jackson:68046",
+    }
+
+
+async def test_manual_create_still_rejects_a_duplicate_name():
+    """人工录入路径仍然拦重名——数据库不再兜底之后这层策略检查更重要。
+
+    人手工敲进一个已存在的名字，绝大多数是笔误而不是"我确实要建一个
+    同名的不同实体"。
+    """
+    conn = await _connect()
+    await create_term(
+        conn, tenant_id="default", standard_name="重复的名字", aliases=[], term_type="t",
+    )
+
+    with pytest.raises(TermNameConflictError):
+        await create_term(
+            conn, tenant_id="default", standard_name="重复的名字", aliases=[], term_type="t",
+        )

@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS terms (
     source            TEXT NOT NULL DEFAULT 'unknown',
     PRIMARY KEY (tenant_id, node_key)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_terms_tenant_standard_name
+CREATE INDEX IF NOT EXISTS idx_terms_tenant_standard_name
     ON terms(tenant_id, term_type, standard_name);
 """
 
@@ -150,6 +150,37 @@ async def _migrate_terms_standard_name_index_to_type_scoped_if_needed(
     await conn.commit()
 
 
+async def _migrate_terms_standard_name_index_drop_unique_if_needed(
+    conn: aiosqlite.Connection,
+) -> None:
+    """把 (tenant_id, term_type, standard_name) 的唯一索引降级成普通索引。
+
+    唯一性下沉到 node_key：terms 表的主键本来就是 (tenant_id, node_key)，
+    身份约束已经在那里；standard_name 是展示名，同一 term_type 下允许重复
+    （两个同名不同人的客户，各自有不同的 node_key）。见
+    docs/superpowers/specs/2026-08-30-name-uniqueness-to-node-key-design.md。
+
+    用 PRAGMA index_list 探测 unique 标志，已经是普通索引或索引不存在都
+    直接跳过——幂等，模式跟上面两个迁移一致。
+
+    注意这是一道单向门：降级之后如果真的写入了同类型同名的多条 Term，
+    想回滚重建唯一索引会失败，必须先人工处理重名。
+    """
+    cursor = await conn.execute("PRAGMA index_list('terms')")
+    rows = await cursor.fetchall()
+    is_unique = any(
+        row[1] == "idx_terms_tenant_standard_name" and row[2] == 1 for row in rows
+    )
+    if not is_unique:
+        return
+    await conn.execute("DROP INDEX idx_terms_tenant_standard_name")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_terms_tenant_standard_name "
+        "ON terms(tenant_id, term_type, standard_name)"
+    )
+    await conn.commit()
+
+
 async def ensure_terms_schema(
     conn: aiosqlite.Connection, *, seed_yaml_path: Path | None = None
 ) -> None:
@@ -183,6 +214,7 @@ async def ensure_terms_schema(
         await _migrate_terms_table_to_tenant_scoped_if_needed(conn)
         await _migrate_terms_drop_product_line_column_if_needed(conn)
         await _migrate_terms_standard_name_index_to_type_scoped_if_needed(conn)
+        await _migrate_terms_standard_name_index_drop_unique_if_needed(conn)
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
     if not table_already_existed and seed_yaml_path is not None and seed_yaml_path.exists():
@@ -619,8 +651,12 @@ async def upsert_term_with_node_key(
     compute_node_key），不像 create_term 那样自动取 standard_name 的值——
     这是与 create_term/update_term 唯一的本质区别。
 
-    standard_name 的租户内唯一性约束（idx_terms_tenant_standard_name）仍然生效：
-    如果这个 standard_name 已经被另一个 node_key 占用，抛 TermNameConflictError。
+    standard_name 不再受唯一性约束——2026-08-30 起
+    idx_terms_tenant_standard_name 降级为普通索引，唯一性下沉到
+    (tenant_id, node_key)（表的主键）。同一 term_type 下两个 node_key
+    不同的术语允许共享同一个 standard_name（复合 node_key 场景下这是
+    合法状态：两个真实存在、同名的不同实体），见
+    docs/superpowers/specs/2026-08-30-name-uniqueness-to-node-key-design.md。
 
     source 默认值 "etl"——这个函数目前唯一的生产调用点就是
     schema_etl.py::_write_entity_mapping，不需要显式传参也总是正确的。
@@ -665,9 +701,10 @@ async def upsert_term_with_node_key(
             ),
         )
     except aiosqlite.IntegrityError:
-        raise TermNameConflictError(
-            f"{standard_name!r} 已经是同类型（{term_type!r}）术语的标准名，无法写入"
-        )
+        # standard_name 的唯一索引在 2026-08-30 已降级为普通索引，重名不再
+        # 触发这里；剩下能命中的只有 NOT NULL 之类的约束违例，原样抛出，
+        # 不要再冒充"标准名冲突"——那会把一个 schema 问题误报成数据问题。
+        raise
     await conn.commit()
 
 
