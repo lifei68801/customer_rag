@@ -8,7 +8,7 @@ import aiosqlite
 from app.graphrag.llm_extractor import extract_candidate_relations
 from app.graphrag.normalization import GraphWriteClientProtocol, normalize_and_write_relations
 from app.graphrag.ontology import Term
-from app.graphrag.ontology_constraints import AllowedCombination
+from app.graphrag.ontology_constraints import AllowedCombination, to_combination_keys
 from app.ingestion.chunking import Chunk
 from app.providers.registry import ProviderRegistry
 
@@ -93,9 +93,7 @@ async def extract_and_write_graph_relations(
     batches = _batch_chunks_by_char_budget(chunks, max_chars=batch_max_chars)
     semaphore = asyncio.Semaphore(max_concurrency)
     confirmed_relation_types_set = set(relation_types)
-    allowed_combinations_set = {
-        (c.subject_term_type, c.relation_type, c.object_term_type) for c in allowed_combinations
-    }
+    allowed_combinations_set = to_combination_keys(allowed_combinations)
 
     async def _process_batch(batch: list[Chunk]) -> list[dict[str, str]]:
         async with semaphore:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
 import aiosqlite
 
@@ -32,6 +33,27 @@ class AllowedCombination:
     subject_term_type: str
     relation_type: str
     object_term_type: str
+
+
+def to_combination_keys(
+    combinations: Iterable[AllowedCombination],
+) -> set[tuple[str, str, str]]:
+    """把允许组合列表转成便于成员判断的三元组集合。
+
+    字段顺序 (subject, relation, object) 是一份隐式契约：五处调用方各自把
+    列表推导成集合，另有三处校验点各自拼出待查的三元组去比对。任何一处把
+    顺序写反都不会报错，集合只会静默匹配不上，表现为"明明配置了这个组合却
+    被判定不在允许列表里"。收进这个函数之后顺序只写在一处。
+
+    调用方拿到的是集合而不是列表，因为它们无一例外都在循环里反复做成员
+    判断；schema_etl 和 graph_extraction 还刻意把这次转换提到循环之外，
+    所以下游函数继续接 set 参数，不改成接 AllowedCombination 列表——那会
+    把 O(n) 的转换推回循环里。
+    """
+    return {
+        (c.subject_term_type, c.relation_type, c.object_term_type)
+        for c in combinations
+    }
 
 
 async def ensure_constraints_schema(conn: aiosqlite.Connection) -> None:

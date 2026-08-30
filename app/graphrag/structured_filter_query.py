@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.graphrag.ontology import Term, resolve_term
 from app.graphrag.ontology_categories import TermTypeCategory
-from app.graphrag.ontology_constraints import AllowedCombination
+from app.graphrag.ontology_constraints import AllowedCombination, to_combination_keys
 from app.graphrag.ontology_recall import precision_match_score
 
 if TYPE_CHECKING:
@@ -483,10 +483,7 @@ def _correct_hop_directions(
     """
     if not allowed_combinations:
         return constraint
-    declared = {
-        (c.subject_term_type, c.relation_type, c.object_term_type)
-        for c in allowed_combinations
-    }
+    declared = to_combination_keys(allowed_combinations)
     corrected: list[Hop] = []
     current_term_type = start_term_type
     for hop in constraint.hops:

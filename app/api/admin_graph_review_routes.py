@@ -11,7 +11,7 @@ from app.api import deps
 from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
-from app.graphrag.ontology_constraints import list_allowed_combinations
+from app.graphrag.ontology_constraints import list_allowed_combinations, to_combination_keys
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.review_queue import (
     RelationNotInConfirmedOntologyError,
@@ -102,10 +102,9 @@ async def approve(
         rt.relation_type
         for rt in await list_relation_types(review_conn, payload.tenant_id, status="confirmed")
     }
-    allowed_combinations = {
-        (c.subject_term_type, c.relation_type, c.object_term_type)
-        for c in await list_allowed_combinations(review_conn, payload.tenant_id, status="confirmed")
-    }
+    allowed_combinations = to_combination_keys(
+        await list_allowed_combinations(review_conn, payload.tenant_id, status="confirmed")
+    )
     try:
         await approve_review(
             review_conn,

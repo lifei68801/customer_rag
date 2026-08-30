@@ -18,7 +18,7 @@ from app.graphrag.etl_stable_code_registry import ensure_stable_code_registry_sc
 from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import list_term_types
-from app.graphrag.ontology_constraints import list_allowed_combinations
+from app.graphrag.ontology_constraints import list_allowed_combinations, to_combination_keys
 from app.graphrag.ontology_lifecycle import is_ontology_confirmed
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.ontology_store import open_ontology_store_conn
@@ -402,10 +402,9 @@ async def run_schema_etl(
     confirmed_relation_types = {
         r.relation_type for r in await list_relation_types(conn, config.tenant_id, status="confirmed")
     }
-    allowed_combinations = {
-        (c.subject_term_type, c.relation_type, c.object_term_type)
-        for c in await list_allowed_combinations(conn, config.tenant_id, status="confirmed")
-    }
+    allowed_combinations = to_combination_keys(
+        await list_allowed_combinations(conn, config.tenant_id, status="confirmed")
+    )
     entity_mappings_by_term_type = {m.term_type: m for m in config.entities}
     for relation_mapping in config.relations:
         try:
