@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from app.graphrag.ontology import Term, resolve_term
+from app.graphrag.ontology import Term, resolve_term, resolve_term_or_candidates
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.ontology_constraints import AllowedCombination, to_combination_keys
 from app.graphrag.ontology_recall import precision_match_score
@@ -627,10 +627,31 @@ async def run_structured_filter_query(
         return {"error": str(exc)}
 
     if isinstance(args.anchor, NameAnchor):
-        term = resolve_term(args.anchor.name, terms, term_type_hint=args.anchor.type_hint)
-        if term is None:
+        candidate = resolve_term_or_candidates(
+            args.anchor.name, terms, term_type_hint=args.anchor.type_hint
+        )
+        if isinstance(candidate, list) and len(candidate) > 1:
+            # 同名多候选：绝不从中随便挑一个，也不能压成 matched_count: 0
+            # ——那会让 Planner 把"有歧义"说成"没有找到"。返回结构化的候选
+            # 清单，让它去问用户是哪一个。
+            return {
+                "ambiguous_anchor": {
+                    "name": args.anchor.name,
+                    "candidates": [
+                        {
+                            "node_key": t.node_key,
+                            "standard_name": t.standard_name,
+                            "term_type": t.term_type,
+                            "extra_properties": t.extra_properties,
+                        }
+                        for t in candidate
+                    ],
+                }
+            }
+        if isinstance(candidate, list):
+            # 零命中，语义不变
             return {"matched_count": 0, "anchors": []}
-        resolved = ResolvedAnchor(term_type=term.term_type, node_key=term.node_key)
+        resolved = ResolvedAnchor(term_type=candidate.term_type, node_key=candidate.node_key)
     else:
         resolved = ResolvedAnchor(term_type=args.anchor.term_type, node_key=None)
 

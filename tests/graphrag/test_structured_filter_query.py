@@ -818,6 +818,32 @@ async def test_run_structured_filter_query_name_anchor_not_resolved_returns_zero
     assert result == {"matched_count": 0, "anchors": []}
 
 
+async def test_name_anchor_with_ambiguous_name_reports_candidates_not_zero():
+    """同名多候选时返回结构化歧义结果，不能压成 matched_count: 0。
+
+    压成 0 的话 Planner 会告诉用户"没有找到"——跟真的没有完全无法区分。
+    这是本计划后续放宽唯一性约束的前提：歧义会变多，必须先能被看见。
+    """
+    terms = [
+        Term(tenant_id="demo", node_key="用户名:张三:100", standard_name="张三",
+             aliases=[], term_type="用户名", extra_properties={}),
+        Term(tenant_id="demo", node_key="用户名:张三:200", standard_name="张三",
+             aliases=[], term_type="用户名", extra_properties={}),
+    ]
+
+    result = await run_structured_filter_query(
+        {"anchor": {"name": "张三"}, "limit": 0},
+        terms=terms, graph_client=_FakeGraphClient(), tenant_id="demo",
+        confirmed_relation_types=set(), term_type_schema={},
+    )
+
+    assert "ambiguous_anchor" in result
+    assert {c["node_key"] for c in result["ambiguous_anchor"]["candidates"]} == {
+        "用户名:张三:100", "用户名:张三:200",
+    }
+    assert "matched_count" not in result
+
+
 async def test_run_structured_filter_query_name_anchor_uses_type_hint_to_disambiguate():
     terms = [
         Term(tenant_id="t1", node_key="产品:Coffee", standard_name="Coffee", aliases=[], term_type="产品"),

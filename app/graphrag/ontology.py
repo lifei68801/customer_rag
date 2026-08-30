@@ -82,6 +82,23 @@ def resolve_term(
     找不到和有歧义这两种"返回 None"的情况如果需要进一步区分（比如给
     人看的错误提示），用 find_candidate_term_types 单独判断。
     """
+    resolved = resolve_term_or_candidates(name, terms, term_type_hint=term_type_hint)
+    return resolved if isinstance(resolved, Term) else None
+
+
+def resolve_term_or_candidates(
+    name: str, terms: list[Term], *, term_type_hint: str | None = None
+) -> Term | list[Term]:
+    """按候选名解析 Term，把"没找到"和"有歧义"区分开。
+
+    唯一命中返回那个 Term；命中多条返回全部候选（长度 ≥2）；零命中返回空
+    列表。resolve_term 是它的薄封装，把"多候选"和"零命中"都压成 None——
+    那个语义对既有调用方仍然正确，不改。
+
+    这个函数存在的理由：standard_name 的唯一索引取消之后，同一 term_type
+    下同名成为合法状态，歧义会真实出现。调用方如果只能拿到 None，就无法
+    向用户澄清"你说的是哪一个"，只能报"没找到"——而那是错的。
+    """
     if term_type_hint:
         hinted = [
             t for t in terms
@@ -90,11 +107,11 @@ def resolve_term(
         if len(hinted) == 1:
             return hinted[0]
         if len(hinted) > 1:
-            return None
+            return hinted
     matches = [t for t in terms if _name_matches(name, t)]
     if len(matches) == 1:
         return matches[0]
-    return None
+    return matches
 
 
 def find_candidate_term_types(name: str, terms: list[Term]) -> list[str]:

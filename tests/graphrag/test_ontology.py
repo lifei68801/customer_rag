@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from app.graphrag.ontology import Term, find_candidate_term_types, load_terminology, resolve_term
+from app.graphrag.ontology import (
+    Term,
+    find_candidate_term_types,
+    load_terminology,
+    resolve_term,
+    resolve_term_or_candidates,
+)
 
 
 def _term(standard_name: str, term_type: str, *, node_key: str | None = None, aliases: list[str] | None = None) -> Term:
@@ -167,3 +173,41 @@ def test_find_candidate_term_types_matches_case_insensitively():
 
     assert find_candidate_term_types("COFFEE", terms) == ["产品"]
     assert find_candidate_term_types("latte", terms) == ["类目"]
+
+
+def _user_term(node_key: str, standard_name: str, term_type: str = "用户名") -> Term:
+    return Term(
+        tenant_id="t1", node_key=node_key, standard_name=standard_name,
+        aliases=[], term_type=term_type, extra_properties={},
+    )
+
+
+def test_resolve_term_or_candidates_returns_the_single_match():
+    terms = [_user_term("用户名:张三:100", "张三")]
+
+    assert resolve_term_or_candidates("张三", terms) == terms[0]
+
+
+def test_resolve_term_or_candidates_returns_all_candidates_when_ambiguous():
+    """同名不同实体时返回全部候选，而不是像 resolve_term 那样返回 None。
+
+    唯一索引取消之后，同一 term_type 下同名是合法状态。调用方需要区分
+    "没找到"和"有歧义"——前者该说"没有这个实体"，后者该问用户是哪一个。
+    """
+    terms = [_user_term("用户名:张三:100", "张三"), _user_term("用户名:张三:200", "张三")]
+
+    result = resolve_term_or_candidates("张三", terms)
+
+    assert isinstance(result, list)
+    assert {t.node_key for t in result} == {"用户名:张三:100", "用户名:张三:200"}
+
+
+def test_resolve_term_or_candidates_returns_empty_list_when_absent():
+    assert resolve_term_or_candidates("没有这个人", [_user_term("用户名:张三:100", "张三")]) == []
+
+
+def test_resolve_term_keeps_returning_none_when_ambiguous():
+    """既有调用方依赖 resolve_term 的"多候选返回 None"语义，不能改。"""
+    terms = [_user_term("用户名:张三:100", "张三"), _user_term("用户名:张三:200", "张三")]
+
+    assert resolve_term("张三", terms) is None

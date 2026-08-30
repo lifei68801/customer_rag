@@ -39,7 +39,11 @@ _USAGE_GUIDE = (
     "确实要用多跳路径时，必须把那条路径的每一跳（含各自的 relation_type/"
     "direction/target_term_type）原样抄进 constraints.hops，不能只抄第一跳就"
     "省略中间类型直接把 target_field/target_value 接到 yy 自己身上——那样等于"
-    "没有对 xx 做任何过滤，返回的会是 yy 这个类型下的全部数量，不是 xx 名下的数量。"
+    "没有对 xx 做任何过滤，返回的会是 yy 这个类型下的全部数量，不是 xx 名下的数量。\n"
+    "观察结果里出现 ambiguous_anchor 时，说明这个名字在库里对应多个不同实体"
+    "（各自的 node_key 和属性都列在 candidates 里）。这不是「没找到」——必须"
+    "向用户澄清指的是哪一个，把区分性属性（比如所在城市、邮编）念给用户听，"
+    "不能自己挑一个，也不能回答「没有查到」。"
 )
 
 _PARAMETERS_SCHEMA: dict[str, Any] = {
