@@ -32,6 +32,10 @@ _Avoid_: 泛指的"数据管道"——必须点明这条路径是"LLM 推断 + �
 **（结构化）ETL 管道**:
 为 MUJI 这类"真相源是干净关系型表"的租户新增的数据写入路径：从租户自己的主数据表（如 MUJI 的 `spu_products`/`sku_master`）确定性地转换、写入，不经过 LLM 推断，不进人工审核队列，因为没有幻觉风险。仍需同步写入 SQLite 的 Term 镜像层，保持与抽取管道一致的双存储架构。**Schema 定义本身复用现有的本体 schema 层**（`ontology_categories`/`ontology_relations`/`ontology_constraints`/`ontology_lifecycle`）——ETL 只负责按已 confirm 的 schema + 列映射配置做确定性写入，不另建一套平行的 schema 定义表。因为已确认存在多个业务域完全不同的结构化租户（MUJI 之外还有一个设备/资产/工单类租户在路上），必须做成通用模块，不能为每个租户各写一段硬编码 Python。
 
+**本体库（ontology store）**:
+`settings.graph_review_db_path` 指向的那个 SQLite 库，装着术语表、本体 schema（分类/关系类型/约束/接入模式）、两条审核队列、租户注册表、ETL 运行记录和稳定码注册表。它是知识图谱在 Neo4j 之外的镜像与治理层，两条接入管道都写它。
+_Avoid_: review 库、审核库（审核队列只占其中两张表，这个叫法把它窄化了，也是 `review_factory.py`/`get_review_conn` 这些既有命名的来源）。注意 settings 里的字段名 `graph_review_db_path` 保持不变——它对应已经在用的环境变量，改名会破坏现有部署。
+
 **接入模式（ingestion_mode）**:
 租户级标记，区分该租户的知识图谱数据走"LLM 抽取"还是"结构化 ETL"路径。决定 `checkout_draft` 要不要播种那 10 个为 LLM 抽取场景设计的通用默认关系（ETL 租户不播种，从空白草稿开始定义自己的关系集）。当前设计里两种模式共享同一套 schema 定义层（分类/关系类型/约束/生命周期），只是数据写入路径和默认值不同。
 

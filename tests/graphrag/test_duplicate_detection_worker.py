@@ -1,3 +1,5 @@
+import logging
+
 import aiosqlite
 import pytest
 
@@ -10,6 +12,7 @@ from app.graphrag.duplicate_review_queue import (
     reject_duplicate_suggestion,
 )
 from app.graphrag.ontology_categories import create_term_type
+from app.graphrag.tenants_store import create_tenants_table
 from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
 from app.graphrag.terms_store import create_term, ensure_terms_schema, get_term, list_terms, update_term
 
@@ -29,6 +32,24 @@ async def conn(tmp_path):
         await create_term_type(conn, tenant_id="t1", value="产品")
         await confirm_ontology(conn, "t1")
         yield conn
+
+
+async def test_main_warns_when_tenant_registry_is_empty(conn, caplog):
+    """租户注册表为空时必须大声告警，不能静默地"扫描 0 个租户"。
+
+    租户注册表的跨库回填现在由 app/main.py 的 lifespan 在启动时做（它要同时
+    读本体库和 ingestion 库才能发现历史 tenant_id）。这个 worker 是独立的
+    CLI 进程，不走 lifespan——如果它跑在一个 API 进程从没启动过的库文件上，
+    注册表就是空的。此时"扫描了 0 个租户、新增 0 条建议"跟"扫描完毕、确实
+    没有重复"在输出上完全一样，是一个静默失效的安全网，比没有更糟。
+    """
+    await create_tenants_table(conn)
+
+    with caplog.at_level(logging.WARNING):
+        enqueued = await main(review_conn=conn)
+
+    assert enqueued == 0
+    assert any("租户注册表为空" in record.message for record in caplog.records)
 
 
 async def test_main_enqueues_suggestion_for_similar_terms(conn):

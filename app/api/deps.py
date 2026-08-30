@@ -16,12 +16,7 @@ from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.table_extraction import TableExtractionFunction
 from app.ingestion.table_extraction_factory import build_table_extractor_from_settings
 from app.ingestion.tracking import ensure_tracking_schema
-from app.graphrag.duplicate_review_queue import ensure_duplicate_review_schema
-from app.graphrag.ontology_lifecycle import ensure_ontology_schema
-from app.graphrag.review_queue import ensure_review_schema
-from app.graphrag.terms_store import ensure_terms_schema
-from app.graphrag.etl_runs_store import ensure_etl_runs_schema
-from app.graphrag.tenants_store import ensure_tenants_schema
+from app.graphrag.ontology_store import open_ontology_store_conn
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
     DEFAULT_EMBEDDING_PROVIDER_NAME,
@@ -318,41 +313,23 @@ _review_conn_lock = asyncio.Lock()
 async def get_review_conn(
     settings: Settings = Depends(get_settings),
 ) -> aiosqlite.Connection:
-    """进程内单例 SQLite 连接，模式同 get_memory_conn。"""
+    """本体库的进程内单例连接，缓存模式同 get_memory_conn。
+
+    这里只负责缓存。开库和建表由 app/graphrag/ontology_store.py 独家持有——
+    在它之前这份建表清单在这里和 review_factory 各有一份手工维护的副本，
+    两份已经分叉（这里 7 类、那边 3 类），而且生产路径没有任何测试覆盖
+    （走 API 的测试一律用 dependency_overrides 把这个函数整个替换掉），
+    分叉只能在生产以 "no such table" 的形式暴露。
+
+    租户注册表的跨库回填不在这里做：它要同时读本体库和 ingestion 库才能
+    发现历史 tenant_id，是一次性迁移而不是"取连接"的属性，现在由
+    app/main.py 的 lifespan 在启动时跑一次。
+    """
     global _review_conn_cache
     if _review_conn_cache is None:
         async with _review_conn_lock:
             if _review_conn_cache is None:
-                db_path = Path(settings.graph_review_db_path)
-                db_path.parent.mkdir(parents=True, exist_ok=True)
-                conn = await aiosqlite.connect(str(db_path))
-                try:
-                    await ensure_review_schema(conn)
-                    await ensure_duplicate_review_schema(conn)
-                    await ensure_terms_schema(
-                        conn, seed_yaml_path=Path(settings.terminology_path)
-                    )
-                    # Task 4 的统一本体建表入口——建 tenant_relation_types/
-                    # term_type_relation_allowlist 两张表，Task 7 新增的关系
-                    # 类型/约束/生命周期路由都直接查询这两张表。漏掉这一步的话
-                    # 这些路由在真实环境下第一次被访问就会因为 "no such table"
-                    # 报 500——ensure_categories_schema 部分和 ensure_terms_schema
-                    # 里已经建过的分类表重复，但都是幂等的 CREATE TABLE IF NOT
-                    # EXISTS，不会冲突。
-                    await ensure_ontology_schema(conn)
-                    await ensure_etl_runs_schema(conn)
-                    # tenants 注册表的迁移回填需要同时读 review_conn 和
-                    # ingestion_conn 两个库里的历史 tenant_id（见
-                    # tenants_store.py::_discover_historical_tenant_ids 的
-                    # 说明），这里显式拿一次 ingestion_conn——get_ingestion_conn
-                    # 自己是懒加载单例，这次调用要么复用已经开着的连接，要么
-                    # 顺带把它开起来，不会重复建库/重复迁移。
-                    ingestion_conn = await get_ingestion_conn(settings)
-                    await ensure_tenants_schema(conn, ingestion_conn)
-                except Exception:
-                    await conn.close()
-                    raise
-                _review_conn_cache = conn
+                _review_conn_cache = await open_ontology_store_conn(settings)
     return _review_conn_cache
 
 

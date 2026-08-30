@@ -10,7 +10,7 @@ from app.config.settings import Settings
 from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
-from app.graphrag.review_factory import build_review_conn_from_settings
+from app.graphrag.ontology_store import open_ontology_store_conn
 from app.graphrag.terms_store import list_terms
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema, process_pending_jobs
 from app.ingestion.ocr_factory import build_ocr_from_settings
@@ -104,7 +104,7 @@ async def main(
             resolved_graph_client = build_graph_client_from_settings(resolved_settings)
             await resolved_graph_client.ensure_tenant_scoped_schema()
         resolved_graph_review_conn = (
-            graph_review_conn or await build_review_conn_from_settings(resolved_settings)
+            graph_review_conn or await open_ontology_store_conn(resolved_settings)
         )
         resolved_graph_terms = graph_terms or await list_terms(
             resolved_graph_review_conn, tenant_id

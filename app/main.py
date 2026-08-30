@@ -18,6 +18,7 @@ from app.api.qa_routes import router as qa_router
 from app.api.session_routes import router as session_router
 from app.api.voice_routes import router as voice_router
 from app.config.settings import Settings
+from app.graphrag.tenants_store import ensure_tenants_schema
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("BM25 索引预热完成")
     except Exception:
         logger.warning("启动预热 BM25 索引失败，将在首个请求时重试", exc_info=True)
+
+    # 租户注册表的存量回填：要同时读本体库和 ingestion 库两个 SQLite 文件才能
+    # 发现历史 tenant_id（见 tenants_store.py::_discover_historical_tenant_ids），
+    # 所以它不属于"取一个本体库连接"这件事，不能焊进 open_ontology_store_conn
+    # ——那会把第二个数据库拖进那个 module 的 interface，而它的绝大多数调用方
+    # （CLI、ingestion、eval）根本不碰 ingestion 库。它本质是一次性迁移，放在
+    # 启动阶段跑一次是它真正的位置。全程幂等，重复启动不会覆盖已有注册记录。
+    #
+    # 失败只告警不阻断，跟上面的 BM25 预热同一处理方式：注册表回填是存量数据
+    # 的补齐，不是请求路径的前提，不该让它把整个应用的启动拖垮。
+    try:
+        review_conn = await deps.get_review_conn(settings)
+        ingestion_conn = await deps.get_ingestion_conn(settings)
+        await ensure_tenants_schema(review_conn, ingestion_conn)
+        logger.info("租户注册表回填完成")
+    except Exception:
+        logger.warning("启动回填租户注册表失败，租户列表可能不完整", exc_info=True)
 
     # 工具注册表必须在启动阶段构建成功——manifest 格式错误/tool.py 缺 TOOL
     # 导出/工具名重复这三类问题，按插件化计划的 Global Constraints 要求

@@ -21,7 +21,7 @@ from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.ontology_constraints import list_allowed_combinations
 from app.graphrag.ontology_lifecycle import is_ontology_confirmed
 from app.graphrag.ontology_relations import list_relation_types
-from app.graphrag.review_factory import build_review_conn_from_settings
+from app.graphrag.ontology_store import open_ontology_store_conn
 from app.graphrag.schema_etl_config import EntityMapping, RelationMapping, SchemaETLConfig, load_schema_etl_config
 from app.graphrag.schema_etl_row_processing import (
     RowProcessingError,
@@ -436,7 +436,7 @@ def _parse_args() -> argparse.Namespace:
 async def _main(*, config_path: Path, data_dir: Path) -> None:
     settings = Settings()
     config = load_schema_etl_config(config_path)
-    conn = await build_review_conn_from_settings(settings)
+    conn = await open_ontology_store_conn(settings)
     graph_client = build_graph_client_from_settings(settings)
     try:
         report = await run_schema_etl(conn=conn, graph_client=graph_client, config=config, data_dir=data_dir)

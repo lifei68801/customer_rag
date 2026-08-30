@@ -13,6 +13,8 @@ from app.graphrag.duplicate_review_queue import (
     enqueue_duplicate_suggestion,
     has_any_duplicate_record,
 )
+from app.graphrag.ontology_store import open_ontology_store_conn
+from app.graphrag.tenants_store import list_tenants
 from app.graphrag.terms_store import is_tombstoned, list_terms
 
 logger = logging.getLogger(__name__)
@@ -77,31 +79,37 @@ async def main(
 
     用法：python -m app.graphrag.duplicate_detection_worker
     """
-    from app.api.deps import get_review_conn  # 延迟 import 避免循环依赖
-
     resolved_settings = settings or Settings()
     conn = review_conn
     # 只有这次调用自己开的连接才由自己负责关闭——传入 review_conn 的调用方
     # （测试、FastAPI 依赖注入）拥有那个连接的生命周期，不该被这里关掉。
-    # get_review_conn() 返回的是进程内缓存的单例连接，但这个函数的生产
-    # 入口只有 CLI（python -m app.graphrag.duplicate_detection_worker）自己
-    # 独占一个进程、跑完就退出，关闭它不会影响到别的调用方；aiosqlite 的
-    # 后台工作线程不是 daemon 线程，泄漏一个未关闭的连接会让 CLI 进程在
-    # 逻辑上跑完之后还挂在解释器退出阶段不返回（同
+    # aiosqlite 的后台工作线程不是 daemon 线程，泄漏一个未关闭的连接会让
+    # CLI 进程在逻辑上跑完之后还挂在解释器退出阶段不返回（同
     # tests/api/test_admin_duplicate_review_routes.py 的 review_conn fixture
     # 里记录的那个症状），这是这个 worker 目前唯一的生产入口，必须关。
     opened_conn_here = conn is None
     if conn is None:
-        conn = await get_review_conn(resolved_settings)
+        conn = await open_ontology_store_conn(resolved_settings)
 
     try:
         if tenant_id is not None:
             tenant_ids = [tenant_id]
         else:
-            from app.graphrag.tenants_store import list_tenants
-
             tenants = await list_tenants(conn, include_disabled=False)
             tenant_ids = [t["tenant_id"] for t in tenants]
+            if not tenant_ids:
+                # 租户注册表的存量回填由 app/main.py 的 lifespan 在启动时做
+                # （它要同时读本体库和 ingestion 库才能发现历史 tenant_id）。
+                # 这个 worker 是独立 CLI 进程，不走 lifespan——跑在一个 API
+                # 进程从没启动过的库文件上时，注册表就是空的。不出声地"扫描
+                # 0 个租户"跟"扫完了、确实没有重复"在输出上无法区分，是个
+                # 静默失效的安全网，比没有更糟，所以这里必须留下痕迹。
+                logger.warning(
+                    "租户注册表为空，本次没有扫描任何租户。如果这不是预期结果，"
+                    "通常说明这个库文件还没被 API 进程启动过（存量租户的回填在 "
+                    "app/main.py 的 lifespan 里），或者所有租户都已被停用；"
+                    "也可以用 --tenant-id 显式指定要扫描的租户绕过注册表。"
+                )
 
         total = 0
         for tid in tenant_ids:

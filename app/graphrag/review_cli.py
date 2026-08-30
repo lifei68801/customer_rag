@@ -12,7 +12,7 @@ from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_constraints import list_allowed_combinations
 from app.graphrag.ontology_relations import list_relation_types
-from app.graphrag.review_factory import build_review_conn_from_settings
+from app.graphrag.ontology_store import open_ontology_store_conn
 from app.graphrag.review_queue import (
     ReviewGraphClientProtocol,
     approve_review,
@@ -141,7 +141,7 @@ async def _main() -> None:
     """
     args = _parse_args()
     settings = Settings()
-    review_conn = await build_review_conn_from_settings(settings)
+    review_conn = await open_ontology_store_conn(settings)
 
     if args.command == "list":
         await cmd_list(review_conn=review_conn, tenant_id=args.tenant_id)
