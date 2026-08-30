@@ -321,6 +321,26 @@ async def count_terms(
     return row[0]
 
 
+async def list_node_keys_by_term_type(
+    conn: aiosqlite.Connection, tenant_id: str, term_type: str
+) -> set[str]:
+    """该租户、该类型下已存在的全部 node_key。
+
+    给 ETL 关系写入路径做"端点实体是否真的写进来过"的批量校验用：调用方
+    在处理某个关系映射的整个源文件之前查一次、拿着这个集合逐行判断，
+    不在行循环里反复查库——跟 _write_entity_mapping 预取 extra_field_specs
+    是同一个模式（设计文档第 6.4 节给出的真实规模是 18 万+ 行）。
+
+    只 SELECT node_key，不走 list_terms：那个函数会把 aliases /
+    extra_properties 一并读出来反序列化成 Term 对象，而这里只需要身份键。
+    """
+    cursor = await conn.execute(
+        "SELECT node_key FROM terms WHERE tenant_id = ? AND term_type = ?",
+        (tenant_id, term_type),
+    )
+    return {row[0] for row in await cursor.fetchall()}
+
+
 async def get_term(
     conn: aiosqlite.Connection,
     tenant_id: str,

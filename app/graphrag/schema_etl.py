@@ -29,7 +29,12 @@ from app.graphrag.schema_etl_row_processing import (
     convert_excel_cell_to_string,
     convert_field_value,
 )
-from app.graphrag.terms_store import TermNameConflictError, UnknownCategoryError, upsert_term_with_node_key
+from app.graphrag.terms_store import (
+    TermNameConflictError,
+    UnknownCategoryError,
+    list_node_keys_by_term_type,
+    upsert_term_with_node_key,
+)
 
 
 class SchemaEtlGraphProtocol(Protocol):
@@ -311,6 +316,22 @@ async def _write_relation_mapping(
             f"关系 {mapping.relation_type!r} 引用的实体类型未在 entities 段声明"
         )
 
+    # 端点实体必须真的写进术语表过，否则跳过这一行——merge_relation 的两端
+    # 都是 MERGE，node_key 对不上任何已有节点时不会报错，而是凭空建出一个
+    # 只有 tenant_id/node_key、没有 type/standard_name 的幽灵节点（见
+    # neo4j_client.py::merge_relation 的说明）。AllocatedCodeNodeKeyPart
+    # 早就有这个守卫（稳定码查不到就跳过），ColumnNodeKeyPart 一直没有：
+    # 实体行被跳过（唯一索引冲突、类型转换失败、缺列）时，关系行照写不误。
+    # demo 租户就这样留下了 `类目:Coffee` 和 `销量:1000` 两个幽灵节点、
+    # 挂着 16 条边。run_schema_etl 保证全部实体映射先于关系映射执行，所以
+    # 这里预取一次就够，不会漏掉后面才写入的实体。
+    subject_node_keys = await list_node_keys_by_term_type(
+        conn, tenant_id, mapping.subject_term_type
+    )
+    object_node_keys = await list_node_keys_by_term_type(
+        conn, tenant_id, mapping.object_term_type
+    )
+
     for row_number, row in enumerate(_read_table_rows(data_dir / mapping.source_file), start=2):
         try:
             subject_key = await compute_node_key(
@@ -321,6 +342,15 @@ async def _write_relation_mapping(
                 conn, tenant_id=tenant_id, term_type=mapping.object_term_type,
                 node_key_parts=object_entity.node_key_parts, row=row, allow_allocation=False,
             )
+            for key, known_keys, term_type in (
+                (subject_key, subject_node_keys, mapping.subject_term_type),
+                (object_key, object_node_keys, mapping.object_term_type),
+            ):
+                if key not in known_keys:
+                    raise RowProcessingError(
+                        f"关系端点 {key!r} 在术语表里不存在"
+                        f"（{term_type!r} 的实体行可能被跳过或尚未写入）"
+                    )
             await graph_client.merge_relation(
                 subject_standard_name=subject_key, object_standard_name=object_key,
                 relation_type=mapping.relation_type, source=mapping.source_file,

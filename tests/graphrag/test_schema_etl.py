@@ -416,6 +416,53 @@ async def test_run_schema_etl_relation_endpoint_never_written_is_skipped_not_gho
     assert next_code == "00002"
 
 
+async def test_run_schema_etl_column_key_endpoint_never_written_is_skipped_not_ghost_merged(
+    tmp_path,
+):
+    """普通列节点键也要有和稳定码同样的守卫：关系文件引用了一个实体文件里
+    从来没写成功过的值时，必须跳过这一行，不能 MERGE 出一个只有 node_key、
+    没有 type/standard_name 的幽灵节点。
+
+    这是真实发生过的事故：demo 租户的 `类目:Coffee` 和 `销量:1000` 两个实体
+    因为当时的唯一索引冲突写入失败，关系写入这一趟却照写不误，在图里留下两个
+    裸 :Term 节点挂着 16 条边。稳定码路径早就有守卫（见上一个测试），
+    ColumnNodeKeyPart 路径没有。
+    """
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_text("name,md_no\nP1,MD1\n", encoding="utf-8")
+    (tmp_path / "skus.csv").write_text("sku_code\nS1\n", encoding="utf-8")
+    (tmp_path / "links.csv").write_text("name,sku_code\nP1,S_NEVER_WRITTEN\n", encoding="utf-8")
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv", standard_name_column="name",
+                node_key_parts=[ColumnNodeKeyPart(column="name")], field_mappings={},
+            ),
+            EntityMapping(
+                term_type="SKU", source_file="skus.csv", standard_name_column="sku_code",
+                node_key_parts=[ColumnNodeKeyPart(column="sku_code")], field_mappings={},
+            ),
+        ],
+        relations=[
+            RelationMapping(
+                relation_type="HAS_SKU", source_file="links.csv",
+                subject_term_type="Product", object_term_type="SKU",
+            ),
+        ],
+    )
+    graph_client = FakeGraphClient()
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 2
+    assert report.relations_written == 0
+    assert report.relations_skipped == 1
+    assert graph_client.merged == []
+
+
 async def test_run_schema_etl_reports_per_type_counts(tmp_path):
     """设计文档第 6.4 节要求汇总报告能按 term_type/relation_type 分别给出
     写入行数，不只是整次运行的总量。"""
