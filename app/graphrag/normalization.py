@@ -9,23 +9,15 @@ import aiosqlite
 
 from app.graphrag.ontology import Term, resolve_term
 from app.graphrag.provenance import AUTO_MERGED
+from app.graphrag.relation_writer import RelationWriterProtocol
 from app.graphrag.review_queue import enqueue_for_review
 
 logger = logging.getLogger(__name__)
 
 
-class GraphWriteClientProtocol(Protocol):
-    async def merge_relation(
-        self,
-        *,
-        subject_standard_name: str,
-        object_standard_name: str,
-        relation_type: str,
-        source: str,
-        tenant_id: str,
-        provenance: str,
-        recorded_at: datetime,
-    ) -> None: ...
+class GraphWriteClientProtocol(RelationWriterProtocol, Protocol):
+    """摄取管道用到的两个图写方法。merge_relation 的签名继承自
+    RelationWriterProtocol——三条写入路径共用同一份声明，见那个模块。"""
 
     async def delete_relations_by_source(self, source: str, *, tenant_id: str) -> None: ...
 

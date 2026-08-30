@@ -17,6 +17,7 @@ from app.graphrag import provenance
 from app.graphrag.etl_stable_code_registry import ensure_stable_code_registry_schema
 from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.ontology import Term
+from app.graphrag.relation_writer import RelationWriterProtocol
 from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.ontology_constraints import list_allowed_combinations, to_combination_keys
 from app.graphrag.ontology_lifecycle import is_ontology_confirmed
@@ -37,24 +38,13 @@ from app.graphrag.terms_store import (
 )
 
 
-class SchemaEtlGraphProtocol(Protocol):
+class SchemaEtlGraphProtocol(RelationWriterProtocol, Protocol):
     """ETL 引擎实际调用的两个图写方法——独立声明，不继承 admin 路由用的
     GraphWriteProtocol（neo4j_client.py）或摄取管道用的
     GraphWriteClientProtocol（normalization.py）：三者是不同消费方，各自
     只暴露自己真正用到的方法，见 2026-08-27 架构评审对 GraphClientProtocol
-    过宽问题的讨论。"""
-
-    async def merge_relation(
-        self,
-        *,
-        subject_standard_name: str,
-        object_standard_name: str,
-        relation_type: str,
-        source: str,
-        tenant_id: str,
-        provenance: str,
-        recorded_at: datetime,
-    ) -> None: ...
+    过宽问题的讨论。merge_relation 的签名继承自 RelationWriterProtocol——
+    窄协议的意图不变，只是那份签名不再各抄一遍。"""
 
     async def sync_term(self, term: Term) -> None: ...
 

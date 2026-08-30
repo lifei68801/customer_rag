@@ -7,6 +7,7 @@ import aiosqlite
 
 from app.db_migrations import add_column_if_missing
 from app.graphrag.provenance import HUMAN_APPROVED
+from app.graphrag.relation_writer import RelationWriterProtocol
 from app.graphrag.ontology import Term, find_candidate_term_types, resolve_term
 
 _SCHEMA_SQL = """
@@ -28,18 +29,10 @@ CREATE INDEX IF NOT EXISTS idx_graph_review_queue_status
 """
 
 
-class ReviewGraphClientProtocol(Protocol):
-    async def merge_relation(
-        self,
-        *,
-        subject_standard_name: str,
-        object_standard_name: str,
-        relation_type: str,
-        source: str,
-        tenant_id: str,
-        provenance: str,
-        recorded_at: datetime,
-    ) -> None: ...
+class ReviewGraphClientProtocol(RelationWriterProtocol, Protocol):
+    """人工审核批准路径只需要写一条关系边，方法集合恰好就是基协议本身。
+    保留这个消费方自己的名字（而不是直接用 RelationWriterProtocol），是为了
+    让 approve_review 的签名继续说明"这里要的是审核路径的图客户端"。"""
 
 
 class ReviewNotFoundError(Exception):
