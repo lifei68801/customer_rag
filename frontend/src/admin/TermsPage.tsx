@@ -82,7 +82,7 @@ function coerceExtraProperty(raw: string, valueType: string): unknown {
   return trimmed
 }
 
-function draftToRecord(draft: TermDraft, specs: ExtraFieldSpec[]): TermRecord {
+function draftToRecord(draft: TermDraft, specs: ExtraFieldSpec[]): Omit<TermRecord, 'node_key'> {
   const extraProperties: Record<string, unknown> = {}
   for (const spec of specs) {
     const coerced = coerceExtraProperty(draft.extra_properties[spec.name] ?? '', spec.value_type)
@@ -195,10 +195,12 @@ export function TermsPage() {
     setSavingKey(key)
     try {
       await updateTerm(
-        sessionToken, tenantId, originalTerm.standard_name, originalTerm.term_type,
+        sessionToken, tenantId, originalTerm.node_key,
         // 按编辑后选中的类型取字段声明——这次编辑可能同时改了 term_type，
         // 属性值该按新类型的声明来转换和取舍，不是按原类型。
-        draftToRecord(editDraft, extraFieldsByType[editDraft.term_type] ?? []),
+        // node_key 不随这次编辑变化：它是身份键，仅在这里从原记录带出用于
+        // 寻址，不进请求体（请求体类型已排除它）。
+        { ...draftToRecord(editDraft, extraFieldsByType[editDraft.term_type] ?? []), node_key: originalTerm.node_key },
       )
       showToast('已保存')
       setEditingKey(null)
@@ -218,7 +220,7 @@ export function TermsPage() {
     const key = termKey(term)
     setDeletingKey(key)
     try {
-      await deleteTerm(sessionToken, tenantId, term.standard_name, term.term_type)
+      await deleteTerm(sessionToken, tenantId, term.node_key)
       showToast('已删除实体')
       await refresh()
     } catch (err) {

@@ -8,6 +8,9 @@ export interface GraphTerm {
 
 export interface TermRecord extends GraphTerm {
   source: string
+  // 身份键。列表接口现在会返回它，编辑/删除按它寻址——标准名在同一
+  // term_type 下已经允许重复（2026-08-30），按名字寻址不再唯一。
+  node_key: string
   // 属性值。写入时这个字段是可选的，语义由后端定义（admin_terms_routes.py
   // 的 TermWriteRequest）：字段缺席=保留原值，传 {} 才是清空。所以只提交
   // 名字和别名的编辑请求可以安全地不带它，不会把属性值抹掉。
@@ -56,7 +59,7 @@ export async function fetchTermsPage(
 export async function createTerm(
   sessionToken: string,
   tenantId: string,
-  term: TermRecord,
+  term: Omit<TermRecord, 'node_key'>,
 ): Promise<TermRecord> {
   const response = await adminFetch(`/api/admin/${encodeURIComponent(tenantId)}/terms`, sessionToken, {
     method: 'POST',
@@ -73,13 +76,11 @@ export async function createTerm(
 export async function updateTerm(
   sessionToken: string,
   tenantId: string,
-  currentStandardName: string,
-  currentTermType: string,
+  nodeKey: string,
   term: TermRecord,
 ): Promise<TermRecord> {
   const response = await adminFetch(
-    `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(currentStandardName)}` +
-      `?term_type=${encodeURIComponent(currentTermType)}`,
+    `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(nodeKey)}`,
     sessionToken,
     {
       method: 'PUT',
@@ -97,12 +98,10 @@ export async function updateTerm(
 export async function deleteTerm(
   sessionToken: string,
   tenantId: string,
-  standardName: string,
-  termType: string,
+  nodeKey: string,
 ): Promise<void> {
   const response = await adminFetch(
-    `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(standardName)}` +
-      `?term_type=${encodeURIComponent(termType)}`,
+    `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(nodeKey)}`,
     sessionToken,
     { method: 'DELETE' },
   )
