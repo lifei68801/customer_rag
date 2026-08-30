@@ -5,7 +5,12 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from app.graphrag.etl_stable_code_registry import allocate_stable_code, ensure_stable_code_registry_schema
+from app.graphrag.etl_projection import DuplicateNodeKeyError
+from app.graphrag.etl_stable_code_registry import (
+    allocate_stable_code,
+    ensure_stable_code_registry_schema,
+    lookup_stable_code,
+)
 from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
 from app.graphrag.ontology_constraints import add_allowed_combination
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
@@ -800,3 +805,128 @@ async def test_run_schema_etl_reads_utf8_bom_encoded_csv(tmp_path):
     term = await get_term(conn, tenant_id="muji", standard_name="圆角收纳盒")
     assert term is not None
     assert term.node_key == "Product:1001"
+
+
+async def test_run_schema_etl_raises_on_duplicate_node_keys_and_writes_nothing(tmp_path):
+    """主键重复是配置错误，不是脏数据：node_key_parts 声明的列组合不足以
+    唯一标识每一行。整体失败、零写入——部分写入会留下一个"看起来成功了、
+    实际缺了一部分"的图谱，比失败更难发现。"""
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,md_no\n"
+        "P1,甲,M1\n"
+        "P1,乙,M2\n",
+        encoding="utf-8",
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+    graph_client = FakeGraphClient()
+
+    with pytest.raises(DuplicateNodeKeyError) as excinfo:
+        await run_schema_etl(
+            conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+        )
+
+    message = str(excinfo.value)
+    assert "Product" in message
+    assert "Product:P1" in message
+    assert "2, 3" in message  # 冲突的源文件行号，第 1 行是表头
+    assert await list_terms(conn, "muji") == []
+    assert graph_client.synced == []
+
+
+async def test_run_schema_etl_dirty_rows_still_skip_instead_of_failing_the_whole_run(tmp_path):
+    """行级脏数据（缺列）语义不变：跳过 + 记报告，不升级成整体失败。
+    只有主键重复才整体失败。"""
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,md_no\n"
+        "P1,甲,M1\n"
+        ",乙,M2\n",
+        encoding="utf-8",
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 1
+    assert report.entities_skipped == 1
+    assert len(await list_terms(conn, "muji")) == 1
+
+
+async def test_run_schema_etl_reuses_stable_codes_allocated_before_a_duplicate_failure(tmp_path):
+    """预检会调 compute_node_key(allow_allocation=True)，也就是说预检失败
+    之前稳定码已经写进 etl_stable_code_registry 了——"零写入"的准确表述是
+    "terms 和图零写入"，不是"零副作用"。这条用例钉住副作用是无害的：
+    稳定码幂等分配，下次运行命中同一个码，不产生新码、不漂移。
+
+    node_key_parts 只用 dup_key 这一列分配稳定码（两行的 dup_key 都是
+    "K1"），variant_value（红/蓝）只用来生成 standard_name——这跟
+    ColumnNodeKeyPart 版本里 product_group_id 重复、product_group_name
+    不同的结构完全对应，只是键的来源换成了稳定码分配路径，测试才真的
+    验证了自己名字承诺的"稳定码幂等"。"""
+    conn = await _confirmed_conn()
+    (tmp_path / "variants.csv").write_text(
+        "variant_value,dup_key\n"
+        "红,K1\n"
+        "蓝,K1\n",
+        encoding="utf-8",
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="VariantValue", source_file="variants.csv",
+                standard_name_parts=["variant_value"],
+                node_key_parts=[
+                    AllocatedCodeNodeKeyPart(scope_columns=[], raw_value_column="dup_key")
+                ],
+                field_mappings={},
+            ),
+        ],
+        relations=[],
+    )
+
+    with pytest.raises(DuplicateNodeKeyError):
+        await run_schema_etl(
+            conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+        )
+    code_after_first = await lookup_stable_code(
+        conn, tenant_id="muji", scope="VariantValue", raw_value="K1"
+    )
+    assert code_after_first is not None
+
+    with pytest.raises(DuplicateNodeKeyError):
+        await run_schema_etl(
+            conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+        )
+
+    # 两次运行都失败，terms 始终是空的——重复的失败不会累积出半份数据。
+    assert await list_terms(conn, "muji") == []
+    # 稳定码幂等分配：第二次运行命中同一个码，不产生新码、不漂移。
+    assert await lookup_stable_code(
+        conn, tenant_id="muji", scope="VariantValue", raw_value="K1"
+    ) == code_after_first

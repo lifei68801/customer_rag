@@ -11,7 +11,14 @@ import aiosqlite
 
 from app.config.settings import Settings
 from app.graphrag import provenance
-from app.graphrag.etl_projection import RowFailure, project_entity_rows, project_relation_rows
+from app.graphrag.etl_projection import (
+    DuplicateNodeKeyError,
+    RowFailure,
+    format_duplicate_key_error,
+    project_entity_rows,
+    project_relation_rows,
+    scan_entity_node_keys,
+)
 from app.graphrag.etl_stable_code_registry import ensure_stable_code_registry_schema
 from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.ontology import Term
@@ -250,6 +257,30 @@ async def run_schema_etl(
             f"租户 {config.tenant_id!r} 的本体 schema 还没有确认，拒绝运行 ETL"
         )
     await ensure_stable_code_registry_schema(conn)
+
+    # 预检：所有实体映射先各扫一遍键，确认没有重复，才进入写入。
+    #
+    # 为什么整体失败而不是逐行跳过：主键重复意味着这份配置的 node_key_parts
+    # 选错了——它没能唯一标识每一行。这不是"某几行数据脏"，跳过多少行都不
+    # 会让配置变对。部分写入反而留下一个"看起来成功了、实际缺了一部分"的
+    # 图谱，比失败更难发现。见 2026-08-30-etl-layered-pipeline-design.md。
+    #
+    # 这一遍不做 term_type 的 schema 校验——那件事仍然由 _write_entity_mapping
+    # 负责，失败仍然记进 skipped_mappings。预检只关心键。
+    duplicates_by_term_type: dict[str, dict[str, list[int]]] = {}
+    for entity_mapping in config.entities:
+        try:
+            scan = await scan_entity_node_keys(
+                conn, tenant_id=config.tenant_id, mapping=entity_mapping, data_dir=data_dir,
+            )
+        except RowProcessingError:
+            # 文件类型不支持之类的问题，留给写入阶段按老路径记进
+            # skipped_mappings，预检不抢着报错。
+            continue
+        if scan.duplicate_keys:
+            duplicates_by_term_type[entity_mapping.term_type] = scan.duplicate_keys
+    if duplicates_by_term_type:
+        raise DuplicateNodeKeyError(format_duplicate_key_error(duplicates_by_term_type))
 
     recorded_at = datetime.now()
     report = ETLRunReport()
