@@ -11,6 +11,7 @@ import aiosqlite
 
 from app.config.settings import Settings
 from app.graphrag import provenance
+from app.graphrag.etl_projection import RowFailure, project_entity_rows
 from app.graphrag.etl_stable_code_registry import ensure_stable_code_registry_schema
 from app.graphrag.etl_staging import read_table_rows
 from app.graphrag.factory import build_graph_client_from_settings
@@ -22,11 +23,7 @@ from app.graphrag.ontology_lifecycle import is_ontology_confirmed
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.ontology_store import open_ontology_store_conn
 from app.graphrag.schema_etl_config import EntityMapping, RelationMapping, SchemaETLConfig, load_schema_etl_config
-from app.graphrag.schema_etl_row_processing import (
-    RowProcessingError,
-    compute_node_key,
-    convert_field_value,
-)
+from app.graphrag.schema_etl_row_processing import RowProcessingError, compute_node_key
 from app.graphrag.terms_store import (
     TermNameConflictError,
     UnknownCategoryError,
@@ -106,46 +103,41 @@ async def _write_entity_mapping(
         raise RowProcessingError(f"term_type {mapping.term_type!r} 不在已确认 schema 里")
     extra_field_specs = {f.name: f for f in types_by_value[mapping.term_type].extra_fields}
 
-    for row_number, row in enumerate(read_table_rows(data_dir / mapping.source_file), start=2):  # 第 1 行是表头
-        try:
-            node_key = await compute_node_key(
-                conn, tenant_id=tenant_id, term_type=mapping.term_type,
-                node_key_parts=mapping.node_key_parts, row=row,
+    # 这一层不再自己读文件、不再自己算键——那两件事已经在 projection 层
+    # 做完了（见 etl_projection.py）。这里只负责"把算好的行写进两个存储"。
+    async for projected in project_entity_rows(
+        conn, tenant_id=tenant_id, mapping=mapping,
+        extra_field_specs=extra_field_specs, data_dir=data_dir,
+    ):
+        if isinstance(projected, RowFailure):
+            report.entities_skipped += 1
+            _record_skipped_row(
+                report, label=mapping.term_type, source_file=mapping.source_file,
+                row_number=projected.row_number, reason=projected.reason,
             )
-            missing = [c for c in mapping.standard_name_parts if not row.get(c)]
-            if missing:
-                raise RowProcessingError(
-                    f"standard_name 需要的列 {missing!r} 不存在或为空"
-                )
-            # 用 " / " 连接，不用冒号——冒号是 node_key 的分隔符，展示名里
-            # 再用一次会让两者在日志和界面上难以区分。
-            standard_name = " / ".join(row[c] for c in mapping.standard_name_parts)
-            extra_properties = {
-                field_name: convert_field_value(
-                    extra_field_specs=extra_field_specs, field_name=field_name,
-                    raw_value=row[source_column],
-                )
-                for field_name, source_column in mapping.field_mappings.items()
-                if source_column in row and row[source_column]
-            }
+            continue
+        try:
             await upsert_term_with_node_key(
-                conn, tenant_id=tenant_id, node_key=node_key, standard_name=standard_name,
-                aliases=[], term_type=mapping.term_type,
-                extra_properties=extra_properties,
+                conn, tenant_id=tenant_id, node_key=projected.node_key,
+                standard_name=projected.standard_name, aliases=[],
+                term_type=mapping.term_type, extra_properties=projected.extra_properties,
             )
             term = Term(
-                tenant_id=tenant_id, node_key=node_key, standard_name=standard_name,
-                aliases=[], term_type=mapping.term_type,
-                extra_properties=extra_properties,
+                tenant_id=tenant_id, node_key=projected.node_key,
+                standard_name=projected.standard_name, aliases=[],
+                term_type=mapping.term_type, extra_properties=projected.extra_properties,
             )
             await graph_client.sync_term(term)
             report.entities_written += 1
             _record_written(report, label=mapping.term_type)
-        except (RowProcessingError, TermNameConflictError, UnknownCategoryError) as exc:
+        except (TermNameConflictError, UnknownCategoryError) as exc:
+            # RowProcessingError 不在这里捕获了——它只可能来自 projection 层，
+            # 而 projection 已经把它转成 RowFailure。这里剩下的是写入本身
+            # 才会抛的两种：别名/名字冲突，和属性值引用了未声明的分类。
             report.entities_skipped += 1
             _record_skipped_row(
                 report, label=mapping.term_type, source_file=mapping.source_file,
-                row_number=row_number, reason=str(exc),
+                row_number=projected.row_number, reason=str(exc),
             )
 
 
