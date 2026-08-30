@@ -247,7 +247,7 @@ async def test_min_relevance_score_does_not_affect_default_behavior_when_unset()
 async def test_ticket_conn_persists_ticket_for_later_stale_scan():
     import aiosqlite
 
-    from app.agent.create_ticket_tool import list_stale_pending_tickets
+    from app.memory.tickets import list_stale_pending_tickets
 
     embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
         await _build_dependencies(with_records=False, llm_text="不应该被用到")

@@ -9,7 +9,7 @@ import aiosqlite
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from app.agent.create_ticket_tool import create_ticket
+from app.memory.tickets import create_ticket
 from app.agent.planner import (
     route_after_planner,
     run_planner_turn,

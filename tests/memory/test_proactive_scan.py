@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import aiosqlite
 
-from app.agent.create_ticket_tool import (
+from app.memory.tickets import (
     create_ticket,
     list_pending_tickets_created_before,
     list_stale_pending_tickets,

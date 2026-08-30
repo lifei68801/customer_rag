@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 import aiosqlite
 
-from app.agent.create_ticket_tool import (
+from app.memory.tickets import (
     ensure_ticket_schema,
     list_pending_tickets_created_before,
     list_stale_pending_tickets,
@@ -36,6 +36,25 @@ logger = logging.getLogger(__name__)
 _DEFAULT_STALE_AFTER_SECONDS = 3 * 24 * 3600
 
 
+async def ensure_proactive_schema(conn: aiosqlite.Connection) -> None:
+    """一次建齐三个扫描入口用到的全部六张表。
+
+    在这之前每个入口各自手工排一份 6 选 N 的子集：哪个入口需要哪几张表是
+    调用方知识，排漏一张不会在入口报错，而是深到 store 函数里才炸出一句
+    裸的 "no such table"。做法照搬 ontology_lifecycle.ensure_ontology_schema
+    ——那个 docstring 说得很直白："统一入口……不需要调用方自己记得额外建表"。
+
+    多建了当前这次扫描用不到的表没有代价：全部是 CREATE TABLE IF NOT
+    EXISTS，幂等且不写数据。
+    """
+    await ensure_ticket_schema(conn)
+    await ensure_customer_profile_schema(conn)
+    await ensure_followup_log_schema(conn)
+    await ensure_known_fixes_schema(conn)
+    await ensure_ticket_fix_notifications_schema(conn)
+    await ensure_delayed_confirmation_schema(conn)
+
+
 async def scan_and_send_ticket_followups(
     conn: aiosqlite.Connection,
     *,
@@ -59,9 +78,7 @@ async def scan_and_send_ticket_followups(
     范围说明：只覆盖"工单挂起过久"这一种触发信号；"已知修复可用"之类
     的触发需要工单-知识库关联这类本仓库没有的数据，不在这次范围内。
     """
-    await ensure_ticket_schema(conn)
-    await ensure_customer_profile_schema(conn)
-    await ensure_followup_log_schema(conn)
+    await ensure_proactive_schema(conn)
 
     stale_tickets = await list_stale_pending_tickets(
         conn, tenant_id=tenant_id, older_than_seconds=stale_after_seconds, now=now
@@ -136,10 +153,7 @@ async def scan_and_send_known_fix_followups(
     embedding 失败只记一次日志、后续 fix 循环直接复用"失败"结果跳过，
     不会对同一条工单反复重试同一次失败。
     """
-    await ensure_known_fixes_schema(conn)
-    await ensure_ticket_fix_notifications_schema(conn)
-    await ensure_customer_profile_schema(conn)
-    await ensure_followup_log_schema(conn)
+    await ensure_proactive_schema(conn)
 
     ticket_embeddings: dict[str, list[float] | None] = {}
 
@@ -221,9 +235,7 @@ async def scan_and_send_delayed_confirmation_followups(
     ——和 scan_and_send_known_fix_followups/scan_and_send_ticket_followups
     是同一个"扫描+画像/频率治理+发送+记录"模式。
     """
-    await ensure_delayed_confirmation_schema(conn)
-    await ensure_customer_profile_schema(conn)
-    await ensure_followup_log_schema(conn)
+    await ensure_proactive_schema(conn)
 
     sent_count = 0
     for item in await list_due_confirmations(conn, tenant_id=tenant_id, now=now):

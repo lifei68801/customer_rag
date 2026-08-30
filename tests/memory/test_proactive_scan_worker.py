@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import aiosqlite
 
-from app.agent.create_ticket_tool import create_ticket
+from app.memory.tickets import create_ticket
 from app.memory.delayed_confirmation import (
     ensure_delayed_confirmation_schema,
     schedule_delayed_confirmation,
