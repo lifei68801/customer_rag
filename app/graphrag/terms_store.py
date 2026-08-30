@@ -32,7 +32,7 @@ CREATE INDEX IF NOT EXISTS idx_terms_tenant_standard_name
 
 
 class TermNotFoundError(Exception):
-    """指定的 standard_name 在术语表里不存在。"""
+    """按 node_key 或 standard_name 定位的术语在术语表里不存在。"""
 
 
 class TermNameConflictError(Exception):
