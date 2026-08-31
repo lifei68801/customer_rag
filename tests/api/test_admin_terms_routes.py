@@ -1402,3 +1402,56 @@ def test_put_only_writes_edits_for_the_fields_actually_submitted(terms_conn):
     assert not any(field.startswith(EXTRA_PROPERTY_PREFIX) for field in edits)
     assert FIELD_EXTRA_PROPERTIES not in edits
     assert edits["standard_name"] == "订单X改"
+
+
+def test_create_term_with_existing_node_key_and_orphaned_property_succeeds(terms_conn):
+    """Task 4 Fix：POST 现在写 __created__ 编辑，当 node_key 撞上 terms 表已有的行时，
+    实际上是在编辑该行。如果该行有已廃弃的属性键（在当前 term_type 声明中不存在），
+    新的 __created__ 编辑中也带有这个键时，应该豁免字段名校验（祖父豁免），
+    允许该编辑成功。
+
+    场景：
+    1. terms 表中已有行，带有属性 "orphaned_key"
+    2. term_type 的当前声明不包含 "orphaned_key"（已廃弃）
+    3. POST 同一个 node_key，payload 也带 {"orphaned_key": "value"}
+    4. 应该成功（200），而不是因为未知字段返回 400
+    """
+    import json
+    # term_type "t" 在前面的 fixture 中已经创建，且不声明任何属性
+    # 直接用低层 SQL 插入一条带有 orphaned_key 的实体，绕过校验
+    asyncio.run(
+        terms_conn.execute(
+            "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
+            "extra_properties, source) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("t1", "t:既有术语", "既有术语", json.dumps(["别名1"]), "t",
+             json.dumps({"orphaned_key": "old_value"}), "manual"),
+        )
+    )
+    asyncio.run(terms_conn.commit())
+
+    session_store = AdminSessionStore()
+    graph_client = SpyGraphClient()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        # 用同一个 node_key POST，payload 也带这个已廃弃的属性
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "既有术语",
+                "aliases": ["别名1"],
+                "term_type": "t",
+                "extra_properties": {"orphaned_key": "new_value"},
+            },
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    # 修复后应该成功（200），表示祖父豁免已应用
+    assert response.status_code == 200
+    # 响应体应该反映 payload 中的属性值
+    assert response.json()["extra_properties"] == {"orphaned_key": "new_value"}
