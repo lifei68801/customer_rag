@@ -46,7 +46,7 @@ def _mapping() -> EntityMapping:
     )
 
 
-async def test_scan_reports_no_duplicates_when_keys_are_unique(tmp_path: Path):
+async def test_scan_reports_no_conflicts_when_keys_are_unique(tmp_path: Path):
     _write_csv(tmp_path / "customers.csv", [
         "name,zip,city",
         "张三,100,北京",
@@ -55,16 +55,20 @@ async def test_scan_reports_no_duplicates_when_keys_are_unique(tmp_path: Path):
     conn = await _conn()
 
     result = await scan_entity_node_keys(
-        conn, tenant_id="t1", mapping=_mapping(), data_dir=tmp_path
+        conn, tenant_id="t1", mapping=_mapping(),
+        extra_field_specs={"city": ExtraFieldSpec(name="city", value_type="string")},
+        data_dir=tmp_path,
     )
 
     assert result.duplicate_keys == {}
     assert result.scanned_rows == 2
 
 
-async def test_scan_collects_duplicate_keys_with_source_row_numbers(tmp_path: Path):
-    """行号从 2 起算——第 1 行是表头。同一个 node_key 出现在哪几行，是
-    DuplicateNodeKeyError 的消息里唯一能让人定位问题的东西。"""
+async def test_scan_collects_value_conflicts_with_source_row_numbers(tmp_path: Path):
+    """同一个 node_key 在两行里算出了**不同的值**（city 分别是北京和深圳）
+    ——这才是要拦的：写入时 ON CONFLICT DO UPDATE 会静默取最后一行。
+
+    行号从 2 起算（第 1 行是表头），是消息里唯一能让人定位问题的东西。"""
     _write_csv(tmp_path / "customers.csv", [
         "name,zip,city",
         "张三,100,北京",
@@ -74,7 +78,9 @@ async def test_scan_collects_duplicate_keys_with_source_row_numbers(tmp_path: Pa
     conn = await _conn()
 
     result = await scan_entity_node_keys(
-        conn, tenant_id="t1", mapping=_mapping(), data_dir=tmp_path
+        conn, tenant_id="t1", mapping=_mapping(),
+        extra_field_specs={"city": ExtraFieldSpec(name="city", value_type="string")},
+        data_dir=tmp_path,
     )
 
     assert result.duplicate_keys == {"客户:张三:100": [2, 4]}
@@ -82,8 +88,8 @@ async def test_scan_collects_duplicate_keys_with_source_row_numbers(tmp_path: Pa
 
 
 async def test_scan_ignores_row_level_failures(tmp_path: Path):
-    """缺列的脏行在第一遍里既不算重复、也不该让扫描崩掉——行级问题由
-    第二遍统一记录成 RowFailure，第一遍只关心键的重复。"""
+    """缺列的脏行在第一遍里既不算冲突、也不该让扫描崩掉——行级问题由
+    第二遍统一记录成 RowFailure，第一遍只关心值冲突。"""
     _write_csv(tmp_path / "customers.csv", [
         "name,zip,city",
         "张三,100,北京",
@@ -92,7 +98,9 @@ async def test_scan_ignores_row_level_failures(tmp_path: Path):
     conn = await _conn()
 
     result = await scan_entity_node_keys(
-        conn, tenant_id="t1", mapping=_mapping(), data_dir=tmp_path
+        conn, tenant_id="t1", mapping=_mapping(),
+        extra_field_specs={"city": ExtraFieldSpec(name="city", value_type="string")},
+        data_dir=tmp_path,
     )
 
     assert result.duplicate_keys == {}
@@ -251,3 +259,35 @@ def test_format_duplicate_key_error_does_not_point_at_a_nonexistent_run_report()
     assert "仅展示前 20 处" in message
     sample_lines = [line for line in message.splitlines() if "← 源文件第" in line]
     assert len(sample_lines) == 20
+
+
+async def test_scan_does_not_flag_a_repeated_entity_whose_values_agree(tmp_path: Path):
+    """**反范式宽表里维度实体天然重复，这是良性的。**
+
+    demo 的 soft_drink_sales.xlsx 有 10000 行，但只有 10 个产品、3 家公司、
+    4 个类目——每个产品自然出现在约 1000 行里。node_key 要唯一标识的是
+    实体，不是行；多行映射到同一实体正是宽表的定义，
+    upsert_term_with_node_key 的 ON CONFLICT DO UPDATE 一直在正确处理它。
+
+    这条用例钉住的是：只要那些行算出的值一致，就不该报错。此前的实现把
+    "重复"本身当成配置错误，会让 demo 的 ETL 整个跑不起来。
+    """
+    _write_csv(tmp_path / "customers.csv", [
+        "name,zip,city",
+        "张三,100,北京",
+        "李四,300,广州",
+        "张三,100,北京",
+        "张三,100,北京",
+    ])
+    conn = await _conn()
+
+    result = await scan_entity_node_keys(
+        conn, tenant_id="t1", mapping=_mapping(),
+        extra_field_specs={"city": ExtraFieldSpec(name="city", value_type="string")},
+        data_dir=tmp_path,
+    )
+
+    assert result.duplicate_keys == {}
+    assert result.scanned_rows == 4
+    # 重复的行仍然算进 node_keys（sweep 要用它），只是不报冲突。
+    assert result.node_keys == {"客户:张三:100", "客户:李四:300"}

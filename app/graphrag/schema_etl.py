@@ -390,9 +390,12 @@ async def run_schema_etl(
     # compute_node_key；现在预检抢在它之前扫了一遍键，如果不加这层判断，
     # 一个 term_type 打错字的 mapping 就会往 etl_stable_code_registry 里
     # 写入永远不会被业务数据引用的孤儿码——这是相对重构前的真实行为倒退。
-    confirmed_term_type_values = {
-        t.value for t in await list_term_types(conn, config.tenant_id, status="confirmed")
+    # 同一次查询既拿到"哪些 term_type 已确认"，也拿到各自的 extra_fields
+    # ——第一遍扫描要用后者做值转换才能比对值冲突（见 scan_entity_node_keys）。
+    confirmed_types_by_value = {
+        t.value: t for t in await list_term_types(conn, config.tenant_id, status="confirmed")
     }
+    confirmed_term_type_values = set(confirmed_types_by_value)
     duplicates_by_term_type: dict[str, dict[str, list[int]]] = {}
     scanned_keys_by_term_type: dict[str, set[str]] = {}
     for entity_mapping in config.entities:
@@ -400,7 +403,12 @@ async def run_schema_etl(
             continue
         try:
             scan = await scan_entity_node_keys(
-                conn, tenant_id=config.tenant_id, mapping=entity_mapping, data_dir=data_dir,
+                conn, tenant_id=config.tenant_id, mapping=entity_mapping,
+                extra_field_specs={
+                    f.name: f
+                    for f in confirmed_types_by_value[entity_mapping.term_type].extra_fields
+                },
+                data_dir=data_dir,
             )
         except RowProcessingError:
             # 文件类型不支持之类的问题，留给写入阶段按老路径记进

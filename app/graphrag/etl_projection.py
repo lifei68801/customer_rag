@@ -13,6 +13,8 @@ docs/superpowers/specs/2026-08-30-etl-layered-pipeline-design.md。
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator
@@ -90,16 +92,66 @@ class DuplicateNodeKeyError(Exception):
     """
 
 
+def _project_values(
+    row: dict[str, str],
+    *,
+    mapping: EntityMapping,
+    extra_field_specs: dict[str, ExtraFieldSpec],
+) -> tuple[str, dict[str, object]]:
+    """从一行源数据算出展示名和属性值。两遍共用，保证它们看到的是同一份
+    投影——第一遍拿它做值冲突比对，第二遍拿它写库，逻辑分叉了阀就白设了。
+    """
+    missing = [c for c in mapping.standard_name_parts if not row.get(c)]
+    if missing:
+        raise RowProcessingError(f"standard_name 需要的列 {missing!r} 不存在或为空")
+    # 用 " / " 连接，不用冒号——冒号是 node_key 的分隔符，展示名里再用一次
+    # 会让两者在日志和界面上难以区分。
+    standard_name = " / ".join(row[c] for c in mapping.standard_name_parts)
+    extra_properties = {
+        field_name: convert_field_value(
+            extra_field_specs=extra_field_specs, field_name=field_name,
+            raw_value=row[source_column],
+        )
+        for field_name, source_column in mapping.field_mappings.items()
+        if source_column in row and row[source_column]
+    }
+    return standard_name, extra_properties
+
+
+def _value_fingerprint(standard_name: str, extra_properties: dict[str, object]) -> str:
+    """同一个 node_key 的两行是否算出了同样的值。
+
+    只留指纹不留值：内存上界仍然是 O(不同实体数)，跟"第一遍只驻留键"这个
+    取舍一致，不会随行宽增长。
+    """
+    payload = json.dumps(
+        [standard_name, sorted(extra_properties.items(), key=lambda kv: kv[0])],
+        ensure_ascii=False, default=str, sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 async def scan_entity_node_keys(
     conn: aiosqlite.Connection,
     *,
     tenant_id: str,
     mapping: EntityMapping,
+    extra_field_specs: dict[str, ExtraFieldSpec],
     data_dir: Path,
 ) -> KeyScanResult:
-    """第一遍：流式读一遍源文件，只算 node_key，收集重复。
+    """第一遍：流式读一遍源文件，算 node_key，收集**值冲突**。
 
-    行级失败（缺列等）在这一遍被静默忽略——它们不是键冲突，而且第二遍
+    **重复的 node_key 本身不是问题**——反范式宽表里维度实体天然重复：
+    demo 的 soft_drink_sales.xlsx 有 10000 行，但只有 10 个产品、3 家公司、
+    4 个类目，每个产品自然出现在约 1000 行里。node_key 要唯一标识的是
+    **实体**，不是行；多行映射到同一实体正是宽表的定义，
+    upsert_term_with_node_key 的 ON CONFLICT DO UPDATE 一直在正确处理它。
+
+    真正该拦的是同一个 node_key 被算出了**不同的值**（展示名或属性值不
+    一致）——那时 ON CONFLICT DO UPDATE 会静默取最后一行，是本项目反复
+    出现的"静默覆盖"。纯重复良性，值冲突才报错。
+
+    行级失败（缺列等）在这一遍被静默忽略——它们不是值冲突，而且第二遍
     会把它们统一记录成 RowFailure，在这里记一次会重复计数。
 
     注意 compute_node_key 在这里仍然 allow_allocation=True，也就是说这一遍
@@ -108,7 +160,10 @@ async def scan_entity_node_keys(
     成立——稳定码是幂等分配的（同一 scope + 原始值永远得到同一个码），
     重跑会命中已有分配，不会漂移。
     """
-    seen: dict[str, list[int]] = {}
+    # node_key -> (首次见到的值指纹, 首次出现的行号)
+    first_seen: dict[str, tuple[str, int]] = {}
+    # 只收录真正出现值冲突的键：node_key -> [首次行号, 冲突行号...]
+    conflicts: dict[str, list[int]] = {}
     scanned = 0
     for row_number, row in enumerate(read_table_rows(data_dir / mapping.source_file), start=2):
         scanned += 1
@@ -117,13 +172,24 @@ async def scan_entity_node_keys(
                 conn, tenant_id=tenant_id, term_type=mapping.term_type,
                 node_key_parts=mapping.node_key_parts, row=row,
             )
+            standard_name, extra_properties = _project_values(
+                row, mapping=mapping, extra_field_specs=extra_field_specs,
+            )
         except RowProcessingError:
             continue
-        seen.setdefault(node_key, []).append(row_number)
+        fingerprint = _value_fingerprint(standard_name, extra_properties)
+        previous = first_seen.get(node_key)
+        if previous is None:
+            first_seen[node_key] = (fingerprint, row_number)
+            continue
+        if previous[0] == fingerprint:
+            # 同一实体在多行里重复出现，值完全一致——良性，正是宽表的常态。
+            continue
+        conflicts.setdefault(node_key, [previous[1]]).append(row_number)
     return KeyScanResult(
-        duplicate_keys={k: v for k, v in seen.items() if len(v) > 1},
+        duplicate_keys=conflicts,
         scanned_rows=scanned,
-        node_keys=set(seen),
+        node_keys=set(first_seen),
     )
 
 
@@ -146,22 +212,9 @@ async def project_entity_rows(
                 conn, tenant_id=tenant_id, term_type=mapping.term_type,
                 node_key_parts=mapping.node_key_parts, row=row,
             )
-            missing = [c for c in mapping.standard_name_parts if not row.get(c)]
-            if missing:
-                raise RowProcessingError(
-                    f"standard_name 需要的列 {missing!r} 不存在或为空"
-                )
-            # 用 " / " 连接，不用冒号——冒号是 node_key 的分隔符，展示名里
-            # 再用一次会让两者在日志和界面上难以区分。
-            standard_name = " / ".join(row[c] for c in mapping.standard_name_parts)
-            extra_properties = {
-                field_name: convert_field_value(
-                    extra_field_specs=extra_field_specs, field_name=field_name,
-                    raw_value=row[source_column],
-                )
-                for field_name, source_column in mapping.field_mappings.items()
-                if source_column in row and row[source_column]
-            }
+            standard_name, extra_properties = _project_values(
+                row, mapping=mapping, extra_field_specs=extra_field_specs,
+            )
         except RowProcessingError as exc:
             yield RowFailure(row_number=row_number, reason=str(exc))
             continue
@@ -227,17 +280,18 @@ def format_duplicate_key_error(
     for term_type, duplicates in duplicates_by_term_type.items():
         total = len(duplicates)
         lines.append(
-            f"实体类型 {term_type!r} 的 node_key 有 {total} 处重复，本次未写入任何数据。"
+            f"实体类型 {term_type!r} 有 {total} 个 node_key 被算出了不同的值，本次未写入任何数据。"
         )
         lines.append(
-            "配置里 node_key_parts 声明的列组合不足以唯一标识每一行，请检查："
+            "同一个实体在不同行里给出了不一致的展示名或属性值——写入时 ON CONFLICT "
+            "DO UPDATE 会静默取最后一行，所以在这里拦下。请检查这些行："
         )
         for node_key, row_numbers in list(duplicates.items())[:_MAX_DUPLICATE_SAMPLES]:
             rows_text = ", ".join(str(n) for n in row_numbers)
             lines.append(f"  {node_key}  ← 源文件第 {rows_text} 行")
         if total > _MAX_DUPLICATE_SAMPLES:
             lines.append(
-                f"  ...仅展示前 {_MAX_DUPLICATE_SAMPLES} 处，实际共 {total} 处重复，"
+                f"  ...仅展示前 {_MAX_DUPLICATE_SAMPLES} 处，实际共 {total} 处冲突，"
                 "完整清单已记入服务端日志。"
             )
             full_list = "\n".join(
