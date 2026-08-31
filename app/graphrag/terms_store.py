@@ -373,6 +373,49 @@ async def list_node_keys_by_term_type(
     return {row[0] for row in await cursor.fetchall()}
 
 
+async def list_etl_node_keys_by_term_type(
+    conn: aiosqlite.Connection, tenant_id: str, term_type: str
+) -> set[str]:
+    """该租户、该类型下、**由 ETL 写入**的全部 node_key。
+
+    跟 list_node_keys_by_term_type 的区别只有 source 过滤，但这个区别是
+    本质的：ETL 的 sweep（源里没有的实体要删掉）只能作用于 ETL 自己写进来
+    的行。审核界面现场创建的（source='review'）和管理后台手工录入的
+    （source='manual'）从来就不来自这个数据源，"源里没有"对它们不成立。
+
+    不要把这个过滤加进 list_node_keys_by_term_type——那个函数服务的是关系
+    写入的端点存在性守卫，它需要的正是"全部 node_key"，无论来源。
+    """
+    cursor = await conn.execute(
+        "SELECT node_key FROM terms WHERE tenant_id = ? AND term_type = ? AND source = 'etl'",
+        (tenant_id, term_type),
+    )
+    return {row[0] for row in await cursor.fetchall()}
+
+
+async def delete_terms_by_node_keys(
+    conn: aiosqlite.Connection, tenant_id: str, node_keys: set[str]
+) -> int:
+    """按 node_key 批量删除该租户的术语行，返回实际删除的行数。
+
+    空集合是干净的空操作，直接返回 0——绝不能让它退化成一条没有有效 WHERE
+    条件的 DELETE 把整张表清空。这是本函数最危险的失败形态，有测试钉住。
+
+    只删 terms 行。图谱侧的节点删除由调用方另行调用 delete_term_node
+    （它是 DETACH DELETE，会连边和别名节点一起清掉）。
+    """
+    if not node_keys:
+        return 0
+    keys = list(node_keys)
+    placeholders = ",".join("?" * len(keys))
+    cursor = await conn.execute(
+        f"DELETE FROM terms WHERE tenant_id = ? AND node_key IN ({placeholders})",
+        (tenant_id, *keys),
+    )
+    await conn.commit()
+    return cursor.rowcount
+
+
 async def get_term(
     conn: aiosqlite.Connection,
     tenant_id: str,

@@ -67,10 +67,18 @@ class RowFailure:
 @dataclass(frozen=True)
 class KeyScanResult:
     """第一遍扫描的产物。只保留键和行号——不保留行本身，内存上界因此
-    只跟行数有关，跟行有多宽无关。"""
+    只跟行数有关，跟行有多宽无关。
+
+    node_keys 是本次源文件算出的全部 node_key。它就是内部 seen 字典的键
+    集合，暴露出来不增加任何内存占用。sweep（源端删除传播）需要它来算
+    "该 term_type 下现有的、但本次没算出来的"那个差集——而且因为它在
+    第一遍就有，sweep 的安全阀可以在任何写入之前判定，"整轮零改动"是
+    结构性的，不是靠回滚。
+    """
 
     duplicate_keys: dict[str, list[int]]
     scanned_rows: int
+    node_keys: set[str]
 
 
 class DuplicateNodeKeyError(Exception):
@@ -115,6 +123,7 @@ async def scan_entity_node_keys(
     return KeyScanResult(
         duplicate_keys={k: v for k, v in seen.items() if len(v) > 1},
         scanned_rows=scanned,
+        node_keys=set(seen),
     )
 
 

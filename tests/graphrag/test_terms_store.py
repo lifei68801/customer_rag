@@ -17,10 +17,12 @@ from app.graphrag.terms_store import (
     count_terms,
     create_term,
     delete_term,
+    delete_terms_by_node_keys,
     ensure_terms_schema,
     get_term,
     get_term_by_node_key,
     is_tombstoned,
+    list_etl_node_keys_by_term_type,
     list_terms,
     merge_terms,
     migrate_term_type,
@@ -1447,3 +1449,87 @@ async def test_delete_term_by_node_key_only_deletes_the_matching_row_among_same_
         await get_term_by_node_key(conn, "default", "t:李四:100")
     remaining = await get_term_by_node_key(conn, "default", "t:李四:200")
     assert remaining.standard_name == "李四"
+
+
+async def test_list_etl_node_keys_by_term_type_excludes_manual_and_review_rows():
+    """sweep 只能扫 ETL 自己写进来的行。审核界面创建的（source='review'）和
+    管理后台手工录入的（source='manual'）从来就不来自这个数据源，"源里没有"
+    对它们不成立，扫掉它们是数据丢失。"""
+    conn = await _connect()
+    # _connect() 只预置了 tenant "default" 下的几个分类字面量；这里用的
+    # tenant "t1" + term_type "产品" 是新组合，_validate_categories 要求
+    # 分类必须已注册并确认，先补齐。
+    await create_term_type(conn, tenant_id="t1", value="产品")
+    await confirm_ontology(conn, "t1")
+    await upsert_term_with_node_key(
+        conn, tenant_id="t1", node_key="产品:A", standard_name="A",
+        aliases=[], term_type="产品", extra_properties={}, source="etl",
+    )
+    await upsert_term_with_node_key(
+        conn, tenant_id="t1", node_key="产品:B", standard_name="B",
+        aliases=[], term_type="产品", extra_properties={}, source="review",
+    )
+    await upsert_term_with_node_key(
+        conn, tenant_id="t1", node_key="产品:C", standard_name="C",
+        aliases=[], term_type="产品", extra_properties={}, source="manual",
+    )
+
+    keys = await list_etl_node_keys_by_term_type(conn, "t1", "产品")
+
+    assert keys == {"产品:A"}
+
+
+async def test_list_etl_node_keys_by_term_type_is_scoped_to_tenant_and_type():
+    conn = await _connect()
+    await create_term_type(conn, tenant_id="t1", value="产品")
+    await create_term_type(conn, tenant_id="t1", value="类目")
+    await confirm_ontology(conn, "t1")
+    await create_term_type(conn, tenant_id="t2", value="产品")
+    await confirm_ontology(conn, "t2")
+    await upsert_term_with_node_key(
+        conn, tenant_id="t1", node_key="产品:A", standard_name="A",
+        aliases=[], term_type="产品", extra_properties={}, source="etl",
+    )
+    await upsert_term_with_node_key(
+        conn, tenant_id="t1", node_key="类目:X", standard_name="X",
+        aliases=[], term_type="类目", extra_properties={}, source="etl",
+    )
+    await upsert_term_with_node_key(
+        conn, tenant_id="t2", node_key="产品:A", standard_name="A",
+        aliases=[], term_type="产品", extra_properties={}, source="etl",
+    )
+
+    assert await list_etl_node_keys_by_term_type(conn, "t1", "产品") == {"产品:A"}
+
+
+async def test_delete_terms_by_node_keys_removes_only_the_named_rows():
+    conn = await _connect()
+    await create_term_type(conn, tenant_id="t1", value="产品")
+    await confirm_ontology(conn, "t1")
+    for key in ("产品:A", "产品:B", "产品:C"):
+        await upsert_term_with_node_key(
+            conn, tenant_id="t1", node_key=key, standard_name=key,
+            aliases=[], term_type="产品", extra_properties={}, source="etl",
+        )
+
+    removed = await delete_terms_by_node_keys(conn, "t1", {"产品:A", "产品:C"})
+
+    assert removed == 2
+    assert await list_etl_node_keys_by_term_type(conn, "t1", "产品") == {"产品:B"}
+
+
+async def test_delete_terms_by_node_keys_on_empty_set_is_a_noop():
+    """空集合必须是干净的空操作——绝不能退化成"没有 WHERE 条件"把整张表删了。
+    这是本函数最危险的失败形态。"""
+    conn = await _connect()
+    await create_term_type(conn, tenant_id="t1", value="产品")
+    await confirm_ontology(conn, "t1")
+    await upsert_term_with_node_key(
+        conn, tenant_id="t1", node_key="产品:A", standard_name="A",
+        aliases=[], term_type="产品", extra_properties={}, source="etl",
+    )
+
+    removed = await delete_terms_by_node_keys(conn, "t1", set())
+
+    assert removed == 0
+    assert await list_etl_node_keys_by_term_type(conn, "t1", "产品") == {"产品:A"}
