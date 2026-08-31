@@ -182,7 +182,7 @@ async def create_new_term(
     # 祖父豁免：按 node_key 查是否已有该实体（terms 表中可能有、也可能没有）。
     # 新的合并语义下，POST 写的 __created__ 编辑如果 node_key 撞上已有实体，
     # 实际上会降级成对那一行的普通字段级编辑（见 term_merge.apply_edits），
-    # 这时应该豁免已有属性键的校验（它们可能因 term_type 声明变更而成为"廃弃字段"）。
+    # 这时应该豁免已有属性键的校验（它们可能因 term_type 声明变更而成为"废弃字段"）。
     # 用 get_term_by_node_key（查 terms 表原始行）而不是合并视图，因为
     # 祖父豁免关心的是"这个实体上在 terms 表里实际存在的属性键"。
     existing_extra_property_keys = frozenset()

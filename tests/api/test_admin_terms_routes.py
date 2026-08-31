@@ -1406,13 +1406,13 @@ def test_put_only_writes_edits_for_the_fields_actually_submitted(terms_conn):
 
 def test_create_term_with_existing_node_key_and_orphaned_property_succeeds(terms_conn):
     """Task 4 Fix：POST 现在写 __created__ 编辑，当 node_key 撞上 terms 表已有的行时，
-    实际上是在编辑该行。如果该行有已廃弃的属性键（在当前 term_type 声明中不存在），
+    实际上是在编辑该行。如果该行有已废弃的属性键（在当前 term_type 声明中不存在），
     新的 __created__ 编辑中也带有这个键时，应该豁免字段名校验（祖父豁免），
     允许该编辑成功。
 
     场景：
     1. terms 表中已有行，带有属性 "orphaned_key"
-    2. term_type 的当前声明不包含 "orphaned_key"（已廃弃）
+    2. term_type 的当前声明不包含 "orphaned_key"（已废弃）
     3. POST 同一个 node_key，payload 也带 {"orphaned_key": "value"}
     4. 应该成功（200），而不是因为未知字段返回 400
     """
@@ -1437,7 +1437,7 @@ def test_create_term_with_existing_node_key_and_orphaned_property_succeeds(terms
     app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
     try:
         client = TestClient(app)
-        # 用同一个 node_key POST，payload 也带这个已廃弃的属性
+        # 用同一个 node_key POST，payload 也带这个已废弃的属性
         response = client.post(
             "/api/admin/t1/terms",
             json={
