@@ -204,6 +204,12 @@ class _FakeGraphClient:
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
         pass
 
+    async def count_stale_relations_by_source(
+        self, source: str, *, tenant_id: str, before_recorded_at: str
+    ) -> tuple[int, int]:
+        # 样例配置不关心安全阀，(0, 0) 表示"没有陈旧边"，不会触发。
+        return (0, 0)
+
     async def delete_stale_relations_by_source(
         self, source: str, *, tenant_id: str, before_recorded_at: str
     ) -> int:

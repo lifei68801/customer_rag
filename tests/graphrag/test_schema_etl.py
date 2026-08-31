@@ -52,6 +52,7 @@ class FakeGraphClient:
         self.merged: list[tuple[str, str, str]] = []
         self.deleted_nodes: list[str] = []
         self.stale_sweeps: list[tuple[str, str]] = []
+        self.stale_relation_counts: dict[str, tuple[int, int]] = {}
 
     async def sync_term(self, term) -> None:
         self.synced.append(term.node_key)
@@ -65,6 +66,13 @@ class FakeGraphClient:
 
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
         self.deleted_nodes.append(node_key)
+
+    async def count_stale_relations_by_source(
+        self, source: str, *, tenant_id: str, before_recorded_at: str
+    ) -> tuple[int, int]:
+        # 默认 (0, 0)：不触发关系侧安全阀，既有用例的行为因此不变。
+        # 要测那道阀的用例把 stale_relation_counts 设成 {源文件: (陈旧数, 总数)}。
+        return self.stale_relation_counts.get(source, (0, 0))
 
     async def delete_stale_relations_by_source(
         self, source: str, *, tenant_id: str, before_recorded_at: str
@@ -1564,3 +1572,52 @@ async def test_etl_does_not_sync_a_manually_deleted_term_and_removes_its_node(tm
     assert "Product:1001" not in graph_client.synced
     # 应在 deleted_nodes 列表里
     assert "Product:1001" in graph_client.deleted_nodes
+
+
+async def test_relation_sweep_safety_valve_aborts_before_deleting_any_edge(tmp_path):
+    """关系侧的安全阀：源文件被误传或截断时挡住大规模删边。
+
+    实体侧那道阀挡不住这条独立路径——关系和实体可以配置成不同的源文件，
+    关系源被截断时实体侧可能完全正常。
+
+    这道阀的保证比实体侧弱一档，是设计使然：实体的 sweep 集合在任何写入
+    之前就能算出（预检第一遍已持有全部 node_key），关系这边要精确知道会删
+    多少条，必须先知道本轮写了哪些边。所以它保证的是"没有发生任何删除"，
+    而不是"没有发生任何改动"——触发时图谱停在"新边已写、陈旧边未删"的
+    新旧共存状态，那正是"先写后扫"本来就接受的中途失败状态，重跑自愈。
+    """
+    conn = await _confirmed_conn()
+    config = _two_relations_same_source_config()
+    _write_product_sku_source(tmp_path)
+    graph_client = FakeGraphClient()
+    # 本轮只重写了 2 条边，而该源文件下共有 10 条 ETL 边——8 条陈旧，占 80%，
+    # 超过 50% 的阈值。
+    graph_client.stale_relation_counts = {"products.csv": (8, 10)}
+
+    with pytest.raises(SweepSafetyValveError) as excinfo:
+        await run_schema_etl(
+            conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+        )
+
+    message = str(excinfo.value)
+    assert "products.csv" in message
+    assert "8 / 10" in message
+    # 一条边都没删——这是这道阀真正保证的东西。
+    assert graph_client.stale_sweeps == []
+
+
+async def test_relation_sweep_safety_valve_can_be_overridden(tmp_path):
+    """租户确实要缩减关系数据时必须有显式的放行方式，跟实体侧同一个开关。"""
+    conn = await _confirmed_conn()
+    config = _two_relations_same_source_config()
+    _write_product_sku_source(tmp_path)
+    graph_client = FakeGraphClient()
+    graph_client.stale_relation_counts = {"products.csv": (8, 10)}
+
+    await run_schema_etl(
+        conn=conn, graph_client=graph_client, config=config,
+        data_dir=tmp_path, allow_large_sweep=True,
+    )
+
+    # 放行之后照常执行删除。
+    assert [s for s, _ in graph_client.stale_sweeps] == ["products.csv"]

@@ -156,6 +156,23 @@ MATCH ()-[r]->() WHERE r.source = $source AND r.tenant_id = $tenant_id
 DELETE r
 """
 
+_COUNT_STALE_RELATIONS_QUERY = """
+MATCH (a:Term {tenant_id: $tenant_id})-[r]->(b:Term {tenant_id: $tenant_id})
+WHERE r.tenant_id = $tenant_id
+  AND r.source = $source
+  AND r.provenance = $provenance
+RETURN
+  count(r) AS total,
+  count(CASE WHEN r.recorded_at < $before THEN 1 END) AS stale
+"""
+# 关系侧安全阀的计数：同一次查询里数出该源文件下 ETL 写过的边总数，以及
+# 其中"本轮没有重写过"（recorded_at 严格早于本轮时间戳）的条数。后者就是
+# delete_stale_relations_by_source 将要删掉的那批，条件逐字一致。
+#
+# 分母用的是**写入之后**的总数（本轮重写的 + 陈旧的）。源文件如果被截断，
+# 本轮重写得少、陈旧的多，比值就高——这正是要挡住的事故形态。
+
+
 _DELETE_STALE_RELATIONS_QUERY = """
 MATCH (a:Term {tenant_id: $tenant_id})-[r]->(b:Term {tenant_id: $tenant_id})
 WHERE r.tenant_id = $tenant_id
@@ -588,6 +605,32 @@ class Neo4jGraphClient:
                 _DELETE_RELATIONS_BY_SOURCE_QUERY,
                 {"source": source, "tenant_id": tenant_id},
             )
+
+    async def count_stale_relations_by_source(
+        self, source: str, *, tenant_id: str, before_recorded_at: str
+    ) -> tuple[int, int]:
+        """返回 (陈旧边条数, 该源文件下 ETL 边总数)，供关系侧的安全阀判定用。
+
+        过滤条件跟 delete_stale_relations_by_source 逐字一致——两者必须看到
+        同一批边，否则阀判的和实际删的就不是一回事。
+
+        调用时机是"关系已写完、陈旧边还没删"：此时总数 = 本轮重写的 + 陈旧的。
+        源文件被误传或截断时本轮重写得少、陈旧的多，比值因此升高。
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                _COUNT_STALE_RELATIONS_QUERY,
+                {
+                    "source": source,
+                    "tenant_id": tenant_id,
+                    "provenance": provenance.ETL,
+                    "before": before_recorded_at,
+                },
+            )
+            record = await result.single()
+            if record is None:
+                return (0, 0)
+            return (record["stale"], record["total"])
 
     async def delete_stale_relations_by_source(
         self, source: str, *, tenant_id: str, before_recorded_at: str

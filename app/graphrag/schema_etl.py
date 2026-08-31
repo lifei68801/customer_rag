@@ -54,6 +54,10 @@ class SchemaEtlGraphProtocol(RelationWriterProtocol, Protocol):
 
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None: ...
 
+    async def count_stale_relations_by_source(
+        self, source: str, *, tenant_id: str, before_recorded_at: str
+    ) -> tuple[int, int]: ...
+
     async def delete_stale_relations_by_source(
         self, source: str, *, tenant_id: str, before_recorded_at: str
     ) -> int: ...
@@ -508,7 +512,36 @@ async def run_schema_etl(
     # 这里必须自己格式化成完全一样的字符串，否则字符串比较会错——见
     # delete_stale_relations_by_source 的说明。
     recorded_at_text = recorded_at.strftime("%Y-%m-%d %H:%M:%S")
-    for source_file in dict.fromkeys(m.source_file for m in config.relations):
+    relation_source_files = list(dict.fromkeys(m.source_file for m in config.relations))
+
+    # 关系侧的安全阀。实体侧那道阀挡不住"关系源文件被误传或截断、而实体侧
+    # 完全正常"这条独立路径——两侧可以配置成不同的源文件。
+    #
+    # 这道阀的保证比实体侧**弱一档**，而且是设计使然：实体的 sweep 集合在
+    # 任何写入之前就能算出来（预检第一遍已持有全部 node_key），所以那边能
+    # 做到"整轮零改动"；关系这边要精确知道会删多少条，必须先知道本轮写了
+    # 哪些边，而那要等关系真的写完。
+    #
+    # 所以它保证的是"没有发生任何删除"，不是"没有发生任何改动"。触发时图谱
+    # 停在"新边已写、陈旧边未删"的状态——那正是"先写后扫"这个设计本来就
+    # 接受的中途失败状态，下次重跑自愈。危险的操作是删除，这道阀挡的正是它。
+    if not allow_large_sweep:
+        for source_file in relation_source_files:
+            stale, total = await graph_client.count_stale_relations_by_source(
+                source_file, tenant_id=config.tenant_id, before_recorded_at=recorded_at_text,
+            )
+            if total == 0 or stale == 0:
+                continue
+            ratio = stale / total
+            if ratio > _SWEEP_SAFETY_THRESHOLD:
+                raise SweepSafetyValveError(
+                    f"源文件 {source_file!r} 的关系清理将移除 {stale} / {total} 条边"
+                    f"（{ratio:.0%}），超过安全阈值 {_SWEEP_SAFETY_THRESHOLD:.0%}，"
+                    "本次未删除任何边。注意：本轮的关系边已经写入、陈旧边保持原样，"
+                    "图谱处于新旧共存状态，重跑一次即可收敛；实体侧的清理也未执行。"
+                    "如果源文件确实缩减到这个规模，勾选「允许大规模清理」后重跑。"
+                )
+    for source_file in relation_source_files:
         report.relations_removed += await graph_client.delete_stale_relations_by_source(
             source_file, tenant_id=config.tenant_id, before_recorded_at=recorded_at_text,
         )
