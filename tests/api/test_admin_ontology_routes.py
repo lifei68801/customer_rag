@@ -664,7 +664,7 @@ def test_update_term_type_rejects_invalid_standard_name_value_type(client):
     assert resp.status_code == 400
 
 
-def test_constraint_fanout_reports_real_data_fanout(client):
+def test_graph_overlay_reports_real_data_fanout_and_entity_counts(client):
     """约束表只说明「这个组合被允许」，说不出实际数据里一个主语节点会连到
     几个宾语节点——而后者才是扇形陷阱的判据。本体层看不出这件事：本体只
     声明了一条边，是不是一对多要问图谱。"""
@@ -692,14 +692,15 @@ def test_constraint_fanout_reports_real_data_fanout(client):
     app.dependency_overrides[deps.get_graph_client] = lambda: fake
     try:
         resp = client.get(
-            "/api/admin/ontology/default/constraint-fanout?status=draft",
+            "/api/admin/ontology/default/graph-overlay?status=draft",
             headers={"Authorization": "Bearer x"},
         )
     finally:
         app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
 
     assert resp.status_code == 200
-    assert resp.json()["fanout"] == [
+    body = resp.json()
+    assert body["fanout"] == [
         {
             "subject_term_type": "产品",
             "relation_type": "SOLD_BY",
@@ -707,9 +708,12 @@ def test_constraint_fanout_reports_real_data_fanout(client):
             "fanout": 3,
         }
     ]
+    # 实体计数跟扇出一起返回——两者都只服务本体图，分两个接口只是多一次往返。
+    # 这个租户还没有任何实体，所以是空字典而不是缺字段。
+    assert body["entity_counts"] == {}
 
 
-def test_constraint_fanout_degrades_to_null_when_probe_fails(client):
+def test_graph_overlay_degrades_fanout_to_null_when_probe_fails(client):
     """单条探测失败不该让整个视图报错——图谱可能正在重建、某个类型还没有
     任何节点。退回「未知」（null）而不是 500。"""
     client.post(
@@ -739,7 +743,7 @@ def test_constraint_fanout_degrades_to_null_when_probe_fails(client):
     app.dependency_overrides[deps.get_graph_client] = lambda: fake
     try:
         resp = client.get(
-            "/api/admin/ontology/default/constraint-fanout?status=draft",
+            "/api/admin/ontology/default/graph-overlay?status=draft",
             headers={"Authorization": "Bearer x"},
         )
     finally:

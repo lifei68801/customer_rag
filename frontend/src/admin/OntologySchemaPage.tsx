@@ -7,6 +7,7 @@ import { Skeleton } from './Skeleton'
 // 图只在约束 tab 的「图」形态下用到，而 sigma + graphology 有几百 kB。
 // 静态导入会让它进首屏包、让所有页面替这一个视图买单，所以按需加载。
 import type { FanoutEntry } from './ontologyGraph/buildScene'
+import { buildOntologyDiff, type OntologyDiff } from './ontologyDiff'
 
 const OntologyGraph = lazy(() =>
   import('./ontologyGraph/OntologyGraph').then((m) => ({ default: m.OntologyGraph })),
@@ -39,6 +40,50 @@ interface Constraint {
   subject_term_type: string
   relation_type: string
   object_term_type: string
+}
+
+/**
+ * 把差异渲染成确认框里的一段文字。
+ *
+ * 确认框是纯文本的（ConfirmContext 只接受 string），所以这里用紧凑的行式
+ * 排版而不是表格。变更多时截断——确认框不是变更清单，它的职责是让用户在
+ * 按下不可逆按钮前知道"大概要改什么、规模多大"。
+ */
+const MAX_DIFF_LINES = 12
+
+function describeConfirmDiff(tenantId: string, diff: OntologyDiff | null): string {
+  // 用 fromCharCode(10) 而不是字面转义拼换行：这段文案要经过确认框的纯文本
+  // 渲染，写成字面量在多层字符串处理里很容易被吃掉一层。
+  const NL = String.fromCharCode(10)
+  const tail =
+    NL + NL +
+    `确认后，当前草稿将成为新的已确认版本，旧的已确认版本会被换掉、无法恢复。确认要确认租户「${tenantId}」吗？`
+  if (diff === null) {
+    return `无法预览本次变更（读取已确认版本失败）。` + tail
+  }
+  if (diff.total === 0) {
+    return `草稿与已确认版本没有差异——这次确认不会改变任何内容。` + tail
+  }
+  const sign = (kind: string) => (kind === 'added' ? '+' : kind === 'removed' ? '-' : '~')
+  const lines: string[] = []
+  const push = (title: string, rows: OntologyDiff['termTypes']) => {
+    if (rows.length === 0) return
+    lines.push(`${title}（${rows.length}）`)
+    for (const row of rows) {
+      lines.push(`  ${sign(row.kind)} ${row.label}${row.detail ? `：${row.detail}` : ''}`)
+    }
+  }
+  push('实体类型', diff.termTypes)
+  push('关系类型', diff.relationTypes)
+  push('约束', diff.constraints)
+
+  const shown = lines.slice(0, MAX_DIFF_LINES)
+  const omitted = lines.length - shown.length
+  return (
+    `本次确认将改动 ${diff.total} 处：` + NL + shown.join(NL) +
+    (omitted > 0 ? NL + `  ...另有 ${omitted} 行未列出` : '') +
+    tail
+  )
 }
 
 const VALUE_TYPES = ['string', 'number', 'integer', 'number[]'] as const
@@ -196,13 +241,43 @@ export function OntologySchemaPage() {
           : null
   const confirmDisabled = confirming || confirmDisabledReason !== null
 
+  /** 拉一份 status 下的本体三件套，供 diff 用。 */
+  const loadSnapshot = async (status: 'draft' | 'confirmed') => {
+    const [tt, rt, cs] = await Promise.all(
+      ['term-types', 'relation-types', 'constraints'].map((ep) =>
+        adminFetch(
+          `/api/admin/ontology/${encodeURIComponent(tenantId)}/${ep}?status=${status}`,
+          sessionToken!,
+        ),
+      ),
+    )
+    const [ttBody, rtBody, csBody] = await Promise.all([tt.json(), rt.json(), cs.json()])
+    return {
+      termTypes: ttBody.term_types ?? [],
+      relationTypes: rtBody.relation_types ?? [],
+      constraints: csBody.constraints ?? [],
+    }
+  }
+
   const handleConfirm = async () => {
     if (!sessionToken || confirmDisabled) return
-    if (
-      !(await confirm(
-        `确认后，当前草稿将成为新的已确认版本，旧的已确认版本会被换掉、无法恢复。确认要确认租户「${tenantId}」吗？`,
-      ))
-    ) {
+
+    // 确认是不可逆的（旧的已确认版本会被换掉、无法恢复），所以先算出这次
+    // 到底要改什么，摆在确认框里。只在点确认时拉已确认版，不拖慢页面首屏。
+    let diff: OntologyDiff | null = null
+    try {
+      const [draftSnapshot, confirmedSnapshot] = await Promise.all([
+        loadSnapshot('draft'),
+        loadSnapshot('confirmed'),
+      ])
+      diff = buildOntologyDiff(draftSnapshot, confirmedSnapshot)
+    } catch {
+      // 算不出差异不该挡住确认——退回原来那句笼统的警告，但要让用户知道
+      // 这次没能预览，而不是让他以为"没有变更"。
+      diff = null
+    }
+
+    if (!(await confirm(describeConfirmDiff(tenantId, diff)))) {
       return
     }
     setPageError(null)
@@ -1190,6 +1265,7 @@ function ConstraintsTab({
   // 扇出来自图谱实际数据，跟约束表分开拉：探测要逐条查 Neo4j，比约束本身慢，
   // 不该拖住表格视图的首屏。失败时保持空数组——没有红边好过标错红边。
   const [fanout, setFanout] = useState<FanoutEntry[]>([])
+  const [entityCounts, setEntityCounts] = useState<Record<string, number>>({})
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
@@ -1311,12 +1387,18 @@ function ConstraintsTab({
     void (async () => {
       try {
         const res = await adminFetch(
-          `/api/admin/ontology/${encodeURIComponent(tenantId)}/constraint-fanout?status=${view}`,
+          `/api/admin/ontology/${encodeURIComponent(tenantId)}/graph-overlay?status=${view}`,
           sessionToken,
         )
         if (!res.ok) return
-        const body = (await res.json()) as { fanout: FanoutEntry[] }
-        if (!cancelled) setFanout(body.fanout)
+        const body = (await res.json()) as {
+          fanout: FanoutEntry[]
+          entity_counts: Record<string, number>
+        }
+        if (!cancelled) {
+          setFanout(body.fanout)
+          setEntityCounts(body.entity_counts ?? {})
+        }
       } catch {
         // 探测失败就不标红，不打断图的渲染——图本身的价值不依赖扇出。
       }
@@ -1355,7 +1437,12 @@ function ConstraintsTab({
       )}
       {loaded && shape === 'graph' && (
         <Suspense fallback={<Skeleton variant="table-rows" count={4} />}>
-          <OntologyGraph termTypes={termTypes} constraints={constraints} fanout={fanout} />
+          <OntologyGraph
+            termTypes={termTypes}
+            constraints={constraints}
+            fanout={fanout}
+            entityCounts={entityCounts}
+          />
         </Suspense>
       )}
       {!loaded && <Skeleton variant="table-rows" count={3} />}

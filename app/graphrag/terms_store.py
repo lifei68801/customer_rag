@@ -398,6 +398,23 @@ async def get_term_merged_by_node_key(
     return merged[0]
 
 
+async def count_terms_by_term_type(
+    conn: aiosqlite.Connection, tenant_id: str
+) -> dict[str, int]:
+    """该租户每个 term_type 下有多少实体，供本体图在节点上叠加数量用。
+
+    数的是 terms 原始表，不是合并视图：被人工删除（__deleted__）的实体仍
+    计入。这是刻意的——这个数字回答的是"管道往这个类型里写了多少"，是
+    数据规模的信号；"用户看得见几条"是另一个问题，不该混在一个数字里。
+    真要后者时应当另开一个接口，而不是让这一个含糊地兼顾两者。
+    """
+    cursor = await conn.execute(
+        "SELECT term_type, COUNT(*) FROM terms WHERE tenant_id = ? GROUP BY term_type",
+        (tenant_id,),
+    )
+    return {row[0]: row[1] for row in await cursor.fetchall()}
+
+
 async def count_terms(
     conn: aiosqlite.Connection, tenant_id: str, *, source: str | None = None
 ) -> int:

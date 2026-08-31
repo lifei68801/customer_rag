@@ -12,8 +12,10 @@ import {
 interface Props {
   termTypes: string[]
   constraints: ConstraintTriple[]
-  /** 来自 /constraint-fanout。拉取失败时传空数组：没有红边好过标错红边。 */
+  /** 来自 /graph-overlay。拉取失败时传空数组：没有红边好过标错红边。 */
   fanout: FanoutEntry[]
+  /** term_type -> 实体数量。同样来自 /graph-overlay，失败时传空对象。 */
+  entityCounts: Record<string, number>
 }
 
 type Selection = { kind: 'node' | 'edge'; id: string } | null
@@ -29,15 +31,15 @@ type Selection = { kind: 'node' | 'edge'; id: string } | null
  * 所以扇出判定这类图算法可以直接在数据层做（见 buildScene），不必依赖
  * 渲染器。
  */
-export function OntologyGraph({ termTypes, constraints, fanout }: Props) {
+export function OntologyGraph({ termTypes, constraints, fanout, entityCounts }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [selection, setSelection] = useState<Selection>(null)
 
   // 主题在渲染时解析一次即可——换肤会重新挂载整个页面。
   const theme = useMemo(() => readGraphTheme(), [])
   const { graph, riskyEdges, fanoutByEdge } = useMemo(
-    () => buildScene(termTypes, constraints, fanout, theme),
-    [termTypes, constraints, fanout, theme],
+    () => buildScene(termTypes, constraints, fanout, entityCounts, theme),
+    [termTypes, constraints, fanout, entityCounts, theme],
   )
 
   useEffect(() => {
@@ -127,6 +129,7 @@ export function OntologyGraph({ termTypes, constraints, fanout }: Props) {
           selection={selection}
           constraints={constraints}
           fanoutByEdge={fanoutByEdge}
+          entityCounts={entityCounts}
         />
       )}
     </div>
@@ -137,17 +140,24 @@ function SelectionDetail({
   selection,
   constraints,
   fanoutByEdge,
+  entityCounts,
 }: {
   selection: NonNullable<Selection>
   constraints: ConstraintTriple[]
   fanoutByEdge: Map<string, number | null>
+  entityCounts: Record<string, number>
 }) {
   if (selection.kind === 'node') {
     const outgoing = constraints.filter((c) => c.subject_term_type === selection.id)
     const incoming = constraints.filter((c) => c.object_term_type === selection.id)
     return (
       <div className="rounded-card border border-subtle bg-card p-3 text-sm">
-        <p className="font-bold text-ink">{selection.id}</p>
+        <p className="font-bold text-ink">
+          {selection.id}
+          <span className="ml-2 font-normal text-ink-soft">
+            {entityCounts[selection.id] ?? 0} 个实体
+          </span>
+        </p>
         <p className="mt-1 text-ink-soft">
           作为主语 {outgoing.length} 条，作为宾语 {incoming.length} 条
         </p>

@@ -60,6 +60,7 @@ export function buildScene(
   termTypes: string[],
   constraints: ConstraintTriple[],
   fanout: FanoutEntry[],
+  entityCounts: Record<string, number>,
   theme: GraphTheme,
 ): BuildResult {
   const graph = new Graph({ multi: true, type: 'directed' })
@@ -82,8 +83,13 @@ export function buildScene(
   const nodes = [...allNodes]
   nodes.forEach((value, index) => {
     const angle = (2 * Math.PI * index) / Math.max(nodes.length, 1)
+    const count = entityCounts[value]
     graph.addNode(value, {
-      label: value,
+      // 标签带上实体数：图从"本体长什么样"变成"本体现在装了多少数据"。
+      // 没有计数（该类型一条实体都没有）时不显示 "(0)"——那会跟"还没同步
+      // 过计数"混淆，而空标签本身已经说明问题，孤立类型另有单独提示。
+      label: count === undefined ? value : `${value} (${count})`,
+      entityCount: count ?? 0,
       x: Math.cos(angle),
       y: Math.sin(angle),
       size: nodeSize(degree.get(value) ?? 0),

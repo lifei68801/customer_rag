@@ -39,6 +39,7 @@ from app.graphrag.ontology_relations import (
 )
 from app.graphrag.neo4j_client import GraphWriteProtocol
 from app.graphrag.terms_store import migrate_term_type
+from app.graphrag.terms_store import count_terms_by_term_type
 
 logger = logging.getLogger(__name__)
 
@@ -314,13 +315,20 @@ async def migrate_tenant_relation_type(
     return {"migrated_count": count}
 
 
-@router.get("/{tenant_id}/constraint-fanout")
-async def probe_tenant_constraint_fanout(
+@router.get("/{tenant_id}/graph-overlay")
+async def load_tenant_graph_overlay(
     tenant_id: str, status: str = "draft",
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> dict:
-    """按已声明的约束逐条探测**真实数据**里的扇出度。
+    """本体图的叠加信息：每条约束的真实扇出度 + 每个实体类型的实体数量。
+
+    两者合在一个接口里是因为它们都只服务本体图这一个消费方，而且都要在
+    切到图视图时一次性取到——分成两个接口只是多一次往返。
+
+    ---
+
+    扇出：按已声明的约束逐条探测**真实数据**里的扇出度。
 
     为什么单独开这个接口：约束表只说明"这个组合被允许"，说不出实际数据里
     一个主语节点会连到几个宾语节点。而后者才是扇形陷阱的判据——沿一条
@@ -335,6 +343,7 @@ async def probe_tenant_constraint_fanout(
     单条探测失败不中断整体——图谱可能正在重建、某个类型还没有任何节点，
     这时该退回"未知"而不是让整个视图报错。
     """
+    entity_counts = await count_terms_by_term_type(review_conn, tenant_id)
     combinations = await list_allowed_combinations(review_conn, tenant_id, status=status)
     fanout: list[dict] = []
     for c in combinations:
@@ -360,7 +369,7 @@ async def probe_tenant_constraint_fanout(
                 "fanout": value,
             }
         )
-    return {"fanout": fanout}
+    return {"fanout": fanout, "entity_counts": entity_counts}
 
 
 @router.get("/{tenant_id}/constraints")
