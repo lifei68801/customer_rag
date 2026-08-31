@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
+import { EmptyState } from './EmptyState'
+import { CopyCheck } from 'lucide-react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
@@ -118,7 +120,11 @@ export function DuplicateTermSuggestionsTab() {
         </p>
       )}
       {suggestions.length === 0 ? (
-        <p className="text-sm text-ink-soft">暂无疑似重复的术语。</p>
+        <EmptyState
+          icon={CopyCheck}
+          title="没有疑似重复的术语"
+          action="重复检测在后台定期跑。新导入或新建实体后，这里可能出现待确认的候选。"
+        />
       ) : (
         <ul className="flex flex-col gap-3">
           {suggestions.map((s) => (

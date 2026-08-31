@@ -1,3 +1,5 @@
+import { Boxes, ShieldCheck, Spline } from 'lucide-react'
+import { EmptyState } from './EmptyState'
 import { Suspense, lazy, useCallback, useEffect, useState, type FormEvent } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
@@ -643,10 +645,15 @@ function TermTypesTab({
     <div className="flex flex-col gap-4">
       {!loaded && <Skeleton variant="table-rows" count={4} />}
       {loaded && items.length === 0 && editingValue === null && (
-        <p className="text-ink-soft">
-          还没有任何{view === 'draft' ? '草稿' : '已确认的'}实体类型。
-          {view === 'draft' && '点击下方「+ 新增实体类型」创建一个。'}
-        </p>
+        <EmptyState
+          icon={Boxes}
+          title={`还没有任何${view === 'draft' ? '草稿' : '已确认的'}实体类型`}
+          action={
+            view === 'draft'
+              ? '点击下方「+ 新增实体类型」创建一个。实体类型是本体的骨架，关系和约束都建立在它之上。'
+              : '草稿确认之后，已确认的实体类型会出现在这里。'
+          }
+        />
       )}
       {items.length > 0 && (
         <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card">
@@ -1044,10 +1051,15 @@ function RelationTypesTab({
     <div className="flex flex-col gap-4">
       {!loaded && <Skeleton variant="table-rows" count={4} />}
       {loaded && items.length === 0 && (
-        <p className="text-ink-soft">
-          还没有任何{view === 'draft' ? '草稿' : '已确认的'}关系类型。
-          {view === 'draft' && '点击下方「+ 新增关系类型」创建一个。'}
-        </p>
+        <EmptyState
+          icon={Spline}
+          title={`还没有任何${view === 'draft' ? '草稿' : '已确认的'}关系类型`}
+          action={
+            view === 'draft'
+              ? '点击下方「+ 新增关系类型」创建一个。关系类型定义实体之间可以有哪些连接。'
+              : '草稿确认之后，已确认的关系类型会出现在这里。'
+          }
+        />
       )}
       {items.length > 0 && (
         <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card">
@@ -1447,10 +1459,15 @@ function ConstraintsTab({
       )}
       {!loaded && <Skeleton variant="table-rows" count={3} />}
       {loaded && shape === 'table' && constraints.length === 0 && (
-        <p className="text-ink-soft">
-          还没有任何{view === 'draft' ? '草稿' : '已确认的'}约束。
-          {view === 'draft' && '在下方表单里添加一个。'}
-        </p>
+        <EmptyState
+          icon={ShieldCheck}
+          title={`还没有任何${view === 'draft' ? '草稿' : '已确认的'}约束`}
+          action={
+            view === 'draft'
+              ? '在下方表单里添加一个。约束声明「哪个实体类型可以经哪种关系连到哪个实体类型」，是本体图上的边。'
+              : '草稿确认之后，已确认的约束会出现在这里。'
+          }
+        />
       )}
       {shape === 'table' && constraints.length > 0 && (
         <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card">

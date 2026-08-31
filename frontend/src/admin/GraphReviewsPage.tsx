@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
+import { EmptyState } from './EmptyState'
+import { History } from 'lucide-react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminDensity } from './DensityContext'
@@ -1112,7 +1114,11 @@ export function GraphReviewsPage() {
           </div>
         ))}
       {tab === 'history' && historyLoaded && history.length === 0 && (
-        <p className="text-ink-soft">还没有处理过的记录——批准或驳回的候选会出现在这里。</p>
+        <EmptyState
+          icon={History}
+          title="还没有处理过的记录"
+          action="在「待审核」标签里批准或驳回候选后，处理结果会出现在这里。"
+        />
       )}
       {tab === 'history' && historyLoaded && history.length > 0 && (
         <Pager

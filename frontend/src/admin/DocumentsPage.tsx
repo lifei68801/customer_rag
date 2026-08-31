@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { FileText } from 'lucide-react'
+import { EmptyState } from './EmptyState'
 import { Link } from 'react-router-dom'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
@@ -539,13 +541,19 @@ export function DocumentsPage() {
             )
           })}
         {loaded && documents.length === 0 && (
-          <p className="text-ink-soft">
-            当前租户还没有已摄取的文档。去
-            <Link to="/admin/data-entry" className="font-bold underline">
-              数据加工
-            </Link>
-            上传一份试试。
-          </p>
+          <EmptyState
+            icon={FileText}
+            title="当前租户还没有已摄取的文档"
+            action={
+              <>
+                去
+                <Link to="/admin/data-entry" className="mx-1 font-bold underline">
+                  数据加工
+                </Link>
+                上传一份试试。
+              </>
+            }
+          />
         )}
         {loaded && documents.length > 0 && (
           <Pager

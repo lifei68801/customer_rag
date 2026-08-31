@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { EmptyState } from './EmptyState'
+import { PlayCircle } from 'lucide-react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { SchemaEtlConfigBuilder } from './schemaEtlConfigBuilder/SchemaEtlConfigBuilder'
 import { useAdminAuth } from './useAdminAuth'
@@ -489,7 +491,11 @@ export function SchemaEtlPage() {
       <div className="flex flex-col gap-2">
         <h2 className="font-mono font-semibold text-ink">历史跑批</h2>
         {runs.length === 0 && (
-          <p className="text-ink-soft">还没有任何跑批记录。在上方上传数据文件开始第一次运行。</p>
+          <EmptyState
+            icon={PlayCircle}
+            title="还没有任何跑批记录"
+            action="在上方上传列映射配置和数据文件，开始第一次运行。首次运行建议勾选「预演」，先看清会写入和移除什么。"
+          />
         )}
         {runs.length > 0 && (
           <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card">

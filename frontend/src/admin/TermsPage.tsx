@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Boxes, SearchX } from 'lucide-react'
+import { EmptyState } from './EmptyState'
 import { Link } from 'react-router-dom'
 import { useAdminAuth } from './useAdminAuth'
 import { useConfirm } from './ConfirmContext'
@@ -472,17 +474,34 @@ export function TermsPage() {
           )
         })}
       {loaded && !error && terms.length === 0 && (
-        <p className="text-ink-soft">
-          还没有任何实体。实体创建只能通过「
-          <Link to="/admin/data-entry/etl" className="font-bold underline">
-            表格导入
-          </Link>
-          」或「
-          <Link to="/admin/data-entry/review" className="font-bold underline">
-            文档抽取
-          </Link>
-          」完成。
-        </p>
+        // 搜索无结果和"一条实体都没有"是两回事。加搜索之前这里只有后者，
+        // 搜索之后如果还只说"还没有任何实体"，用户会以为数据没了——明明有
+        // 两万条，只是没匹配的。
+        search ? (
+          <EmptyState
+            icon={SearchX}
+            title={`没有匹配「${search}」的实体`}
+            action="搜索会同时匹配标准名和别名。换个关键词，或清除搜索看全部。"
+          />
+        ) : (
+          <EmptyState
+            icon={Boxes}
+            title="还没有任何实体"
+            action={
+              <>
+                实体创建只能通过「
+                <Link to="/admin/data-entry/etl" className="font-bold underline">
+                  表格导入
+                </Link>
+                」或「
+                <Link to="/admin/data-entry/review" className="font-bold underline">
+                  文档抽取
+                </Link>
+                」完成。
+              </>
+            }
+          />
+        )
       )}
       {loaded && terms.length > 0 && (
         <Pager page={page} totalPages={Math.max(1, Math.ceil(total / PAGE_SIZE))} onPageChange={setPage} />
