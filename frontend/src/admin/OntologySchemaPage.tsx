@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useState, type FormEvent } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useConfirm } from './ConfirmContext'
 import { useAdminDensity } from './DensityContext'
 import { Skeleton } from './Skeleton'
+// 图只在约束 tab 的「图」形态下用到，而 sigma + graphology 有几百 kB。
+// 静态导入会让它进首屏包、让所有页面替这一个视图买单，所以按需加载。
+import type { FanoutEntry } from './ontologyGraph/buildScene'
+
+const OntologyGraph = lazy(() =>
+  import('./ontologyGraph/OntologyGraph').then((m) => ({ default: m.OntologyGraph })),
+)
 import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 
@@ -1177,6 +1184,12 @@ function ConstraintsTab({
   const [object, setObject] = useState('')
   const [adding, setAdding] = useState(false)
   const [removingKey, setRemovingKey] = useState<string | null>(null)
+  // 约束本质是 (主语类型, 关系, 宾语类型) 的边表——图和表是同一份数据的两种
+  // 呈现。默认给表：新增/删除都在表上操作，图是只读的全局视图。
+  const [shape, setShape] = useState<'table' | 'graph'>('table')
+  // 扇出来自图谱实际数据，跟约束表分开拉：探测要逐条查 Neo4j，比约束本身慢，
+  // 不该拖住表格视图的首屏。失败时保持空数组——没有红边好过标错红边。
+  const [fanout, setFanout] = useState<FanoutEntry[]>([])
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
@@ -1292,16 +1305,67 @@ function ConstraintsTab({
 
   const cellPadding = density === 'compact' ? 'px-2 py-1' : 'px-3 py-2'
 
+  useEffect(() => {
+    if (shape !== 'graph' || !sessionToken) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await adminFetch(
+          `/api/admin/ontology/${encodeURIComponent(tenantId)}/constraint-fanout?status=${view}`,
+          sessionToken,
+        )
+        if (!res.ok) return
+        const body = (await res.json()) as { fanout: FanoutEntry[] }
+        if (!cancelled) setFanout(body.fanout)
+      } catch {
+        // 探测失败就不标红，不打断图的渲染——图本身的价值不依赖扇出。
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [shape, sessionToken, tenantId, view, constraints])
+
+  const shapeButtonClass = (active: boolean) =>
+    `rounded-control border border-subtle px-3 py-1.5 text-sm font-bold transition ${focusRing} ${
+      active ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink hover:bg-interactive-hover'
+    }`
+
   return (
     <div className="flex flex-col gap-4">
+      {loaded && (
+        <div className="flex items-center gap-2" role="group" aria-label="约束视图形态">
+          <button
+            type="button"
+            className={shapeButtonClass(shape === 'table')}
+            aria-pressed={shape === 'table'}
+            onClick={() => setShape('table')}
+          >
+            表格
+          </button>
+          <button
+            type="button"
+            className={shapeButtonClass(shape === 'graph')}
+            aria-pressed={shape === 'graph'}
+            onClick={() => setShape('graph')}
+          >
+            图
+          </button>
+        </div>
+      )}
+      {loaded && shape === 'graph' && (
+        <Suspense fallback={<Skeleton variant="table-rows" count={4} />}>
+          <OntologyGraph termTypes={termTypes} constraints={constraints} fanout={fanout} />
+        </Suspense>
+      )}
       {!loaded && <Skeleton variant="table-rows" count={3} />}
-      {loaded && constraints.length === 0 && (
+      {loaded && shape === 'table' && constraints.length === 0 && (
         <p className="text-ink-soft">
           还没有任何{view === 'draft' ? '草稿' : '已确认的'}约束。
           {view === 'draft' && '在下方表单里添加一个。'}
         </p>
       )}
-      {constraints.length > 0 && (
+      {shape === 'table' && constraints.length > 0 && (
         <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card">
           <table className="w-full text-left text-sm">
             <thead>

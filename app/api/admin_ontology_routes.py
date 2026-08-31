@@ -314,6 +314,55 @@ async def migrate_tenant_relation_type(
     return {"migrated_count": count}
 
 
+@router.get("/{tenant_id}/constraint-fanout")
+async def probe_tenant_constraint_fanout(
+    tenant_id: str, status: str = "draft",
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+) -> dict:
+    """按已声明的约束逐条探测**真实数据**里的扇出度。
+
+    为什么单独开这个接口：约束表只说明"这个组合被允许"，说不出实际数据里
+    一个主语节点会连到几个宾语节点。而后者才是扇形陷阱的判据——沿一条
+    1:N 的边做计数聚合会把归属放大（订单→产品→公司 这条两跳路径上，
+    产品→公司 是 1:N，于是每笔订单都会通向全部 3 家公司，"某公司有多少
+    订单"因此恒等于订单总数）。
+
+    本体层看不出这件事：本体只声明了一条 `产品 SOLD_BY 公司`，是不是
+    一对多要问图谱。
+
+    逐条查询，约束数量通常是个位数到几十条（demo 是 5 条），不做批量优化。
+    单条探测失败不中断整体——图谱可能正在重建、某个类型还没有任何节点，
+    这时该退回"未知"而不是让整个视图报错。
+    """
+    combinations = await list_allowed_combinations(review_conn, tenant_id, status=status)
+    fanout: list[dict] = []
+    for c in combinations:
+        try:
+            value = await graph_client.probe_relation_fanout(
+                tenant_id=tenant_id,
+                relation_type=c.relation_type,
+                from_term_type=c.subject_term_type,
+                to_term_type=c.object_term_type,
+                direction="outgoing",
+            )
+        except Exception:
+            logger.exception(
+                "探测扇出失败：tenant=%r %s -%s-> %s",
+                tenant_id, c.subject_term_type, c.relation_type, c.object_term_type,
+            )
+            value = None
+        fanout.append(
+            {
+                "subject_term_type": c.subject_term_type,
+                "relation_type": c.relation_type,
+                "object_term_type": c.object_term_type,
+                "fanout": value,
+            }
+        )
+    return {"fanout": fanout}
+
+
 @router.get("/{tenant_id}/constraints")
 async def list_tenant_constraints(
     tenant_id: str, status: str = "draft",

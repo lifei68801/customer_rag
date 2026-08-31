@@ -321,6 +321,11 @@ class GraphWriteProtocol(Protocol):
 
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None: ...
 
+    async def probe_relation_fanout(
+        self, *, tenant_id: str, relation_type: str, from_term_type: str,
+        to_term_type: str, direction: str,
+    ) -> int: ...
+
     async def count_relation_edges_for_term(
         self, *, tenant_id: str, node_key: str
     ) -> int: ...

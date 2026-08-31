@@ -53,9 +53,21 @@ class _FakeGraphClient:
         self._term_type_migrate_error = term_type_migrate_error
         self.ensured_index_calls: list[tuple[str, str, list[tuple[str, str]]]] = []
         self.migrate_term_type_nodes_calls: list[tuple[str, str, str]] = []
+        self.fanout_by_relation: dict[str, int] = {}
+        self.fanout_error: Exception | None = None
 
     async def sync_term(self, term) -> None:
         pass
+
+    async def probe_relation_fanout(
+        self, *, tenant_id: str, relation_type: str, from_term_type: str,
+        to_term_type: str, direction: str,
+    ) -> int:
+        # 默认 1（函数关系，无扇出）；要测扇出的用例把 fanout_by_relation
+        # 设成 {关系类型: 扇出度}，要测探测失败的设 fanout_error。
+        if self.fanout_error is not None:
+            raise self.fanout_error
+        return self.fanout_by_relation.get(relation_type, 1)
 
     async def migrate_relation_type_edges(self, *, tenant_id: str, old_type: str, new_type: str) -> int:
         if self._migrate_error is not None:
@@ -650,3 +662,88 @@ def test_update_term_type_rejects_invalid_standard_name_value_type(client):
         headers={"Authorization": "Bearer x"},
     )
     assert resp.status_code == 400
+
+
+def test_constraint_fanout_reports_real_data_fanout(client):
+    """约束表只说明「这个组合被允许」，说不出实际数据里一个主语节点会连到
+    几个宾语节点——而后者才是扇形陷阱的判据。本体层看不出这件事：本体只
+    声明了一条边，是不是一对多要问图谱。"""
+    for value in ("产品", "公司"):
+        client.post(
+            f"/api/admin/ontology/default/term-types", json={"value": value, "extra_fields": []},
+            headers={"Authorization": "Bearer x"},
+        )
+    client.post("/api/admin/ontology/default/checkout", headers={"Authorization": "Bearer x"})
+    # SOLD_BY 不在默认播种的 10 种通用关系里，约束校验要求它先存在于草稿。
+    client.post(
+        "/api/admin/ontology/default/relation-types",
+        json={"relation_type": "SOLD_BY", "example_phrase": "产品 SOLD_BY 公司"},
+        headers={"Authorization": "Bearer x"},
+    )
+    added = client.post(
+        "/api/admin/ontology/default/constraints",
+        json={"subject_term_type": "产品", "relation_type": "SOLD_BY", "object_term_type": "公司"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert added.status_code == 200, added.text
+
+    fake = _FakeGraphClient()
+    fake.fanout_by_relation = {"SOLD_BY": 3}
+    app.dependency_overrides[deps.get_graph_client] = lambda: fake
+    try:
+        resp = client.get(
+            "/api/admin/ontology/default/constraint-fanout?status=draft",
+            headers={"Authorization": "Bearer x"},
+        )
+    finally:
+        app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
+
+    assert resp.status_code == 200
+    assert resp.json()["fanout"] == [
+        {
+            "subject_term_type": "产品",
+            "relation_type": "SOLD_BY",
+            "object_term_type": "公司",
+            "fanout": 3,
+        }
+    ]
+
+
+def test_constraint_fanout_degrades_to_null_when_probe_fails(client):
+    """单条探测失败不该让整个视图报错——图谱可能正在重建、某个类型还没有
+    任何节点。退回「未知」（null）而不是 500。"""
+    client.post(
+        "/api/admin/ontology/default/term-types", json={"value": "产品", "extra_fields": []},
+        headers={"Authorization": "Bearer x"},
+    )
+    client.post(
+        "/api/admin/ontology/default/term-types", json={"value": "公司", "extra_fields": []},
+        headers={"Authorization": "Bearer x"},
+    )
+    client.post("/api/admin/ontology/default/checkout", headers={"Authorization": "Bearer x"})
+    # SOLD_BY 不在默认播种的 10 种通用关系里，约束校验要求它先存在于草稿。
+    client.post(
+        "/api/admin/ontology/default/relation-types",
+        json={"relation_type": "SOLD_BY", "example_phrase": "产品 SOLD_BY 公司"},
+        headers={"Authorization": "Bearer x"},
+    )
+    added = client.post(
+        "/api/admin/ontology/default/constraints",
+        json={"subject_term_type": "产品", "relation_type": "SOLD_BY", "object_term_type": "公司"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert added.status_code == 200, added.text
+
+    fake = _FakeGraphClient()
+    fake.fanout_error = RuntimeError("图谱不可用")
+    app.dependency_overrides[deps.get_graph_client] = lambda: fake
+    try:
+        resp = client.get(
+            "/api/admin/ontology/default/constraint-fanout?status=draft",
+            headers={"Authorization": "Bearer x"},
+        )
+    finally:
+        app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
+
+    assert resp.status_code == 200
+    assert resp.json()["fanout"][0]["fanout"] is None
