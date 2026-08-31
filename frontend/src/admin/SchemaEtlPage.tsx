@@ -215,6 +215,8 @@ export function SchemaEtlPage() {
     const form = event.currentTarget
     const configInput = form.elements.namedItem('config') as HTMLInputElement
     const dataFilesInput = form.elements.namedItem('data_files') as HTMLInputElement
+    const dryRunInput = form.elements.namedItem('dry_run') as HTMLInputElement | null
+    const allowLargeSweepInput = form.elements.namedItem('allow_large_sweep') as HTMLInputElement | null
     const configFile = configInput.files?.[0]
     if (!configFile) return
 
@@ -226,6 +228,8 @@ export function SchemaEtlPage() {
       for (const file of Array.from(dataFilesInput.files ?? [])) {
         formData.append('data_files', file)
       }
+      formData.append('dry_run', String(dryRunInput?.checked ?? false))
+      formData.append('allow_large_sweep', String(allowLargeSweepInput?.checked ?? false))
       const response = await adminFetch(
         `/api/admin/${encodeURIComponent(tenantId)}/schema-etl/runs`,
         sessionToken,
@@ -444,6 +448,20 @@ export function SchemaEtlPage() {
                   disabled={confirmed !== true}
                   className="text-ink"
                 />
+              </label>
+              <label className="flex items-center gap-2 text-sm font-bold text-ink">
+                <input type="checkbox" name="dry_run" disabled={confirmed !== true} />
+                预演（不写入）
+                <span className="ml-2 font-normal text-ink-soft">
+                  只报告将要移除多少实体，不做任何写入或删除。
+                </span>
+              </label>
+              <label className="flex items-center gap-2 text-sm font-bold text-ink">
+                <input type="checkbox" name="allow_large_sweep" disabled={confirmed !== true} />
+                允许大规模清理
+                <span className="ml-2 font-normal text-ink-soft">
+                  本次移除比例超过安全阈值时也继续。默认不勾。
+                </span>
               </label>
               {uploadError && (
                 <p role="alert" className="text-sm text-ink">

@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -155,15 +155,31 @@ async def _run_schema_etl_job(
     tenant_id: str,
     config_path: Path,
     data_dir: Path,
+    dry_run: bool = False,
+    allow_large_sweep: bool = False,
 ) -> None:
     """后台异步执行的实际跑批体——run_schema_etl 自己会再检查一次
     is_ontology_confirmed（本路由的 /runs 入口已经提前检查过一次，这里的
     检查是它自己的兜底，不是重复劳动），所以 SchemaETLNotConfirmedError
     在这里仍然是一个合法的、需要捕获的失败分支（例如页面检查通过后、
-    真正跑批前，租户 schema 被别人改成未确认）。"""
+    真正跑批前，租户 schema 被别人改成未确认）。
+
+    dry_run / allow_large_sweep 原样透传给 run_schema_etl（源端删除传播，
+    2026-08-31）：dry_run 时只报告将要删除多少，不做任何写入；
+    allow_large_sweep 是安全阀的显式绕过开关，默认关闭。它们可能触发的
+    DuplicateNodeKeyError / SweepSafetyValveError / DuplicateEntityMappingError
+    都是配置类异常，跟其它异常一样统一走下面的 except Exception 落到
+    status='failed'，不额外区分处理——保留完整的异常消息即可。"""
     try:
         config = load_schema_etl_config(config_path)
-        report = await run_schema_etl(conn=conn, graph_client=graph_client, config=config, data_dir=data_dir)
+        report = await run_schema_etl(
+            conn=conn,
+            graph_client=graph_client,
+            config=config,
+            data_dir=data_dir,
+            dry_run=dry_run,
+            allow_large_sweep=allow_large_sweep,
+        )
         await mark_etl_run_completed(
             conn,
             run_id=run_id,
@@ -181,6 +197,8 @@ async def start_schema_etl_run(
     background_tasks: BackgroundTasks,
     config: UploadFile,
     data_files: list[UploadFile] = [],
+    dry_run: bool = Form(False),
+    allow_large_sweep: bool = Form(False),
     upload_dir: Path = Depends(deps.get_upload_dir),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: SchemaEtlGraphProtocol = Depends(deps.get_graph_client),
@@ -242,6 +260,8 @@ async def start_schema_etl_run(
         tenant_id=tenant_id,
         config_path=config_path,
         data_dir=run_dir,
+        dry_run=dry_run,
+        allow_large_sweep=allow_large_sweep,
     )
     return StartRunResponse(run_id=run_id)
 

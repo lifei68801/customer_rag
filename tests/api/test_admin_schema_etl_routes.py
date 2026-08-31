@@ -17,6 +17,7 @@ from app.graphrag.etl_runs_store import (
 from app.graphrag.ontology_categories import create_term_type
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag.ontology_relations import create_relation_type
+from app.graphrag.schema_etl import ETLRunReport
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
@@ -426,3 +427,48 @@ def test_sanitize_data_filename_handles_dangerous_single_dot_names():
     # 验证包含斜线等危险字符的文件名被妥善处理
     assert _sanitize_data_filename("../etc") == ".._etc"  # 斜线被替换成下划线
     assert _sanitize_data_filename("..\\etc") == ".._etc"  # 反斜线也被替换
+
+
+def test_start_run_passes_dry_run_and_allow_large_sweep_through(client, review_conn, monkeypatch):
+    """两个开关必须真的透传到 run_schema_etl——只在路由上接收却不往下传，
+    是这种"加开关"改动最典型的静默失效。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    captured: dict[str, object] = {}
+
+    async def fake_run_schema_etl(
+        *, conn, graph_client, config, data_dir, dry_run=False, allow_large_sweep=False
+    ):
+        captured["dry_run"] = dry_run
+        captured["allow_large_sweep"] = allow_large_sweep
+        return ETLRunReport()
+
+    monkeypatch.setattr("app.api.admin_schema_etl_routes.run_schema_etl", fake_run_schema_etl)
+
+    files = {"config": ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")}
+    data = {"dry_run": "true", "allow_large_sweep": "true"}
+    response = client.post("/api/admin/muji/schema-etl/runs", files=files, data=data)
+
+    assert response.status_code == 200
+    assert captured == {"dry_run": True, "allow_large_sweep": True}
+
+
+def test_start_run_defaults_both_switches_to_false(client, review_conn, monkeypatch):
+    """不传两个字段时必须默认关闭——安全阀默认生效，dry-run 默认不生效。
+    默认值搞反会让安全阀形同虚设。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    captured: dict[str, object] = {}
+
+    async def fake_run_schema_etl(
+        *, conn, graph_client, config, data_dir, dry_run=False, allow_large_sweep=False
+    ):
+        captured["dry_run"] = dry_run
+        captured["allow_large_sweep"] = allow_large_sweep
+        return ETLRunReport()
+
+    monkeypatch.setattr("app.api.admin_schema_etl_routes.run_schema_etl", fake_run_schema_etl)
+
+    files = {"config": ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")}
+    response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+
+    assert response.status_code == 200
+    assert captured == {"dry_run": False, "allow_large_sweep": False}
