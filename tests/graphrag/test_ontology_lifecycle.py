@@ -252,3 +252,42 @@ async def test_confirm_ontology_is_idempotent_no_op_without_any_draft():
 
     assert await list_relation_types(conn, "t1", status="confirmed") == confirmed_relations_after_first
     assert await list_term_types(conn, "t1", status="confirmed") == confirmed_term_types_after_first
+
+
+async def test_concurrent_checkout_draft_does_not_violate_primary_key():
+    """管理后台本体页面的三个 tab（实体类型/关系类型/约束）各自发一次
+    checkout，实测会几乎同时到达。
+
+    checkout_draft 是"先查后写、中间无锁"：查草稿是否为空、查已确认版本
+    是否存在、再插入，三步之间有 await 让出点，而 deps.get_review_conn 是
+    进程内单例连接，多个请求的协程共用它、可以在这些让出点互相穿插。两个
+    请求都看到"草稿为空"就会都执行复制，第二个撞主键
+    UNIQUE (tenant_id, relation_type, status)，返回 500，界面显示
+    "schema 草稿初始化失败"。
+
+    这条用例用 asyncio.gather 在同一个连接上并发调用，复现那个交错。
+    """
+    import asyncio
+
+    conn = await _conn()
+    await create_relation_type(
+        conn, "t1", relation_type="BELONG_TO", example_phrase="A BELONG_TO B"
+    )
+    await create_term_type(conn, tenant_id="t1", value="产品")
+    await add_allowed_combination(
+        conn, tenant_id="t1", subject_term_type="产品",
+        relation_type="BELONG_TO", object_term_type="产品",
+    )
+    await confirm_ontology(conn, "t1")
+
+    # confirm 会清掉检出标记，所以这三次并发调用都会走到"需要重新复制"的分支。
+    await asyncio.gather(
+        checkout_draft(conn, "t1"),
+        checkout_draft(conn, "t1"),
+        checkout_draft(conn, "t1"),
+    )
+
+    # 复制是幂等的：三次并发不该产生重复行，也不该抛 IntegrityError。
+    assert len(await list_relation_types(conn, "t1", status="draft")) == 1
+    assert len(await list_term_types(conn, "t1", status="draft")) == 1
+    assert len(await list_allowed_combinations(conn, "t1", status="draft")) == 1

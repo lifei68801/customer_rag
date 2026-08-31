@@ -77,6 +77,20 @@ async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
     用一张独立的状态表记录"自上次 confirm 以来是否已经检出过"，检出信号不再
     跟"当前行数是否为零"绑在一起，删空草稿就是删空草稿，不会被这个函数悄悄
     撤销。
+
+    并发安全：三条"从已确认版本复制成草稿"的插入都用 INSERT OR IGNORE。
+    这个函数是典型的"先查后写、中间无锁"——检查草稿是否为空、检查已确认
+    版本是否存在、再插入，三步之间有 await 让出点，而 deps.get_review_conn
+    是进程内单例连接，多个请求的协程共用它、可以在这些让出点互相穿插。
+    管理后台的本体页面三个 tab（实体类型/关系类型/约束）各自发一次
+    checkout，实测会几乎同时到达：两个请求都看到"草稿为空"、都执行复制，
+    第二个撞主键 UNIQUE (tenant_id, relation_type, status)，返回 500，
+    界面显示"schema 草稿初始化失败"。
+
+    复制这件事天生幂等——行已经在了就该跳过——所以 OR IGNORE 是语义上
+    正确的写法，而不是掩盖冲突。用加锁或包事务也能解决，但那会把单例
+    连接上的并发请求串行化，代价更大，而且没必要：本来就该幂等的操作
+    不需要互斥。
     """
     await _ensure_checkout_state_schema(conn)
     if await _has_checked_out_since_last_confirm(conn, tenant_id):
@@ -84,7 +98,7 @@ async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
     if not await _has_any_row(conn, "tenant_relation_types", tenant_id, "draft"):
         if await _has_any_row(conn, "tenant_relation_types", tenant_id, "confirmed"):
             await conn.execute(
-                "INSERT INTO tenant_relation_types "
+                "INSERT OR IGNORE INTO tenant_relation_types "
                 "(tenant_id, relation_type, example_phrase, description, allow_chain_query, "
                 "source, status) "
                 "SELECT tenant_id, relation_type, example_phrase, description, "
@@ -97,7 +111,7 @@ async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
     if not await _has_any_row(conn, "term_type_relation_allowlist", tenant_id, "draft"):
         if await _has_any_row(conn, "term_type_relation_allowlist", tenant_id, "confirmed"):
             await conn.execute(
-                "INSERT INTO term_type_relation_allowlist "
+                "INSERT OR IGNORE INTO term_type_relation_allowlist "
                 "(tenant_id, subject_term_type, relation_type, object_term_type, status) "
                 "SELECT tenant_id, subject_term_type, relation_type, object_term_type, 'draft' "
                 "FROM term_type_relation_allowlist WHERE tenant_id = ? AND status = 'confirmed'",
@@ -106,7 +120,7 @@ async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
     if not await _has_any_row(conn, "ontology_term_types", tenant_id, "draft"):
         if await _has_any_row(conn, "ontology_term_types", tenant_id, "confirmed"):
             await conn.execute(
-                "INSERT INTO ontology_term_types "
+                "INSERT OR IGNORE INTO ontology_term_types "
                 "(tenant_id, value, extra_fields, node_key_template, status) "
                 "SELECT tenant_id, value, extra_fields, node_key_template, 'draft' "
                 "FROM ontology_term_types WHERE tenant_id = ? AND status = 'confirmed'",
