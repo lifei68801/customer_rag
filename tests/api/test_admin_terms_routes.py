@@ -9,6 +9,13 @@ from app.api.admin_session import AdminSessionStore
 from app.graphrag.ontology_categories import create_term_type
 from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
+from app.graphrag.term_edits_store import (
+    EXTRA_PROPERTY_PREFIX,
+    FIELD_CREATED,
+    FIELD_DELETED,
+    ensure_term_edits_schema,
+    list_term_edits_for_node_key,
+)
 from app.graphrag.terms_store import create_term, ensure_terms_schema, list_terms, update_term
 from app.main import app
 from tests.settings_factory import build_settings
@@ -21,6 +28,10 @@ def _settings(**overrides):
 async def _open_terms_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
+    # Task 4：这个文件的写接口现在把编辑写进 term_edits，不再是 terms——
+    # 手工建表的测试连接需要显式建这张表，真实的
+    # ontology_store.open_ontology_store_conn 会自动建（唯一的建表入口）。
+    await ensure_term_edits_schema(conn)
     # confirm_ontology/checkout_draft 需要 tenant_relation_types/
     # term_type_relation_allowlist 等表存在——ensure_terms_schema 只建
     # ontology_term_types 一张分类表，这里补齐完整的
@@ -259,7 +270,16 @@ def test_create_term_returns_404_for_unknown_tenant(terms_conn):
     assert response.status_code == 404
 
 
-def test_create_term_with_conflicting_name_returns_400(terms_conn):
+def test_create_term_with_conflicting_name_merges_into_existing_row(terms_conn):
+    """Task 4 前：这个用例断言同名冲突返回 400（_check_name_conflict）。
+
+    Task 4 起该端点不再做名字冲突检查——这是刻意的，standard_name 早已
+    不是身份键（2026-08-30 起同一 term_type 下允许重名），编辑层路径上
+    "名字撞了"不再是数据完整性问题。这里提交的 standard_name/term_type
+    算出的 node_key 恰好和已有的 terms 行相同，于是这次 POST 写的
+    __created__ 编辑被合并视图当成对那一行的普通字段级编辑（见
+    term_merge.apply_edits），不报错、也不会产生第二条记录。
+    """
     asyncio.run(
         create_term(terms_conn, tenant_id="t1", standard_name="已存在", aliases=[], term_type="t")
     )
@@ -278,7 +298,10 @@ def test_create_term_with_conflicting_name_returns_400(terms_conn):
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 400
+    assert response.status_code == 200
+    # terms 表仍然只有原来那一条，没有因为这次 POST 多出一行。
+    raw_terms = asyncio.run(list_terms(terms_conn, "t1"))
+    assert [t.standard_name for t in raw_terms] == ["已存在"]
 
 
 def test_create_term_with_unknown_category_returns_400(terms_conn):
@@ -358,7 +381,16 @@ def test_update_term_with_rename_calls_rename_then_sync(terms_conn):
     assert graph_client.call_order == ["rename_term_node", "sync_term"]
 
 
-def test_update_term_rename_into_existing_name_returns_400(terms_conn):
+def test_update_term_rename_into_existing_name_succeeds_without_conflict_check(terms_conn):
+    """Task 4 前：这个用例断言改名撞了别的术语的名字返回 400
+    （_check_name_conflict）。
+
+    Task 4 起 update_term 不再是这个端点的写入路径，_check_name_conflict
+    随之失去生产调用方——编辑层路径上不重建这道检查（同名多条术语在
+    2026-08-30 之后本就是允许的合法状态，见 test_update_term_addresses_by_node_key
+    这类用例）。node_key 是身份键，改名不改变它，所以 A 和 B 仍然是
+    两条独立记录，只是现在展示名恰好相同。
+    """
     asyncio.run(create_term(terms_conn, tenant_id="t1", standard_name="A", aliases=[], term_type="t"))
     asyncio.run(create_term(terms_conn, tenant_id="t1", standard_name="B", aliases=[], term_type="t"))
     session_store = AdminSessionStore()
@@ -376,7 +408,12 @@ def test_update_term_rename_into_existing_name_returns_400(terms_conn):
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 400
+    assert response.status_code == 200
+    assert response.json()["standard_name"] == "B"
+    assert response.json()["node_key"] == "t:A"
+    # terms 表两条原始记录都还在，PUT 没有碰 terms 表。
+    raw_terms = asyncio.run(list_terms(terms_conn, "t1"))
+    assert sorted(t.standard_name for t in raw_terms) == ["A", "B"]
 
 
 def test_update_nonexistent_term_returns_404(terms_conn):
@@ -917,11 +954,18 @@ def test_update_term_without_extra_properties_preserves_them_in_graph_too(terms_
     assert graph_client.synced[0]["extra_properties"] == {"revenue": 2141.0}
 
 
-def test_update_term_with_empty_extra_properties_clears_them(terms_conn):
-    """显式传 {} 是"清空属性值"，不能和字段缺席混为一谈。
+def test_update_term_with_empty_extra_properties_still_preserves_them(terms_conn):
+    """Task 4 前：这个用例断言显式传 {} 会清空属性值，跟"缺席=保留"相对。
 
-    没有这条区分，"保留"就退化成"永远无法清空"——属性值一旦写进去就再也
-    删不掉了。这是上一个测试的另一半：缺席=保留，{}=清空。
+    Task 4 起 PUT 按提交的字段逐条写 term_edits：extra_properties 里每个
+    键各写一条 extra_properties.<name> 编辑，terms 表那一行完全不碰。
+    "清空"在字段级架构下没有对应的写法——一个空字典意味着"这次没有提交
+    任何属性字段"，跟缺席（None）产生相同效果：不写任何属性编辑，已有
+    的属性值（不管来自管道还是之前的人工编辑）原样保留。field-level 的
+    合并只会用提交的键覆盖同名键的值（见 term_merge._apply_field_edits：
+    `{**term.extra_properties, **property_edits}`），没有"删掉某个键"的
+    编辑语义，所以"用 {} 清空全部属性"这件事在这次改动之后不再可能，除非
+    针对某个具体字段单独提交一条编辑覆盖它的值。
     """
     from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
     asyncio.run(
@@ -956,7 +1000,11 @@ def test_update_term_with_empty_extra_properties_clears_them(terms_conn):
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert response.json()["extra_properties"] == {}
+    assert response.json()["extra_properties"] == {"revenue": 2141.0}
+    edits = asyncio.run(
+        list_term_edits_for_node_key(terms_conn, "t1", "订单号:1-143-51064-X")
+    )
+    assert not any(field.startswith(EXTRA_PROPERTY_PREFIX) for field in edits)
 
 
 # Task 3：test_update_term_requires_term_type_query_param 和
@@ -1185,3 +1233,161 @@ def test_update_term_addresses_by_node_key(terms_conn):
     assert response.status_code == 200
     assert response.json()["standard_name"] == "张三改"
     assert response.json()["node_key"] == "t:张三:200"
+
+
+# ---------------------------------------------------------------------------
+# Task 4：POST/PUT/DELETE 写编辑层，不再写 terms 表。
+# ---------------------------------------------------------------------------
+
+
+def test_put_writes_an_edit_and_never_touches_the_terms_table(terms_conn):
+    """Global Constraints 第一条：人工编辑路径永不写 terms。违反了的话
+    "重跑 ETL 不伤人工修正"的保证就静默失效了。"""
+    from app.graphrag.terms_store import upsert_term_with_node_key
+    asyncio.run(
+        upsert_term_with_node_key(
+            terms_conn, tenant_id="t1", node_key="t:ETL实体", standard_name="ETL实体",
+            aliases=[], term_type="t", extra_properties={},
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.put(
+            "/api/admin/t1/terms/t:ETL实体",
+            json={"standard_name": "人工改名", "aliases": [], "term_type": "t"},
+            headers=_authed_headers(session_store),
+        )
+        assert response.status_code == 200
+
+        # terms 表那一行的 standard_name 没变——PUT 只写 term_edits。
+        raw_terms = asyncio.run(list_terms(terms_conn, "t1"))
+        assert [t.standard_name for t in raw_terms] == ["ETL实体"]
+
+        edits = asyncio.run(list_term_edits_for_node_key(terms_conn, "t1", "t:ETL实体"))
+        assert edits["standard_name"] == "人工改名"
+
+        # 读端点走合并视图，返回人工值。
+        list_response = client.get("/api/admin/t1/terms", headers=_authed_headers(session_store))
+    finally:
+        app.dependency_overrides.clear()
+
+    names = {t["node_key"]: t["standard_name"] for t in list_response.json()["terms"]}
+    assert names["t:ETL实体"] == "人工改名"
+
+
+def test_delete_writes_a_deleted_edit_and_keeps_the_terms_row(terms_conn):
+    """人工删除不可被 ETL 恢复——terms 行仍然存在（ETL 还在维护它），
+    但对所有读路径不可见。"""
+    asyncio.run(
+        create_term(
+            terms_conn, tenant_id="t1", standard_name="待人工删除", aliases=[], term_type="t"
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient(edge_count=0)
+    try:
+        client = TestClient(app)
+        response = client.delete(
+            "/api/admin/t1/terms/t:待人工删除", headers=_authed_headers(session_store)
+        )
+        assert response.status_code == 200
+
+        # terms 表那一行仍然存在——DELETE 不删 terms 行。
+        raw_terms = asyncio.run(list_terms(terms_conn, "t1"))
+        assert [t.standard_name for t in raw_terms] == ["待人工删除"]
+
+        edits = asyncio.run(list_term_edits_for_node_key(terms_conn, "t1", "t:待人工删除"))
+        assert FIELD_DELETED in edits
+
+        # 读端点看不到它。
+        list_response = client.get("/api/admin/t1/terms", headers=_authed_headers(session_store))
+    finally:
+        app.dependency_overrides.clear()
+
+    assert list_response.json()["terms"] == []
+
+
+def test_post_writes_a_created_edit_not_a_terms_row(terms_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "纯编辑层实体", "aliases": ["别名A"], "term_type": "t",
+                "extra_properties": {},
+            },
+            headers=_authed_headers(session_store),
+        )
+        assert response.status_code == 200
+
+        # terms 表没有新增行——POST 只写 __created__ 编辑。
+        raw_terms = asyncio.run(list_terms(terms_conn, "t1"))
+        assert raw_terms == []
+
+        edits = asyncio.run(
+            list_term_edits_for_node_key(terms_conn, "t1", "t:纯编辑层实体")
+        )
+        created = edits[FIELD_CREATED]
+        assert created["standard_name"] == "纯编辑层实体"
+        assert created["term_type"] == "t"
+        assert created["aliases"] == ["别名A"]
+        assert created["extra_properties"] == {}
+
+        # 读端点能看到这个新实体。
+        list_response = client.get("/api/admin/t1/terms", headers=_authed_headers(session_store))
+    finally:
+        app.dependency_overrides.clear()
+
+    node_keys = {t["node_key"] for t in list_response.json()["terms"]}
+    assert "t:纯编辑层实体" in node_keys
+
+
+def test_put_only_writes_edits_for_the_fields_actually_submitted(terms_conn):
+    """字段级而不是整行级。payload 里 extra_properties 缺席时不写任何
+    属性编辑——否则该实体的属性值再也不跟着数据源更新。"""
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
+    asyncio.run(
+        create_term_type(
+            terms_conn, tenant_id="t1", value="订单号2",
+            extra_fields=[ExtraFieldSpec(name="revenue", value_type="number")],
+        )
+    )
+    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(
+        create_term(
+            terms_conn, tenant_id="t1", standard_name="订单X", aliases=[],
+            term_type="订单号2", extra_properties={"revenue": 100.0},
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.put(
+            "/api/admin/t1/terms/订单号2:订单X",
+            json={"standard_name": "订单X改", "aliases": [], "term_type": "订单号2"},
+            headers=_authed_headers(session_store),
+        )
+        assert response.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+    edits = asyncio.run(list_term_edits_for_node_key(terms_conn, "t1", "订单号2:订单X"))
+    assert not any(field.startswith(EXTRA_PROPERTY_PREFIX) for field in edits)
+    assert edits["standard_name"] == "订单X改"

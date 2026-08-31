@@ -13,23 +13,29 @@ from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.duplicate_detection import find_similar_terms
 from app.graphrag.neo4j_client import GraphWriteProtocol
 from app.graphrag.ontology import Term
+from app.graphrag.term_edits_store import EXTRA_PROPERTY_PREFIX, FIELD_CREATED, FIELD_DELETED, upsert_term_edit
 from app.graphrag.terms_store import (
     InvalidExtraPropertyTypeError,
-    TermNameConflictError,
     TermNotFoundError,
     UnknownCategoryError,
+    _validate_categories,
     count_terms,
-    create_term,
-    delete_term,
-    get_term_by_node_key,
+    get_term_merged_by_node_key,
     is_tombstoned,
-    list_terms,
-    update_term,
+    list_terms_merged,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/{tenant_id}/terms", dependencies=[Depends(deps.require_admin_session)])
+
+# Task 4：这三个写入端点都在 require_admin_session 之下，但那个依赖只校验
+# Authorization: Bearer <token> 是否是有效的管理员 session（app/api/deps.py），
+# 不返回任何身份标识（返回值是 None）。本设计不做编辑历史/审计流水
+# （term_edits 每个 (node_key, field) 只保留当前值，见
+# docs/superpowers/specs/2026-08-30-manual-edits-layer-design.md 非目标），
+# edited_by 目前只是可观测性字段，固定写 "admin"。
+_EDITED_BY = "admin"
 
 
 class TermResponse(BaseModel):
@@ -111,12 +117,12 @@ async def list_all_terms(
     # 传入（管理后台自己的分页列表 fetchTermsPage() 两个参数总是一起传），
     # 才按分页语义处理。
     if page is None and page_size is None:
-        terms = await list_terms(review_conn, tenant_id, source=source)
+        terms = await list_terms_merged(review_conn, tenant_id, source=source)
     else:
         effective_page = page or 1
         effective_page_size = page_size or 20
         offset = (effective_page - 1) * effective_page_size
-        terms = await list_terms(
+        terms = await list_terms_merged(
             review_conn, tenant_id, limit=effective_page_size, offset=offset, source=source
         )
     total = await count_terms(review_conn, tenant_id, source=source)
@@ -130,11 +136,28 @@ async def create_new_term(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> TermResponse:
+    """新增术语。Task 4 起改写编辑层：不再往 terms 表插入新行，而是给
+    node_key 写一条 __created__ 编辑——terms 表在 ETL 产出同 node_key 的行
+    之前永远没有这一行（见 term_merge._synthesize_created，合并视图会把
+    它合成出来，source 固定标 "review"）。
+
+    这个端点是全库唯一的 create_term 生产调用点——"知识图谱审核"页
+    （GraphReviewsPage）批准关系时现场创建端点实体，走的就是这里。
+
+    不再做名字冲突检查（原 create_term 内部的 _check_name_conflict）。
+    这是刻意的：standard_name 早已不是身份键（2026-08-30 起同一 term_type
+    下允许重名），编辑层路径上"名字撞了"不再是数据完整性问题，也不在这里
+    重建这道检查。如果这次创建的 node_key 恰好和已有的一行（不管是 ETL
+    产出的还是别的编辑层创建的）相同，合并视图会把 __created__ 的字段
+    降级成对那一行的普通字段级编辑（见 term_merge.apply_edits），不报错、
+    也不会产生第二条记录。
+    """
     await require_active_tenant_or_404(review_conn, tenant_id)
     # 创建前先跟同租户、同类型的现有术语比一遍相似度，供管理员在提交后
     # 直接看到"这个新名字是不是已经有一个很像的术语了"——查询范围限定在
-    # 同 term_type，避免不同类型之间凑巧撞名字的噪声提示。
-    existing_terms = await list_terms(review_conn, tenant_id, source=None)
+    # 同 term_type，避免不同类型之间凑巧撞名字的噪声提示。走合并视图，
+    # 这样刚被人工编辑过（改名/属性）的术语也能算进相似度比对。
+    existing_terms = await list_terms_merged(review_conn, tenant_id, source=None)
     # 已经被合并过的墓碑行（duplicate_review_queue.approve_duplicate_suggestion
     # 打上的标记）排除在外——它的 standard_name 字面包含被合并前的原名，不该
     # 被当成"这个新名字看起来很像"的提示对象，见 is_tombstoned() 的说明。
@@ -147,29 +170,37 @@ async def create_new_term(
         {"node_key": term.node_key, "standard_name": term.standard_name, "similarity_score": score}
         for term, score in similar
     ]
+    extra_properties = payload.extra_properties or {}
     try:
-        await create_term(
-            review_conn,
-            tenant_id=tenant_id,
-            standard_name=payload.standard_name,
-            aliases=payload.aliases,
-            term_type=payload.term_type,
-            extra_properties=payload.extra_properties,
-            source=payload.source,
+        await _validate_categories(
+            review_conn, tenant_id=tenant_id, term_type=payload.term_type,
+            extra_properties=extra_properties,
         )
-    except TermNameConflictError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
     except UnknownCategoryError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except InvalidExtraPropertyTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    node_key = f"{payload.term_type}:{payload.standard_name}"
+    await upsert_term_edit(
+        review_conn,
+        tenant_id=tenant_id,
+        node_key=node_key,
+        field=FIELD_CREATED,
+        value={
+            "standard_name": payload.standard_name,
+            "term_type": payload.term_type,
+            "aliases": payload.aliases,
+            "extra_properties": extra_properties,
+        },
+        edited_by=_EDITED_BY,
+    )
     term = Term(
         tenant_id=tenant_id,
-        node_key=f"{payload.term_type}:{payload.standard_name}",
+        node_key=node_key,
         standard_name=payload.standard_name,
         aliases=payload.aliases,
         term_type=payload.term_type,
-        extra_properties=payload.extra_properties or {},
+        extra_properties=extra_properties,
         source=payload.source,
     )
     # 新增成功后立即同步进图谱（属性+别名节点），不留图谱异步落后的窗口。
@@ -192,34 +223,67 @@ async def update_existing_term(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> TermResponse:
+    """编辑术语。Task 4 起改写编辑层：不再 UPDATE terms 表那一行，而是
+    按提交的字段逐条写 term_edits——standard_name/aliases/term_type 各
+    一条，extra_properties 里每个键各一条 extra_properties.<name>。字段级
+    而不是整行级：terms 表那一行原样不动，重跑 ETL 不会丢掉这次编辑之外
+    的字段。
+
+    payload.extra_properties 缺席（None）时不写任何属性编辑，沿用既有
+    "字段缺席=保留原值"的语义。**显式传 {} 现在等价于"没有提交任何属性
+    字段"**，同样不写任何属性编辑，跟缺席产生相同效果——这是相对于
+    Task 4 之前"传 {} 清空全部属性值"的一处刻意的行为变化：字段级架构下
+    一条 extra_properties.<name> 编辑只能覆盖某个键的值（见
+    term_merge._apply_field_edits 的 `{**term.extra_properties,
+    **property_edits}` 合并写法），没有"删掉这个键"的编辑语义，所以
+    "用一个空字典清空全部属性"这件事不再可能；要清空某个具体属性字段，
+    需要针对该字段单独提交一条编辑覆盖它的值。
+
+    不再做名字冲突检查（原 update_term 内部的 _check_name_conflict），
+    理由同 create_new_term 的文档字符串：standard_name 不再是身份键，
+    编辑层路径上不重建这道检查。
+    """
     await require_active_tenant_or_404(review_conn, tenant_id)
     try:
-        existing_before_update = await get_term_by_node_key(review_conn, tenant_id, node_key)
-        # 解析一次，三处写入（SQLite、响应体、图谱镜像）共用同一个值——
-        # 漏掉任何一处都会让两个存储之间出现只有属性值不一致的静默偏差。
-        effective_extra_properties = (
-            existing_before_update.extra_properties
-            if payload.extra_properties is None
-            else payload.extra_properties
-        )
-        await update_term(
-            review_conn,
-            tenant_id=tenant_id,
-            node_key=existing_before_update.node_key,
-            new_standard_name=payload.standard_name,
-            aliases=payload.aliases,
-            term_type=payload.term_type,
-            extra_properties=effective_extra_properties,
-        )
+        existing_before_update = await get_term_merged_by_node_key(review_conn, tenant_id, node_key)
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
-    except TermNameConflictError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        await _validate_categories(
+            review_conn, tenant_id=tenant_id, term_type=payload.term_type,
+            extra_properties=payload.extra_properties or {},
+            existing_extra_property_keys=frozenset(existing_before_update.extra_properties),
+        )
     except UnknownCategoryError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except InvalidExtraPropertyTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    node_key = existing_before_update.node_key
+
+    await upsert_term_edit(
+        review_conn, tenant_id=tenant_id, node_key=node_key, field="standard_name",
+        value=payload.standard_name, edited_by=_EDITED_BY,
+    )
+    await upsert_term_edit(
+        review_conn, tenant_id=tenant_id, node_key=node_key, field="aliases",
+        value=payload.aliases, edited_by=_EDITED_BY,
+    )
+    await upsert_term_edit(
+        review_conn, tenant_id=tenant_id, node_key=node_key, field="term_type",
+        value=payload.term_type, edited_by=_EDITED_BY,
+    )
+    if payload.extra_properties is not None:
+        for name, value in payload.extra_properties.items():
+            await upsert_term_edit(
+                review_conn, tenant_id=tenant_id, node_key=node_key,
+                field=f"{EXTRA_PROPERTY_PREFIX}{name}", value=value, edited_by=_EDITED_BY,
+            )
+    # 解析一次，响应体和图谱镜像共用同一个值——漏掉任何一处都会让两个
+    # 存储之间出现只有属性值不一致的静默偏差。未提交的键沿用编辑前的
+    # 合并值（管道值或更早的人工编辑），提交的键覆盖同名键。
+    effective_extra_properties = {
+        **existing_before_update.extra_properties,
+        **(payload.extra_properties or {}),
+    }
     if payload.standard_name != existing_before_update.standard_name:
         # 改名：先对同一个图节点做属性级联更新（保留已有关系边），再用
         # sync_term 刷新 type/别名。sync_term 现在按
@@ -265,15 +329,24 @@ async def delete_existing_term(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> dict[str, bool]:
+    """删除术语。Task 4 起改写编辑层：不再 DELETE terms 表那一行，只写
+    一条 __deleted__ 编辑——terms 表那一行（如果存在）继续留着，ETL 还在
+    维护它，只是对所有读路径（含这个管理后台自己的列表接口）不可见，
+    重跑 ETL 也不会让它复活（Global Constraints"人工删除不可被 ETL
+    恢复"）。图谱侧仍然真删（delete_term_node），因为 Neo4j 没有"对部分
+    读路径隐藏"这种中间状态，图上不该留一个 SQLite 侧已经不可见的节点。
+    """
     await require_active_tenant_or_404(review_conn, tenant_id)
     # 先确认术语本身存在——404 的优先级要在 409 之前：一个根本不存在的
     # 名字不该因为图谱里凑巧有同名孤儿边就返回"已在图谱中使用"这种
-    # 误导性的错误。确认存在之后再查图谱：这个术语已经被真实关系边
+    # 误导性的错误。走合并视图：已经被人工删除过的实体（__deleted__）
+    # 和只存在于编辑层的实体（纯 __created__，terms 表没有对应行）都要能
+    # 被这一步正确识别。确认存在之后再查图谱：这个术语已经被真实关系边
     # 使用的话拒绝删除，避免"词表说不存在了，但图谱边还在用它"的不
-    # 一致状态——这一步必须在 delete_term() 之前，不能删完 SQLite 记录
+    # 一致状态——这一步必须在写 __deleted__ 编辑之前，不能标记完删除
     # 才发现图谱不允许删。
     try:
-        term = await get_term_by_node_key(review_conn, tenant_id, node_key)
+        term = await get_term_merged_by_node_key(review_conn, tenant_id, node_key)
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
     edge_count = await graph_client.count_relation_edges_for_term(
@@ -281,7 +354,10 @@ async def delete_existing_term(
     )
     if edge_count > 0:
         raise HTTPException(status_code=409, detail="该术语已在图谱中使用，无法删除")
-    await delete_term(review_conn, tenant_id, term.node_key)
+    await upsert_term_edit(
+        review_conn, tenant_id=tenant_id, node_key=term.node_key, field=FIELD_DELETED,
+        value=None, edited_by=_EDITED_BY,
+    )
     try:
         await graph_client.delete_term_node(tenant_id=tenant_id, node_key=term.node_key)
     except Exception:
