@@ -13,6 +13,7 @@ from app.graphrag.ontology_categories import (
     list_term_types,
 )
 from app.graphrag.term_edits_store import (
+    FIELD_CREATED,
     FIELD_DELETED,
     list_term_edits,
     list_term_edits_for_node_key,
@@ -396,6 +397,62 @@ async def get_term_merged_by_node_key(
     if not merged:
         raise TermNotFoundError(f"术语已被人工删除: {node_key}")
     return merged[0]
+
+
+async def count_terms_merged(
+    conn: aiosqlite.Connection, tenant_id: str, *, source: str | None = None
+) -> int:
+    """合并视图下的术语总数——**分页器要用这个，不是 count_terms**。
+
+    count_terms 数的是 terms 原始表，跟 list_terms_merged 返回的内容对不上：
+    人工删除（__deleted__）的行仍在 terms 里但不出现在列表中，纯编辑层创建
+    （__created__ 且 terms 无对应行）的实体则相反。两个偏差方向相反、会部分
+    抵消——这比单纯多算更坏，抵消会让问题在小数据上看着"差不多对"，掩盖两个
+    独立的错误。
+
+    实现上不走"全量合并再数长度"：那要把整张表载入内存，而分页的意义正是
+    不这么做。改为在 SQL 的基数上按编辑层做增减——term_edits 只包含被人工
+    碰过的行，通常远小于 terms。
+    """
+    base = await count_terms(conn, tenant_id, source=source)
+    edits = await list_term_edits(conn, tenant_id)
+    if not edits:
+        return base
+
+    deleted_keys = {k for k, fields in edits.items() if FIELD_DELETED in fields}
+    created_keys = {k for k, fields in edits.items() if FIELD_CREATED in fields}
+    touched = deleted_keys | created_keys
+    if not touched:
+        return base
+
+    # 只查被编辑过的那几个 node_key 在 terms 里的实际情况——要知道它们存不存在
+    # 以及 source 是什么（source 过滤对合并结果整体生效，见 list_terms_merged）。
+    keys = list(touched)
+    placeholders = ",".join("?" * len(keys))
+    cursor = await conn.execute(
+        f"SELECT node_key, source FROM terms WHERE tenant_id = ? AND node_key IN ({placeholders})",
+        (tenant_id, *keys),
+    )
+    source_by_key = {row[0]: row[1] for row in await cursor.fetchall()}
+
+    total = base
+    for key in deleted_keys:
+        # 有 terms 行的才需要减：base 里本来就没数过纯编辑层创建的实体。
+        existing_source = source_by_key.get(key)
+        if existing_source is None:
+            continue
+        if source is None or existing_source == source:
+            total -= 1
+    for key in created_keys:
+        if key in source_by_key or key in deleted_keys:
+            # terms 里已有对应行时，那一行接管存在性、base 已经数过它；
+            # 同时被删除的则根本不出现。两种都不该再加。
+            continue
+        # 纯编辑层创建的实体在合并视图里 source 固定为 "review"
+        # （见 term_merge._synthesize_created）。
+        if source is None or source == "review":
+            total += 1
+    return total
 
 
 async def count_terms_by_term_type(

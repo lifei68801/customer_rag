@@ -1577,3 +1577,60 @@ def test_search_finds_a_manually_renamed_term_by_its_new_name(terms_conn):
     assert [t["standard_name"] for t in by_new["terms"]] == ["人工改过的名字"]
     # 用已经不再显示的旧名字搜不到——搜索和列表看到的是同一份数据。
     assert by_old["terms"] == []
+
+
+def test_pager_total_matches_the_merged_list_not_the_raw_table(terms_conn):
+    """分页器的 total 必须跟列表内容同口径。
+
+    count_terms 数的是 terms 原始表，跟 list_terms_merged 返回的内容对不上：
+    人工删除（__deleted__）的行仍在表里但不出现在列表中，纯编辑层创建
+    （__created__ 且 terms 无对应行）的实体则相反。
+
+    两个偏差方向相反、会部分抵消——这比单纯多算更坏：抵消会让问题在小数据上
+    看着"差不多对"，掩盖两个独立的错误。这条用例同时构造两种，确保修复不是
+    靠抵消蒙对的。
+    """
+    for i in range(5):
+        asyncio.run(
+            create_term(
+                terms_conn, tenant_id="t1", standard_name=f"n{i}", aliases=[], term_type="t"
+            )
+        )
+    # 删掉两条（terms 行还在，但列表里不该出现）
+    for i in (0, 1):
+        asyncio.run(
+            upsert_term_edit(
+                terms_conn, tenant_id="t1", node_key=f"t:n{i}",
+                field=FIELD_DELETED, value=None, edited_by="admin",
+            )
+        )
+    # 纯编辑层创建一条（terms 里没有，但列表里该出现）
+    asyncio.run(
+        upsert_term_edit(
+            terms_conn, tenant_id="t1", node_key="t:纯编辑层",
+            field=FIELD_CREATED,
+            value={
+                "standard_name": "纯编辑层", "term_type": "t",
+                "aliases": [], "extra_properties": {},
+            },
+            edited_by="admin",
+        )
+    )
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        body = client.get(
+            "/api/admin/t1/terms?page=1&page_size=100", headers=_authed_headers(session_store)
+        ).json()
+    finally:
+        app.dependency_overrides.clear()
+
+    # 5 条原始 - 2 条删除 + 1 条编辑层创建 = 4 条
+    assert len(body["terms"]) == 4
+    # total 必须等于实际列出的条数，而不是原始表的 5。
+    assert body["total"] == 4

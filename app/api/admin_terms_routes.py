@@ -24,7 +24,7 @@ from app.graphrag.terms_store import (
     InvalidExtraPropertyTypeError,
     TermNotFoundError,
     UnknownCategoryError,
-    count_terms,
+    count_terms_merged,
     get_term_by_node_key,
     get_term_merged_by_node_key,
     is_tombstoned,
@@ -160,7 +160,10 @@ async def list_all_terms(
         terms = await list_terms_merged(
             review_conn, tenant_id, limit=effective_page_size, offset=offset, source=source
         )
-    total = await count_terms(review_conn, tenant_id, source=source)
+    # 用合并视图的计数，不是 count_terms——后者数的是 terms 原始表，跟列表
+    # 内容对不上（人工删除的仍在表里但不显示、纯编辑层创建的反之），分页器
+    # 会撒谎。见 count_terms_merged 的说明。
+    total = await count_terms_merged(review_conn, tenant_id, source=source)
     return TermListResponse(terms=[_to_response(term) for term in terms], total=total)
 
 
