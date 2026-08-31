@@ -9,6 +9,12 @@ from app.graphrag.ontology_categories import (
 )
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag import terms_store
+from app.graphrag.term_edits_store import (
+    FIELD_CREATED,
+    FIELD_DELETED,
+    ensure_term_edits_schema,
+    upsert_term_edit,
+)
 from app.graphrag.terms_store import (
     InvalidExtraPropertyTypeError,
     TermNameConflictError,
@@ -21,9 +27,11 @@ from app.graphrag.terms_store import (
     ensure_terms_schema,
     get_term,
     get_term_by_node_key,
+    get_term_merged_by_node_key,
     is_tombstoned,
     list_etl_node_keys_by_term_type,
     list_terms,
+    list_terms_merged,
     merge_terms,
     migrate_term_type,
     update_term,
@@ -1533,3 +1541,146 @@ async def test_delete_terms_by_node_keys_on_empty_set_is_a_noop():
 
     assert removed == 0
     assert await list_etl_node_keys_by_term_type(conn, "t1", "产品") == {"产品:A"}
+
+
+# ---------------------------------------------------------------------------
+# list_terms_merged / get_term_merged_by_node_key —— 合并视图两个查询入口的
+# 集成测试（真实 aiosqlite 连接）。term_merge.apply_edits 本身的合并语义已经
+# 在 tests/graphrag/test_term_merge.py 用纯函数单测穷举过，这里只验证两个
+# 包装函数确实把 terms 表和 term_edits 表接起来了——它们是"所有读路径都该
+# 走这个"的入口，后续任务全部建在它们之上，不能只靠间接调用验证。
+# ---------------------------------------------------------------------------
+
+
+async def _connect_with_edits() -> aiosqlite.Connection:
+    conn = await _connect()
+    await ensure_term_edits_schema(conn)
+    return conn
+
+
+async def test_list_terms_merged_applies_field_edits_over_pipeline_output():
+    """改过的字段取人工值，其余字段仍取管道值。"""
+    conn = await _connect_with_edits()
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:A", standard_name="管道产出的名字",
+        aliases=[], term_type="t", extra_properties={}, source="etl",
+    )
+    await upsert_term_edit(
+        conn, tenant_id="default", node_key="t:A", field="standard_name",
+        value="人工改过的名字", edited_by="alice",
+    )
+
+    merged = await list_terms_merged(conn, "default")
+
+    assert [t.standard_name for t in merged] == ["人工改过的名字"]
+    assert merged[0].node_key == "t:A"
+
+
+async def test_list_terms_merged_excludes_entities_marked_deleted():
+    conn = await _connect_with_edits()
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:A", standard_name="A",
+        aliases=[], term_type="t", extra_properties={}, source="etl",
+    )
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:B", standard_name="B",
+        aliases=[], term_type="t", extra_properties={}, source="etl",
+    )
+    await upsert_term_edit(
+        conn, tenant_id="default", node_key="t:A", field=FIELD_DELETED,
+        value=None, edited_by="alice",
+    )
+
+    merged = await list_terms_merged(conn, "default")
+
+    assert [t.node_key for t in merged] == ["t:B"]
+
+
+async def test_list_terms_merged_includes_pure_edit_layer_created_entities():
+    """terms 表里没有对应行，纯粹由 __created__ 编辑合成的实体也要出现在
+    列表里——这是抽取管道审核流程"当场建端点实体"能闭环的前提。"""
+    conn = await _connect_with_edits()
+    await upsert_term_edit(
+        conn, tenant_id="default", node_key="t:NEW", field=FIELD_CREATED,
+        value={"standard_name": "人工新建", "term_type": "t", "aliases": [], "extra_properties": {}},
+        edited_by="alice",
+    )
+
+    merged = await list_terms_merged(conn, "default")
+
+    assert [t.node_key for t in merged] == ["t:NEW"]
+    assert merged[0].standard_name == "人工新建"
+    assert merged[0].source == "review"
+
+
+async def test_get_term_merged_by_node_key_raises_for_deleted_entity():
+    """对读路径而言，被 __deleted__ 标记过的实体就是不存在，跟 terms 表里
+    根本没有这一行不该有可观测的区别。"""
+    conn = await _connect_with_edits()
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:A", standard_name="A",
+        aliases=[], term_type="t", extra_properties={}, source="etl",
+    )
+    await upsert_term_edit(
+        conn, tenant_id="default", node_key="t:A", field=FIELD_DELETED,
+        value=None, edited_by="alice",
+    )
+
+    with pytest.raises(TermNotFoundError):
+        await get_term_merged_by_node_key(conn, "default", "t:A")
+
+
+async def test_get_term_merged_by_node_key_returns_synthesized_created_entity():
+    """terms 表无行、只有 __created__ 编辑时，按 node_key 单条查询也要能
+    拿到合成结果——不能只有 list_terms_merged 认得这种实体。"""
+    conn = await _connect_with_edits()
+    await upsert_term_edit(
+        conn, tenant_id="default", node_key="t:NEW", field=FIELD_CREATED,
+        value={"standard_name": "人工新建", "term_type": "t", "aliases": [], "extra_properties": {}},
+        edited_by="alice",
+    )
+
+    term = await get_term_merged_by_node_key(conn, "default", "t:NEW")
+
+    assert term.node_key == "t:NEW"
+    assert term.standard_name == "人工新建"
+    assert term.source == "review"
+
+
+async def test_list_terms_merged_source_filter_excludes_edit_layer_created_entities():
+    """source 过滤要对合并结果整体生效：apply_edits 追加的纯编辑层创建
+    实体固定 source="review"，传 source="etl" 时不该把它们也带出来——
+    这是评审发现的缺口，管理后台"来源筛选"依赖这条行为。"""
+    conn = await _connect_with_edits()
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:A", standard_name="A",
+        aliases=[], term_type="t", extra_properties={}, source="etl",
+    )
+    await upsert_term_edit(
+        conn, tenant_id="default", node_key="t:NEW", field=FIELD_CREATED,
+        value={"standard_name": "人工新建", "term_type": "t", "aliases": [], "extra_properties": {}},
+        edited_by="alice",
+    )
+
+    etl_only = await list_terms_merged(conn, "default", source="etl")
+
+    assert [t.node_key for t in etl_only] == ["t:A"]
+
+
+async def test_list_terms_merged_without_source_filter_includes_edit_layer_created_entities():
+    """source=None（默认）的行为必须完全不变：绝大多数调用方走这条路径，
+    修 source 过滤的 bug 不能连带把默认场景也过滤掉。"""
+    conn = await _connect_with_edits()
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="t:A", standard_name="A",
+        aliases=[], term_type="t", extra_properties={}, source="etl",
+    )
+    await upsert_term_edit(
+        conn, tenant_id="default", node_key="t:NEW", field=FIELD_CREATED,
+        value={"standard_name": "人工新建", "term_type": "t", "aliases": [], "extra_properties": {}},
+        edited_by="alice",
+    )
+
+    merged = await list_terms_merged(conn, "default")
+
+    assert {t.node_key for t in merged} == {"t:A", "t:NEW"}

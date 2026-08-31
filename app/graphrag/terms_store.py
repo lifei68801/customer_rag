@@ -356,10 +356,19 @@ async def list_terms_merged(
     合并发生在之后：被 __deleted__ 排除掉的行会让这一页少几条，纯编辑层
     创建的实体则追加在末尾。分页的精确性让位于"读到的一定是合并结果"
     ——后者是本设计的保证，前者只是列表页的观感。
+
+    source 过滤对**合并后的整体结果**生效，不只是 terms 表那次查询：
+    apply_edits 追加的纯编辑层创建实体固定 source="review"（见
+    term_merge._synthesize_created），不受上面那次 SQL 过滤约束——传了
+    具体来源（比如管理后台的来源筛选传 "etl"）就不该把它们也带出来。
+    传 source=None（默认）时这一步是空操作，不改变既有行为。
     """
     terms = await list_terms(conn, tenant_id, limit=limit, offset=offset, source=source)
     edits = await list_term_edits(conn, tenant_id)
-    return apply_edits(terms, edits, tenant_id=tenant_id)
+    merged = apply_edits(terms, edits, tenant_id=tenant_id)
+    if source is not None:
+        merged = [term for term in merged if term.source == source]
+    return merged
 
 
 async def get_term_merged_by_node_key(
