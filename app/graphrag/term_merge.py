@@ -19,6 +19,7 @@ from app.graphrag.term_edits_store import (
     EXTRA_PROPERTY_PREFIX,
     FIELD_CREATED,
     FIELD_DELETED,
+    FIELD_EXTRA_PROPERTIES,
 )
 
 # Term 上可以被整字段替换的编辑字段。extra_properties 不在其中——它按
@@ -29,10 +30,22 @@ _REPLACEABLE_FIELDS = ("standard_name", "aliases", "term_type")
 def _apply_field_edits(term: Term, edits: dict[str, object]) -> Term:
     """把普通字段级编辑叠加到一个 Term 上，返回新的 Term。
 
-    extra_properties 走单独的路径：编辑的 field 形如
-    "extra_properties.revenue"，只覆盖字典里的那一个键，同一个字典里
-    其余属性仍然跟随管道——这正是"字段级而不是整行级"的要点，整行覆盖
-    会让人工只改了展示名却导致该实体的金额再也不跟着数据源更新。
+    extra_properties 有两种共存的编辑粒度：
+
+    - 单键编辑，field 形如 "extra_properties.revenue"，只覆盖字典里的
+      那一个键，同一个字典里其余属性仍然跟随管道——这是"字段级而不是
+      整行级"的常规情形，整行覆盖会让人工只改了展示名却导致该实体的
+      金额再也不跟着数据源更新。
+    - 整字典编辑，field 是 FIELD_EXTRA_PROPERTIES（"extra_properties"，
+      不带尾部的点号，见 term_edits_store.py 的说明），表示人显式提交了
+      完整的属性集合、整体接管这个字段——只有这种编辑才能真正清空全部
+      属性值（单键编辑没有"删掉某个键"的语义，做不到清空）。管理后台
+      PUT 在 payload.extra_properties 非 None 时写的正是这一种。
+
+    两者的优先级：整字典编辑存在时作为基底（整体替换 term 原有的
+    extra_properties），单键编辑仍然叠加在基底之上——这让"整字典编辑 +
+    __created__ 之后 ETL 产出同 node_key 时被拆开的单键编辑"这类组合
+    场景也能正确工作，不会因为两种粒度并存互相覆盖。
     """
     changes: dict[str, object] = {}
     for field in _REPLACEABLE_FIELDS:
@@ -44,7 +57,10 @@ def _apply_field_edits(term: Term, edits: dict[str, object]) -> Term:
         for key, value in edits.items()
         if key.startswith(EXTRA_PROPERTY_PREFIX)
     }
-    if property_edits:
+    if FIELD_EXTRA_PROPERTIES in edits:
+        base_properties = dict(edits[FIELD_EXTRA_PROPERTIES])
+        changes["extra_properties"] = {**base_properties, **property_edits}
+    elif property_edits:
         changes["extra_properties"] = {**term.extra_properties, **property_edits}
 
     return replace(term, **changes) if changes else term

@@ -13,6 +13,7 @@ from app.graphrag.term_edits_store import (
     EXTRA_PROPERTY_PREFIX,
     FIELD_CREATED,
     FIELD_DELETED,
+    FIELD_EXTRA_PROPERTIES,
     ensure_term_edits_schema,
     list_term_edits_for_node_key,
 )
@@ -954,18 +955,19 @@ def test_update_term_without_extra_properties_preserves_them_in_graph_too(terms_
     assert graph_client.synced[0]["extra_properties"] == {"revenue": 2141.0}
 
 
-def test_update_term_with_empty_extra_properties_still_preserves_them(terms_conn):
-    """Task 4 前：这个用例断言显式传 {} 会清空属性值，跟"缺席=保留"相对。
+def test_update_term_with_empty_extra_properties_clears_them(terms_conn):
+    """显式传 {} 是"清空属性值"，不能和字段缺席混为一谈。
 
-    Task 4 起 PUT 按提交的字段逐条写 term_edits：extra_properties 里每个
-    键各写一条 extra_properties.<name> 编辑，terms 表那一行完全不碰。
-    "清空"在字段级架构下没有对应的写法——一个空字典意味着"这次没有提交
-    任何属性字段"，跟缺席（None）产生相同效果：不写任何属性编辑，已有
-    的属性值（不管来自管道还是之前的人工编辑）原样保留。field-level 的
-    合并只会用提交的键覆盖同名键的值（见 term_merge._apply_field_edits：
-    `{**term.extra_properties, **property_edits}`），没有"删掉某个键"的
-    编辑语义，所以"用 {} 清空全部属性"这件事在这次改动之后不再可能，除非
-    针对某个具体字段单独提交一条编辑覆盖它的值。
+    没有这条区分，"保留"就退化成"永远无法清空"——属性值一旦写进去就再也
+    删不掉了。这是上一个测试的另一半：缺席=保留，{}=清空。
+
+    这条断言曾在 Task 4 的第一版实现里被误改成"{} 也保留"（field-level
+    单键编辑确实没有"删掉某个键"的语义），但契约本身没变
+    （TermWriteRequest 的文档字符串、frontend/src/admin/termsApi.ts 都
+    明文写了"缺席=保留、{}=清空"）——修法是给编辑层加一种新的编辑粒度
+    （FIELD_EXTRA_PROPERTIES 整字典编辑），不是悄悄改契约。见
+    term_merge._apply_field_edits 里 FIELD_EXTRA_PROPERTIES 作为基底、
+    EXTRA_PROPERTY_PREFIX 单键编辑叠加其上的合并顺序。
     """
     from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
     asyncio.run(
@@ -1000,10 +1002,18 @@ def test_update_term_with_empty_extra_properties_still_preserves_them(terms_conn
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert response.json()["extra_properties"] == {"revenue": 2141.0}
+    assert response.json()["extra_properties"] == {}
+    # terms 表那一行的属性值没变——PUT 只写 term_edits，清空是通过
+    # FIELD_EXTRA_PROPERTIES 整字典编辑覆盖出来的，不是真的删了什么。
+    raw_terms = asyncio.run(list_terms(terms_conn, "t1"))
+    assert raw_terms[0].extra_properties == {"revenue": 2141.0}
     edits = asyncio.run(
         list_term_edits_for_node_key(terms_conn, "t1", "订单号:1-143-51064-X")
     )
+    assert edits[FIELD_EXTRA_PROPERTIES] == {}
+    # FIELD_EXTRA_PROPERTIES（"extra_properties"）本身不以
+    # EXTRA_PROPERTY_PREFIX（"extra_properties."）开头，这里顺带确认
+    # 没有另外多写出单键编辑。
     assert not any(field.startswith(EXTRA_PROPERTY_PREFIX) for field in edits)
 
 
@@ -1390,4 +1400,5 @@ def test_put_only_writes_edits_for_the_fields_actually_submitted(terms_conn):
 
     edits = asyncio.run(list_term_edits_for_node_key(terms_conn, "t1", "订单号2:订单X"))
     assert not any(field.startswith(EXTRA_PROPERTY_PREFIX) for field in edits)
+    assert FIELD_EXTRA_PROPERTIES not in edits
     assert edits["standard_name"] == "订单X改"

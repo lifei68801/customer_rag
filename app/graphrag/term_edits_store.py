@@ -21,6 +21,17 @@ FIELD_DELETED = "__deleted__"
 FIELD_CREATED = "__created__"
 # 属性字段编辑的 field 前缀，例如 "extra_properties.revenue"。
 EXTRA_PROPERTY_PREFIX = "extra_properties."
+# 整字典编辑：人显式提交了完整的属性集合（管理后台 PUT 的语义，
+# TermWriteRequest.extra_properties 非 None 时）。value 是整个字典，
+# 整体替换、不是叠加。与 EXTRA_PROPERTY_PREFIX 的单键编辑并存——单键
+# 编辑只覆盖一个属性、其余仍跟随管道；这个整字典编辑表示"这个集合由
+# 人接管了"，是 PUT 显式传 {} 能真正清空全部属性值的唯一途径（字段级
+# 单键编辑没有"删掉某个键"的语义，做不到清空）。
+# 注意：这个值故意不带尾部的点号，跟 EXTRA_PROPERTY_PREFIX 只差一个
+# 字符——"extra_properties".startswith("extra_properties.") 是 False
+# （前者比后者短，见 term_merge.py 顶部的验证），两者不会被
+# apply_edits 的 startswith(EXTRA_PROPERTY_PREFIX) 判断互相误判。
+FIELD_EXTRA_PROPERTIES = "extra_properties"
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS term_edits (

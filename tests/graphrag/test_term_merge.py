@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.graphrag.ontology import Term
-from app.graphrag.term_edits_store import FIELD_CREATED, FIELD_DELETED
+from app.graphrag.term_edits_store import FIELD_CREATED, FIELD_DELETED, FIELD_EXTRA_PROPERTIES
 from app.graphrag.term_merge import apply_edits
 
 
@@ -157,3 +157,47 @@ def test_edits_for_other_tenants_node_keys_do_not_leak():
     merged = apply_edits(terms, edits, tenant_id="t1")
 
     assert [t.node_key for t in merged] == ["产品:A"]
+
+
+def test_extra_properties_whole_dict_edit_replaces_the_base_and_clears_the_rest():
+    """FIELD_EXTRA_PROPERTIES 是"人显式提交了完整属性集合"的整字典编辑，
+    整体替换 term 原有的 extra_properties——这是管理后台 PUT 传 {} 能
+    真正清空全部属性值的唯一途径（单键编辑没有"删掉某个键"的语义）。"""
+    terms = [_term("产品:A", "甲", extra_properties={"revenue": 100, "cost": 60})]
+    edits = {"产品:A": {FIELD_EXTRA_PROPERTIES: {}}}
+
+    merged = apply_edits(terms, edits, tenant_id="t1")
+
+    assert merged[0].extra_properties == {}
+
+
+def test_extra_properties_whole_dict_edit_is_the_base_for_single_key_edits():
+    """整字典编辑和带点号的单键编辑共存时：整字典编辑是基底（整体替换
+    管道原值），单键编辑仍然叠加在这个基底之上——不会因为两种粒度并存
+    互相覆盖丢失。"""
+    terms = [_term("产品:A", "甲", extra_properties={"revenue": 100, "cost": 60})]
+    edits = {
+        "产品:A": {
+            FIELD_EXTRA_PROPERTIES: {"revenue": 1, "note": "接管的字典"},
+            "extra_properties.note": "单键编辑覆盖了整字典里的这个键",
+        }
+    }
+
+    merged = apply_edits(terms, edits, tenant_id="t1")
+
+    # 整字典编辑接管了整个字段，管道的 cost 不再出现。
+    assert merged[0].extra_properties == {
+        "revenue": 1,
+        "note": "单键编辑覆盖了整字典里的这个键",
+    }
+
+
+def test_extra_properties_without_whole_dict_edit_falls_back_to_single_key_merge():
+    """没有整字典编辑时行为不变：单键编辑只覆盖那一个键，其余属性仍然
+    跟随管道——回归保护，防止整字典编辑的引入意外改变了这条既有路径。"""
+    terms = [_term("产品:A", "甲", extra_properties={"revenue": 100, "cost": 60})]
+    edits = {"产品:A": {"extra_properties.revenue": 999}}
+
+    merged = apply_edits(terms, edits, tenant_id="t1")
+
+    assert merged[0].extra_properties == {"revenue": 999, "cost": 60}

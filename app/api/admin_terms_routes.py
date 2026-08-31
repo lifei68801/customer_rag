@@ -13,7 +13,12 @@ from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.duplicate_detection import find_similar_terms
 from app.graphrag.neo4j_client import GraphWriteProtocol
 from app.graphrag.ontology import Term
-from app.graphrag.term_edits_store import EXTRA_PROPERTY_PREFIX, FIELD_CREATED, FIELD_DELETED, upsert_term_edit
+from app.graphrag.term_edits_store import (
+    FIELD_CREATED,
+    FIELD_DELETED,
+    FIELD_EXTRA_PROPERTIES,
+    upsert_term_edit,
+)
 from app.graphrag.terms_store import (
     InvalidExtraPropertyTypeError,
     TermNotFoundError,
@@ -224,20 +229,25 @@ async def update_existing_term(
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> TermResponse:
     """编辑术语。Task 4 起改写编辑层：不再 UPDATE terms 表那一行，而是
-    按提交的字段逐条写 term_edits——standard_name/aliases/term_type 各
-    一条，extra_properties 里每个键各一条 extra_properties.<name>。字段级
-    而不是整行级：terms 表那一行原样不动，重跑 ETL 不会丢掉这次编辑之外
-    的字段。
+    按提交的字段写 term_edits——standard_name/aliases/term_type 各一条，
+    terms 表那一行原样不动，重跑 ETL 不会丢掉这次编辑之外的字段。
 
-    payload.extra_properties 缺席（None）时不写任何属性编辑，沿用既有
-    "字段缺席=保留原值"的语义。**显式传 {} 现在等价于"没有提交任何属性
-    字段"**，同样不写任何属性编辑，跟缺席产生相同效果——这是相对于
-    Task 4 之前"传 {} 清空全部属性值"的一处刻意的行为变化：字段级架构下
-    一条 extra_properties.<name> 编辑只能覆盖某个键的值（见
-    term_merge._apply_field_edits 的 `{**term.extra_properties,
-    **property_edits}` 合并写法），没有"删掉这个键"的编辑语义，所以
-    "用一个空字典清空全部属性"这件事不再可能；要清空某个具体属性字段，
-    需要针对该字段单独提交一条编辑覆盖它的值。
+    extra_properties 的语义跟 TermWriteRequest 文档字符串、
+    frontend/src/admin/termsApi.ts 明文的约定保持一致，也是
+    docs/superpowers/specs/2026-08-30-manual-edits-layer-design.md 之后
+    的一次修正（原实现误把"缺席=保留"当成了"显式 {}=保留"）：
+
+    - payload.extra_properties 缺席（None）：不写任何属性编辑——这次
+      请求不涉及属性值，保留原样，字段级不碰这个字段。
+    - payload.extra_properties 非 None（含显式的 {}）：写一条
+      FIELD_EXTRA_PROPERTIES 整字典编辑，值就是提交的字典，整体接管
+      这个字段——提交 {} 因此真正清空全部属性值。这不是退回整行覆盖：
+      只有属性这一个字段被冻结，standard_name/aliases/term_type 仍然
+      各自独立按字段级编辑，只改名字和别名（extra_properties 缺席）时
+      属性值继续完全跟随 ETL，spec 要防的"人工只改了展示名却导致金额
+      再也不跟着数据源更新"没有被破坏。见 term_merge._apply_field_edits
+      里 FIELD_EXTRA_PROPERTIES 和 EXTRA_PROPERTY_PREFIX 单键编辑共存
+      时的合并顺序。
 
     不再做名字冲突检查（原 update_term 内部的 _check_name_conflict），
     理由同 create_new_term 的文档字符串：standard_name 不再是身份键，
@@ -272,18 +282,20 @@ async def update_existing_term(
         value=payload.term_type, edited_by=_EDITED_BY,
     )
     if payload.extra_properties is not None:
-        for name, value in payload.extra_properties.items():
-            await upsert_term_edit(
-                review_conn, tenant_id=tenant_id, node_key=node_key,
-                field=f"{EXTRA_PROPERTY_PREFIX}{name}", value=value, edited_by=_EDITED_BY,
-            )
+        # 整字典编辑：提交了（哪怕是空字典）就整体接管这个字段。
+        await upsert_term_edit(
+            review_conn, tenant_id=tenant_id, node_key=node_key,
+            field=FIELD_EXTRA_PROPERTIES, value=payload.extra_properties,
+            edited_by=_EDITED_BY,
+        )
     # 解析一次，响应体和图谱镜像共用同一个值——漏掉任何一处都会让两个
-    # 存储之间出现只有属性值不一致的静默偏差。未提交的键沿用编辑前的
-    # 合并值（管道值或更早的人工编辑），提交的键覆盖同名键。
-    effective_extra_properties = {
-        **existing_before_update.extra_properties,
-        **(payload.extra_properties or {}),
-    }
+    # 存储之间出现只有属性值不一致的静默偏差。缺席（None）时沿用编辑前
+    # 的合并值；非 None（含 {}）时整体替换成提交的值。
+    effective_extra_properties = (
+        existing_before_update.extra_properties
+        if payload.extra_properties is None
+        else payload.extra_properties
+    )
     if payload.standard_name != existing_before_update.standard_name:
         # 改名：先对同一个图节点做属性级联更新（保留已有关系边），再用
         # sync_term 刷新 type/别名。sync_term 现在按
