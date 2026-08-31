@@ -45,4 +45,8 @@ def test_each_consumer_protocol_keeps_only_what_it_uses():
         "merge_relation",
         "delete_relations_by_source",
     }
-    assert SchemaEtlGraphProtocol.__protocol_attrs__ == {"merge_relation", "sync_term"}
+    assert SchemaEtlGraphProtocol.__protocol_attrs__ == {
+        "merge_relation",
+        "sync_term",
+        "delete_term_node",
+    }

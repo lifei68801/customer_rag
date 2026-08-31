@@ -15,7 +15,7 @@ from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
 from app.graphrag.ontology_constraints import add_allowed_combination
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag.ontology_relations import create_relation_type
-from app.graphrag.schema_etl import SchemaETLNotConfirmedError, run_schema_etl
+from app.graphrag.schema_etl import SchemaETLNotConfirmedError, SweepSafetyValveError, run_schema_etl
 from app.graphrag.schema_etl_config import (
     AllocatedCodeNodeKeyPart,
     ColumnNodeKeyPart,
@@ -23,7 +23,7 @@ from app.graphrag.schema_etl_config import (
     RelationMapping,
     SchemaETLConfig,
 )
-from app.graphrag.terms_store import ensure_terms_schema, get_term, list_terms
+from app.graphrag.terms_store import ensure_terms_schema, get_term, list_terms, upsert_term_with_node_key
 
 pytestmark = pytest.mark.anyio
 
@@ -32,6 +32,7 @@ class FakeGraphClient:
     def __init__(self) -> None:
         self.synced: list[str] = []
         self.merged: list[tuple[str, str, str]] = []
+        self.deleted_nodes: list[str] = []
 
     async def sync_term(self, term) -> None:
         self.synced.append(term.node_key)
@@ -41,6 +42,9 @@ class FakeGraphClient:
         source, tenant_id, provenance, recorded_at,
     ) -> None:
         self.merged.append((subject_standard_name, object_standard_name, relation_type))
+
+    async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
+        self.deleted_nodes.append(node_key)
 
 
 async def _confirmed_conn() -> aiosqlite.Connection:
@@ -969,3 +973,224 @@ async def test_run_schema_etl_reuses_stable_codes_allocated_before_a_duplicate_f
     assert await lookup_stable_code(
         conn, tenant_id="muji", scope="VariantValue", raw_value="K1"
     ) == code_after_first
+
+
+async def test_run_schema_etl_removes_entities_that_vanished_from_the_source(tmp_path):
+    """源里删掉一行，重跑之后那个实体就该从 terms 和图谱里消失——数据源是
+    权威的，本体是它的投影。ETL 此前只有 upsert、没有任何删除，源修正后
+    得到的是新旧并存而不是修正后的状态。"""
+    conn = await _confirmed_conn()
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+        ],
+        relations=[],
+    )
+    path = tmp_path / "products.csv"
+    path.write_text(
+        "product_group_id,product_group_name\nP1,甲\nP2,乙\nP3,丙\n", encoding="utf-8"
+    )
+    await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+    assert len(await list_terms(conn, "muji")) == 3
+
+    path.write_text("product_group_id,product_group_name\nP1,甲\nP2,乙\n", encoding="utf-8")
+    graph_client = FakeGraphClient()
+    report = await run_schema_etl(
+        conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_removed == 1
+    assert report.entities_removed_by_type == {"Product": 1}
+    assert {t.node_key for t in await list_terms(conn, "muji")} == {"Product:P1", "Product:P2"}
+    # 图谱侧也要删——delete_term_node 是 DETACH DELETE，连边和别名节点一起清。
+    assert graph_client.deleted_nodes == ["Product:P3"]
+
+
+async def test_run_schema_etl_sweep_never_touches_manually_created_terms(tmp_path):
+    """审核界面创建的实体（source='review'）从来就不来自这个数据源，
+    "源里没有"对它不成立。即使它的 term_type 由 ETL 管理，也不能被扫掉。"""
+    conn = await _confirmed_conn()
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+        ],
+        relations=[],
+    )
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name\nP1,甲\n", encoding="utf-8"
+    )
+    await upsert_term_with_node_key(
+        conn, tenant_id="muji", node_key="Product:HAND", standard_name="手工产品",
+        aliases=[], term_type="Product", extra_properties={}, source="review",
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_removed == 0
+    assert "Product:HAND" in {t.node_key for t in await list_terms(conn, "muji")}
+
+
+async def test_run_schema_etl_reports_zero_removals_explicitly(tmp_path):
+    """零删除也要出现在报告里——"本次没有移除任何实体"和"根本没跑删除
+    逻辑"必须能区分开。"""
+    conn = await _confirmed_conn()
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+        ],
+        relations=[],
+    )
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name\nP1,甲\n", encoding="utf-8"
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_removed == 0
+    assert report.entities_removed_by_type == {"Product": 0}
+    assert report.relations_removed == 0
+
+
+async def test_run_schema_etl_safety_valve_aborts_with_zero_changes(tmp_path):
+    """一次误传的、被截断的源文件会静默清空大半个图谱，而症状要等用户提问
+    答不出来才暴露。阈值把最常见的事故形态挡在门外，且触发时整轮零改动——
+    不做部分清理。"""
+    conn = await _confirmed_conn()
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+        ],
+        relations=[],
+    )
+    path = tmp_path / "products.csv"
+    path.write_text(
+        "product_group_id,product_group_name\nP1,甲\nP2,乙\nP3,丙\nP4,丁\n",
+        encoding="utf-8",
+    )
+    await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+    before = {t.node_key for t in await list_terms(conn, "muji")}
+    assert len(before) == 4
+
+    # 截断到只剩 1 行：将要移除 3/4 = 75%，超过 50% 阈值。
+    path.write_text("product_group_id,product_group_name\nP1,甲\n", encoding="utf-8")
+    graph_client = FakeGraphClient()
+
+    with pytest.raises(SweepSafetyValveError) as excinfo:
+        await run_schema_etl(
+            conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+        )
+
+    message = str(excinfo.value)
+    assert "Product" in message
+    assert "3" in message and "4" in message
+    # 零改动：既没删，也没写。
+    assert {t.node_key for t in await list_terms(conn, "muji")} == before
+    assert graph_client.deleted_nodes == []
+    assert graph_client.synced == []
+
+
+async def test_run_schema_etl_allow_large_sweep_lets_the_run_through(tmp_path):
+    """阈值是启发式，不是正确性保证。租户确实要缩减数据时必须有显式的放行
+    方式，否则安全阀会把合法操作永久挡死。"""
+    conn = await _confirmed_conn()
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+        ],
+        relations=[],
+    )
+    path = tmp_path / "products.csv"
+    path.write_text(
+        "product_group_id,product_group_name\nP1,甲\nP2,乙\nP3,丙\nP4,丁\n",
+        encoding="utf-8",
+    )
+    await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    path.write_text("product_group_id,product_group_name\nP1,甲\n", encoding="utf-8")
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config,
+        data_dir=tmp_path, allow_large_sweep=True,
+    )
+
+    assert report.entities_removed == 3
+    assert {t.node_key for t in await list_terms(conn, "muji")} == {"Product:P1"}
+
+
+async def test_run_schema_etl_dry_run_reports_removals_without_changing_anything(tmp_path):
+    """首次启用 sweep 会清理掉历史累积的孤儿实体，规模可能不小。dry-run 让
+    租户先看一眼将要删什么，再决定是否真跑。"""
+    conn = await _confirmed_conn()
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+        ],
+        relations=[],
+    )
+    path = tmp_path / "products.csv"
+    path.write_text(
+        "product_group_id,product_group_name\nP1,甲\nP2,乙\n", encoding="utf-8"
+    )
+    await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    path.write_text("product_group_id,product_group_name\nP1,甲\n", encoding="utf-8")
+    graph_client = FakeGraphClient()
+    report = await run_schema_etl(
+        conn=conn, graph_client=graph_client, config=config,
+        data_dir=tmp_path, dry_run=True,
+    )
+
+    assert report.dry_run is True
+    assert report.entities_removed == 1
+    assert report.entities_removed_by_type == {"Product": 1}
+    # 什么都没动。
+    assert len(await list_terms(conn, "muji")) == 2
+    assert graph_client.deleted_nodes == []
+    assert graph_client.synced == []

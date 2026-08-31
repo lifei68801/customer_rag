@@ -33,6 +33,8 @@ from app.graphrag.schema_etl_row_processing import RowProcessingError
 from app.graphrag.terms_store import (
     TermNameConflictError,
     UnknownCategoryError,
+    delete_terms_by_node_keys,
+    list_etl_node_keys_by_term_type,
     list_node_keys_by_term_type,
     upsert_term_with_node_key,
 )
@@ -48,10 +50,28 @@ class SchemaEtlGraphProtocol(RelationWriterProtocol, Protocol):
 
     async def sync_term(self, term: Term) -> None: ...
 
+    async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None: ...
+
 
 class SchemaETLNotConfirmedError(Exception):
     """该租户的本体 schema 还没有 confirm，拒绝运行 ETL——见
     docs/superpowers/specs/2026-08-16-schema-etl-engine-design.md 第 6.2 节。"""
+
+
+class SweepSafetyValveError(Exception):
+    """源端删除的清理规模超过安全阈值，整轮失败、零改动。
+
+    一次误传的、被截断的源文件会静默清空大半个图谱，而症状要等用户提问
+    答不出来才暴露。阈值和放行开关让"我确实要缩减数据"这件事必须被显式
+    表达。阈值是启发式而不是正确性保证——它拦不住 49% 的误删，作用是把
+    最常见的事故形态（传错文件、导出被截断）挡在门外。
+    """
+
+
+# 单个 term_type 的清理占比超过这个比例就触发安全阀。50% 是拍的，没有
+# 数据依据——真实租户的数据波动幅度未知，可能过松也可能过紧，跑过若干
+# 次真实运行后应当回头调整。
+_SWEEP_SAFETY_THRESHOLD = 0.5
 
 
 @dataclass
@@ -79,6 +99,13 @@ class ETLRunReport:
     skipped_by_type: dict[str, int] = field(default_factory=dict)
     skipped_rows: list[SkippedRow] = field(default_factory=list)
     skipped_mappings: list[SkippedMapping] = field(default_factory=list)
+    # 源端删除的传播（2026-08-31）。零删除时这三个字段也会出现在报告里——
+    # "本次没有移除任何实体"和"根本没跑删除逻辑"必须能区分开。
+    entities_removed: int = 0
+    entities_removed_by_type: dict[str, int] = field(default_factory=dict)
+    relations_removed: int = 0
+    # dry_run=True 时，上面的删除计数是"将要删除多少"，而不是"已经删了多少"。
+    dry_run: bool = False
 
 
 def _record_written(report: ETLRunReport, *, label: str) -> None:
@@ -242,7 +269,13 @@ async def _write_relation_mapping(
 
 
 async def run_schema_etl(
-    *, conn: aiosqlite.Connection, graph_client: SchemaEtlGraphProtocol, config: SchemaETLConfig, data_dir: Path
+    *,
+    conn: aiosqlite.Connection,
+    graph_client: SchemaEtlGraphProtocol,
+    config: SchemaETLConfig,
+    data_dir: Path,
+    dry_run: bool = False,
+    allow_large_sweep: bool = False,
 ) -> ETLRunReport:
     """按已确认 schema + 列映射配置，把 CSV 源数据确定性写入 Term/Neo4j 双存储。
     见 docs/superpowers/specs/2026-08-16-schema-etl-engine-design.md 第 6 节。
@@ -279,6 +312,7 @@ async def run_schema_etl(
         t.value for t in await list_term_types(conn, config.tenant_id, status="confirmed")
     }
     duplicates_by_term_type: dict[str, dict[str, list[int]]] = {}
+    scanned_keys_by_term_type: dict[str, set[str]] = {}
     for entity_mapping in config.entities:
         if entity_mapping.term_type not in confirmed_term_type_values:
             continue
@@ -292,8 +326,45 @@ async def run_schema_etl(
             continue
         if scan.duplicate_keys:
             duplicates_by_term_type[entity_mapping.term_type] = scan.duplicate_keys
+        scanned_keys_by_term_type[entity_mapping.term_type] = scan.node_keys
     if duplicates_by_term_type:
         raise DuplicateNodeKeyError(format_duplicate_key_error(duplicates_by_term_type))
+
+    # sweep 集合在这里就能算出来——预检第一遍已经持有本次源文件的全部
+    # node_key。因此安全阀的判定发生在任何写入之前，"整轮零改动"是结构性
+    # 的，跟 DuplicateNodeKeyError 走同一条路径，不是靠记得回滚。
+    #
+    # 只圈 source='etl' 的行：审核界面创建的（'review'）和管理后台手工录入
+    # 的（'manual'）从来就不来自这个数据源，"源里没有"对它们不成立。
+    sweep_by_term_type: dict[str, set[str]] = {}
+    existing_etl_keys_by_term_type: dict[str, set[str]] = {}
+    for term_type, scanned_keys in scanned_keys_by_term_type.items():
+        existing = await list_etl_node_keys_by_term_type(conn, config.tenant_id, term_type)
+        existing_etl_keys_by_term_type[term_type] = existing
+        sweep_by_term_type[term_type] = existing - scanned_keys
+
+    if not allow_large_sweep:
+        for term_type, doomed in sweep_by_term_type.items():
+            existing_count = len(existing_etl_keys_by_term_type[term_type])
+            if existing_count == 0 or not doomed:
+                continue
+            ratio = len(doomed) / existing_count
+            if ratio > _SWEEP_SAFETY_THRESHOLD:
+                raise SweepSafetyValveError(
+                    f"实体类型 {term_type!r} 的清理将移除 {len(doomed)} / {existing_count} 行"
+                    f"（{ratio:.0%}），超过安全阈值 {_SWEEP_SAFETY_THRESHOLD:.0%}，本次未做任何改动。\n"
+                    f"如果源文件确实缩减到这个规模，勾选\"允许大规模清理\"后重跑。"
+                )
+
+    if dry_run:
+        # 预演：把将要删除的规模填进报告就返回，不写入、不删除。首次启用
+        # sweep 时历史累积的孤儿实体可能规模不小，让租户先看一眼。
+        preview = ETLRunReport(dry_run=True)
+        preview.entities_removed = sum(len(v) for v in sweep_by_term_type.values())
+        preview.entities_removed_by_type = {
+            term_type: len(doomed) for term_type, doomed in sweep_by_term_type.items()
+        }
+        return preview
 
     recorded_at = datetime.now()
     report = ETLRunReport()
@@ -332,6 +403,22 @@ async def run_schema_etl(
                 SkippedMapping(
                     label=relation_mapping.relation_type, source_file=relation_mapping.source_file, reason=str(exc),
                 )
+            )
+
+    # sweep 的执行放在写入之后：判定必须在写入前（才能保证阀触发时零改动），
+    # 但执行必须在写入后——先删后写会在中途留下实体缺失，关系写入的端点
+    # 存在性守卫会大面积误判、把合法的关系行全部跳过。
+    for term_type, doomed in sweep_by_term_type.items():
+        report.entities_removed_by_type[term_type] = len(doomed)
+        if not doomed:
+            continue
+        removed = await delete_terms_by_node_keys(conn, config.tenant_id, doomed)
+        report.entities_removed += removed
+        for node_key in doomed:
+            # delete_term_node 是 DETACH DELETE，连这个节点的边和别名节点
+            # 一起清掉，不会留下悬空引用。
+            await graph_client.delete_term_node(
+                tenant_id=config.tenant_id, node_key=node_key
             )
 
     return report
