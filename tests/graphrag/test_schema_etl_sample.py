@@ -200,6 +200,15 @@ class _FakeGraphClient:
     async def merge_relation(self, **kwargs) -> None:
         pass
 
+    async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
+        pass
+
+    async def delete_stale_relations_by_source(
+        self, source: str, *, tenant_id: str, before_recorded_at: str
+    ) -> int:
+        # 这份假客户端只验证样例配置能跑通 run_schema_etl，不关心扫除计数。
+        return 0
+
 
 async def test_generated_sample_files_run_successfully_through_run_schema_etl(tmp_path):
     conn = await aiosqlite.connect(":memory:")

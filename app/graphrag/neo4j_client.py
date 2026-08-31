@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from app.graphrag.ontology import Term
+from app.graphrag import provenance
 from app.graphrag.structured_filter_query import (
     AttributeConstraint,
     ExpandSpec,
@@ -154,6 +155,36 @@ _DELETE_RELATIONS_BY_SOURCE_QUERY = """
 MATCH ()-[r]->() WHERE r.source = $source AND r.tenant_id = $tenant_id
 DELETE r
 """
+
+_DELETE_STALE_RELATIONS_QUERY = """
+MATCH (a:Term {tenant_id: $tenant_id})-[r]->(b:Term {tenant_id: $tenant_id})
+WHERE r.tenant_id = $tenant_id
+  AND r.source = $source
+  AND r.provenance = $provenance
+  AND r.recorded_at < $before
+DELETE r
+RETURN count(r) AS removed
+"""
+# 只删本次运行没有重写过的边：merge_relation 每次 MERGE 都无条件
+# SET r.recorded_at，所以本轮写过的边时间戳恰好等于本轮的值，严格早于
+# 它的就是"上一轮写过、这一轮源里已经没有"的陈旧边。
+#
+# recorded_at 存的是 "%Y-%m-%d %H:%M:%S" 字符串，这个格式的字典序等于
+# 时序，可以直接用 < 比较。
+#
+# 已知边界：两轮 ETL 在同一秒内跑完时，上一轮的时间戳与本轮相同、匹配
+# 不到，陈旧边会残留到下一轮。实际不可能——单轮 ETL 远超一秒，且
+# etl_runs 上有"每租户同时只能有一个 running"的唯一索引。这个边界不去
+# 消除它，留着靠下一轮 ETL 自愈。
+#
+# provenance 也进过滤条件：同名 source 的边如果是抽取管道写的
+# （AUTO_MERGED / HUMAN_APPROVED），不该被 ETL 的清理波及。
+#
+# RETURN count(r) AS removed 的返回值语义已经用真实 Neo4j 5.22（本项目
+# docker-compose.yml 里固定的版本）验证过：DELETE 之后 r 仍然绑定着被删除
+# 的那些关系记录，count(r) 统计的是这次匹配+删除的行数，不是删除后图里
+# 剩余的边数——三条边中两条命中过滤条件时，脚本验证 RETURN 值为 2，
+# 删除后图里确实只剩 1 条边，两者互相印证。
 
 # 别名节点用 alias_name 属性而不是 standard_name——避免和 _SUBGRAPH_QUERY
 # 按 tenant_id/node_key 精确匹配标准节点的查询模式产生歧义（别名节点本身
@@ -557,6 +588,27 @@ class Neo4jGraphClient:
                 _DELETE_RELATIONS_BY_SOURCE_QUERY,
                 {"source": source, "tenant_id": tenant_id},
             )
+
+    async def delete_stale_relations_by_source(
+        self, source: str, *, tenant_id: str, before_recorded_at: str
+    ) -> int:
+        """删除某个源文件下、本次 ETL 运行没有重写过的关系边，返回删除条数。
+
+        与 delete_relations_by_source（全删）的区别是它只删陈旧的那些——
+        配合"先写新边、再扫陈旧边"的顺序，图谱在任何时刻都是完整的，见
+        _DELETE_STALE_RELATIONS_QUERY 的说明。"""
+        async with self._driver.session() as session:
+            result = await session.run(
+                _DELETE_STALE_RELATIONS_QUERY,
+                {
+                    "source": source,
+                    "tenant_id": tenant_id,
+                    "provenance": provenance.ETL,
+                    "before": before_recorded_at,
+                },
+            )
+            record = await result.single()
+            return record["removed"] if record else 0
 
     async def sync_term(self, term: Term) -> None:
         """把术语表里的一个标准术语同步进图谱：写入/更新标准节点的

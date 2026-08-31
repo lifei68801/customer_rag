@@ -52,10 +52,29 @@ class SchemaEtlGraphProtocol(RelationWriterProtocol, Protocol):
 
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None: ...
 
+    async def delete_stale_relations_by_source(
+        self, source: str, *, tenant_id: str, before_recorded_at: str
+    ) -> int: ...
+
 
 class SchemaETLNotConfirmedError(Exception):
     """该租户的本体 schema 还没有 confirm，拒绝运行 ETL——见
     docs/superpowers/specs/2026-08-16-schema-etl-engine-design.md 第 6.2 节。"""
+
+
+class DuplicateEntityMappingError(Exception):
+    """config.entities 里出现了重复的 term_type，整轮失败、零写入。
+
+    run_schema_etl 内部两处都按 term_type 建字典——
+    entity_mappings_by_term_type（关系写入时查主客体实体映射）和
+    scanned_keys_by_term_type（sweep 判定"源里还有哪些键"）。Python 字典
+    字面量对重复 key 是静默取最后一条的，不会报错也不会警告。这不是
+    "某几行数据脏"，是配置本身声明了两条互相冲突的映射，跳过多少行都不会
+    让配置变对：前一条映射贡献的 node_key 集合会被后一条悄悄覆盖掉，进而
+    在 sweep 判定里被当成"源里已经没有这个键"，本该保留的实体会被当成陈旧
+    数据删除——这比"关系端点查找不到、关系行被跳过"更严重，是静默的数据
+    丢失而不是可见的失败，所以必须在任何写入之前就整体拒绝，走法与
+    DuplicateNodeKeyError 一致。"""
 
 
 class SweepSafetyValveError(Exception):
@@ -291,6 +310,31 @@ async def run_schema_etl(
         )
     await ensure_stable_code_registry_schema(conn)
 
+    # 预检最先做的一件事：config.entities 里 term_type 不能重复。下面的
+    # scanned_keys_by_term_type 和后面的 entity_mappings_by_term_type 都
+    # 按 term_type 建字典，重复声明会被静默折叠成后一条——见
+    # DuplicateEntityMappingError 的文档字符串。这一步不依赖 term_type
+    # 是否在已确认 schema 里，纯粹是 config 自身的结构性检查，所以放在
+    # confirmed_term_type_values 计算之前，任何扫描、任何写入之前。
+    term_type_source_files: dict[str, list[str]] = {}
+    for entity_mapping in config.entities:
+        term_type_source_files.setdefault(entity_mapping.term_type, []).append(
+            entity_mapping.source_file
+        )
+    duplicate_term_types = {
+        term_type: source_files
+        for term_type, source_files in term_type_source_files.items()
+        if len(source_files) > 1
+    }
+    if duplicate_term_types:
+        detail = "；".join(
+            f"{term_type!r} 出现在 {source_files!r}"
+            for term_type, source_files in duplicate_term_types.items()
+        )
+        raise DuplicateEntityMappingError(
+            f"config.entities 里以下 term_type 被声明了不止一次，本次未做任何改动：{detail}"
+        )
+
     # 预检：所有实体映射先各扫一遍键，确认没有重复，才进入写入。
     #
     # 为什么整体失败而不是逐行跳过：主键重复意味着这份配置的 node_key_parts
@@ -404,6 +448,25 @@ async def run_schema_etl(
                     label=relation_mapping.relation_type, source_file=relation_mapping.source_file, reason=str(exc),
                 )
             )
+
+    # 关系用"先写后扫"：本轮该写的边都已 MERGE 完（时间戳被刷新成本轮的
+    # 值），现在删掉同源下时间戳更早的——那些就是上一轮写过、这一轮源里
+    # 已经没有的边。任何时刻图谱都是完整的，中途失败最多留下新旧共存，
+    # 下次重跑自愈；若改成"先全删再全写"，中途失败会留下一个边被删光、
+    # 实体还在的图谱，而 ETL 数据量大、这个窗口很长。
+    #
+    # 按源文件去重：多条关系映射常常共享同一个源文件（demo 配置里五条关系
+    # 全部来自 soft_drink_sales.xlsx），逐映射扫一遍是重复劳动，
+    # dict.fromkeys 去重的同时保持顺序。
+    #
+    # recorded_at 传给 merge_relation 时由 neo4j_client 内部做 strftime；
+    # 这里必须自己格式化成完全一样的字符串，否则字符串比较会错——见
+    # delete_stale_relations_by_source 的说明。
+    recorded_at_text = recorded_at.strftime("%Y-%m-%d %H:%M:%S")
+    for source_file in dict.fromkeys(m.source_file for m in config.relations):
+        report.relations_removed += await graph_client.delete_stale_relations_by_source(
+            source_file, tenant_id=config.tenant_id, before_recorded_at=recorded_at_text,
+        )
 
     # sweep 的执行放在写入之后：判定必须在写入前（才能保证阀触发时零改动），
     # 但执行必须在写入后——先删后写会在中途留下实体缺失，关系写入的端点

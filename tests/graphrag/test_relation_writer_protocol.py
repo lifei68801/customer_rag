@@ -49,4 +49,5 @@ def test_each_consumer_protocol_keeps_only_what_it_uses():
         "merge_relation",
         "sync_term",
         "delete_term_node",
+        "delete_stale_relations_by_source",
     }

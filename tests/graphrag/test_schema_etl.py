@@ -15,7 +15,12 @@ from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
 from app.graphrag.ontology_constraints import add_allowed_combination
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag.ontology_relations import create_relation_type
-from app.graphrag.schema_etl import SchemaETLNotConfirmedError, SweepSafetyValveError, run_schema_etl
+from app.graphrag.schema_etl import (
+    DuplicateEntityMappingError,
+    SchemaETLNotConfirmedError,
+    SweepSafetyValveError,
+    run_schema_etl,
+)
 from app.graphrag.schema_etl_config import (
     AllocatedCodeNodeKeyPart,
     ColumnNodeKeyPart,
@@ -33,6 +38,7 @@ class FakeGraphClient:
         self.synced: list[str] = []
         self.merged: list[tuple[str, str, str]] = []
         self.deleted_nodes: list[str] = []
+        self.stale_sweeps: list[tuple[str, str]] = []
 
     async def sync_term(self, term) -> None:
         self.synced.append(term.node_key)
@@ -45,6 +51,13 @@ class FakeGraphClient:
 
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
         self.deleted_nodes.append(node_key)
+
+    async def delete_stale_relations_by_source(
+        self, source: str, *, tenant_id: str, before_recorded_at: str
+    ) -> int:
+        self.stale_sweeps.append((source, before_recorded_at))
+        # 假客户端不真的维护边集合，返回 0；真实计数由 Neo4j 侧的实现负责。
+        return 0
 
 
 async def _confirmed_conn() -> aiosqlite.Connection:
@@ -1194,3 +1207,154 @@ async def test_run_schema_etl_dry_run_reports_removals_without_changing_anything
     assert len(await list_terms(conn, "muji")) == 2
     assert graph_client.deleted_nodes == []
     assert graph_client.synced == []
+
+
+def _product_sku_config() -> SchemaETLConfig:
+    """Product/SKU 各一条实体映射、一条 HAS_SKU 关系映射，三者都来自
+    同一个 products.csv——用于验证关系"先写后扫"只需要一个源文件。"""
+    return SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+            EntityMapping(
+                term_type="SKU", source_file="products.csv",
+                standard_name_parts=["jan"],
+                node_key_parts=[ColumnNodeKeyPart(column="jan")],
+                field_mappings={},
+            ),
+        ],
+        relations=[
+            RelationMapping(
+                relation_type="HAS_SKU", source_file="products.csv",
+                subject_term_type="Product", object_term_type="SKU",
+            ),
+        ],
+    )
+
+
+def _two_relations_same_source_config() -> SchemaETLConfig:
+    """Product/SKU/VariantValue 三条实体映射 + HAS_SKU/HAS_VARIANT_VALUE 两条
+    关系映射，全部指向同一个 products.csv——对应简报里"demo 配置里五条关系
+    全部来自同一个源文件"的场景，用来验证按源文件去重而不是按映射逐一扫。
+    HAS_VARIANT_VALUE 的主客体都是 VariantValue，两端键算出来天然相同，
+    这里只是为了触发写入+扫除，不追求业务上合理。"""
+    return SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+            EntityMapping(
+                term_type="SKU", source_file="products.csv",
+                standard_name_parts=["jan"],
+                node_key_parts=[ColumnNodeKeyPart(column="jan")],
+                field_mappings={},
+            ),
+            EntityMapping(
+                term_type="VariantValue", source_file="products.csv",
+                standard_name_parts=["variant_value"],
+                node_key_parts=[ColumnNodeKeyPart(column="variant_value")],
+                field_mappings={},
+            ),
+        ],
+        relations=[
+            RelationMapping(
+                relation_type="HAS_SKU", source_file="products.csv",
+                subject_term_type="Product", object_term_type="SKU",
+            ),
+            RelationMapping(
+                relation_type="HAS_VARIANT_VALUE", source_file="products.csv",
+                subject_term_type="VariantValue", object_term_type="VariantValue",
+            ),
+        ],
+    )
+
+
+def _write_product_sku_source(tmp_path: Path) -> None:
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,jan,variant_value\n"
+        "1001,圆角收纳盒,4901234567890,红色\n",
+        encoding="utf-8",
+    )
+
+
+async def test_run_schema_etl_sweeps_stale_relations_after_writing_fresh_ones(tmp_path):
+    """关系用"先写新边、再扫陈旧边"：任何时刻图谱都是完整的，中途失败最多
+    留下新旧共存，下次重跑自愈。若改成"先全删再全写"，中途失败会留下一个
+    边被删光、实体还在的图谱，而 ETL 数据量大、这个窗口很长。"""
+    conn = await _confirmed_conn()
+    config = _product_sku_config()
+    _write_product_sku_source(tmp_path)
+    graph_client = FakeGraphClient()
+
+    await run_schema_etl(
+        conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+    )
+
+    # 扫除发生了，且针对配置里出现过的源文件。
+    assert [s for s, _ in graph_client.stale_sweeps] == ["products.csv"]
+    # 扫除的时间界线就是本轮的写入时间——本轮写的边一律不会被扫掉。
+    assert graph_client.stale_sweeps[0][1]
+
+
+async def test_run_schema_etl_sweeps_each_source_file_once_not_once_per_mapping(tmp_path):
+    """多条关系映射共享同一个源文件时（demo 配置里五条关系全部来自
+    soft_drink_sales.xlsx），扫除必须按源文件去重，不能每个映射扫一遍。"""
+    conn = await _confirmed_conn()
+    config = _two_relations_same_source_config()
+    _write_product_sku_source(tmp_path)
+    graph_client = FakeGraphClient()
+
+    await run_schema_etl(
+        conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+    )
+
+    assert [s for s, _ in graph_client.stale_sweeps] == ["products.csv"]
+    # 两种关系都写进去了，没有互相抹掉。
+    assert {r for _, _, r in graph_client.merged} == {"HAS_SKU", "HAS_VARIANT_VALUE"}
+
+
+async def test_run_schema_etl_rejects_duplicate_entity_term_type(tmp_path):
+    """config.entities 里两条映射共享同一个 term_type 是配置错误，不是可以
+    逐行跳过的脏数据：run_schema_etl 内部两处（entity_mappings_by_term_type、
+    scanned_keys_by_term_type）都按 term_type 建字典，重复声明会被静默折叠
+    成后一条，前一条映射写入的实体会在下一轮被误判成"源里已经消失"进而被
+    sweep 删除——代价从"关系端点查找不准"升级成了静默数据丢失。必须在任何
+    写入之前整体拒绝、零改动。"""
+    conn = await _confirmed_conn()
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products_a.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+            EntityMapping(
+                term_type="Product", source_file="products_b.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+        ],
+        relations=[],
+    )
+    graph_client = FakeGraphClient()
+
+    with pytest.raises(DuplicateEntityMappingError):
+        await run_schema_etl(
+            conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+        )
+
+    assert len(await list_terms(conn, "muji")) == 0
+    assert graph_client.synced == []
+    assert graph_client.deleted_nodes == []
