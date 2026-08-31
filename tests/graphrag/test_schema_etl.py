@@ -1358,3 +1358,114 @@ async def test_run_schema_etl_rejects_duplicate_entity_term_type(tmp_path):
     assert len(await list_terms(conn, "muji")) == 0
     assert graph_client.synced == []
     assert graph_client.deleted_nodes == []
+
+
+async def test_run_schema_etl_sweep_deletes_graph_node_before_sqlite_row(tmp_path):
+    """双存储删除顺序决定了中途失败能不能自愈：必须先删 Neo4j 节点、再删
+    SQLite 行。doomed 集合本身算自 SQLite 的 source='etl' 行，如果反过来
+    先删 SQLite（内部已 commit）、再删 Neo4j，delete_term_node 中途抛异常
+    时 SQLite 行已经没了，留下一个再也不会进入任何一次未来 sweep 候选集
+    的孤儿节点——不可自愈。现在这个顺序下，同样的异常发生时 SQLite 还
+    完好，下次重跑会重新算出同一个 doomed 集合、对着同一个节点再调一次
+    delete_term_node（MATCH 不到是空操作，天然幂等），最终收敛。"""
+    conn = await _confirmed_conn()
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+        ],
+        relations=[],
+    )
+    path = tmp_path / "products.csv"
+    path.write_text(
+        "product_group_id,product_group_name\nP1,甲\nP2,乙\n", encoding="utf-8"
+    )
+    await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    # P2 从源里消失，下一轮会被 sweep 判定为 doomed。
+    path.write_text("product_group_id,product_group_name\nP1,甲\n", encoding="utf-8")
+
+    class FailingGraphClient(FakeGraphClient):
+        async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
+            raise RuntimeError("图数据库暂时不可用")
+
+    graph_client = FailingGraphClient()
+
+    with pytest.raises(RuntimeError):
+        await run_schema_etl(
+            conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+        )
+
+    # 图删在前、SQLite 删在后：异常发生在图删除这一步，此刻 SQLite 侧的
+    # 批量删除还没执行——Product:P2 这一行必须还在，这就是可自愈方向的
+    # 证据：只要 SQLite 行还在，下次重跑就还会把它算进同一个 doomed 集合。
+    assert "Product:P2" in {t.node_key for t in await list_terms(conn, "muji")}
+
+
+async def test_run_schema_etl_skips_relation_row_whose_endpoint_is_doomed_this_round(tmp_path):
+    """关系写入先于实体 sweep：如果不扣掉本轮已判定为 doomed 的端点，一条
+    关系行可能引用一个"上一轮写的、本轮源里已经消失"的实体——写入时刻它
+    在 SQLite 里还没被删（sweep 在写入之后才执行），端点存在性守卫会误判
+    成"端点还在"而放行，紧接着 sweep 就把这个刚写的端点连同这条边一起
+    DETACH DELETE 掉。relations_written 计过数、边却不存在，这是写完立刻
+    删的不自洽。扣掉 doomed 之后，这一行应该走既有的"端点不存在"路径，
+    被跳过并记进 skipped_rows。"""
+    conn = await _confirmed_conn()
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={},
+            ),
+            EntityMapping(
+                term_type="SKU", source_file="skus.csv",
+                standard_name_parts=["jan"],
+                node_key_parts=[ColumnNodeKeyPart(column="jan")],
+                field_mappings={},
+            ),
+        ],
+        relations=[
+            RelationMapping(
+                relation_type="HAS_SKU", source_file="skus.csv",
+                subject_term_type="Product", object_term_type="SKU",
+            ),
+        ],
+    )
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name\nP1,甲\nP2,乙\n", encoding="utf-8"
+    )
+    (tmp_path / "skus.csv").write_text(
+        "jan,product_group_id\nS1,P1\n", encoding="utf-8"
+    )
+    await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    # Product:P1 从实体源里消失（本轮会被判定为 doomed），但 skus.csv 没
+    # 变——它引用的 product_group_id 仍然是 P1，关系行还会尝试写这条边。
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name\nP2,乙\n", encoding="utf-8"
+    )
+    graph_client = FakeGraphClient()
+    report = await run_schema_etl(
+        conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_removed_by_type["Product"] == 1
+    # 这一行被跳过，不再计入 relations_written，也没有被写进图谱。
+    assert report.relations_written == 0
+    assert report.relations_skipped == 1
+    assert ("Product:P1", "SKU:S1", "HAS_SKU") not in graph_client.merged
+    skipped = [r for r in report.skipped_rows if r.label == "HAS_SKU"]
+    assert len(skipped) == 1
+    assert "Product:P1" in skipped[0].reason

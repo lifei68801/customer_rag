@@ -122,8 +122,17 @@ class ETLRunReport:
     # "本次没有移除任何实体"和"根本没跑删除逻辑"必须能区分开。
     entities_removed: int = 0
     entities_removed_by_type: dict[str, int] = field(default_factory=dict)
+    # dry_run=True 时这个值不代表预测——关系侧无法预演。原因：dry-run 从不
+    # 进入关系写入，扫除条件"recorded_at < 本轮时间戳"会匹配该 source 下
+    # 全部现存边（没有任何边在本轮被重写、刷新时间戳）；如果照实体侧的方式
+    # 朴素统计"现存边有多少条"，报出来的会是"将删除全部关系"，比不报更
+    # 误导。要正确预览关系侧，需要先投影出本轮会写哪些边、再和现存边做
+    # 差集，那是另一个设计，不在这次范围内——所以 dry-run 下这个字段固定
+    # 是 0，且这个 0 不代表"没有要删的关系"。
     relations_removed: int = 0
-    # dry_run=True 时，上面的删除计数是"将要删除多少"，而不是"已经删了多少"。
+    # dry_run=True 时，entities_removed / entities_removed_by_type 是
+    # "将要删除多少"（预演，terms 和 Neo4j 都零写入）；dry_run=False 时是
+    # "已经删了多少"（delete_terms_by_node_keys 的真实返回值）。
     dry_run: bool = False
 
 
@@ -205,6 +214,7 @@ async def _write_relation_mapping(
     recorded_at: datetime,
     data_dir: Path,
     report: ETLRunReport,
+    sweep_by_term_type: dict[str, set[str]],
 ) -> None:
     if mapping.relation_type not in confirmed_relation_types:
         raise RowProcessingError(f"relation_type {mapping.relation_type!r} 不在已确认 schema 里")
@@ -242,6 +252,21 @@ async def _write_relation_mapping(
     object_node_keys = await list_node_keys_by_term_type(
         conn, tenant_id, mapping.object_term_type
     )
+    # 扣掉本轮已经判定要 sweep 掉的键：关系写入发生在实体 sweep 之前
+    # （sweep 的执行必须放在全部写入之后，否则会在中途留下实体缺失，见
+    # run_schema_etl 里 sweep 循环前的说明），所以上面两次预取查到的是
+    # sweep 执行前的 SQLite 状态——一个端点即使本轮源里已经没有它、注定要
+    # 被删，只要它是上一轮写的旧行，此刻仍然"存在"，会让守卫误判成"端点
+    # 还在"而放行。放行的后果是：这一行关系被写进图谱，紧接着 sweep 用
+    # delete_term_node（DETACH DELETE）把这个刚写的端点连同这条边一起删掉
+    # ——relations_written 已经计过数，边却不存在了，写完立刻删这种不自洽
+    # 正是这条分支要消除的。所以这里不问"SQLite 里还有没有这一行"，而是问
+    # "本轮判定源里已经消失了吗"：命中 doomed 集合的键，从"已知存在"的键
+    # 集里去掉，让它们走下面既有的"端点不存在"分支，被跳过而不是被写入。
+    subject_doomed = sweep_by_term_type.get(mapping.subject_term_type, set())
+    object_doomed = sweep_by_term_type.get(mapping.object_term_type, set())
+    subject_node_keys = subject_node_keys - subject_doomed
+    object_node_keys = object_node_keys - object_doomed
 
     # 这一层不再自己读文件、不再自己算键——那两件事已经在 projection 层
     # 做完了（见 etl_projection.py）。这里只负责端点存在性校验和写入。
@@ -258,10 +283,11 @@ async def _write_relation_mapping(
             continue
         try:
             # 端点存在性守卫留在写入层：它需要预取的 node_key 集合，而且
-            # 语义是"写入时刻这个端点在不在术语表里"，不是 projection 能
-            # 回答的。守卫本身一字未改——merge_relation 的两端都是 MERGE，
-            # node_key 对不上任何已有节点时不会报错，而是凭空建出一个只有
-            # tenant_id/node_key 的幽灵节点。
+            # 语义是"写入时刻这个端点在不在术语表里、且不会在本轮被 sweep
+            # 掉"，不是 projection 能回答的。守卫的判定逻辑本身没变——
+            # merge_relation 的两端都是 MERGE，node_key 对不上任何已有节点
+            # 时不会报错，而是凭空建出一个只有 tenant_id/node_key 的幽灵
+            # 节点；变的是 known_keys 集合的内容（已扣掉 doomed，见上）。
             for key, known_keys, term_type in (
                 (projected.subject_node_key, subject_node_keys, mapping.subject_term_type),
                 (projected.object_node_key, object_node_keys, mapping.object_term_type),
@@ -269,7 +295,8 @@ async def _write_relation_mapping(
                 if key not in known_keys:
                     raise RowProcessingError(
                         f"关系端点 {key!r} 在术语表里不存在"
-                        f"（{term_type!r} 的实体行可能被跳过或尚未写入）"
+                        f"（{term_type!r} 的实体行可能被跳过、尚未写入，或本轮已被判定"
+                        f"为源里消失、即将被清理）"
                     )
             await graph_client.merge_relation(
                 subject_standard_name=projected.subject_node_key,
@@ -401,8 +428,19 @@ async def run_schema_etl(
                 )
 
     if dry_run:
-        # 预演：把将要删除的规模填进报告就返回，不写入、不删除。首次启用
-        # sweep 时历史累积的孤儿实体可能规模不小，让租户先看一眼。
+        # 预演：把将要删除的实体规模填进报告就返回。首次启用 sweep 时历史
+        # 累积的孤儿实体可能规模不小，让租户先看一眼。
+        #
+        # 准确的说法是"terms 和 Neo4j 零写入"，不是"零副作用"：预检里的
+        # compute_node_key(allow_allocation=True)（在上面 scan_entity_node_keys
+        # 内部）会为首次出现的原始值分配并持久化稳定码，写 etl_stable_code_
+        # registry 表。这个副作用本身无害——稳定码幂等分配，同一 scope +
+        # 原始值永远得到同一个码，重复 dry-run 或紧接着的正式跑不会漂移——
+        # 但如果说成"不删除、不写入"就盖过了这一点，故意把话说准确。
+        #
+        # 只覆盖实体侧：这里从不进入关系写入/清理，所以 relations_removed
+        # 固定是 0，且这个 0 不代表"关系侧没有要删的"——见 ETLRunReport.
+        # relations_removed 字段注释里的完整解释。
         preview = ETLRunReport(dry_run=True)
         preview.entities_removed = sum(len(v) for v in sweep_by_term_type.values())
         preview.entities_removed_by_type = {
@@ -440,7 +478,7 @@ async def run_schema_etl(
                 mapping=relation_mapping, entity_mappings_by_term_type=entity_mappings_by_term_type,
                 confirmed_relation_types=confirmed_relation_types,
                 allowed_combinations=allowed_combinations, recorded_at=recorded_at,
-                data_dir=data_dir, report=report,
+                data_dir=data_dir, report=report, sweep_by_term_type=sweep_by_term_type,
             )
         except RowProcessingError as exc:
             report.skipped_mappings.append(
@@ -471,18 +509,37 @@ async def run_schema_etl(
     # sweep 的执行放在写入之后：判定必须在写入前（才能保证阀触发时零改动），
     # 但执行必须在写入后——先删后写会在中途留下实体缺失，关系写入的端点
     # 存在性守卫会大面积误判、把合法的关系行全部跳过。
+    #
+    # 双存储内部的删除顺序：每个 term_type 都先删 Neo4j 节点、再删 SQLite
+    # 行——这个顺序不是随手排的，是"哪个方向能自愈"决定的。doomed 集合
+    # 本身算自 SQLite 的 source='etl' 行（scanned_keys_by_term_type 之前
+    # 那一段）；如果反过来先删 SQLite（批量 DELETE，内部已 commit）、
+    # 再逐节点删 Neo4j，一旦 delete_term_node 中途抛异常：SQLite 行已经
+    # 没了，Neo4j 节点还在，而这个孤儿节点的 node_key 已经不在任何一次
+    # 未来 sweep 的候选集里（候选集来自 SQLite）——重跑也救不回来，是
+    # 不可自愈的方向。现在这个顺序下，同样中途失败：SQLite 还完好，
+    # delete_term_node 已经处理过的那些节点在 Neo4j 里也已经没了，但
+    # 下次重跑会重新算出同一个 doomed 集合、对着这些节点再调一次
+    # delete_term_node——MATCH 匹配不到就是空操作，天然幂等——直到全部
+    # 处理完才会执行 SQLite 侧的批量删除。这个方向最终收敛，反方向不会。
     for term_type, doomed in sweep_by_term_type.items():
-        report.entities_removed_by_type[term_type] = len(doomed)
         if not doomed:
+            # 零删除也要出现在报告里——"本次没有移除任何实体"和"根本没
+            # 跑删除逻辑"必须能区分开，见 ETLRunReport 上的字段注释。
+            report.entities_removed_by_type[term_type] = 0
             continue
-        removed = await delete_terms_by_node_keys(conn, config.tenant_id, doomed)
-        report.entities_removed += removed
         for node_key in doomed:
             # delete_term_node 是 DETACH DELETE，连这个节点的边和别名节点
             # 一起清掉，不会留下悬空引用。
             await graph_client.delete_term_node(
                 tenant_id=config.tenant_id, node_key=node_key
             )
+        # 两个字段都用 delete_terms_by_node_keys 的真实返回值，而不是
+        # len(doomed)（计划要删多少）——两者语义不同，理论上可能分叉，
+        # 报告里应该反映实际发生了什么，不是预期发生了什么。
+        removed = await delete_terms_by_node_keys(conn, config.tenant_id, doomed)
+        report.entities_removed += removed
+        report.entities_removed_by_type[term_type] = removed
 
     return report
 

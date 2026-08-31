@@ -451,9 +451,9 @@ export function SchemaEtlPage() {
               </label>
               <label className="flex items-center gap-2 text-sm font-bold text-ink">
                 <input type="checkbox" name="dry_run" disabled={confirmed !== true} />
-                预演（不写入）
+                预演（terms 和 Neo4j 零写入）
                 <span className="ml-2 font-normal text-ink-soft">
-                  只报告将要移除多少实体，不做任何写入或删除。
+                  只报告将要移除多少实体，不做任何实体写入或删除；预演只覆盖实体侧，关系侧无法预演。
                 </span>
               </label>
               <label className="flex items-center gap-2 text-sm font-bold text-ink">
