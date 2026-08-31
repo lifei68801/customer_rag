@@ -11,6 +11,7 @@ from app.api.admin_session import AdminSessionStore
 from app.graphrag.ontology import Term
 from app.graphrag.review_queue import ensure_review_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
+from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
 from app.ingestion.tracking import ensure_tracking_schema, record_ingested
@@ -159,9 +160,11 @@ async def _open_review_conn() -> aiosqlite.Connection:
     # get_review_conn（app/api/deps.py）在生产环境里同一个连接同时建
     # review_queue 和 terms 两套 schema——upload_document/retry_ingestion_job
     # 现在不再经 deps.get_terms，而是直接用自己拿到的 review_conn 调
-    # list_terms()（Fix 3），测试用的连接必须跟生产环境一样两套 schema
-    # 都有，否则 list_terms 会报 "no such table: terms"。
+    # list_terms_merged()（Task 3 改道），测试用的连接必须跟生产环境一样
+    # 把 terms + term_edits 两套 schema 都建好，否则 list_terms_merged 会报
+    # "no such table: terms" / "no such table: term_edits"。
     await ensure_terms_schema(conn)
+    await ensure_term_edits_schema(conn)
     # Task 4：这个文件里的写接口（upload_document/delete_document/
     # retry_ingestion_job/delete_ingestion_job）现在都会先用 review_conn 调
     # require_active_tenant() 校验 tenant_id——真实的 deps.get_review_conn()

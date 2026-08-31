@@ -25,7 +25,7 @@ from app.graphrag.review_queue import (
     list_resolved_reviews,
     reject_review,
 )
-from app.graphrag.terms_store import list_terms
+from app.graphrag.terms_store import list_terms_merged
 
 router = APIRouter(
     prefix="/api/admin/graph-reviews", dependencies=[Depends(deps.require_admin_session)]
@@ -93,7 +93,7 @@ async def approve(
     # 这个路由自己的权威 tenant_id 是 payload.tenant_id，不用 deps.get_terms
     # 那套独立的 gateway_tenant_id 解析——两者在这条请求里可能不是同一个
     # 值，直接按 payload.tenant_id 加载术语表，避免跨租户读到错的术语表。
-    terms: list[Term] = await list_terms(review_conn, payload.tenant_id)
+    terms: list[Term] = await list_terms_merged(review_conn, payload.tenant_id)
     # 与 normalize_and_write_relations() 的自动写入路径共用同一套"已确认
     # 本体范围"数据源：这里查的是 status="confirmed"，不是草稿——审核员
     # 批准动作最终写图谱，必须过跟自动路径一样的闸门，见

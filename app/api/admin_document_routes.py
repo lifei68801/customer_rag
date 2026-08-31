@@ -24,7 +24,7 @@ from app.api.tenant_guard import require_active_tenant_or_404
 from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
-from app.graphrag.terms_store import list_terms
+from app.graphrag.terms_store import list_terms_merged
 from app.ingestion.ingestion_queue import (
     SUPPORTED_SUFFIXES,
     JobNotDeadError,
@@ -206,7 +206,7 @@ async def upload_document(
     # 这个路由自己已经有权威的 tenant_id（Form 字段），不用 deps.get_terms
     # 那套独立的 gateway_tenant_id 解析——两者在这条请求里可能不是同一个
     # 值，直接按本路由的 tenant_id 加载术语表，避免跨租户读到错的术语表。
-    terms: list[Term] = await list_terms(review_conn, tenant_id)
+    terms: list[Term] = await list_terms_merged(review_conn, tenant_id)
 
     contents = await file.read()
     if len(contents) > _MAX_UPLOAD_BYTES:
@@ -363,7 +363,7 @@ async def retry_ingestion_job(
     await require_active_tenant_or_404(review_conn, tenant_id)
     # 同上（upload_document）：用本路由自己的权威 tenant_id（路径/查询参数）
     # 加载术语表，不经 deps.get_terms 的独立 gateway_tenant_id 解析。
-    terms: list[Term] = await list_terms(review_conn, tenant_id)
+    terms: list[Term] = await list_terms_merged(review_conn, tenant_id)
     try:
         await retry_job(ingestion_conn, job_id, tenant_id=tenant_id)
     except JobNotFoundError:

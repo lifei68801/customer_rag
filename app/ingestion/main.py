@@ -11,7 +11,7 @@ from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_store import open_ontology_store_conn
-from app.graphrag.terms_store import list_terms
+from app.graphrag.terms_store import list_terms_merged
 from app.ingestion.pipeline import ingest_directory
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
@@ -74,7 +74,7 @@ async def main(
             graph_review_conn
             or await open_ontology_store_conn(resolved_settings)
         )
-        resolved_graph_terms = graph_terms or await list_terms(
+        resolved_graph_terms = graph_terms or await list_terms_merged(
             resolved_graph_review_conn, tenant_id
         )
         # 术语表（基准真相）先同步进图谱：写入/更新标准节点的 type

@@ -15,7 +15,7 @@ from app.graphrag.duplicate_review_queue import (
 )
 from app.graphrag.ontology_store import open_ontology_store_conn
 from app.graphrag.tenants_store import list_tenants
-from app.graphrag.terms_store import is_tombstoned, list_terms
+from app.graphrag.terms_store import is_tombstoned, list_terms_merged
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ _MAX_BUCKET_SIZE_FOR_PAIRWISE_SCAN = 2000
 
 
 async def _scan_tenant(conn: aiosqlite.Connection, tenant_id: str) -> int:
-    terms = await list_terms(conn, tenant_id)
+    terms = await list_terms_merged(conn, tenant_id)
     by_term_type: dict[str, list] = defaultdict(list)
     for term in terms:
         # 已经被合并过的墓碑行（approve_duplicate_suggestion 打上的标记）不该

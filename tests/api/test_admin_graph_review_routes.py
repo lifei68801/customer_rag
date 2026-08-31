@@ -11,6 +11,7 @@ from app.graphrag.ontology import Term
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
+from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 from tests.settings_factory import build_settings
@@ -24,6 +25,10 @@ async def _open_review_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(conn)
     await ensure_terms_schema(conn)
+    # Task 3：approve/reject 路由现在经 list_terms_merged() 读术语表，测试
+    # 连接要跟生产环境一样把 term_edits 表也建好，否则会报
+    # "no such table: term_edits"。
+    await ensure_term_edits_schema(conn)
     # Task 4：approve/reject 现在会先用 review_conn 调 require_active_tenant()
     # 校验 payload.tenant_id——真实的 deps.get_review_conn() 会自动建好
     # tenants 表并回填历史租户，这里是手工建表的测试连接，绕开了那条路径，

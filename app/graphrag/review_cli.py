@@ -19,7 +19,7 @@ from app.graphrag.review_queue import (
     list_pending_reviews,
     reject_review,
 )
-from app.graphrag.terms_store import list_terms
+from app.graphrag.terms_store import list_terms_merged
 
 
 async def cmd_list(*, review_conn: aiosqlite.Connection, tenant_id: str) -> list[dict[str, Any]]:
@@ -147,7 +147,7 @@ async def _main() -> None:
     elif args.command == "approve":
         graph_client = build_graph_client_from_settings(settings)
         await graph_client.ensure_tenant_scoped_schema()
-        terms = await list_terms(review_conn, args.tenant_id)
+        terms = await list_terms_merged(review_conn, args.tenant_id)
         await cmd_approve(
             review_conn=review_conn,
             review_id=args.review_id,

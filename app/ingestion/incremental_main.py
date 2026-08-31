@@ -11,7 +11,7 @@ from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_store import open_ontology_store_conn
-from app.graphrag.terms_store import list_terms
+from app.graphrag.terms_store import list_terms_merged
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema, process_pending_jobs
 from app.ingestion.ocr_factory import build_ocr_from_settings
 from app.ingestion.ocr_parser import OcrFunction
@@ -106,7 +106,7 @@ async def main(
         resolved_graph_review_conn = (
             graph_review_conn or await open_ontology_store_conn(resolved_settings)
         )
-        resolved_graph_terms = graph_terms or await list_terms(
+        resolved_graph_terms = graph_terms or await list_terms_merged(
             resolved_graph_review_conn, tenant_id
         )
 

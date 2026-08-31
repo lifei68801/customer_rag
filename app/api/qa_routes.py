@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.api import deps
 from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
-from app.graphrag.terms_store import list_terms
+from app.graphrag.terms_store import list_terms_merged
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
@@ -50,7 +50,7 @@ async def qa_endpoint(
     )
     # 直接用上面刚解析出的权威 tenant_id 查术语表，不经过 deps.get_terms
     # 那套独立解析 tenant_id 的 Depends，见 app/api/deps.py 顶部说明。
-    terms = await list_terms(review_conn, tenant_id)
+    terms = await list_terms_merged(review_conn, tenant_id)
     result = await answer_question(
         payload.question,
         embedding_registry=embedding_registry,

@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
+from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 from app.memory.schema import ensure_schema
@@ -82,6 +83,9 @@ async def _override_get_review_conn() -> aiosqlite.Connection:
     # 等表），否则 list_relation_types/list_term_types 会报 "no such table"。
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
+    # Task 3：agent_chat_endpoint 现在经 list_terms_merged() 读术语表，
+    # 测试连接要把 term_edits 表也建好，否则会报 "no such table: term_edits"。
+    await ensure_term_edits_schema(conn)
     await ensure_ontology_schema(conn)
     return conn
 

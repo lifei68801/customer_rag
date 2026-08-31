@@ -18,7 +18,7 @@ from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.ontology_constraints import list_allowed_combinations
 from app.graphrag.ontology_relations import list_relation_types
-from app.graphrag.terms_store import list_terms
+from app.graphrag.terms_store import list_terms_merged
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
@@ -106,7 +106,7 @@ async def agent_chat_endpoint(
     # deps.get_terms 等独立解析 tenant_id 的 Depends——网关未配置时后者会
     # 悄悄回退到硬编码的 "default" 租户，跟这里的 tenant_id 不是同一个值，
     # 见 app/api/deps.py 顶部关于这几个函数已删除的说明。
-    terms = await list_terms(review_conn, tenant_id)
+    terms = await list_terms_merged(review_conn, tenant_id)
     confirmed_relation_types = {
         rt.relation_type
         for rt in await list_relation_types(review_conn, tenant_id, status="confirmed")

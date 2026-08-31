@@ -14,6 +14,7 @@ from app.graphrag.duplicate_review_queue import (
 from app.graphrag.ontology_categories import create_term_type
 from app.graphrag.tenants_store import create_tenants_table
 from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
+from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import create_term, ensure_terms_schema, get_term, list_terms, update_term
 
 
@@ -22,6 +23,9 @@ async def conn(tmp_path):
     async with aiosqlite.connect(":memory:") as conn:
         await ensure_duplicate_review_schema(conn)
         await ensure_terms_schema(conn, seed_yaml_path=tmp_path / "empty.yaml")
+        # Task 3：_scan_tenant() 现在经 list_terms_merged() 读术语表，测试
+        # 连接要把 term_edits 表也建好，否则会报 "no such table: term_edits"。
+        await ensure_term_edits_schema(conn)
         # create_term validates term_type against the confirmed ontology
         # categories for the tenant (app/graphrag/terms_store.py::
         # _validate_categories) -- the brief's fixture omitted this, so

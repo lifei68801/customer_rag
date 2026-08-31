@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from app.api import deps
 from app.config.settings import Settings
-from app.graphrag.terms_store import list_terms
+from app.graphrag.terms_store import list_terms_merged
 from app.providers.asr import ASRProvider, ASRRequest
 from app.providers.registry import ProviderRegistry
 from app.voice.asr_stream_processing import filter_filler_words, merge_chunk_transcript
@@ -42,7 +42,7 @@ async def asr_finalize_endpoint(
     effective_tenant_id = deps.resolve_tenant_id(
         gateway_tenant_id, tenant_id, source="asr_finalize"
     )
-    terms = await list_terms(review_conn, effective_tenant_id)
+    terms = await list_terms_merged(review_conn, effective_tenant_id)
 
     if asr_provider is None:
         raise HTTPException(status_code=503, detail="ASR provider 未配置")

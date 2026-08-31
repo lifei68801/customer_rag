@@ -19,7 +19,7 @@ from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_store import open_ontology_store_conn
 from app.graphrag.term_guard import GraphClientProtocol
-from app.graphrag.terms_store import list_terms
+from app.graphrag.terms_store import list_terms_merged
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
     DEFAULT_EMBEDDING_PROVIDER_NAME,
@@ -384,7 +384,7 @@ async def main(
     if use_graph:
         resolved_review_conn = await open_ontology_store_conn(resolved_settings)
         try:
-            resolved_terms = terms or await list_terms(resolved_review_conn, tenant_id)
+            resolved_terms = terms or await list_terms_merged(resolved_review_conn, tenant_id)
         finally:
             await resolved_review_conn.close()
         if graph_client is not None:
