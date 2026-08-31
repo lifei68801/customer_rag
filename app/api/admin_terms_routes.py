@@ -199,7 +199,10 @@ async def create_new_term(
         },
         edited_by=_EDITED_BY,
     )
-    term = Term(
+    # 写完编辑层后从合并视图取回同步进图谱——图谱应当是合并结果的投影。
+    # 响应体用原来的逻辑（payload.source）保持兼容性。
+    merged_term = await get_term_merged_by_node_key(review_conn, tenant_id=tenant_id, node_key=node_key)
+    term_to_return = Term(
         tenant_id=tenant_id,
         node_key=node_key,
         standard_name=payload.standard_name,
@@ -210,14 +213,14 @@ async def create_new_term(
     )
     # 新增成功后立即同步进图谱（属性+别名节点），不留图谱异步落后的窗口。
     try:
-        await graph_client.sync_term(term)
+        await graph_client.sync_term(merged_term)
     except Exception:
         logger.exception(
             "术语 %r（租户 %r）已写入 SQLite 但同步进图谱失败——两侧数据已不一致，需要人工核对",
-            term.standard_name, tenant_id,
+            term_to_return.standard_name, tenant_id,
         )
         raise
-    return _to_response(term, similar_terms=similar_terms_payload)
+    return _to_response(term_to_return, similar_terms=similar_terms_payload)
 
 
 @router.put("/{node_key}", response_model=TermResponse)
@@ -288,14 +291,6 @@ async def update_existing_term(
             field=FIELD_EXTRA_PROPERTIES, value=payload.extra_properties,
             edited_by=_EDITED_BY,
         )
-    # 解析一次，响应体和图谱镜像共用同一个值——漏掉任何一处都会让两个
-    # 存储之间出现只有属性值不一致的静默偏差。缺席（None）时沿用编辑前
-    # 的合并值；非 None（含 {}）时整体替换成提交的值。
-    effective_extra_properties = (
-        existing_before_update.extra_properties
-        if payload.extra_properties is None
-        else payload.extra_properties
-    )
     if payload.standard_name != existing_before_update.standard_name:
         # 改名：先对同一个图节点做属性级联更新（保留已有关系边），再用
         # sync_term 刷新 type/别名。sync_term 现在按
@@ -314,15 +309,8 @@ async def update_existing_term(
                 existing_before_update.standard_name, payload.standard_name, tenant_id,
             )
             raise
-    term = Term(
-        tenant_id=tenant_id,
-        node_key=node_key,
-        standard_name=payload.standard_name,
-        aliases=payload.aliases,
-        term_type=payload.term_type,
-        extra_properties=effective_extra_properties,
-        source=existing_before_update.source,
-    )
+    # 写完编辑层后从合并视图取回——图谱应当是合并结果的投影。
+    term = await get_term_merged_by_node_key(review_conn, tenant_id=tenant_id, node_key=node_key)
     try:
         await graph_client.sync_term(term)
     except Exception:

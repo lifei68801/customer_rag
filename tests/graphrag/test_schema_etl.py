@@ -28,7 +28,19 @@ from app.graphrag.schema_etl_config import (
     RelationMapping,
     SchemaETLConfig,
 )
-from app.graphrag.terms_store import ensure_terms_schema, get_term, list_terms, upsert_term_with_node_key
+from app.graphrag.term_edits_store import (
+    FIELD_DELETED,
+    ensure_term_edits_schema,
+    upsert_term_edit,
+)
+from app.graphrag.terms_store import (
+    TermNotFoundError,
+    ensure_terms_schema,
+    get_term,
+    get_term_merged_by_node_key,
+    list_terms,
+    upsert_term_with_node_key,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -36,12 +48,14 @@ pytestmark = pytest.mark.anyio
 class FakeGraphClient:
     def __init__(self) -> None:
         self.synced: list[str] = []
+        self.synced_terms: list = []  # 用于测试合并值——记录完整的 Term 对象
         self.merged: list[tuple[str, str, str]] = []
         self.deleted_nodes: list[str] = []
         self.stale_sweeps: list[tuple[str, str]] = []
 
     async def sync_term(self, term) -> None:
         self.synced.append(term.node_key)
+        self.synced_terms.append(term)  # 同时记录完整的 term 供新测试使用
 
     async def merge_relation(
         self, *, subject_standard_name, object_standard_name, relation_type,
@@ -63,6 +77,7 @@ class FakeGraphClient:
 async def _confirmed_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
+    await ensure_term_edits_schema(conn)
     await ensure_ontology_schema(conn)
     await ensure_stable_code_registry_schema(conn)
     await create_term_type(
@@ -1469,3 +1484,83 @@ async def test_run_schema_etl_skips_relation_row_whose_endpoint_is_doomed_this_r
     skipped = [r for r in report.skipped_rows if r.label == "HAS_SKU"]
     assert len(skipped) == 1
     assert "Product:P1" in skipped[0].reason
+
+
+async def test_etl_sync_pushes_the_merged_value_not_the_raw_pipeline_value(tmp_path):
+    """图谱是合并结果的投影。ETL 刚写完的原始值不能盖掉图上的人工修正。"""
+    conn = await _confirmed_conn()
+    # ETL 写入实体
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,md_no\n1001,原始名称,A123\n", encoding="utf-8"
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+    graph_client = FakeGraphClient()
+    report = await run_schema_etl(conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path)
+    assert report.entities_written == 1
+    # 确认第一次 sync 收到的是原始名称
+    assert len(graph_client.synced_terms) == 1
+    assert graph_client.synced_terms[0].standard_name == "原始名称"
+
+    # 人工改展示名（写 term_edits）
+    await upsert_term_edit(
+        conn, tenant_id="muji", node_key="Product:1001",
+        field="standard_name", value="人工修改的名称", edited_by="admin"
+    )
+
+    # 重跑 ETL（人工编辑应当被保留）
+    graph_client = FakeGraphClient()
+    report = await run_schema_etl(conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path)
+    assert report.entities_written == 1
+    # 第二次 sync 应该收到的是合并后的值（人工值），而非 ETL 管道的原始值
+    assert len(graph_client.synced_terms) == 1
+    assert graph_client.synced_terms[0].standard_name == "人工修改的名称"
+
+
+async def test_etl_does_not_sync_a_manually_deleted_term_and_removes_its_node(tmp_path):
+    """人工删除不可被 ETL 恢复——图谱要跟上，而不是让 ETL 把它同步回去。"""
+    conn = await _confirmed_conn()
+    # ETL 写入实体
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,md_no\n1001,某商品,A123\n", encoding="utf-8"
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+    graph_client = FakeGraphClient()
+    report = await run_schema_etl(conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path)
+    assert report.entities_written == 1
+    assert "Product:1001" in graph_client.synced
+
+    # 人工删除（写 __deleted__ 编辑）
+    await upsert_term_edit(
+        conn, tenant_id="muji", node_key="Product:1001",
+        field=FIELD_DELETED, value=None, edited_by="admin"
+    )
+
+    # 重跑 ETL——应当不再 sync 这个已删除的实体，而是从图谱删除其节点
+    graph_client = FakeGraphClient()
+    report = await run_schema_etl(conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path)
+    # 不在 synced 列表里
+    assert "Product:1001" not in graph_client.synced
+    # 应在 deleted_nodes 列表里
+    assert "Product:1001" in graph_client.deleted_nodes

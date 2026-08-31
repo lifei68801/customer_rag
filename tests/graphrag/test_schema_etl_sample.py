@@ -20,6 +20,7 @@ from app.graphrag.schema_etl_sample import (
     SampleFile,
     generate_schema_etl_sample_files,
 )
+from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
 
 pytestmark = pytest.mark.anyio
@@ -213,6 +214,7 @@ class _FakeGraphClient:
 async def test_generated_sample_files_run_successfully_through_run_schema_etl(tmp_path):
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
+    await ensure_term_edits_schema(conn)
     await ensure_ontology_schema(conn)
     await ensure_stable_code_registry_schema(conn)
     await create_term_type(

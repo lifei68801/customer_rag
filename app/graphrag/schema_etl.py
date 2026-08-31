@@ -32,8 +32,10 @@ from app.graphrag.schema_etl_config import EntityMapping, RelationMapping, Schem
 from app.graphrag.schema_etl_row_processing import RowProcessingError
 from app.graphrag.terms_store import (
     TermNameConflictError,
+    TermNotFoundError,
     UnknownCategoryError,
     delete_terms_by_node_keys,
+    get_term_merged_by_node_key,
     list_etl_node_keys_by_term_type,
     list_node_keys_by_term_type,
     upsert_term_with_node_key,
@@ -183,12 +185,17 @@ async def _write_entity_mapping(
                 standard_name=projected.standard_name, aliases=[],
                 term_type=mapping.term_type, extra_properties=projected.extra_properties,
             )
-            term = Term(
-                tenant_id=tenant_id, node_key=projected.node_key,
-                standard_name=projected.standard_name, aliases=[],
-                term_type=mapping.term_type, extra_properties=projected.extra_properties,
-            )
-            await graph_client.sync_term(term)
+            # 写完 upsert_term_with_node_key 后用 get_term_merged_by_node_key
+            # 取回合并结果——图谱应当是合并视图的投影，而非 terms 表原始值的投影。
+            try:
+                merged_term = await get_term_merged_by_node_key(
+                    conn, tenant_id=tenant_id, node_key=projected.node_key
+                )
+                await graph_client.sync_term(merged_term)
+            except TermNotFoundError:
+                # 实体被人工标记为 __deleted__——人工删除不可被 ETL 恢复。
+                # 跳过 sync_term，并在图上删除该节点。
+                await graph_client.delete_term_node(tenant_id=tenant_id, node_key=projected.node_key)
             report.entities_written += 1
             _record_written(report, label=mapping.term_type)
         except (TermNameConflictError, UnknownCategoryError) as exc:
