@@ -64,7 +64,7 @@ async def _connect() -> aiosqlite.Connection:
     await create_term_type(conn, tenant_id="default", value="module")
     await create_term_type(conn, tenant_id="default", value="other")
     await create_term_type(conn, tenant_id="default", value="t")
-    # 真实术语只认已确认的实体类型（见 _validate_categories），这里创建完就
+    # 真实术语只认已确认的实体类型（见 validate_term_categories），这里创建完就
     # 立刻确认，让共享 fixture 产出的类型对 create_term/update_term 可用。
     await confirm_ontology(conn, "default")
     return conn
@@ -547,7 +547,7 @@ async def test_removing_extra_field_from_term_type_preserves_existing_term_value
 async def test_update_term_resubmitting_undeclared_but_already_stored_key_succeeds():
     """回归测试：字段从 term_type 里被去掉之后，重新保存这条术语（哪怕值原样
     不改）不能因为这个字段"未声明"而被拒绝或静默丢弃——见
-    _validate_categories 的 existing_extra_property_keys 参数说明。"""
+    validate_term_categories 的 existing_extra_property_keys 参数说明。"""
     from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
     await create_term_type(conn, tenant_id="default", value="房型", extra_fields=[ExtraFieldSpec(name="area", value_type="string")])
@@ -560,7 +560,7 @@ async def test_update_term_resubmitting_undeclared_but_already_stored_key_succee
 
     # 业务把"area"从房型的声明字段里移除——update_term_type 只操作草稿行，
     # 确认之后草稿已清空，需要先检出一份新草稿；改完再确认一次，让
-    # 下面 update_term 的 _validate_categories（查已确认声明）真正看到
+    # 下面 update_term 的 validate_term_categories（查已确认声明）真正看到
     # "area 已不再声明"这个状态，否则测的就不是这里的豁免逻辑了。
     await checkout_draft(conn, "default")
     await update_term_type(conn, tenant_id="default", value="房型", new_value="房型", extra_fields=[])
@@ -598,7 +598,7 @@ async def test_update_term_rejects_genuinely_new_undeclared_key():
         )
 
 
-async def test_validate_categories_rejects_term_type_from_another_tenant():
+async def test_validate_term_categories_rejects_term_type_from_another_tenant():
     """term_type 校验闭环之后必须按租户过滤——tenant_a 注册的分类，
     tenant_b 提交同名 term_type 应该被拒绝（对 tenant_b 而言这是未知分类）。"""
     conn = await aiosqlite.connect(":memory:")
@@ -1465,7 +1465,7 @@ async def test_list_etl_node_keys_by_term_type_excludes_manual_and_review_rows()
     对它们不成立，扫掉它们是数据丢失。"""
     conn = await _connect()
     # _connect() 只预置了 tenant "default" 下的几个分类字面量；这里用的
-    # tenant "t1" + term_type "产品" 是新组合，_validate_categories 要求
+    # tenant "t1" + term_type "产品" 是新组合，validate_term_categories 要求
     # 分类必须已注册并确认，先补齐。
     await create_term_type(conn, tenant_id="t1", value="产品")
     await confirm_ontology(conn, "t1")

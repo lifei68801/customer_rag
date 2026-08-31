@@ -28,7 +28,7 @@ async def conn(tmp_path):
         await ensure_term_edits_schema(conn)
         # create_term validates term_type against the confirmed ontology
         # categories for the tenant (app/graphrag/terms_store.py::
-        # _validate_categories) -- the brief's fixture omitted this, so
+        # validate_term_categories) -- the brief's fixture omitted this, so
         # create_term("t1", term_type="公司"/"产品") would otherwise raise
         # UnknownCategoryError. Seed both term types used below for tenant t1.
         await ensure_ontology_schema(conn)

@@ -562,7 +562,7 @@ async def _check_name_conflict(
             )
 
 
-async def _validate_categories(
+async def validate_term_categories(
     conn: aiosqlite.Connection,
     *,
     tenant_id: str,
@@ -577,6 +577,12 @@ async def _validate_categories(
     "已废弃字段"只豁免字段名检查，不再做类型检查（因为它已经不在
     declared_by_name 里，无法判断"应该是什么类型"）——这是延续本体
     基座计划"移除字段声明不触碰已有数据"的原则，见 Global Constraints。
+
+    这是 terms_store 的公开校验入口（2026-08-31 起去掉下划线前缀）：
+    除了本模块内部的 create_term/update_term/upsert_term_with_node_key，
+    app/api/admin_terms_routes.py 的写入端点（POST/PUT）也直接依赖它做
+    分类/字段校验——这层跨模块契约现在是显式的，重构这个函数的签名或
+    异常行为时需要同时检查 app/api 层的调用点。
     """
     types = await list_term_types(conn, tenant_id, status="confirmed")
     types_by_value = {t.value: t for t in types}
@@ -623,7 +629,7 @@ async def create_term(
     docs/superpowers/specs/2026-08-19-data-entry-unification-design.md 决策 C。
     """
     extra_properties = extra_properties or {}
-    await _validate_categories(
+    await validate_term_categories(
         conn, tenant_id=tenant_id, term_type=term_type,
         extra_properties=extra_properties,
     )
@@ -684,7 +690,7 @@ async def update_term(
     """
     extra_properties = extra_properties or {}
     existing_term = await get_term_by_node_key(conn, tenant_id, node_key)
-    await _validate_categories(
+    await validate_term_categories(
         conn, tenant_id=tenant_id, term_type=term_type,
         extra_properties=extra_properties,
         existing_extra_property_keys=frozenset(existing_term.extra_properties),
@@ -794,7 +800,7 @@ async def upsert_term_with_node_key(
         frozenset(json.loads(existing_row["extra_properties"]))
         if existing_row is not None else frozenset()
     )
-    await _validate_categories(
+    await validate_term_categories(
         conn, tenant_id=tenant_id, term_type=term_type,
         extra_properties=extra_properties,
         existing_extra_property_keys=existing_extra_property_keys,

@@ -23,11 +23,11 @@ from app.graphrag.terms_store import (
     InvalidExtraPropertyTypeError,
     TermNotFoundError,
     UnknownCategoryError,
-    _validate_categories,
     count_terms,
     get_term_merged_by_node_key,
     is_tombstoned,
     list_terms_merged,
+    validate_term_categories,
 )
 
 logger = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ async def create_new_term(
     ]
     extra_properties = payload.extra_properties or {}
     try:
-        await _validate_categories(
+        await validate_term_categories(
             review_conn, tenant_id=tenant_id, term_type=payload.term_type,
             extra_properties=extra_properties,
         )
@@ -259,7 +259,7 @@ async def update_existing_term(
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
     try:
-        await _validate_categories(
+        await validate_term_categories(
             review_conn, tenant_id=tenant_id, term_type=payload.term_type,
             extra_properties=payload.extra_properties or {},
             existing_extra_property_keys=frozenset(existing_before_update.extra_properties),

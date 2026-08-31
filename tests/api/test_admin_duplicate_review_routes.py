@@ -36,7 +36,7 @@ async def _open_review_conn() -> aiosqlite.Connection:
     await create_tenants_table(conn)
     await create_tenant(conn, tenant_id="demo", name="demo")
     # approve_duplicate_suggestion() 最终经 terms_store.update_term() 校验
-    # term_type 是否在该租户"已确认"的分类白名单里（_validate_categories）
+    # term_type 是否在该租户"已确认"的分类白名单里（validate_term_categories）
     # ——需要 ontology_term_types 表存在，并且本文件用到的 term_type（"公司"）
     # 有一条 status='confirmed' 的行，否则会报 UnknownCategoryError。
     await ensure_ontology_schema(conn)

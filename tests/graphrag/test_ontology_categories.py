@@ -34,7 +34,7 @@ async def _conn() -> aiosqlite.Connection:
 
 # 注意：这个文件里凡是需要一张 terms 表来模拟"真实术语引用"的测试，一律用
 # 手写 CREATE TABLE + 原生 SQL INSERT，不调用 terms_store.py::create_term/
-# ensure_terms_schema。terms_store.py 里 _validate_categories/
+# ensure_terms_schema。terms_store.py 里 validate_term_categories/
 # _bridge_seed_categories_from_existing_terms 目前调用 list_term_types(conn,
 # tenant_id) 时还没有传 status（这是本次改造范围之外的调用点，属于同一个
 # plan 后续任务负责更新，见 docs/superpowers/specs/

@@ -42,7 +42,7 @@ async def _open_terms_conn() -> aiosqlite.Connection:
     # 这里补齐分类，保持既有测试的字面量不变（见 test_terms_store.py 的
     # _connect() 同款说明）。term_type 现在按租户隔离，需要给每个测试里用到的
     # 租户各注册一份。真实术语只认
-    # 已确认的实体类型（见 _validate_categories），这里创建完就立刻确认。
+    # 已确认的实体类型（见 validate_term_categories），这里创建完就立刻确认。
     for tenant_id in ("t1", "tenant_a"):
         await create_term_type(conn, tenant_id=tenant_id, value="error_code")
         await create_term_type(conn, tenant_id=tenant_id, value="t")
