@@ -1455,3 +1455,55 @@ def test_create_term_with_existing_node_key_and_orphaned_property_succeeds(terms
     assert response.status_code == 200
     # 响应体应该反映 payload 中的属性值
     assert response.json()["extra_properties"] == {"orphaned_key": "new_value"}
+
+
+def test_post_on_a_manually_deleted_node_key_resurrects_it(terms_conn):
+    """人工重建一个曾被人工删除的 node_key，应当让它重新可见。
+
+    "人工删除不可被恢复"这条规矩的准确表述是 Foundry 的
+    「Deletions aren't reversible by datasource updates」——禁的是**数据源
+    更新**把人删掉的东西带回来（ETL 重跑仍然做不到），不是禁止人自己撤销
+    自己的删除。
+
+    修之前这条路径不是静默成功，而是 500：POST 写完 __created__ 之后紧接着
+    调 get_term_merged_by_node_key 同步图谱，而它对被 __deleted__ 标记的实体
+    抛 TermNotFoundError，路由没有捕获——一次合法的重建变成不透明的服务端
+    错误。
+    """
+    asyncio.run(
+        create_term(
+            terms_conn, tenant_id="t1", standard_name="删了又建", aliases=[], term_type="t"
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient(edge_count=0)
+    try:
+        client = TestClient(app)
+        headers = _authed_headers(session_store)
+
+        deleted = client.delete("/api/admin/t1/terms/t:删了又建", headers=headers)
+        assert deleted.status_code == 200
+        assert client.get("/api/admin/t1/terms", headers=headers).json()["terms"] == []
+
+        recreated = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "删了又建", "aliases": [], "term_type": "t",
+                "extra_properties": {},
+            },
+            headers=headers,
+        )
+        assert recreated.status_code == 200
+
+        listed = client.get("/api/admin/t1/terms", headers=headers).json()["terms"]
+    finally:
+        app.dependency_overrides.clear()
+
+    # 重新可见了。
+    assert [t["standard_name"] for t in listed] == ["删了又建"]
+    # __deleted__ 编辑已经被撤掉，不是靠别的方式绕过去的。
+    edits = asyncio.run(list_term_edits_for_node_key(terms_conn, "t1", "t:删了又建"))
+    assert FIELD_DELETED not in edits

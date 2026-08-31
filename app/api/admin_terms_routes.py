@@ -17,6 +17,7 @@ from app.graphrag.term_edits_store import (
     FIELD_CREATED,
     FIELD_DELETED,
     FIELD_EXTRA_PROPERTIES,
+    delete_term_edit,
     upsert_term_edit,
 )
 from app.graphrag.terms_store import (
@@ -215,6 +216,23 @@ async def create_new_term(
             "extra_properties": extra_properties,
         },
         edited_by=_EDITED_BY,
+    )
+    # 人工重建一个曾被人工删除的 node_key：撤掉那条 __deleted__ 编辑，让它
+    # 重新可见。这不违反"人工删除不可被恢复"——那条规矩的准确表述是
+    # Foundry 的「Deletions aren't reversible by datasource updates」，
+    # 禁的是**数据源更新**把人删掉的东西带回来（ETL 重跑仍然做不到，
+    # 见 term_merge.apply_edits 里 FIELD_DELETED 的短路），而不是禁止人
+    # 自己撤销自己的删除。
+    #
+    # 顺序：先写 __created__ 再撤 __deleted__。反过来的话，中间一步失败会
+    # 让实体带着删除前的旧值重新可见；现在这个顺序下中间失败则维持删除
+    # 状态不变，是安全的那一侧。
+    #
+    # 不这样做的后果不是"静默成功"而是 500：下面那句
+    # get_term_merged_by_node_key 会因 __deleted__ 抛 TermNotFoundError，
+    # 路由没有捕获它——一次合法的重建操作变成不透明的服务端错误。
+    await delete_term_edit(
+        review_conn, tenant_id=tenant_id, node_key=node_key, field=FIELD_DELETED
     )
     # 写完编辑层后从合并视图取回同步进图谱——图谱应当是合并结果的投影。
     # 响应体用原来的逻辑（payload.source）保持兼容性。
