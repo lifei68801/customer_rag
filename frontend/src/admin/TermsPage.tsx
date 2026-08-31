@@ -11,7 +11,10 @@ import { adminFetch } from './adminApi'
 import { Pager } from './Pager'
 import { usePaginatedAdminList } from './usePaginatedAdminList'
 
-const PAGE_SIZE = 20
+// 50 而不是 20：20017 条实体在 20/页 下是 1001 页。搜索已经解决了「找特定
+// 一条」（90% 的实际需求），剩下的浏览场景把每页调大就拿到了虚拟滚动八成的
+// 收益，而不用重做分页器、来源筛选、密度切换三处交互。
+const PAGE_SIZE = 50
 
 type SourceFilter = 'all' | 'manual' | 'etl' | 'review' | 'unknown'
 

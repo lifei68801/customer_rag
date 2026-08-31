@@ -39,6 +39,12 @@ interface EtlRunReport {
   skipped_by_type?: Record<string, number>
   skipped_rows?: SkippedRow[]
   skipped_mappings?: { label: string; source_file: string; reason: string }[]
+  // 源端删除传播（2026-08-30）。这四个字段后端一直在返回，前端此前没接——
+  // 于是勾了「预演」跑一次，界面上什么都看不到，dry-run 等于不存在。
+  entities_removed?: number
+  entities_removed_by_type?: Record<string, number>
+  relations_removed?: number
+  dry_run?: boolean
 }
 
 interface RunDetail {
@@ -529,11 +535,34 @@ export function SchemaEtlPage() {
           )}
           {selectedRun.report && (
             <>
+              {selectedRun.report.dry_run && (
+                <p className="rounded-card border border-subtle bg-card px-3 py-2 text-sm text-ink">
+                  <strong className="font-bold">这是一次预演</strong>
+                  ——terms 和 Neo4j 都零写入，下面的移除数量是「将要移除多少」而不是
+                  「已经移除了多少」。预演只覆盖实体侧，关系侧的清理数量无法预演
+                  （见运行报告字段说明），所以关系移除恒为 0，那个 0 不代表关系侧
+                  没有要删的。
+                </p>
+              )}
               <p className="text-sm text-ink">
                 实体写入 {selectedRun.report.entities_written ?? 0} 条，跳过{' '}
                 {selectedRun.report.entities_skipped ?? 0} 条；关系写入{' '}
                 {selectedRun.report.relations_written ?? 0} 条，跳过{' '}
                 {selectedRun.report.relations_skipped ?? 0} 条
+              </p>
+              {/* 移除数量总是显示，零删除时也显示——「本次没有移除任何实体」和
+                  「根本没跑删除逻辑」必须能区分开，这是源端删除传播那份设计的
+                  绑定约束。 */}
+              <p className="text-sm text-ink">
+                {selectedRun.report.dry_run ? '将移除' : '移除'}实体{' '}
+                {selectedRun.report.entities_removed ?? 0} 条，关系{' '}
+                {selectedRun.report.relations_removed ?? 0} 条
+                {(selectedRun.report.entities_removed ?? 0) === 0 &&
+                  (selectedRun.report.relations_removed ?? 0) === 0 && (
+                    <span className="text-ink-soft">
+                      （源数据与图谱一致，没有要清理的）
+                    </span>
+                  )}
               </p>
               <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle">
                 <table className="w-full text-left text-sm">
@@ -542,6 +571,9 @@ export function SchemaEtlPage() {
                       <th className="px-3 py-2">类型</th>
                       <th className="px-3 py-2">写入</th>
                       <th className="px-3 py-2">跳过</th>
+                      <th className="px-3 py-2">
+                        {selectedRun.report?.dry_run ? '将移除' : '移除'}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -549,6 +581,9 @@ export function SchemaEtlPage() {
                       new Set([
                         ...Object.keys(selectedRun.report.written_by_type ?? {}),
                         ...Object.keys(selectedRun.report.skipped_by_type ?? {}),
+                        // 移除数量按类型逐个列出——某个类型被清理了多少，是
+                        // 汇总数字说不出来的。
+                        ...Object.keys(selectedRun.report.entities_removed_by_type ?? {}),
                       ]),
                     ).map((label) => (
                       <tr key={label} className="border-b border-subtle text-ink last:border-b-0">
@@ -558,6 +593,9 @@ export function SchemaEtlPage() {
                         </td>
                         <td className="px-3 py-2">
                           {selectedRun.report?.skipped_by_type?.[label] ?? 0}
+                        </td>
+                        <td className="px-3 py-2">
+                          {selectedRun.report?.entities_removed_by_type?.[label] ?? 0}
                         </td>
                       </tr>
                     ))}
