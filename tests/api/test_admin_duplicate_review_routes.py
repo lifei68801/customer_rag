@@ -15,6 +15,7 @@ from app.graphrag.duplicate_review_queue import (
 )
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
+from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
@@ -29,6 +30,7 @@ async def _open_review_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_duplicate_review_schema(conn)
     await ensure_terms_schema(conn)
+    await ensure_term_edits_schema(conn)
     # 路由在 approve/reject 之前会先用 review_conn 调 require_active_tenant()
     # 校验 payload.tenant_id——真实的 deps.get_review_conn() 会自动建好
     # tenants 表并回填历史租户，这里是手工建表的测试连接，绕开了那条路径，
@@ -198,72 +200,6 @@ def test_reject_duplicate_suggestion(review_conn):
 
     assert reject_response.status_code == 200
     assert reject_response.json() == {"rejected": True}
-
-
-def test_approve_returns_409_on_real_term_name_conflict(review_conn):
-    """Fix 2：approve_duplicate_suggestion() 内部经 terms_store.update_term()
-    做真正的合并写入，可能抛出 TermNameConflictError（不是 ValueError 的
-    子类）——之前路由只兜 ValueError，会让这类真实冲突变成不透明的 500，
-    违反设计规格"合并操作在这种情况下应该失败并让审核人员看到明确的错误
-    信息，不能静默失败"的要求。这里用真实的 terms 表数据（不是 fake
-    对象）构造出一个真实的名字冲突：第三方术语"某第三方"已经把"可乐"占
-    用成自己的别名，合并"可口可乐股份"（别名里也有"可乐"）进"Coca-Cola"
-    时，"可乐"会被追加进 Coca-Cola 的新 aliases，跟"某第三方"已有的别名
-    冲突。"""
-    asyncio.run(
-        _seed_confirmed_term_type(review_conn, tenant_id="demo", term_type="公司")
-    )
-    asyncio.run(
-        _seed_terms(
-            review_conn,
-            [
-                Term(
-                    tenant_id="demo", node_key="公司:Coca-Cola", standard_name="Coca-Cola",
-                    aliases=[], term_type="公司",
-                ),
-                Term(
-                    tenant_id="demo", node_key="公司:可口可乐股份", standard_name="可口可乐股份",
-                    aliases=["可乐"], term_type="公司",
-                ),
-                Term(
-                    tenant_id="demo", node_key="公司:某第三方", standard_name="某第三方",
-                    aliases=["可乐"], term_type="公司",
-                ),
-            ],
-        )
-    )
-    asyncio.run(
-        enqueue_duplicate_suggestion(
-            review_conn,
-            tenant_id="demo",
-            candidate_a_node_key="公司:Coca-Cola",
-            candidate_b_node_key="公司:可口可乐股份",
-            similarity_score=0.92,
-            reason="alias_overlap",
-        )
-    )
-    session_store = AdminSessionStore()
-    app.dependency_overrides[deps.get_settings] = lambda: _settings()
-    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
-    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
-    try:
-        client = TestClient(app)
-        headers = _authed_headers(session_store)
-        list_response = client.get(
-            "/api/admin/duplicate-reviews", params={"tenant_id": "demo"}, headers=headers,
-        )
-        review_id = list_response.json()["suggestions"][0]["review_id"]
-
-        approve_response = client.post(
-            f"/api/admin/duplicate-reviews/{review_id}/approve",
-            json={"tenant_id": "demo", "keep_node_key": "公司:Coca-Cola"},
-            headers=headers,
-        )
-    finally:
-        app.dependency_overrides.clear()
-
-    assert approve_response.status_code == 409
-    assert "可乐" in approve_response.json()["detail"]
 
 
 def test_approve_unknown_review_id_returns_404(review_conn):

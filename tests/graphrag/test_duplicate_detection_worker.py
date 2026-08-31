@@ -209,9 +209,13 @@ async def test_main_second_run_does_not_resuggest_approved_tombstoned_pair(conn)
 
     assert second_run_processed == 0
     assert await list_pending_duplicate_suggestions(conn, tenant_id="t1") == []
-    keeper = await get_term(conn, "t1", "Coca-Cola", "公司")
+    # 使用合并视图检查 keeper 的别名——merge_terms 现在通过编辑层实现
+    from app.graphrag.terms_store import get_term_merged_by_node_key
+    keeper = await get_term_merged_by_node_key(conn, "t1", "公司:Coca-Cola")
     assert set(keeper.aliases) == {"可口可乐", "可口可乐股份"}
+    # merged 那条的原始行仍在 terms 表中（未被删除），但在合并视图中不可见
     all_terms = await list_terms(conn, "t1")
     merged_row = next(t for t in all_terms if t.node_key == "公司:可口可乐股份")
-    assert merged_row.standard_name.startswith("[已合并] ")
+    # 原始行保持不变（未墓碑化）
+    assert merged_row.standard_name == "可口可乐股份"
     assert merged_row.aliases == []

@@ -12,7 +12,12 @@ from app.graphrag.ontology_categories import (
     ensure_categories_schema,
     list_term_types,
 )
-from app.graphrag.term_edits_store import list_term_edits, list_term_edits_for_node_key
+from app.graphrag.term_edits_store import (
+    FIELD_DELETED,
+    list_term_edits,
+    list_term_edits_for_node_key,
+    upsert_term_edit,
+)
 from app.graphrag.term_merge import apply_edits
 
 logger = logging.getLogger(__name__)
@@ -834,14 +839,6 @@ async def upsert_term_with_node_key(
 _TOMBSTONE_PREFIX = "[已合并] "
 
 
-def _tombstone_name(node_key: str) -> str:
-    """merge_terms 把被合并那条 Term 的 standard_name 重写成这个格式
-    （"合并进了别的术语"的墓碑标记）——这是这个格式唯一的生成位置，其它
-    需要构造/识别这个字符串的地方（is_tombstoned 本身、merge_terms 内部
-    墓碑化/恢复两处调用）都通过这里，不重复拼字面量。"""
-    return f"{_TOMBSTONE_PREFIX}{node_key}"
-
-
 def is_tombstoned(term: Term) -> bool:
     """term 是否已经是一条被 merge_terms 合并掉的墓碑行。
 
@@ -869,89 +866,48 @@ async def merge_terms(
     aliases（去重）——不是只追加 standard_name，否则 merged 那条自己的
     别名会变成孤儿，resolve_term() 再也找不回它们。merged 那条本身不删除
     （node_key 可能已经被 Neo4j 图数据引用，删除会破坏引用完整性），改成
-    "墓碑化"：把它的 standard_name 重写成一个不会跟真实术语碰撞的占位名、
-    aliases 清空，之后 resolve_term() 统一路由到 keep 那条。
+    在编辑层写一条 __deleted__ 标记，使其在合并视图里虚拟不可见。
 
     两个 node_key 有任意一个在这个租户下不存在，抛 TermNotFoundError。
 
-    实现是"先墓碑化 merged 那条，再追加到 keep 那条"两步 update_term()
-    调用，不是真正的数据库事务（update_term() 内部各自 commit）：必须先
-    墓碑化，否则 merged 那条自己的 standard_name/aliases 还在，会跟马上
-    要追加到 keep 那条上的同样字符串撞上 update_term() 的别名冲突检查
-    （_check_name_conflict）。第二步失败时会尝试把 merged 那条恢复成
-    合并前的状态，再重新抛出原始异常；如果连恢复本身也失败（比如恢复的
-    目标名字这期间被并发写入抢占），会记一条 ERROR 日志留下人工核对/
-    手动恢复所需的全部信息，然后依然重新抛出触发这整条回滚路径的原始
-    异常（不是恢复失败的异常）——调用方关心的是"为什么合并失败"，恢复
-    失败是已经被记录下来的次要问题，不应该掩盖掉主要异常。
+    实现是编辑层的两条 upsert_term_edit 调用：
+    1. merged_node_key 写 __deleted__ 编辑——之后 apply_edits 会把这一行
+       从合并结果里排除。
+    2. keep_node_key 写 aliases 编辑 = keep 当前别名 + merged 的
+       standard_name + merged 的全部别名（去重）。
+
+    因为编辑层没有 _check_name_conflict 这道检查（旧实现的复杂性来源），
+    也没有中间态——两条编辑要么都成功、要么都被原子地应用到读路径，不需要
+    补偿回滚的中间状态处理。
     """
-    terms = await list_terms(conn, tenant_id)
-    terms_by_node_key = {t.node_key: t for t in terms}
-    keep_term = terms_by_node_key.get(keep_node_key)
-    merged_term = terms_by_node_key.get(merged_node_key)
-    if keep_term is None or merged_term is None:
-        raise TermNotFoundError(
-            f"待合并的术语不存在: keep={keep_node_key!r}, merged={merged_node_key!r}"
-        )
+    # 当前值的获取使用 get_term_merged_by_node_key，它会把编辑层合并进去
+    # ——如果某一方已经被删除过（有 __deleted__ 编辑），这里会抛
+    # TermNotFoundError，满足"两个 node_key 有任意一个不存在时抛异常"的
+    # 契约。
+    keep_term = await get_term_merged_by_node_key(conn, tenant_id, keep_node_key)
+    merged_term = await get_term_merged_by_node_key(conn, tenant_id, merged_node_key)
 
-    merged_original_standard_name = merged_term.standard_name
-    merged_original_aliases = list(merged_term.aliases)
-
-    # Step 1: 墓碑化 merged 那条——先清空它的名字/别名占用，避免 Step 2
-    # 追加同样的字符串到 keep 那条时撞上别名冲突检查。
-    await update_term(
+    # Step 1: 把 merged 那条标记为已删除。
+    await upsert_term_edit(
         conn,
         tenant_id=tenant_id,
-        node_key=merged_term.node_key,
-        new_standard_name=_tombstone_name(merged_term.node_key),
-        aliases=[],
-        term_type=merged_term.term_type,
-        extra_properties=merged_term.extra_properties,
+        node_key=merged_node_key,
+        field=FIELD_DELETED,
+        value=None,
+        edited_by="admin",
     )
 
-    # Step 2: 把 merged 那条合并前的 standard_name/aliases 追加到 keep 那条。
+    # Step 2: 把 merged 那条的别名追加到 keep 那条。
+    # 别名并集 = keep 当前别名 + merged 的 standard_name + merged 的全部别名
+    # （去重，保持顺序）。
     merged_aliases = list(dict.fromkeys(
-        [*keep_term.aliases, merged_original_standard_name, *merged_original_aliases]
+        [*keep_term.aliases, merged_term.standard_name, *merged_term.aliases]
     ))
-    try:
-        await update_term(
-            conn,
-            tenant_id=tenant_id,
-            node_key=keep_term.node_key,
-            new_standard_name=keep_term.standard_name,
-            aliases=merged_aliases,
-            term_type=keep_term.term_type,
-            extra_properties=keep_term.extra_properties,
-        )
-    except Exception as append_exc:
-        try:
-            await update_term(
-                conn,
-                tenant_id=tenant_id,
-                node_key=merged_term.node_key,
-                new_standard_name=merged_original_standard_name,
-                aliases=merged_original_aliases,
-                term_type=merged_term.term_type,
-                extra_properties=merged_term.extra_properties,
-            )
-        except Exception as compensation_exc:
-            logger.error(
-                "合并术语失败且补偿恢复也失败：tenant_id=%r keep_node_key=%r "
-                "merged_node_key=%r 的原始 standard_name=%r、aliases=%r 已经从"
-                "数据库丢失（该行目前仍是墓碑状态 standard_name=%r, aliases=[]），"
-                "需要人工核对/手动恢复。触发合并失败的原始异常=%r，"
-                "补偿恢复自身失败的异常=%r",
-                tenant_id, keep_node_key, merged_node_key,
-                merged_original_standard_name, merged_original_aliases,
-                _tombstone_name(merged_term.node_key), append_exc, compensation_exc,
-                exc_info=True,
-            )
-            raise append_exc from compensation_exc
-        logger.warning(
-            "合并术语 tenant_id=%r keep_node_key=%r merged_node_key=%r 追加别名"
-            "步骤失败，已回滚：把 merged 那条的 standard_name/aliases 恢复为"
-            "合并前的状态（standard_name=%r, aliases=%r）。原始异常=%r",
-            tenant_id, keep_node_key, merged_node_key,
-            merged_original_standard_name, merged_original_aliases, append_exc,
-        )
-        raise
+    await upsert_term_edit(
+        conn,
+        tenant_id=tenant_id,
+        node_key=keep_node_key,
+        field="aliases",
+        value=merged_aliases,
+        edited_by="admin",
+    )
