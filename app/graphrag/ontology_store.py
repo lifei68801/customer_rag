@@ -34,6 +34,7 @@ from app.graphrag.etl_runs_store import ensure_etl_runs_schema
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.review_queue import ensure_review_schema
 from app.graphrag.tenants_store import create_tenants_table
+from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
 
 
@@ -54,6 +55,7 @@ async def open_ontology_store_conn(settings: Settings) -> aiosqlite.Connection:
         await ensure_review_schema(conn)
         await ensure_duplicate_review_schema(conn)
         await ensure_terms_schema(conn, seed_yaml_path=Path(settings.terminology_path))
+        await ensure_term_edits_schema(conn)
         # 一个入口建齐分类/关系类型/约束/接入模式/草稿检出状态五张表。
         await ensure_ontology_schema(conn)
         await ensure_etl_runs_schema(conn)
