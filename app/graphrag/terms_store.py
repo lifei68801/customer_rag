@@ -12,6 +12,8 @@ from app.graphrag.ontology_categories import (
     ensure_categories_schema,
     list_term_types,
 )
+from app.graphrag.term_edits_store import list_term_edits, list_term_edits_for_node_key
+from app.graphrag.term_merge import apply_edits
 
 logger = logging.getLogger(__name__)
 
@@ -337,6 +339,49 @@ async def list_terms(
         )
     rows = await cursor.fetchall()
     return [_row_to_term(row) for row in rows]
+
+
+async def list_terms_merged(
+    conn: aiosqlite.Connection,
+    tenant_id: str,
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+    source: str | None = None,
+) -> list[Term]:
+    """管道产出叠加人工编辑之后的术语列表——**所有读路径都该走这个**，
+    而不是 list_terms。
+
+    参数与 list_terms 一致。注意 limit/offset 作用在 terms 表的查询上，
+    合并发生在之后：被 __deleted__ 排除掉的行会让这一页少几条，纯编辑层
+    创建的实体则追加在末尾。分页的精确性让位于"读到的一定是合并结果"
+    ——后者是本设计的保证，前者只是列表页的观感。
+    """
+    terms = await list_terms(conn, tenant_id, limit=limit, offset=offset, source=source)
+    edits = await list_term_edits(conn, tenant_id)
+    return apply_edits(terms, edits, tenant_id=tenant_id)
+
+
+async def get_term_merged_by_node_key(
+    conn: aiosqlite.Connection, tenant_id: str, node_key: str
+) -> Term:
+    """按 node_key 取单条的合并结果。
+
+    实体被 __deleted__ 编辑标记过时抛 TermNotFoundError——对读路径而言
+    它就是不存在，跟 terms 表里根本没有这一行不该有可观测的区别。
+    """
+    edits = await list_term_edits_for_node_key(conn, tenant_id, node_key)
+    try:
+        term = await get_term_by_node_key(conn, tenant_id, node_key)
+    except TermNotFoundError:
+        merged = apply_edits([], {node_key: edits}, tenant_id=tenant_id)
+        if not merged:
+            raise
+        return merged[0]
+    merged = apply_edits([term], {node_key: edits}, tenant_id=tenant_id)
+    if not merged:
+        raise TermNotFoundError(f"术语已被人工删除: {node_key}")
+    return merged[0]
 
 
 async def count_terms(
