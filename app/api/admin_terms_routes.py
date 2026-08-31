@@ -115,6 +115,7 @@ async def list_all_terms(
     page: int | None = None,
     page_size: int | None = None,
     source: str | None = None,
+    q: str | None = None,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> TermListResponse:
     # page/page_size 都不传（比如 termsApi.ts 里不分页的 fetchTerms()，
@@ -123,6 +124,33 @@ async def list_all_terms(
     # 保持这个分页 query 参数引入之前的行为不变。只要任意一个参数被显式
     # 传入（管理后台自己的分页列表 fetchTermsPage() 两个参数总是一起传），
     # 才按分页语义处理。
+    # q（搜索）走一条独立路径：**必须在合并视图上过滤，不能在 SQL 里过滤**。
+    # 人工改过展示名的术语，如果按 terms 表的原始值搜，只能用旧名字找到、
+    # 用界面上看到的新名字反而搜不到——正好反了。所以先取全量合并结果、
+    # 在内存里过滤，再切分页。
+    #
+    # 代价是搜索时要把该租户的术语全量载入。可以接受：list_terms 本来就在
+    # 别的路径上（agent 每轮消歧、摄取管线）以全量方式被调用，这不是新引入
+    # 的量级。真成为瓶颈时再考虑把编辑层的展示名物化成可索引的列。
+    if q is not None and q.strip():
+        needle = q.strip().casefold()
+        matched = [
+            t
+            for t in await list_terms_merged(review_conn, tenant_id, source=source)
+            if needle in t.standard_name.casefold()
+            or any(needle in alias.casefold() for alias in t.aliases)
+        ]
+        effective_page_size = page_size or 20
+        offset = ((page or 1) - 1) * effective_page_size
+        return TermListResponse(
+            terms=[
+                _to_response(term)
+                for term in matched[offset : offset + effective_page_size]
+            ],
+            # 搜索路径下 total 是命中数，跟列表内容一致——不走下面那个
+            # count_terms（它数的是 terms 原始表，见函数末尾的说明）。
+            total=len(matched),
+        )
     if page is None and page_size is None:
         terms = await list_terms_merged(review_conn, tenant_id, source=source)
     else:

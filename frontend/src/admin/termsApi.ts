@@ -42,10 +42,15 @@ export async function fetchTermsPage(
   page: number,
   pageSize: number,
   source?: string,
+  query?: string,
 ): Promise<TermPage> {
   const sourceParam = source ? `&source=${encodeURIComponent(source)}` : ''
+  // 搜索在后端作用于**合并视图**（terms + 人工编辑），所以人工改过展示名的
+  // 术语能用界面上看到的新名字搜到。别改成前端过滤——当前页只有 20 条，
+  // 前端过滤等于只搜这一页。
+  const queryParam = query?.trim() ? `&q=${encodeURIComponent(query.trim())}` : ''
   const response = await adminFetch(
-    `/api/admin/${encodeURIComponent(tenantId)}/terms?page=${page}&page_size=${pageSize}${sourceParam}`,
+    `/api/admin/${encodeURIComponent(tenantId)}/terms?page=${page}&page_size=${pageSize}${sourceParam}${queryParam}`,
     sessionToken,
   )
   if (!response.ok) {

@@ -74,6 +74,9 @@ export function GraphReviewsPage() {
   // 只锁一行的话，点另一行会因为下面的 processingId 二次校验静默 return，
   // 但那一行看起来还是"启用"的，等于按钮看着能点、点了却没反应。
   const [processingId, setProcessingId] = useState<number | null>(null)
+  // 键盘分诊的焦点行。审核是"同一个动作重复几百次"的场景，鼠标在按钮之间
+  // 往返是纯损耗——j/k 移动、a 批准、r 驳回、x 选中，手不用离开键盘。
+  const [focusedIndex, setFocusedIndex] = useState(0)
   const [graphTerms, setGraphTerms] = useState<GraphTerm[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [batchRejectNote, setBatchRejectNote] = useState('')
@@ -294,6 +297,61 @@ export function GraphReviewsPage() {
   const toggleSelectAllOnPage = () => {
     setSelectedIds(allOnPageSelected ? new Set() : new Set(pending.map((r) => r.review_id)))
   }
+
+  // 键盘分诊。只在待审列表非空、且没有弹窗打开时生效——弹窗里 a/r/x 是
+  // 正常输入字符，不能被当成快捷键吞掉。输入框聚焦时同理。
+  useEffect(() => {
+    if (pending.length === 0 || createDraft) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const typing =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      if (typing || event.metaKey || event.ctrlKey || event.altKey) return
+
+      const clamp = (index: number) => Math.max(0, Math.min(index, pending.length - 1))
+      const current = pending[clamp(focusedIndex)]
+
+      switch (event.key) {
+        case 'j':
+          event.preventDefault()
+          setFocusedIndex((i) => clamp(i + 1))
+          break
+        case 'k':
+          event.preventDefault()
+          setFocusedIndex((i) => clamp(i - 1))
+          break
+        case 'a':
+          if (!current || processingId !== null || batchProcessing) return
+          event.preventDefault()
+          void handleApprove(current.review_id)
+          break
+        case 'r':
+          if (!current || processingId !== null || batchProcessing) return
+          event.preventDefault()
+          void handleReject(current.review_id)
+          break
+        case 'x':
+          if (!current) return
+          event.preventDefault()
+          toggleSelected(current.review_id)
+          break
+        default:
+          break
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [pending, focusedIndex, createDraft, processingId, batchProcessing])
+
+  // 列表变短（批准/驳回后那一条被移出）时把焦点收回范围内，否则焦点会
+  // 停在一个不存在的行上，看起来像"焦点消失了"。
+  useEffect(() => {
+    setFocusedIndex((i) => Math.max(0, Math.min(i, pending.length - 1)))
+  }, [pending.length])
 
   const refreshHistory = useCallback(async () => {
     if (!sessionToken) return
@@ -726,6 +784,20 @@ export function GraphReviewsPage() {
           全选本页（{pending.length} 条）
         </label>
       )}
+      {tab === 'pending' && pendingLoaded && pending.length > 0 && (
+        <p className="text-xs text-ink-soft">
+          键盘：
+          <kbd className="mx-1 rounded-chip border border-subtle bg-paper px-1.5 py-0.5 font-mono">j</kbd>
+          <kbd className="mr-1 rounded-chip border border-subtle bg-paper px-1.5 py-0.5 font-mono">k</kbd>
+          移动 ·
+          <kbd className="mx-1 rounded-chip border border-subtle bg-paper px-1.5 py-0.5 font-mono">a</kbd>
+          批准 ·
+          <kbd className="mx-1 rounded-chip border border-subtle bg-paper px-1.5 py-0.5 font-mono">r</kbd>
+          驳回 ·
+          <kbd className="mx-1 rounded-chip border border-subtle bg-paper px-1.5 py-0.5 font-mono">x</kbd>
+          选中。当前行左侧有色条标记。
+        </p>
+      )}
       {tab === 'pending' &&
         pendingLoaded &&
         pending.map((review) => {
@@ -735,10 +807,16 @@ export function GraphReviewsPage() {
           const objectAmbiguous =
             candidateTermTypesFor(drafts[review.review_id]?.object ?? '').length >= 2 &&
             !(justCreated[review.review_id]?.object ?? ambiguityPick[review.review_id]?.object)
+          const isFocused = pending[focusedIndex]?.review_id === review.review_id
           return (
           <div
             key={review.review_id}
+            data-focused={isFocused || undefined}
+            // 焦点用左侧色条标记，不改边框——边框变色会让整行轻微位移，
+            // 连按 j 时整个列表会抖。
             className={`flex flex-col gap-3 rounded-card border border-subtle bg-card ${
+              isFocused ? 'border-l-4 border-l-accent-primary' : 'border-l-4 border-l-transparent'
+            } ${
               density === 'compact' ? 'p-2.5' : 'p-4'
             }`}
           >

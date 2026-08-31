@@ -123,6 +123,10 @@ export function TermsPage() {
   const [optionsLoaded, setOptionsLoaded] = useState(false)
 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
+  // 输入框的即时值与真正拿去请求的值分开：每敲一个字就发一次请求，既浪费
+  // 也会让结果乱序返回（后发的先到）。300ms 防抖后再请求。
+  const [searchInput, setSearchInput] = useState('')
+  const [search, setSearch] = useState('')
 
   const [editingKey, setEditingKey] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState<TermDraft | null>(null)
@@ -157,10 +161,11 @@ export function TermsPage() {
       const data = await fetchTermsPage(
         sessionToken, tenantId, page, PAGE_SIZE,
         sourceFilter === 'all' ? undefined : sourceFilter,
+        search,
       )
       return { items: data.terms, total: data.total }
     },
-    [sessionToken, tenantId, sourceFilter],
+    [sessionToken, tenantId, sourceFilter, search],
   )
   const {
     items: terms, total, loaded, error, setError, page, setPage, refresh,
@@ -173,6 +178,16 @@ export function TermsPage() {
   useEffect(() => {
     setPage(1)
   }, [sourceFilter, setPage])
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchInput), 300)
+    return () => clearTimeout(timer)
+  }, [searchInput])
+
+  // 换关键词要回第一页——否则搜出 3 条却停在第 5 页，界面是空的。
+  useEffect(() => {
+    setPage(1)
+  }, [search, setPage])
 
   useEffect(() => {
     if (loaded && terms.length === 0 && page > 1) {
@@ -239,6 +254,33 @@ export function TermsPage() {
   return (
     <div className="flex flex-col gap-6">
       <h1 className="font-mono text-xl font-semibold text-ink">实体列表</h1>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor="term-search" className="text-sm font-bold text-ink">
+          搜索
+        </label>
+        <input
+          id="term-search"
+          type="search"
+          value={searchInput}
+          onChange={(event) => setSearchInput(event.target.value)}
+          placeholder="按名称或别名"
+          aria-describedby="term-search-hint"
+          className={`w-56 rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:outline-none ${focusRing}`}
+        />
+        {searchInput && (
+          <button
+            type="button"
+            onClick={() => setSearchInput('')}
+            className={`rounded-control border border-subtle bg-paper px-3 py-2 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
+          >
+            清除
+          </button>
+        )}
+        <span id="term-search-hint" className="text-xs text-ink-soft">
+          搜标准名和别名，不区分大小写
+        </span>
+      </div>
 
       <div className="flex items-center gap-2">
         <label htmlFor="source-filter" className="text-sm font-bold text-ink">

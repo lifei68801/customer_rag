@@ -16,6 +16,7 @@ from app.graphrag.term_edits_store import (
     FIELD_EXTRA_PROPERTIES,
     ensure_term_edits_schema,
     list_term_edits_for_node_key,
+    upsert_term_edit,
 )
 from app.graphrag.terms_store import create_term, ensure_terms_schema, list_terms, update_term
 from app.main import app
@@ -1507,3 +1508,72 @@ def test_post_on_a_manually_deleted_node_key_resurrects_it(terms_conn):
     # __deleted__ 编辑已经被撤掉，不是靠别的方式绕过去的。
     edits = asyncio.run(list_term_edits_for_node_key(terms_conn, "t1", "t:删了又建"))
     assert FIELD_DELETED not in edits
+
+
+def test_search_matches_standard_name_and_aliases(terms_conn):
+    """搜索命中标准名或任一别名，不区分大小写。"""
+    for name, aliases in (("Coca-Cola", ["可乐"]), ("Pepsi", []), ("矿泉水", [])):
+        asyncio.run(
+            create_term(terms_conn, tenant_id="t1", standard_name=name, aliases=aliases, term_type="t")
+        )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        headers = _authed_headers(session_store)
+
+        by_name = client.get("/api/admin/t1/terms?page=1&page_size=20&q=cola", headers=headers).json()
+        by_alias = client.get("/api/admin/t1/terms?page=1&page_size=20&q=可乐", headers=headers).json()
+        miss = client.get("/api/admin/t1/terms?page=1&page_size=20&q=不存在的东西", headers=headers).json()
+    finally:
+        app.dependency_overrides.clear()
+
+    # 大小写不敏感：查 "cola" 命中 "Coca-Cola"。
+    assert [t["standard_name"] for t in by_name["terms"]] == ["Coca-Cola"]
+    assert by_name["total"] == 1
+    # 别名命中。
+    assert [t["standard_name"] for t in by_alias["terms"]] == ["Coca-Cola"]
+    # total 是命中数，不是全表数——否则分页器会撒谎。
+    assert miss["total"] == 0
+    assert miss["terms"] == []
+
+
+def test_search_finds_a_manually_renamed_term_by_its_new_name(terms_conn):
+    """**这条是搜索最容易做错的地方。**
+
+    搜索必须作用在合并视图（terms + 人工编辑）上。如果在 SQL 里按 terms 表
+    的原始值过滤，人工改过展示名的术语就只能用**旧**名字搜到、用界面上看到
+    的新名字反而搜不到——正好反了。
+    """
+    asyncio.run(
+        create_term(
+            terms_conn, tenant_id="t1", standard_name="管道产出的名字",
+            aliases=[], term_type="t",
+        )
+    )
+    asyncio.run(
+        upsert_term_edit(
+            terms_conn, tenant_id="t1", node_key="t:管道产出的名字",
+            field="standard_name", value="人工改过的名字", edited_by="admin",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        headers = _authed_headers(session_store)
+        by_new = client.get("/api/admin/t1/terms?page=1&page_size=20&q=人工改过", headers=headers).json()
+        by_old = client.get("/api/admin/t1/terms?page=1&page_size=20&q=管道产出", headers=headers).json()
+    finally:
+        app.dependency_overrides.clear()
+
+    # 用界面上看到的新名字能搜到。
+    assert [t["standard_name"] for t in by_new["terms"]] == ["人工改过的名字"]
+    # 用已经不再显示的旧名字搜不到——搜索和列表看到的是同一份数据。
+    assert by_old["terms"] == []
