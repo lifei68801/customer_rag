@@ -16,7 +16,7 @@ import {
  */
 
 describe('新路由表', () => {
-  it('七个目的地，流程内的按阶段分段', () => {
+  it('七个工作流目的地加一个设置页', () => {
     expect(ADMIN_ROUTES).toEqual({
       ontology: '/admin/model/ontology',
       ontologyGraph: '/admin/model/graph',
@@ -25,6 +25,7 @@ describe('新路由表', () => {
       reviewRelations: '/admin/review/relations',
       reviewDuplicates: '/admin/review/duplicates',
       terms: '/admin/terms',
+      settings: '/admin/settings',
     })
   })
 
@@ -104,14 +105,21 @@ describe('导航分组', () => {
     }
   })
 
-  it('七个目的地全部出现在侧边栏，一个都不藏', () => {
+  it('每个工作流目的地都在侧边栏，一个都不藏', () => {
     // 这条是这次重构的目的：此前「疑似重复」和「本体图」在第四层，侧边栏
     // 上一个字都看不到。任何新增页面如果忘了挂进导航，这里会失败。
+    //
+    // 设置页是唯一的例外，而且是显式的：它不是流程的一站，是账号级的
+    // 偏好，入口在底部的账号菜单里。
     const inNav = [
       ...NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path)),
       ...NAV_STANDALONE.map((i) => i.path),
     ].sort()
-    expect(inNav).toEqual(Object.values(ADMIN_ROUTES).sort())
+    const shouldBeInNav = Object.entries(ADMIN_ROUTES)
+      .filter(([key]) => key !== 'settings')
+      .map(([, path]) => path)
+      .sort()
+    expect(inNav).toEqual(shouldBeInNav)
   })
 
   it('每个叶子的所属分组与它的路径段一致', () => {

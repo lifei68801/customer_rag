@@ -9,6 +9,7 @@ import { SchemaEtlPage } from './admin/SchemaEtlPage'
 import { OntologySchemaPage } from './admin/OntologySchemaPage'
 import { DuplicatesPage } from './admin/DuplicatesPage'
 import { OntologyGraphPage } from './admin/OntologyGraphPage'
+import { SettingsPage } from './admin/SettingsPage'
 import { NotFoundPage } from './admin/NotFoundPage'
 import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'
 
@@ -33,6 +34,7 @@ function App() {
         <Route path="review/relations" element={<GraphReviewsPage />} />
         <Route path="review/duplicates" element={<DuplicatesPage />} />
         <Route path="terms" element={<TermsPage />} />
+        <Route path="settings" element={<SettingsPage />} />
 
         {/* 旧书签。每条一跳直达，不经过中间那一代。 */}
         {Object.entries(LEGACY_REDIRECTS).map(([from, to]) => (

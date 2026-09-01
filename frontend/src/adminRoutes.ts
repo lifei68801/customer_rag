@@ -31,6 +31,8 @@ export const ADMIN_ROUTES = {
   // 两段式：实体列表不属于任何阶段，路径里留一个「browse」段就是个孤儿
   // ——侧边栏没有那个组，URL 里却有。形状本身说清楚它不在流程里。
   terms: '/admin/terms',
+  // 账号设置。不在任何导航分组里——它不是流程的一站，是账号级的偏好。
+  settings: '/admin/settings',
 } as const
 
 /**
@@ -142,9 +144,15 @@ const ALL_NAV_ITEMS: NavItem[] = [
   ...NAV_STANDALONE,
 ]
 
+/** 导航里没有的页面，标题写在这里。 */
+const EXTRA_TITLES: Partial<Record<keyof typeof ADMIN_ROUTES, string>> = {
+  settings: '设置',
+}
+
 export const PAGE_TITLES: Record<keyof typeof ADMIN_ROUTES, string> = Object.fromEntries(
   Object.entries(ADMIN_ROUTES).map(([key, path]) => [
     key,
-    ALL_NAV_ITEMS.find((i) => i.path === path)!.label,
+    EXTRA_TITLES[key as keyof typeof ADMIN_ROUTES] ??
+      ALL_NAV_ITEMS.find((i) => i.path === path)!.label,
   ]),
 ) as Record<keyof typeof ADMIN_ROUTES, string>

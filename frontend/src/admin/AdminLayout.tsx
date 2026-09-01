@@ -1,14 +1,13 @@
 import { ChevronDown, Menu, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
+import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { NAV_GROUPS, NAV_STANDALONE } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
 import { DensityProvider } from './DensityContext'
-import { DensitySwitcher } from './DensitySwitcher'
-import { SkinSwitcher } from './SkinSwitcher'
 import { TenantProvider } from './TenantContext'
 import { TenantSwitcher } from './TenantSwitcher'
 import { CommandPalette } from './CommandPalette'
+import { AccountMenu } from './AccountMenu'
 import { useNavGroups } from './useNavGroups'
 import { VersionSwitcher } from './VersionSwitcher'
 import { NavBadge } from './NavBadge'
@@ -156,9 +155,7 @@ export function AdminLayout() {
                 话，用户会先挑页面、再发现自己在错的租户里，得重来一次。 */}
             <TenantSwitcher />
             <AdminNav />
-            <div className="flex flex-row flex-wrap gap-3 md:flex-col">
-              <SkinSwitcher />
-              <DensitySwitcher />
+            <div className="flex flex-col gap-3">
               {/* 快捷键不告诉用户等于不存在。用 kbd 而不是纯文本，让它看起来
                   就是个按键提示。 */}
               <p className="text-xs text-ink-soft">
@@ -168,19 +165,8 @@ export function AdminLayout() {
                 </kbd>
                 打开命令面板
               </p>
-              <Link
-                to="/"
-                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-2 text-center text-sm font-bold text-ink transition active:scale-95 active:opacity-90 ${focusRing}`}
-              >
-                返回前台
-              </Link>
-              <button
-                type="button"
-                onClick={logout}
-                className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-2 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 ${focusRing}`}
-              >
-                登出
-              </button>
+              {/* 账号级的动作收在这里，侧边栏本体只剩工作流程。 */}
+              <AccountMenu onLogout={logout} />
             </div>
           </aside>
           <main className="flex-1 overflow-y-auto p-6">
