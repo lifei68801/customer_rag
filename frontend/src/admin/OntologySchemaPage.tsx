@@ -1,23 +1,18 @@
-import { Boxes, ShieldCheck, Spline } from 'lucide-react'
+import { Boxes, ShieldCheck, Spline, Waypoints } from 'lucide-react'
 import { EmptyState } from './EmptyState'
-import { Suspense, lazy, useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useConfirm } from './ConfirmContext'
 import { useAdminDensity } from './DensityContext'
 import { Skeleton } from './Skeleton'
-// 图只在约束 tab 的「图」形态下用到，而 sigma + graphology 有几百 kB。
-// 静态导入会让它进首屏包、让所有页面替这一个视图买单，所以按需加载。
-import { buildOntologyDiff, type OntologyDiff } from './ontologyDiff'
-
-const OntologyGraph = lazy(() =>
-  import('./ontologyGraph/OntologyGraph').then((m) => ({ default: m.OntologyGraph })),
-)
 import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
+import { buildOntologyDiff, type OntologyDiff } from './ontologyDiff'
 import { useOntologyData } from './useOntologyData'
 import { useOntologyVersion } from './useOntologyVersion'
-import { PAGE_TITLES } from '../adminRoutes'
+import { Link } from 'react-router-dom'
+import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
 import type {
   Constraint,
   ExtraFieldSpec,
@@ -83,6 +78,14 @@ const tabButtonClass = (active: boolean) =>
   `rounded-control border border-subtle px-3 py-2 text-sm font-bold transition ${focusRing} ${
     active ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
+
+/**
+ * 确认按钮可用时的 title。
+ *
+ * 导出是为了让测试能绑住这个文案本身——测试文件里抄一份常量，源码改了
+ * 测试照样绿，那种测试等于没写。
+ */
+export const CONFIRM_IRREVERSIBLE_HINT = '不可逆：旧的已确认版本会被换掉，无法恢复'
 
 const emptyTermTypeDraft = (): TermType => ({ value: '', extra_fields: [], standard_name_value_type: 'string' })
 const emptyRelationTypeDraft = (): RelationType => ({
@@ -303,8 +306,13 @@ export function OntologySchemaPage() {
               type="button"
               onClick={handleConfirm}
               disabled={confirmDisabled}
-              title={confirmDisabledReason ?? undefined}
-              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-success px-4 py-2 text-sm font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              // 禁用时说明为什么点不了，可用时说明点下去会发生什么。颜色
+              // 不能是唯一的信号——色觉障碍的用户看到的是两个灰按钮。
+              title={confirmDisabledReason ?? CONFIRM_IRREVERSIBLE_HINT}
+              // 危险色而不是成功色。这个动作确实会"成功"，但它的效果是
+              // 「旧的已确认版本会被换掉、无法恢复」。确认弹窗把后果写得
+              // 很清楚，可用户在点开弹窗之前就已经形成了预期。
+              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
               {confirming ? '确认中…' : '确认 schema'}
             </button>
@@ -1212,14 +1220,13 @@ function ConstraintsTab({
   const [removingKey, setRemovingKey] = useState<string | null>(null)
   // 约束本质是 (主语类型, 关系, 宾语类型) 的边表——图和表是同一份数据的两种
   // 呈现。默认给表：新增/删除都在表上操作，图是只读的全局视图。
-  const [shape, setShape] = useState<'table' | 'graph'>('table')
 
-  const { constraints, termTypes, draftRelationTypes, fanout, entityCounts, loaded, refresh } =
+  const { constraints, termTypes, draftRelationTypes, loaded, refresh } =
     useOntologyData({
       sessionToken,
       tenantId,
       view,
-      withGraphOverlay: shape === 'graph',
+      withGraphOverlay: false,
       reloadKey: confirmVersion,
       onError,
     })
@@ -1294,45 +1301,19 @@ function ConstraintsTab({
 
   const cellPadding = density === 'compact' ? 'px-2 py-1' : 'px-3 py-2'
 
-  const shapeButtonClass = (active: boolean) =>
-    `rounded-control border border-subtle px-3 py-1.5 text-sm font-bold transition ${focusRing} ${
-      active ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink hover:bg-interactive-hover'
-    }`
-
   return (
     <div className="flex flex-col gap-4">
       {loaded && (
-        <div className="flex items-center gap-2" role="group" aria-label="约束视图形态">
-          <button
-            type="button"
-            className={shapeButtonClass(shape === 'table')}
-            aria-pressed={shape === 'table'}
-            onClick={() => setShape('table')}
-          >
-            表格
-          </button>
-          <button
-            type="button"
-            className={shapeButtonClass(shape === 'graph')}
-            aria-pressed={shape === 'graph'}
-            onClick={() => setShape('graph')}
-          >
-            图
-          </button>
-        </div>
-      )}
-      {loaded && shape === 'graph' && (
-        <Suspense fallback={<Skeleton variant="table-rows" count={4} />}>
-          <OntologyGraph
-            termTypes={termTypes}
-            constraints={constraints}
-            fanout={fanout}
-            entityCounts={entityCounts}
-          />
-        </Suspense>
+        <Link
+          to={ADMIN_ROUTES.ontologyGraph}
+          className={`inline-flex min-h-[36px] items-center gap-1.5 self-start rounded-control border border-subtle bg-paper px-3 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
+        >
+          <Waypoints aria-hidden="true" className="h-4 w-4" />
+          在本体图中查看
+        </Link>
       )}
       {!loaded && <Skeleton variant="table-rows" count={3} />}
-      {loaded && shape === 'table' && constraints.length === 0 && (
+      {loaded && constraints.length === 0 && (
         <EmptyState
           icon={ShieldCheck}
           title={`还没有任何${view === 'draft' ? '草稿' : '已确认的'}约束`}
@@ -1343,7 +1324,7 @@ function ConstraintsTab({
           }
         />
       )}
-      {shape === 'table' && constraints.length > 0 && (
+      {constraints.length > 0 && (
         <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card">
           <table className="w-full text-left text-sm">
             <thead>
