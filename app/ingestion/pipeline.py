@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Literal, NamedTuple
 
 import aiosqlite
 
@@ -24,6 +25,28 @@ from app.providers.registry import ProviderRegistry
 from app.retrieval.vector_store import VectorRecord, VectorStore
 
 logger = logging.getLogger(__name__)
+
+
+#: 这次摄取有没有真的建出知识图谱。
+#: - built：抽取跑完了
+#: - skipped_ontology_unconfirmed：想建但本体没确认，pipeline 跳过了
+#: - not_requested：调用方压根没要求建图（用户没勾那个复选框）
+#:
+#: 后两者要分开：一个是「你以为建了其实没建」，需要在界面上说明并给出
+#: 修复路径；另一个是用户自己的选择，报警反而是噪音。
+GraphStatus = Literal["built", "skipped_ontology_unconfirmed", "not_requested"]
+
+
+class IngestResult(NamedTuple):
+    """_ingest_chunks 的结果。
+
+    做成 NamedTuple 而不是让 _ingest_chunks 直接返回元组，是为了让五个
+    ingest_*_file 保持它们原本的 int 契约——它们的调用方（eval runner、
+    scan_changes 等）只关心 chunk 数，不该被图谱状态牵连。
+    """
+
+    chunk_count: int
+    graph_status: GraphStatus
 
 
 async def _embed_and_upsert(
@@ -75,7 +98,7 @@ async def _maybe_extract_graph_relations(
     graph_terms: list[Term] | None,
     graph_client: GraphWriteClientProtocol | None,
     graph_review_conn: aiosqlite.Connection | None,
-) -> None:
+) -> GraphStatus:
     """图谱抽取为可选步骤，四项必需参数任一缺失则直接跳过，不影响向量化写入路径。
 
     graph_review_conn 独立于这四项之外是可选项：未能对齐术语表的候选
@@ -104,12 +127,12 @@ async def _maybe_extract_graph_relations(
         and graph_terms
         and graph_client is not None
     ):
-        return
+        return "not_requested"
     if graph_review_conn is not None and not await is_ontology_confirmed(graph_review_conn, tenant_id):
         logger.info(
             "租户 %r 本体 schema 尚未确认，跳过文档 %r 的知识图谱抽取", tenant_id, source
         )
-        return
+        return "skipped_ontology_unconfirmed"
     relation_types = (
         [rt.relation_type for rt in await list_relation_types(graph_review_conn, tenant_id, status="confirmed")]
         if graph_review_conn is not None else []
@@ -136,6 +159,7 @@ async def _maybe_extract_graph_relations(
         allowed_combinations=allowed_combinations,
         review_conn=graph_review_conn,
     )
+    return "built"
 
 
 async def _ingest_chunks(
@@ -151,7 +175,7 @@ async def _ingest_chunks(
     graph_terms: list[Term] | None,
     graph_client: GraphWriteClientProtocol | None,
     graph_review_conn: aiosqlite.Connection | None,
-) -> int:
+) -> IngestResult:
     """已解析出 chunk 之后共用的写入逻辑：向量化+入库，可选做图谱抽取。
 
     向量化和图谱抽取吃的是两份不同粒度的 chunk：embedding 路径先经过
@@ -201,7 +225,7 @@ async def _ingest_chunks(
         raise embed_result
     if isinstance(graph_result, BaseException):
         raise graph_result
-    return embed_result
+    return IngestResult(chunk_count=embed_result, graph_status=graph_result)
 
 
 async def ingest_markdown_file(
@@ -228,7 +252,7 @@ async def ingest_markdown_file(
     """
     text = path.read_text(encoding="utf-8")
     chunks = chunk_markdown(text, source=str(path))
-    return await _ingest_chunks(
+    return (await _ingest_chunks(
         chunks,
         path,
         embedding_registry=embedding_registry,
@@ -240,7 +264,7 @@ async def ingest_markdown_file(
         graph_terms=graph_terms,
         graph_client=graph_client,
         graph_review_conn=graph_review_conn,
-    )
+    )).chunk_count
 
 
 async def ingest_pdf_file(
@@ -263,7 +287,7 @@ async def ingest_pdf_file(
     （见 pdf_parser.py），不提供则保持"跳过无文字层页面"的原有行为。
     """
     chunks = await parse_pdf(path, ocr=ocr)
-    return await _ingest_chunks(
+    return (await _ingest_chunks(
         chunks,
         path,
         embedding_registry=embedding_registry,
@@ -275,7 +299,7 @@ async def ingest_pdf_file(
         graph_terms=graph_terms,
         graph_client=graph_client,
         graph_review_conn=graph_review_conn,
-    )
+    )).chunk_count
 
 
 async def ingest_docx_file(
@@ -293,7 +317,7 @@ async def ingest_docx_file(
 ) -> int:
     """读取单个 Word 文件（按一级标题分块），向量化并写入向量库，返回写入的 chunk 数。"""
     chunks = parse_docx(path)
-    return await _ingest_chunks(
+    return (await _ingest_chunks(
         chunks,
         path,
         embedding_registry=embedding_registry,
@@ -305,7 +329,7 @@ async def ingest_docx_file(
         graph_terms=graph_terms,
         graph_client=graph_client,
         graph_review_conn=graph_review_conn,
-    )
+    )).chunk_count
 
 
 async def ingest_image_file(
@@ -328,7 +352,7 @@ async def ingest_image_file(
     默认实现需要本机安装 Tesseract 二进制（见 ocr_parser.py 的说明）。
     """
     chunks = await parse_image(path, ocr=ocr)
-    return await _ingest_chunks(
+    return (await _ingest_chunks(
         chunks,
         path,
         embedding_registry=embedding_registry,
@@ -340,7 +364,7 @@ async def ingest_image_file(
         graph_terms=graph_terms,
         graph_client=graph_client,
         graph_review_conn=graph_review_conn,
-    )
+    )).chunk_count
 
 
 async def ingest_ticket_csv_file(
@@ -365,7 +389,7 @@ async def ingest_ticket_csv_file(
     chunks = parse_ticket_csv(
         path, column_mapping=column_mapping, resolved_only=resolved_only
     )
-    return await _ingest_chunks(
+    return (await _ingest_chunks(
         chunks,
         path,
         embedding_registry=embedding_registry,
@@ -377,7 +401,7 @@ async def ingest_ticket_csv_file(
         graph_terms=graph_terms,
         graph_client=graph_client,
         graph_review_conn=graph_review_conn,
-    )
+    )).chunk_count
 
 
 async def ingest_directory(

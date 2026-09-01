@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import aiosqlite
 import pytest
@@ -804,3 +805,100 @@ async def test_ingest_directory_processes_markdown_and_pdf_but_skips_other_exten
     )
     texts = {record.text for record in results}
     assert texts == {"内容A。", "内容B。"}
+
+
+# ── 图谱状态回传 ────────────────────────────────────────────────────────
+#
+# 跳过图谱抽取这件事此前只写在 log.info 里。上传前的界面提示只覆盖"接下
+# 来会怎样"；已经传完的那批文档，用户事后无从知道哪些没有图谱。_ingest_chunks
+# 把状态回传出来，摄取队列落进 ingested_documents.graph_status。
+
+
+async def _run_ingest_chunks(*, graph_review_conn, with_graph_resources: bool):
+    """搭一份最小的摄取输入，返回 _ingest_chunks 的完整结果。"""
+    from app.ingestion.chunking import Chunk
+    from app.ingestion.pipeline import _ingest_chunks
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, "llm", FixedLLMProvider('{"relations": []}')
+    )
+    terms = [
+        Term(
+            tenant_id="t1", node_key="示例错误码E502", standard_name="示例错误码E502",
+            aliases=["网关超时示例"], term_type="error_code",
+        ),
+    ]
+    return await _ingest_chunks(
+        [Chunk(text="网关超时示例", heading_path=[])],
+        Path("a.md"),
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=InMemoryVectorStore(),
+        tenant_id="t1",
+        graph_llm_registry=llm_registry if with_graph_resources else None,
+        graph_llm_provider_name="llm" if with_graph_resources else None,
+        graph_terms=terms if with_graph_resources else None,
+        graph_client=FakeGraphClient() if with_graph_resources else None,
+        graph_review_conn=graph_review_conn,
+    )
+
+
+async def test_ingest_chunks_reports_skipped_when_ontology_unconfirmed():
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_ontology_schema(conn)
+    # 只建表不确认：is_ontology_confirmed 为 False。
+    try:
+        result = await _run_ingest_chunks(graph_review_conn=conn, with_graph_resources=True)
+    finally:
+        await conn.close()
+
+    assert result.graph_status == "skipped_ontology_unconfirmed"
+    # 向量化那一侧照常：文档仍然可以被检索到，这正是不该禁掉整个上传的理由。
+    assert result.chunk_count == 1
+
+
+async def test_ingest_chunks_reports_not_requested_without_graph_resources():
+    """用户没勾「同时构建知识图谱」时，摄取队列传的图谱资源全是 None。
+    这跟"想建但建不了"要区分开——前者不该在界面上报警。"""
+    result = await _run_ingest_chunks(graph_review_conn=None, with_graph_resources=False)
+
+    assert result.graph_status == "not_requested"
+
+
+async def test_ingest_chunks_reports_built_when_extraction_runs():
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_ontology_schema(conn)
+    await ensure_review_schema(conn)
+    await checkout_draft(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="error_code")
+    await add_allowed_combination(
+        conn, tenant_id="t1", subject_term_type="error_code",
+        relation_type="RELATED_TO", object_term_type="error_code",
+    )
+    await confirm_ontology(conn, "t1")
+    try:
+        result = await _run_ingest_chunks(graph_review_conn=conn, with_graph_resources=True)
+    finally:
+        await conn.close()
+
+    assert result.graph_status == "built"
+
+
+async def test_ingest_file_helpers_still_return_chunk_count():
+    """五个 ingest_*_file 对外仍然返回 int。它们的调用方（eval runner、
+    scan_changes 等）只关心 chunk 数，不该被这次改动牵连。"""
+    import inspect
+
+    from app.ingestion import pipeline
+
+    for name in (
+        "ingest_markdown_file", "ingest_pdf_file", "ingest_docx_file",
+        "ingest_image_file", "ingest_ticket_csv_file",
+    ):
+        # pipeline.py 有 from __future__ import annotations，注解是字符串，
+        # eval_str 让它求值回真实类型。
+        sig = inspect.signature(getattr(pipeline, name), eval_str=True)
+        assert sig.return_annotation is int, f"{name} 的返回类型变了"

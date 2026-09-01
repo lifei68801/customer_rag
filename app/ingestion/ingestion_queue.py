@@ -439,7 +439,7 @@ async def process_pending_jobs(
                         table_semaphore=table_semaphore,
                     )
                     use_graph = bool(job["build_graph"])
-                    chunk_count = await _ingest_chunks(
+                    ingest_result = await _ingest_chunks(
                         chunks,
                         Path(file_path),
                         embedding_registry=embedding_registry,
@@ -457,7 +457,11 @@ async def process_pending_jobs(
                         tenant_id=tenant_id,
                         file_path=file_path,
                         content_hash=job["content_hash"],
-                        chunk_count=chunk_count,
+                        chunk_count=ingest_result.chunk_count,
+                        # 本体未确认时图谱会被跳过而文档照常入库。落到这一列
+                        # 上，用户事后才知道哪些文档需要在确认 schema 后重传，
+                        # 而不是只能整批重来。
+                        graph_status=ingest_result.graph_status,
                     )
             except Exception as exc:  # noqa: BLE001 - 任何异常都要落到重试/死信逻辑
                 await mark_job_failed(

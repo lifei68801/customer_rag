@@ -21,6 +21,9 @@ interface TrackedDocument {
   content_hash: string
   chunk_count: number
   last_ingested_at: string
+  // 这次摄取有没有真的建出图谱。null 是历史记录——"不知道建没建"和
+  // "确定没建"是两回事，只有后者才该在界面上说。
+  graph_status: 'built' | 'skipped_ontology_unconfirmed' | 'not_requested' | null
 }
 
 /** file_path 是服务端落盘的完整路径（含 uuid 前缀），管理页面只需要给人看的文件名。 */
@@ -535,9 +538,21 @@ export function DocumentsPage() {
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-ink" title={doc.file_path}>
-                    {displayFileName(doc.file_path)}（{doc.chunk_count} chunks，最近摄取：
-                    {doc.last_ingested_at}）
+                  <span className="flex items-center gap-2 text-ink">
+                    <span title={doc.file_path}>
+                      {displayFileName(doc.file_path)}（{doc.chunk_count} chunks，最近摄取：
+                      {doc.last_ingested_at}）
+                    </span>
+                    {/* 只标 skipped：built 是正常状态不用解释，not_requested
+                        是用户自己的选择，null 是历史记录、无从追溯。 */}
+                    {doc.graph_status === 'skipped_ontology_unconfirmed' && (
+                      <span
+                        title="摄取时本体 schema 未确认，这份文档没有建知识图谱。确认 schema 后重新上传即可补上。"
+                        className="rounded-chip border border-subtle bg-accent-secondary px-2 py-0.5 text-xs font-bold text-on-accent"
+                      >
+                        无图谱
+                      </span>
+                    )}
                   </span>
                   <div className="flex gap-2">
                     <button

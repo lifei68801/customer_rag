@@ -22,7 +22,19 @@ import { ADMIN_ROUTES } from '../adminRoutes'
 
 // byTenant 让确认状态随租户变化——「切到未确认的租户」是唯一能产生
 // 「已勾选 + 本体未确认」这个组合的路径。
-function stubApi(confirmed: boolean | 'error', byTenant?: Record<string, boolean>) {
+interface StubDoc {
+  file_path: string
+  content_hash: string
+  chunk_count: number
+  last_ingested_at: string
+  graph_status: string | null
+}
+
+function stubApi(
+  confirmed: boolean | 'error',
+  byTenant?: Record<string, boolean>,
+  docs: StubDoc[] = [],
+) {
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
@@ -49,7 +61,7 @@ function stubApi(confirmed: boolean | 'error', byTenant?: Record<string, boolean
       if (url.includes('/documents')) {
         return Promise.resolve(
           new Response(
-            JSON.stringify({ documents: [], total: 0, pending_jobs: [], dead_jobs: [] }),
+            JSON.stringify({ documents: docs, total: docs.length, pending_jobs: [], dead_jobs: [] }),
             { status: 200 },
           ),
         )
@@ -156,5 +168,49 @@ describe('状态拉不到', () => {
     await ready()
     expect(graphBox()).toBeEnabled()
     expect(notice()).toBeNull()
+  })
+})
+
+
+describe('已摄取列表标出没有图谱的文档', () => {
+  // 上传前的提示只覆盖「接下来会怎样」。已经传完的那批，用户事后无从知道
+  // 哪些没有图谱——只能整批重传。这一列就是给事后查的。
+  const doc = (file: string, graph_status: string | null): StubDoc => ({
+    file_path: `/data/${file}`,
+    content_hash: 'h',
+    chunk_count: 3,
+    last_ingested_at: '2026-09-01T10:00:00',
+    graph_status,
+  })
+
+  it('被跳过的那条要说出来', async () => {
+    stubApi(true, undefined, [doc('a.md', 'skipped_ontology_unconfirmed')])
+    renderPage()
+    await waitFor(() => expect(screen.getByText(/a\.md/)).toBeTruthy())
+    expect(screen.getByTitle(/本体.*未确认/)).toBeTruthy()
+  })
+
+  it('建好了的不加标记——正常状态不需要解释', async () => {
+    stubApi(true, undefined, [doc('a.md', 'built')])
+    renderPage()
+    await waitFor(() => expect(screen.getByText(/a\.md/)).toBeTruthy())
+    expect(screen.queryByTitle(/本体.*未确认/)).toBeNull()
+  })
+
+  it('用户没要求建图的也不加标记', async () => {
+    // not_requested 是用户自己的选择，报警是噪音。
+    stubApi(true, undefined, [doc('a.md', 'not_requested')])
+    renderPage()
+    await waitFor(() => expect(screen.getByText(/a\.md/)).toBeTruthy())
+    expect(screen.queryByTitle(/本体.*未确认/)).toBeNull()
+  })
+
+  it('历史记录（状态未知）也不加标记', async () => {
+    // NULL 是「不知道建没建」，不是「确定没建」。拿不准就别说——
+    // 跟徽标、跟上传前的提示同一条规矩。
+    stubApi(true, undefined, [doc('old.md', null)])
+    renderPage()
+    await waitFor(() => expect(screen.getByText(/old\.md/)).toBeTruthy())
+    expect(screen.queryByTitle(/本体.*未确认/)).toBeNull()
   })
 })
