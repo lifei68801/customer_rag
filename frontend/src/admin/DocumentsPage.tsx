@@ -65,6 +65,9 @@ export function DocumentsPage() {
   const [jobError, setJobError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [buildGraph, setBuildGraph] = useState(false)
+  // null = 还没拿到 / 拉取失败。拉不到时不做任何断言——说"图谱不会被抽取"
+  // 可能是假的，宁可什么都不说。同侧边栏徽标的规矩。
+  const [ontologyConfirmed, setOntologyConfirmed] = useState<boolean | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -88,6 +91,34 @@ export function DocumentsPage() {
   useEffect(() => {
     document.title = '文档管理 · 管理后台'
   }, [])
+
+  useEffect(() => {
+    if (!sessionToken) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await adminFetch(
+          `/api/admin/ontology/${encodeURIComponent(tenantId)}/status`,
+          sessionToken,
+        )
+        if (!res.ok) return
+        const body = (await res.json()) as { confirmed: boolean }
+        if (!cancelled) setOntologyConfirmed(body.confirmed)
+      } catch {
+        // 保持 null：不显示提示，也不禁用任何东西。
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionToken, tenantId])
+
+  // 本体没确认时图谱一定建不起来（ingestion/pipeline.py 会跳过抽取），
+  // 让复选框停在勾选状态等于替用户维持一个不会兑现的承诺——而且它是
+  // 受控值，disabled 也照样把 build_graph=true 提交上去。
+  useEffect(() => {
+    if (ontologyConfirmed === false) setBuildGraph(false)
+  }, [ontologyConfirmed])
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
@@ -327,6 +358,8 @@ export function DocumentsPage() {
     }
   }
 
+  const graphUnavailable = ontologyConfirmed === false
+
   return (
     <div className="flex flex-col gap-6">
       <h1 className="font-mono text-xl font-semibold text-ink">文档管理（租户：{tenantId}）</h1>
@@ -335,15 +368,34 @@ export function DocumentsPage() {
         onSubmit={handleUpload}
         className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4"
       >
-        <input type="file" name="file" required className="text-ink" />
-        <label className="flex items-center gap-2 text-sm text-ink">
-          <input
-            type="checkbox"
-            checked={buildGraph}
-            onChange={(event) => setBuildGraph(event.target.checked)}
-          />
-          同时构建知识图谱（LLM 关系抽取，耗时更久）
+        <label className="flex flex-col gap-1 text-sm font-bold text-ink">
+          选择文件
+          <input type="file" name="file" required className="font-normal text-ink" />
         </label>
+        <div className="flex flex-col gap-1">
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={buildGraph}
+              disabled={graphUnavailable}
+              onChange={(event) => setBuildGraph(event.target.checked)}
+            />
+            同时构建知识图谱（LLM 关系抽取，耗时更久）
+          </label>
+          {/* 只关掉这个选项，不关掉上传：分块和向量化不依赖本体，文档
+              照样能被检索到。ETL 那边禁用整个操作是对的——没有 schema
+              就没法把列映射到实体类型；这里只有图谱那一半依赖本体。 */}
+          {graphUnavailable && (
+            <p data-testid="graph-unavailable" className="text-xs text-ink-soft">
+              该租户本体 schema 尚未确认，抽取不出图谱。文档仍会被摄取并可用于检索，
+              先去
+              <Link to={ADMIN_ROUTES.ontology} className="mx-1 font-bold underline">
+                本体结构
+              </Link>
+              确认 schema 后重新上传，才会建图。
+            </p>
+          )}
+        </div>
         {uploadError && (
           <p role="alert" className="text-sm text-ink">
             {uploadError}

@@ -1,3 +1,5 @@
+import '@testing-library/jest-dom/vitest'
+
 /**
  * jsdom 缺的浏览器 API。
  *
