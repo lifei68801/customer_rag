@@ -1,22 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Command } from 'cmdk'
-import {
-  Boxes,
-  Building2,
-  FileText,
-  Gauge,
-  GitPullRequestArrow,
-  Palette,
-  Table2,
-  type LucideIcon,
-} from 'lucide-react'
+import { Building2, Gauge, Palette, type LucideIcon } from 'lucide-react'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminDensity } from './DensityContext'
 import { useAdminSkin, type SkinId } from './SkinContext'
 import { useAdminTenant } from './TenantContext'
 import { adminFetch } from './adminApi'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { NAV_GROUPS } from '../adminRoutes'
 
 interface TenantOption {
   tenant_id: string
@@ -79,28 +70,21 @@ export function CommandPaletteDialog({ onClose }: { onClose: () => void }) {
   }
 
   const items: CommandItem[] = [
-    {
-      id: 'nav-ontology', group: '导航', icon: Boxes, label: '本体管理',
-      hint: '实体类型 / 关系类型 / 约束',
-      run: withClose(() => navigate(ADMIN_ROUTES.ontology)),
-    },
-    {
-      id: 'nav-documents', group: '导航', icon: FileText, label: '文档管理',
-      run: withClose(() => navigate(ADMIN_ROUTES.documents)),
-    },
-    {
-      id: 'nav-data-entry', group: '导航', icon: Table2, label: '数据加工',
-      hint: '表格导入 / 文档抽取',
-      run: withClose(() => navigate(ADMIN_ROUTES.terms)),
-    },
-    {
-      id: 'nav-terms', group: '导航', icon: Boxes, label: '实体列表',
-      run: withClose(() => navigate(ADMIN_ROUTES.terms)),
-    },
-    {
-      id: 'nav-reviews', group: '导航', icon: GitPullRequestArrow, label: '知识图谱审核',
-      run: withClose(() => navigate(ADMIN_ROUTES.reviewRelations)),
-    },
+    // 直接从侧边栏那张表生成，不再手写一份。手写的表不会在改路由时报错：
+    // 上一版里它有「数据加工」「知识图谱审核」这些已经不存在的名字，缺三
+    // 个目的地，还有一条指向一个从来没存在过的路径——点了只是白屏。
+    ...NAV_GROUPS.flatMap((group) =>
+      group.items.map((item) => ({
+        id: `nav-${item.path}`,
+        group: '导航',
+        icon: item.icon,
+        label: item.label,
+        // 带上组名：光看「表格导入」不知道它属于哪一段流程，而搜索时输入
+        // 「接入」也该能找到它。
+        hint: group.label,
+        run: withClose(() => navigate(item.path)),
+      })),
+    ),
     ...tenants.map((t) => ({
       id: `tenant-${t.tenant_id}`,
       group: '切换租户',
@@ -128,6 +112,11 @@ export function CommandPaletteDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div
+      // 一个覆盖全屏、抓走焦点的浮层必须有 dialog 语义，否则屏幕阅读器
+      // 不知道自己进了模态，还在念下面那一层页面。
+      role="dialog"
+      aria-modal="true"
+      aria-label="命令面板"
       className="fixed inset-0 z-[1000] flex items-start justify-center bg-black/50 p-4 pt-[12vh]"
       // 点遮罩关闭。面板本身 stopPropagation，避免点内容时误关。
       onClick={close}

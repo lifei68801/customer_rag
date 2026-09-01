@@ -495,8 +495,8 @@ export function TermsPage() {
                   表格导入
                 </Link>
                 」或「
-                <Link to={ADMIN_ROUTES.reviewRelations} className="font-bold underline">
-                  文档抽取
+                <Link to={ADMIN_ROUTES.documents} className="font-bold underline">
+                  文档上传
                 </Link>
                 」完成。
               </>

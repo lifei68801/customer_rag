@@ -547,11 +547,11 @@ export function DocumentsPage() {
             title="当前租户还没有已摄取的文档"
             action={
               <>
-                去
-                <Link to={ADMIN_ROUTES.reviewRelations} className="mx-1 font-bold underline">
-                  数据加工
+                上传一份文档试试；结构化的表格数据走
+                <Link to={ADMIN_ROUTES.etl} className="mx-1 font-bold underline">
+                  表格导入
                 </Link>
-                上传一份试试。
+                。
               </>
             }
           />
