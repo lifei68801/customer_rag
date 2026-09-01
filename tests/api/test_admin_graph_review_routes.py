@@ -114,6 +114,17 @@ class FakeGraphClient:
         self.written.append(kwargs)
 
 
+class UnavailableGraphClient:
+    """模拟 Neo4j 挂掉：merge_relation 抛一个非业务异常。
+
+    用 ConnectionError 而不是 ValueError——后者已经被路由当成"输入有问题"
+    转成 400 了，用它测不到基础设施异常那条路径。
+    """
+
+    async def merge_relation(self, **kwargs) -> None:
+        raise ConnectionError("Neo4j 不可用")
+
+
 class RelationTypeRejectingGraphClient:
     async def merge_relation(self, **kwargs) -> None:
         raise ValueError(f"不允许的关系类型: {kwargs['relation_type']!r}")
@@ -767,3 +778,61 @@ def test_approve_review_with_ambiguous_standard_name_message_mentions_candidate_
 
     assert response.status_code == 400
     assert "存在歧义" in response.json()["detail"]
+
+
+def test_approve_returns_503_and_keeps_the_review_pending_when_graph_is_down(review_conn):
+    """图谱写入失败时返回 503（可重试），不是 500（不透明），且记录仍停在
+    待审队列。
+
+    503 而不是 500 是有意的：审核员看到 500 分不出"我填错了"还是"图谱挂了"，
+    而这两种的应对完全不同。批量批准时尤其明显——图谱挂掉会让 10 条连续
+    失败，用户需要知道该等一等再整批重试。
+
+    记录停在 pending 是 approve_review 的写入顺序保证的：先写图谱、后改
+    状态，图谱这一步抛异常时那条 UPDATE 根本没执行。这个方向可自愈——
+    反过来（先改状态后写图）会留下"记录已批准、图谱没有边"的不可自愈状态。
+    """
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="a", object_candidate="b", relation_type="RELATED_TO",
+            reason="subject_unresolved", source="s.md", tenant_id="t1",
+        )
+    )
+    session_store = AdminSessionStore()
+    asyncio.run(
+        _seed_terms(
+            review_conn,
+            [
+                Term(tenant_id="t1", node_key="A", standard_name="A", aliases=[], term_type=""),
+                Term(tenant_id="t1", node_key="B", standard_name="B", aliases=[], term_type=""),
+            ],
+        )
+    )
+    asyncio.run(
+        _seed_confirmed_ontology(
+            review_conn, tenant_id="t1", relation_type="RELATED_TO",
+            subject_term_type="", object_term_type="",
+        )
+    )
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: UnavailableGraphClient()
+    try:
+        client = TestClient(app)
+        headers = _authed_headers(session_store)
+        response = client.post(
+            f"/api/admin/graph-reviews/{review_id}/approve",
+            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            headers=headers,
+        )
+        # 记录必须还在待审列表里——否则用户重试无门。
+        pending = client.get(
+            "/api/admin/graph-reviews", params={"tenant_id": "t1"}, headers=headers
+        ).json()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert "稍后重试" in response.json()["detail"]
+    assert [r["review_id"] for r in pending["reviews"]] == [review_id]

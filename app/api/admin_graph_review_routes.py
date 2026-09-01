@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -26,6 +27,8 @@ from app.graphrag.review_queue import (
     reject_review,
 )
 from app.graphrag.terms_store import list_terms_merged
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/admin/graph-reviews", dependencies=[Depends(deps.require_admin_session)]
@@ -130,6 +133,31 @@ async def approve(
         raise HTTPException(status_code=400, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        # 上面那几个 except 转出来的 HTTPException 不该被下面的兜底再吞一次。
+        raise
+    except Exception:
+        # 兜底：Neo4j 连接失败、超时这类基础设施异常。上面六个 except 覆盖的
+        # 都是"输入有问题、你得改"的业务异常，基础设施异常不在其中，此前会
+        # 变成不透明的 500——审核员看不出是自己填错了还是图谱挂了，而这两种
+        # 的应对完全不同。
+        #
+        # 返回 503 而不是 500 是有意的：语义是"服务暂时不可用"，明确告诉调用
+        # 方这是**可重试**的，跟 400 那类"改输入才行"区分开。批量批准时这一点
+        # 尤其重要——图谱挂掉会让 10 条连续失败，用户需要知道该等一等再整批
+        # 重试，而不是逐条去检查自己填了什么。
+        #
+        # 记录仍然停在 pending：approve_review 先写图谱、后改状态，图谱这一步
+        # 抛异常时那条 UPDATE 根本没执行（见 review_queue.approve_review 的
+        # 写入顺序）。merge_relation 是 MERGE、幂等，重试安全。
+        logger.exception(
+            "批准候选 %s（租户 %r）时图谱写入失败——记录仍在待审队列，可重试",
+            review_id, payload.tenant_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="图谱写入失败，该记录仍在待审队列中，请稍后重试。",
+        )
     return {"approved": True}
 
 
