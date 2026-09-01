@@ -17,6 +17,22 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_session
     ON conversation_turns (tenant_id, session_id, id);
 
+-- 问答诊断快照。「答错了」反查实体是发现数据问题的主路径，而当时用了
+-- 哪些工具、匹配到哪些实体，此前只活在内存里，一轮对话结束就没了。
+CREATE TABLE IF NOT EXISTS qa_diagnostics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    resolved_question TEXT,
+    answer TEXT NOT NULL,
+    used_sources TEXT NOT NULL,
+    tool_results TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_qa_diagnostics_tenant_session
+    ON qa_diagnostics (tenant_id, session_id, id);
+
 CREATE TABLE IF NOT EXISTS memory_items (
     memory_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,

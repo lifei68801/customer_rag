@@ -24,6 +24,7 @@ from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.ontology_constraints import AllowedCombination
 from app.graphrag.term_guard import build_term_guard_context
 from app.memory.chat_sessions import touch_session
+from app.memory.qa_diagnostics import record_diagnostic
 from app.memory.clarification import (
     clear_pending_clarification,
     ensure_clarification_schema,
@@ -648,6 +649,24 @@ def build_agent_graph(
             role="assistant",
             content=final_text,
         )
+        # 诊断快照。会话轮次可能走 Redis（session_window_backend），而诊断
+        # 要能按租户长期回查，固定落在 memory_conn 这个 SQLite 上。
+        #
+        # 存不进去不该让这轮对话失败——用户已经拿到答案了，少一份排查素材
+        # 远好过报错。
+        try:
+            await record_diagnostic(
+                memory_conn,
+                tenant_id=state["tenant_id"],
+                session_id=session_id,
+                question=state["question"],
+                resolved_question=state.get("resolved_question"),
+                answer=final_text,
+                used_sources=state.get("used_sources", []),
+                tool_results=state.get("tool_results", []),
+            )
+        except Exception:
+            logger.exception("记录问答诊断失败，跳过（不影响本轮回答）")
         if state.get("is_correction_handled"):
             # correction_check_node 已经在本轮同步完成了事实抽取+冲突决策+
             # 写入（见该节点注释），这里再入队只会让 worker 用独立的一次

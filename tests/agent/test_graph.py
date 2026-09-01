@@ -1157,3 +1157,52 @@ async def test_term_guard_runs_on_the_resolved_question_not_the_raw_one():
     await conn.close()
 
     assert graph_client.queried_node_keys == ["公司:Coca-Cola"]
+
+
+async def test_memory_save_node_records_a_qa_diagnostic():
+    """每轮问答留一份诊断快照。
+
+    「答错了」反查实体是这个项目里发现数据问题的主路径，而当时用了哪些
+    工具、匹配到哪些实体，此前只活在 state 里，一轮对话结束就没了。重跑
+    不能替代——LLM 非确定性，可能复现不出那个错误。
+    """
+    import aiosqlite
+
+    from app.memory.qa_diagnostics import get_diagnostic, list_diagnostics
+    from app.memory.schema import ensure_schema
+
+    embedding_registry, vector_store, bm25_index, llm_registry, _ = (
+        await _build_dependencies(with_records=True, llm_text="重启路由器即可解决。")
+    )
+    memory_conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(memory_conn)
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
+        query_rewrite_enabled=False,
+        memory_conn=memory_conn,
+    )
+
+    await graph.ainvoke(
+        {
+            "question": "网络连不上怎么办？",
+            "tenant_id": "t1",
+            "session_id": "s1",
+            "user_id": "c1",
+        }
+    )
+
+    rows = await list_diagnostics(memory_conn, tenant_id="t1", session_id="s1")
+    assert len(rows) == 1
+    detail = await get_diagnostic(memory_conn, tenant_id="t1", diagnostic_id=rows[0]["id"])
+    assert detail["question"] == "网络连不上怎么办？"
+    assert detail["answer"] == "重启路由器即可解决。"
+    # 用了哪些来源要一起留下：诊断的第一步是看检索到了什么。
+    assert detail["used_sources"] == ["faq/network.md"]
+    await memory_conn.close()
