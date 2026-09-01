@@ -10,6 +10,8 @@ import { TenantSwitcher } from './TenantSwitcher'
 import { CommandPalette } from './CommandPalette'
 import { useNavGroups } from './useNavGroups'
 import { VersionSwitcher } from './VersionSwitcher'
+import { NavBadge } from './NavBadge'
+import { useNavBadges } from './useNavBadges'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -19,10 +21,64 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
-export function AdminLayout() {
-  const { sessionToken, logout } = useAdminAuth()
+/**
+ * 侧边栏导航。
+ *
+ * 单独成一个组件是因为它要用 useAdminTenant（徽标按租户算）——而
+ * TenantProvider 是 AdminLayout 自己渲染的，同一个组件体里拿不到自己
+ * 提供的 context。
+ */
+function AdminNav() {
   const { pathname, search } = useLocation()
   const { isExpanded, toggle } = useNavGroups(pathname)
+  const badges = useNavBadges()
+
+  return (
+            <nav aria-label="后台导航" className="flex flex-col gap-1">
+              {NAV_GROUPS.map((group) => {
+                const expanded = isExpanded(group)
+                const groupCount = group.items.reduce((sum, i) => sum + (badges[i.path] ?? 0), 0)
+                return (
+                  <div key={group.id} className="flex flex-col gap-1">
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      onClick={() => toggle(group)}
+                      className={`flex min-h-[36px] cursor-pointer items-center justify-between rounded-control px-2 text-xs font-bold uppercase tracking-wide text-ink-soft transition hover:bg-interactive-hover ${focusRing}`}
+                    >
+                      {group.label}
+                      {/* 组头上是组内的合计。收起时这是唯一的提醒——不展开
+                          就看不到待办，等于没提醒。 */}
+                      {!expanded && <NavBadge label={group.label} count={groupCount} />}
+                      <ChevronDown
+                        aria-hidden="true"
+                        className={`ml-2 h-3.5 w-3.5 flex-shrink-0 transition-transform ${expanded ? '' : '-rotate-90'}`}
+                      />
+                    </button>
+                    {expanded && group.id === 'model' && <VersionSwitcher />}
+                    {expanded &&
+                      group.items.map((item) => (
+                        <NavLink
+                          key={item.path}
+                          // 只有建模组内部带上 version：它对别的组没有意义，
+                          // 带着跑只会让 URL 说谎——看起来那些页面也有版本概念。
+                          to={{ pathname: item.path, search: group.id === 'model' ? search : '' }}
+                          className={navLinkClass}
+                        >
+                          <item.icon aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
+                          {item.label}
+                          <NavBadge label={item.label} count={badges[item.path]} />
+                        </NavLink>
+                      ))}
+                  </div>
+                )
+              })}
+            </nav>
+  )
+}
+
+export function AdminLayout() {
+  const { sessionToken, logout } = useAdminAuth()
 
   if (!sessionToken) {
     return <Navigate to="/admin/login" replace />
@@ -48,41 +104,7 @@ export function AdminLayout() {
             {/* 租户排在最上面：它决定后面看到的每一条数据。排在导航下面的
                 话，用户会先挑页面、再发现自己在错的租户里，得重来一次。 */}
             <TenantSwitcher />
-            <nav aria-label="后台导航" className="flex flex-col gap-1">
-              {NAV_GROUPS.map((group) => {
-                const expanded = isExpanded(group)
-                return (
-                  <div key={group.id} className="flex flex-col gap-1">
-                    <button
-                      type="button"
-                      aria-expanded={expanded}
-                      onClick={() => toggle(group)}
-                      className={`flex min-h-[36px] cursor-pointer items-center justify-between rounded-control px-2 text-xs font-bold uppercase tracking-wide text-ink-soft transition hover:bg-interactive-hover ${focusRing}`}
-                    >
-                      {group.label}
-                      <ChevronDown
-                        aria-hidden="true"
-                        className={`h-3.5 w-3.5 transition-transform ${expanded ? '' : '-rotate-90'}`}
-                      />
-                    </button>
-                    {expanded && group.id === 'model' && <VersionSwitcher />}
-                    {expanded &&
-                      group.items.map((item) => (
-                        <NavLink
-                          key={item.path}
-                          // 只有建模组内部带上 version：它对别的组没有意义，
-                          // 带着跑只会让 URL 说谎——看起来那些页面也有版本概念。
-                          to={{ pathname: item.path, search: group.id === 'model' ? search : '' }}
-                          className={navLinkClass}
-                        >
-                          <item.icon aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
-                          {item.label}
-                        </NavLink>
-                      ))}
-                  </div>
-                )
-              })}
-            </nav>
+            <AdminNav />
             <div className="flex flex-row flex-wrap gap-3 md:flex-col">
               <SkinSwitcher />
               <DensitySwitcher />

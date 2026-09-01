@@ -9,6 +9,7 @@ from app.api.admin_auth_routes import router as admin_auth_router
 from app.api.admin_document_routes import router as admin_document_router
 from app.api.admin_duplicate_review_routes import router as admin_duplicate_review_router
 from app.api.admin_graph_review_routes import router as admin_graph_review_router
+from app.api.admin_nav_badges_routes import router as admin_nav_badges_router
 from app.api.admin_ontology_routes import router as admin_ontology_router
 from app.api.admin_schema_etl_routes import router as admin_schema_etl_router
 from app.api.admin_tenant_routes import router as admin_tenant_router
@@ -98,6 +99,7 @@ app.include_router(admin_auth_router)
 app.include_router(admin_document_router)
 app.include_router(admin_graph_review_router)
 app.include_router(admin_duplicate_review_router)
+app.include_router(admin_nav_badges_router)
 app.include_router(admin_ontology_router)
 app.include_router(admin_terms_router)
 app.include_router(admin_schema_etl_router)
