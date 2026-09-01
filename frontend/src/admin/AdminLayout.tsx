@@ -5,6 +5,7 @@ import { DensitySwitcher } from './DensitySwitcher'
 import { SkinSwitcher } from './SkinSwitcher'
 import { TenantProvider } from './TenantContext'
 import { TenantSwitcher } from './TenantSwitcher'
+import { CommandPalette } from './CommandPalette'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -33,6 +34,9 @@ export function AdminLayout() {
   return (
     <TenantProvider>
       <DensityProvider>
+        {/* 挂在两个 Provider 内部——命令面板要调用 TenantContext /
+            DensityContext / SkinContext 的方法，挂在外面拿不到。 */}
+        <CommandPalette />
         <div className="flex min-h-dvh flex-col bg-paper md:flex-row">
           <aside className="flex flex-col gap-3 border-b border-subtle bg-card p-4 md:w-56 md:flex-shrink-0 md:flex-col md:justify-between md:border-b-0 md:border-r">
             <nav className="flex flex-row flex-wrap gap-2 md:flex-col">
@@ -50,6 +54,15 @@ export function AdminLayout() {
               <TenantSwitcher />
               <SkinSwitcher />
               <DensitySwitcher />
+              {/* 快捷键不告诉用户等于不存在。用 kbd 而不是纯文本，让它看起来
+                  就是个按键提示。 */}
+              <p className="text-xs text-ink-soft">
+                按
+                <kbd className="mx-1 rounded-chip border border-subtle bg-paper px-1.5 py-0.5 font-mono">
+                  ⌘K
+                </kbd>
+                打开命令面板
+              </p>
               <Link
                 to="/"
                 className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-3 py-2 text-center text-sm font-bold text-ink transition active:scale-95 active:opacity-90 ${focusRing}`}
