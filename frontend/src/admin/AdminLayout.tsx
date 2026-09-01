@@ -1,4 +1,5 @@
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Menu, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { NAV_GROUPS } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
@@ -79,6 +80,23 @@ function AdminNav() {
 
 export function AdminLayout() {
   const { sessionToken, logout } = useAdminAuth()
+  const { pathname } = useLocation()
+  const [drawerOpen, setDrawerOpen] = useState(false)
+
+  // 换页面就关：抽屉的用途是选一个去处，选完还挡着等于每次都要多点一下。
+  // 监听 pathname 而不是只在链接上挂 onClick——页面内部的跳转（空状态里的
+  // 链接、⌘K）同样算选完了去处。
+  useEffect(() => setDrawerOpen(false), [pathname])
+
+  // 抽屉盖住内容时，键盘用户需要一条不用找关闭按钮的退路。
+  useEffect(() => {
+    if (!drawerOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDrawerOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [drawerOpen])
 
   if (!sessionToken) {
     return <Navigate to="/admin/login" replace />
@@ -100,7 +118,28 @@ export function AdminLayout() {
             DensityContext / SkinContext 的方法，挂在外面拿不到。 */}
         <CommandPalette />
         <div className="flex min-h-dvh flex-col bg-paper md:flex-row">
-          <aside className="flex flex-col gap-3 border-b border-subtle bg-card p-4 md:w-56 md:flex-shrink-0 md:flex-col md:justify-between md:border-b-0 md:border-r">
+          {/* 窄屏专用的开关条。宽屏上侧边栏常驻，不需要它。 */}
+          <div className="flex items-center gap-2 border-b border-subtle bg-card p-3 md:hidden">
+            <button
+              type="button"
+              aria-label="导航菜单"
+              aria-expanded={drawerOpen}
+              onClick={() => setDrawerOpen((v) => !v)}
+              className={`flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-control border border-subtle bg-paper text-ink transition active:scale-95 ${focusRing}`}
+            >
+              {drawerOpen ? <X aria-hidden="true" className="h-5 w-5" /> : <Menu aria-hidden="true" className="h-5 w-5" />}
+            </button>
+            <span className="font-mono text-sm font-bold text-ink">管理后台</span>
+          </div>
+          {/* data-open 是语义状态，显示与否交给断点：宽屏 md:flex 永远展开，
+              窄屏由它决定。用 hidden 而不是不渲染，是为了让宽屏那份始终在
+              DOM 里——否则跨断点缩放窗口时侧边栏的展开状态会被重置。 */}
+          <aside
+            data-open={drawerOpen}
+            className={`flex-col gap-3 border-b border-subtle bg-card p-4 md:flex md:w-56 md:flex-shrink-0 md:justify-between md:border-b-0 md:border-r ${
+              drawerOpen ? 'flex' : 'hidden'
+            }`}
+          >
             {/* 租户排在最上面：它决定后面看到的每一条数据。排在导航下面的
                 话，用户会先挑页面、再发现自己在错的租户里，得重来一次。 */}
             <TenantSwitcher />
