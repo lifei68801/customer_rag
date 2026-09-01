@@ -64,55 +64,53 @@ describe('侧边栏', () => {
     expect(aside().queryByLabelText('切换列表密度')).toBeNull()
   })
 
-  it('租户切换仍然常驻——它是数据作用域，不是偏好', () => {
+  it('当前租户名仍然常驻——它是数据作用域，不是偏好', () => {
+    // 切换动作收进了菜单，名字没有。看不到当前租户的代价是往错的租户里
+    // 导数据，不可撤销；看不到皮肤设置的代价是多点一下。
     renderAt(ADMIN_ROUTES.documents)
-    expect(aside().getByLabelText('切换租户')).toBeTruthy()
+    expect(aside().getByRole('button', { name: /账号与租户/ })).toBeTruthy()
   })
 })
 
 describe('账号菜单', () => {
   it('默认收着', () => {
     renderAt(ADMIN_ROUTES.documents)
-    expect(aside().getByRole('button', { name: '账号' }).getAttribute('aria-expanded')).toBe(
+    expect(aside().getByRole('button', { name: /账号与租户/ }).getAttribute('aria-expanded')).toBe(
       'false',
     )
-    expect(screen.queryByRole('menu', { name: '账号' })).toBeNull()
+    expect(screen.queryByRole('menu', { name: '账号与租户' })).toBeNull()
   })
 
   it('点开有设置、返回前台、登出', async () => {
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.documents)
-    await user.click(aside().getByRole('button', { name: '账号' }))
+    await user.click(aside().getByRole('button', { name: /账号与租户/ }))
     // 菜单里它们的角色是 menuitem，不是 link/button——role 属性覆盖了
     // 元素的隐含角色，这正是屏幕阅读器听到的。
-    const menu = within(screen.getByRole('menu', { name: '账号' }))
+    const menu = within(screen.getByRole('menu', { name: '账号与租户' }))
     for (const label of ['设置', '返回前台', '登出']) {
       expect(menu.getByRole('menuitem', { name: label })).toBeTruthy()
     }
   })
 
-  it('登出和其他项之间有分隔——它是有代价的误触', async () => {
-    const user = userEvent.setup()
-    renderAt(ADMIN_ROUTES.documents)
-    await user.click(aside().getByRole('button', { name: '账号' }))
-    expect(within(screen.getByRole('menu', { name: '账号' })).getByRole('separator')).toBeTruthy()
-  })
+  // 「登出跟别的项隔开」由 tenantMenu.test.tsx 断言——菜单现在有两条
+  // 分隔线（租户区一条、登出前一条），那边的断言更贴合当前形态。
 
   it('Escape 关上', async () => {
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.documents)
-    await user.click(aside().getByRole('button', { name: '账号' }))
+    await user.click(aside().getByRole('button', { name: /账号与租户/ }))
     await user.keyboard('{Escape}')
-    expect(screen.queryByRole('menu', { name: '账号' })).toBeNull()
+    expect(screen.queryByRole('menu', { name: '账号与租户' })).toBeNull()
   })
 
   it('选完就关——菜单的用途是选一项', async () => {
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.documents)
-    await user.click(aside().getByRole('button', { name: '账号' }))
+    await user.click(aside().getByRole('button', { name: /账号与租户/ }))
     await user.click(
-      within(screen.getByRole('menu', { name: '账号' })).getByRole('menuitem', { name: '设置' }),
+      within(screen.getByRole('menu', { name: '账号与租户' })).getByRole('menuitem', { name: '设置' }),
     )
-    expect(screen.queryByRole('menu', { name: '账号' })).toBeNull()
+    expect(screen.queryByRole('menu', { name: '账号与租户' })).toBeNull()
   })
 })

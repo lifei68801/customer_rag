@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import App from '../App'
@@ -142,7 +142,13 @@ describe('本体未确认', () => {
     await user.click(graphBox())
     expect(graphBox()).toBeChecked()
 
-    await user.selectOptions(screen.getByLabelText('切换租户'), 'fresh')
+    // 租户切换现在在左下角的账号菜单里，不再是一个 select。
+    await user.click(screen.getByRole('button', { name: /账号与租户/ }))
+    await user.click(
+      within(screen.getByRole('menu', { name: '账号与租户' })).getByRole('menuitemradio', {
+        name: /fresh/,
+      }),
+    )
 
     await waitFor(() => expect(graphBox()).toBeDisabled())
     expect(graphBox(), '切到未确认租户后仍然勾着').not.toBeChecked()

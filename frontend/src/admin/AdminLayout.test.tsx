@@ -105,13 +105,12 @@ describe('折叠状态', () => {
 })
 
 describe('租户', () => {
-  it('租户切换器排在导航之前', () => {
-    // 租户决定后面看到的每一条数据。它排在导航下面的话，用户会先挑页面
-    // 再发现自己在错的租户里，得重来一次。
+  it('当前租户名常驻显示在左下角', () => {
+    // 它从顶部搬到了左下角的账号菜单里，但**名字始终可见**——这是把切换
+    // 动作收进菜单的前提。看不到当前租户的话，用户会在错的租户里导一批
+    // 数据，而那个错误不可撤销。
     renderAt(ADMIN_ROUTES.documents)
     const aside = screen.getByRole('complementary')
-    const tenant = within(aside).getByLabelText('切换租户')
-    const navEl = within(aside).getByRole('navigation', { name: '后台导航' })
-    expect(tenant.compareDocumentPosition(navEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(aside).getByRole('button', { name: /账号与租户/ })).toBeTruthy()
   })
 })

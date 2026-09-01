@@ -5,7 +5,6 @@ import { NAV_GROUPS, NAV_STANDALONE } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
 import { DensityProvider } from './DensityContext'
 import { TenantProvider } from './TenantContext'
-import { TenantSwitcher } from './TenantSwitcher'
 import { CommandPalette } from './CommandPalette'
 import { AccountMenu } from './AccountMenu'
 import { useNavGroups } from './useNavGroups'
@@ -151,9 +150,6 @@ export function AdminLayout() {
               drawerOpen ? 'flex' : 'hidden'
             }`}
           >
-            {/* 租户排在最上面：它决定后面看到的每一条数据。排在导航下面的
-                话，用户会先挑页面、再发现自己在错的租户里，得重来一次。 */}
-            <TenantSwitcher />
             <AdminNav />
             <div className="flex flex-col gap-3">
               {/* 快捷键不告诉用户等于不存在。用 kbd 而不是纯文本，让它看起来
@@ -165,7 +161,8 @@ export function AdminLayout() {
                 </kbd>
                 打开命令面板
               </p>
-              {/* 账号级的动作收在这里，侧边栏本体只剩工作流程。 */}
+              {/* 当前租户 + 账号动作。租户名常驻在按钮上——它是数据作用域，
+                  看不到它的话用户会在错的租户里导数据。 */}
               <AccountMenu onLogout={logout} />
             </div>
           </aside>
