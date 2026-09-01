@@ -109,6 +109,52 @@ def _to_response(term: Term, *, similar_terms: list[dict[str, Any]] | None = Non
     )
 
 
+class TermRelation(BaseModel):
+    direction: Literal["in", "out"]
+    relation_type: str
+    node_key: str
+    standard_name: str
+    term_type: str | None = None
+
+
+class TermDetailResponse(TermResponse):
+    #: None 表示关系拉取失败，[] 表示确实没有关系。两者必须分开：孤立实体
+    #: 对检索基本无用，是个真实且重要的状态，不能跟「Neo4j 挂了」混为一谈。
+    relations: list[TermRelation] | None = None
+
+
+@router.get("/{node_key:path}", response_model=TermDetailResponse)
+async def get_term_detail(
+    tenant_id: str,
+    node_key: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+) -> TermDetailResponse:
+    """实体详情：属性 + 它在图谱里连着什么。
+
+    关系这块是详情页存在的理由——一个实体有没有用，取决于它连着谁，而这
+    在列表行里放不下。
+
+    Neo4j 挂掉不让整页打不开：属性存在 SQLite 里，照样能看能改，关系那块
+    单独标成拉取失败。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    try:
+        term = await get_term_merged_by_node_key(review_conn, tenant_id, node_key)
+    except TermNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    relations: list[TermRelation] | None
+    try:
+        rows = await graph_client.list_term_relations(tenant_id=tenant_id, node_key=node_key)
+        relations = [TermRelation(**row) for row in rows]
+    except Exception:
+        logger.exception("读取实体 %r 的图谱关系失败", node_key)
+        relations = None
+
+    return TermDetailResponse(**_to_response(term).model_dump(), relations=relations)
+
+
 @router.get("", response_model=TermListResponse)
 async def list_all_terms(
     tenant_id: str,

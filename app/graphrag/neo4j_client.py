@@ -27,6 +27,25 @@ _RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 _RESERVED_FIELD_NAME = "standard_name"
 _CAST_BY_VALUE_TYPE = {"number": "toFloat", "integer": "toInteger"}
 
+# 详情页专用：一跳邻居，带 node_key 和方向。
+#
+# 不复用 _SUBGRAPH_QUERY——那个是给 agent 检索用的，只返回 standard_name，
+# 详情页要能点击跳到邻居，光有显示名跳不了；而且它把 2 跳链式关系也算进
+# 来，详情页只关心直接相连的。
+#
+# 方向要分出来：「公司 生产 产品」和「产品 生产 公司」是两回事，混在一起
+# 看不出这个实体在关系里扮演什么角色。
+_TERM_RELATIONS_QUERY = """
+MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term)
+WHERE r.tenant_id = $tenant_id
+RETURN CASE WHEN startNode(r) = t THEN 'out' ELSE 'in' END AS direction,
+       type(r) AS relation_type,
+       related.node_key AS node_key,
+       related.standard_name AS standard_name,
+       related.type AS term_type
+ORDER BY relation_type, standard_name
+"""
+
 _SUBGRAPH_QUERY = """
 MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term)
 WHERE r.tenant_id = $tenant_id
@@ -330,6 +349,10 @@ class GraphWriteProtocol(Protocol):
         self, *, tenant_id: str, node_key: str
     ) -> int: ...
 
+    async def list_term_relations(
+        self, *, tenant_id: str, node_key: str
+    ) -> list[dict[str, Any]]: ...
+
     async def ensure_extra_field_indexes(
         self, *, tenant_id: str, term_type: str, extra_fields: list["ExtraFieldSpec"]
     ) -> None: ...
@@ -353,6 +376,16 @@ class Neo4jGraphClient:
 
     def __init__(self, *, driver: Neo4jDriverProtocol) -> None:
         self._driver = driver
+
+    async def list_term_relations(
+        self, *, tenant_id: str, node_key: str
+    ) -> list[dict[str, Any]]:
+        async with self._driver.session() as session:
+            result = await session.run(
+                _TERM_RELATIONS_QUERY,
+                {"node_key": node_key, "tenant_id": tenant_id},
+            )
+            return await result.data()
 
     async def query_subgraph(
         self, node_key: str, *, tenant_id: str

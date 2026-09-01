@@ -13,6 +13,7 @@ import { adminFetch } from './adminApi'
 import { Pager } from './Pager'
 import { usePaginatedAdminList } from './usePaginatedAdminList'
 import { ADMIN_ROUTES } from '../adminRoutes'
+import { termDetailPath } from './TermDetailPage'
 import { PAGE_TITLES } from '../adminRoutes'
 
 // 50 而不是 20：20017 条实体在 20/页 下是 1001 页。搜索已经解决了「找特定
@@ -331,7 +332,14 @@ export function TermsPage() {
               {!isEditing && (
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-ink">
-                    <span className="font-bold">{term.standard_name}</span>
+                    {/* 名字是通往详情的链接：关系、来源、完整属性都在那边，
+                        列表行里放不下。这也是问答诊断反查的落点。 */}
+                    <Link
+                      to={termDetailPath(term.node_key)}
+                      className={`font-bold text-ink underline underline-offset-2 hover:text-accent-primary ${focusRing}`}
+                    >
+                      {term.standard_name}
+                    </Link>
                     {term.aliases.length > 0 && (
                       <span className="text-ink-soft">（别名：{term.aliases.join('、')}）</span>
                     )}

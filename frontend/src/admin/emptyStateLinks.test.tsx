@@ -18,6 +18,9 @@ const ROOT = join(__dirname, '..')
 const KNOWN_LABELS = new Set(NAV_GROUPS.flatMap((g) => g.items.map((i) => i.label)))
 // 侧边栏之外的合法去处：登录页和前台不在那七个目的地里。
 const ALSO_FINE = new Set(['返回前台', '登出', '管理后台'])
+// 「返回X」是导航方向，不是目的地名——它天然跟着来路走，不会因为页面
+// 改名而失效。
+const BACK_LINK = /^返回/
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -38,9 +41,13 @@ describe('引导链接的文案', () => {
       for (const [index, line] of source.split('\n').entries()) {
         const text = line.match(/^\s*([^<>{}\s][^<>{}]*?)\s*$/)?.[1]
         if (!text) continue
+        // 多行 <Link> 的属性行（className=… 之类）不是链接文字。不排掉的话
+        // 这条规则会把样式字符串报成「文案不对」——一条只会误报的规则，
+        // 用不了几次就会被人加 skip 绕过去。
+        if (text.includes('=')) continue
         const prev = source.split('\n')[index - 1] ?? ''
         if (!/<Link\s|to=\{ADMIN_ROUTES/.test(prev)) continue
-        if (KNOWN_LABELS.has(text) || ALSO_FINE.has(text)) continue
+        if (KNOWN_LABELS.has(text) || ALSO_FINE.has(text) || BACK_LINK.test(text)) continue
         offenders.push(`${file.slice(ROOT.length + 1)}:${index + 1} 「${text}」`)
       }
     }

@@ -9,6 +9,7 @@ import { SchemaEtlPage } from './admin/SchemaEtlPage'
 import { OntologySchemaPage } from './admin/OntologySchemaPage'
 import { DuplicatesPage } from './admin/DuplicatesPage'
 import { OntologyGraphPage } from './admin/OntologyGraphPage'
+import { TermDetailPage } from './admin/TermDetailPage'
 import { SettingsPage } from './admin/SettingsPage'
 import { NotFoundPage } from './admin/NotFoundPage'
 import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'
@@ -34,6 +35,9 @@ function App() {
         <Route path="review/relations" element={<GraphReviewsPage />} />
         <Route path="review/duplicates" element={<DuplicatesPage />} />
         <Route path="terms" element={<TermsPage />} />
+        {/* 详情页在列表下一层。node_key 含冒号和中文，靠 encodeURIComponent
+            过 URL；它不含斜杠，所以 :nodeKey 够用。 */}
+        <Route path="terms/:nodeKey" element={<TermDetailPage />} />
         <Route path="settings" element={<SettingsPage />} />
 
         {/* 旧书签。每条一跳直达，不经过中间那一代。 */}
