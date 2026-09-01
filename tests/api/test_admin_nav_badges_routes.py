@@ -13,6 +13,8 @@ from app.graphrag.duplicate_review_queue import (
     ensure_duplicate_review_schema,
 )
 from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema
+from app.graphrag.term_edits_store import ensure_term_edits_schema
+from app.graphrag.terms_store import ensure_terms_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.main import app
 from tests.settings_factory import build_settings
@@ -26,6 +28,8 @@ async def _open_review_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(conn)
     await ensure_duplicate_review_schema(conn)
+    await ensure_terms_schema(conn)
+    await ensure_term_edits_schema(conn)
     await create_tenants_table(conn)
     await create_tenant(conn, tenant_id="demo", name="demo")
     await create_tenant(conn, tenant_id="other", name="other")
@@ -94,7 +98,11 @@ def test_returns_both_pending_counts_in_one_call(review_conn):
     response = _get(review_conn, tenant_id="demo")
 
     assert response.status_code == 200
-    assert response.json() == {"pending_relations": 3, "pending_duplicates": 2}
+    assert response.json() == {
+        "pending_relations": 3,
+        "pending_duplicates": 2,
+        "total_terms": 0,
+    }
 
 
 def test_counts_are_scoped_to_the_tenant(review_conn):
@@ -105,6 +113,7 @@ def test_counts_are_scoped_to_the_tenant(review_conn):
     assert _get(review_conn, tenant_id="demo").json() == {
         "pending_relations": 1,
         "pending_duplicates": 1,
+        "total_terms": 0,
     }
 
 
@@ -113,6 +122,7 @@ def test_empty_queues_report_zero_not_an_error(review_conn):
     assert _get(review_conn, tenant_id="demo").json() == {
         "pending_relations": 0,
         "pending_duplicates": 0,
+        "total_terms": 0,
     }
 
 
@@ -124,3 +134,22 @@ def test_requires_authentication(review_conn):
         assert response.status_code == 401
     finally:
         app.dependency_overrides.clear()
+
+
+async def _seed_terms(conn: aiosqlite.Connection, *, tenant_id: str, count: int) -> None:
+    for i in range(count):
+        await conn.execute(
+            "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type,"
+            " extra_properties) VALUES (?, ?, ?, '[]', '公司', '{}')",
+            (tenant_id, f"公司:C{i}", f"C{i}"),
+        )
+    await conn.commit()
+
+
+def test_reports_entity_count_for_the_tenant(review_conn):
+    """实体总数是规模，不是待办——界面上刻意做得比徽标弱。放同一个端点是
+    因为它和那两个数一起显示，没有只要其中一个的场景。"""
+    asyncio.run(_seed_terms(review_conn, tenant_id="demo", count=4))
+    asyncio.run(_seed_terms(review_conn, tenant_id="other", count=9))
+
+    assert _get(review_conn, tenant_id="demo").json()["total_terms"] == 4

@@ -40,12 +40,18 @@ function renderAt(path: string) {
 const nav = () => within(screen.getByRole('navigation', { name: '后台导航' }))
 
 describe('分组', () => {
-  it('四个阶段都在，顺序即工作顺序', () => {
+  it('三个阶段都在，顺序即依赖顺序', () => {
     renderAt(ADMIN_ROUTES.documents)
     const headers = nav()
       .getAllByRole('button', { expanded: undefined })
       .map((b) => b.textContent?.trim())
-    expect(headers).toEqual(['接入数据', '建模', '审核', '浏览'])
+    expect(headers).toEqual(['建模', '接入数据', '审核'])
+  })
+
+  it('流程外的实体列表在分组之外，始终可见', () => {
+    // 它不归任何组，所以不该被折叠——每一步之后都可能用到。
+    renderAt(ADMIN_ROUTES.documents)
+    expect(nav().getByRole('link', { name: '实体列表' })).toBeTruthy()
   })
 
   it('当前所在的组自动展开，其余收起', () => {
@@ -60,7 +66,7 @@ describe('分组', () => {
   it('404 页上不会有任何组被自动展开', () => {
     // 高亮一个用户并不在的组，比不高亮更糟——他会以为自己在那儿。
     renderAt('/admin/乱敲')
-    for (const label of ['接入数据', '建模', '审核', '浏览']) {
+    for (const label of ['建模', '接入数据', '审核']) {
       expect(nav().getByRole('button', { name: label }).getAttribute('aria-expanded')).toBe('false')
     }
   })

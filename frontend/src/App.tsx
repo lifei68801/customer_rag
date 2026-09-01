@@ -32,7 +32,7 @@ function App() {
         <Route path="model/graph" element={<OntologyGraphPage />} />
         <Route path="review/relations" element={<GraphReviewsPage />} />
         <Route path="review/duplicates" element={<DuplicatesPage />} />
-        <Route path="browse/terms" element={<TermsPage />} />
+        <Route path="terms" element={<TermsPage />} />
 
         {/* 旧书签。每条一跳直达，不经过中间那一代。 */}
         {Object.entries(LEGACY_REDIRECTS).map(([from, to]) => (

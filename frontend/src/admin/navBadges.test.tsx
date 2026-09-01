@@ -14,7 +14,13 @@ import { ADMIN_ROUTES } from '../adminRoutes'
  * 把"有多少件事等着你"提到导航上，收起的组也能看见。
  */
 
-function stubFetch(badges: { pending_relations: number; pending_duplicates: number } | 'error') {
+interface Badges {
+  pending_relations: number
+  pending_duplicates: number
+  total_terms: number
+}
+
+function stubFetch(badges: Badges | 'error') {
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
@@ -49,7 +55,7 @@ const nav = () => within(screen.getByRole('navigation', { name: '后台导航' }
 
 describe('徽标', () => {
   it('待办数显示在对应的链接上', async () => {
-    stubFetch({ pending_relations: 7, pending_duplicates: 3 })
+    stubFetch({ pending_relations: 7, pending_duplicates: 3, total_terms: 20017 })
     renderAt(ADMIN_ROUTES.reviewRelations)
     await waitFor(() => {
       expect(nav().getByLabelText('待审关系：7 项待处理')).toBeTruthy()
@@ -58,7 +64,7 @@ describe('徽标', () => {
   })
 
   it('收起的组也带着数字——不展开就看不到待办，等于没提醒', async () => {
-    stubFetch({ pending_relations: 7, pending_duplicates: 3 })
+    stubFetch({ pending_relations: 7, pending_duplicates: 3, total_terms: 20017 })
     renderAt(ADMIN_ROUTES.documents)
     // 审核组此时是收起的。
     expect(nav().getByRole('button', { name: /审核/ }).getAttribute('aria-expanded')).toBe('false')
@@ -68,7 +74,7 @@ describe('徽标', () => {
   })
 
   it('零不显示——每个链接后面挂个 0 只是噪音', async () => {
-    stubFetch({ pending_relations: 0, pending_duplicates: 4 })
+    stubFetch({ pending_relations: 0, pending_duplicates: 4, total_terms: 20017 })
     renderAt(ADMIN_ROUTES.reviewRelations)
     await waitFor(() => {
       expect(nav().getByLabelText('疑似重复：4 项待处理')).toBeTruthy()
@@ -83,5 +89,32 @@ describe('徽标', () => {
     renderAt(ADMIN_ROUTES.reviewRelations)
     await waitFor(() => expect(nav().getByRole('link', { name: /待审关系/ })).toBeTruthy())
     expect(nav().queryByLabelText(/项待处理/)).toBeNull()
+  })
+})
+
+
+describe('实体总数', () => {
+  it('显示在实体列表上，但不是待办徽标', async () => {
+    // 「有 20017 条实体」不是一件等着你处理的事。跟待办用同样的样式会
+    // 稀释审核那两个数字的意义——那才是真的有事等着你。
+    stubFetch({ pending_relations: 7, pending_duplicates: 3, total_terms: 20017 })
+    renderAt(ADMIN_ROUTES.documents)
+    await waitFor(() => expect(nav().getByLabelText('实体列表：共 20,017 条')).toBeTruthy())
+    expect(nav().queryByLabelText(/实体列表：.*待处理/)).toBeNull()
+  })
+
+  it('不算进任何组的待办合计里', async () => {
+    // 它不在任何组里，本来就不该被算进去；这条防的是以后有人把独立项
+    // 也塞进某个组时顺手把计数一起并了。
+    stubFetch({ pending_relations: 7, pending_duplicates: 3, total_terms: 20017 })
+    renderAt(ADMIN_ROUTES.documents)
+    await waitFor(() => expect(nav().getByLabelText('审核：10 项待处理')).toBeTruthy())
+  })
+
+  it('零条实体不显示——空租户不需要被提醒它是空的', async () => {
+    stubFetch({ pending_relations: 0, pending_duplicates: 0, total_terms: 0 })
+    renderAt(ADMIN_ROUTES.documents)
+    await waitFor(() => expect(nav().getByRole('link', { name: /实体列表/ })).toBeTruthy())
+    expect(nav().queryByLabelText(/共 .* 条/)).toBeNull()
   })
 })

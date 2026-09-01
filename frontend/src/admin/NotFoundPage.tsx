@@ -1,6 +1,6 @@
 import { Compass } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { NAV_GROUPS } from '../adminRoutes'
+import { NAV_GROUPS, NAV_STANDALONE } from '../adminRoutes'
 import { EmptyState } from './EmptyState'
 
 /**
@@ -42,6 +42,19 @@ export function NotFoundPage() {
                 ))}
               </div>
             ))}
+            {/* 流程外的目的地也要在这里出现——404 页的作用是把所有去处
+                摊开，漏掉一个就等于那个页面在这里也是藏着的。 */}
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              {NAV_STANDALONE.map((item) => (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  className="font-bold text-ink underline underline-offset-2 hover:text-accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+                >
+                  {item.label}
+                </Link>
+              ))}
+            </div>
           </div>
         </div>
       }

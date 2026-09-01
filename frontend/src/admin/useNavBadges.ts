@@ -30,11 +30,13 @@ export function useNavBadges(): Record<string, number> {
         const body = (await res.json()) as {
           pending_relations: number
           pending_duplicates: number
+          total_terms: number
         }
         if (cancelled) return
         setCounts({
           [ADMIN_ROUTES.reviewRelations]: body.pending_relations,
           [ADMIN_ROUTES.reviewDuplicates]: body.pending_duplicates,
+          [ADMIN_ROUTES.terms]: body.total_terms,
         })
       } catch {
         // 徽标是锦上添花，拉不到就不显示，别让它把导航搞挂。

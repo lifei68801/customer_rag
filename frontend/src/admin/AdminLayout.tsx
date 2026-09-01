@@ -1,7 +1,7 @@
 import { ChevronDown, Menu, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
-import { NAV_GROUPS } from '../adminRoutes'
+import { NAV_GROUPS, NAV_STANDALONE } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
 import { DensityProvider } from './DensityContext'
 import { DensitySwitcher } from './DensitySwitcher'
@@ -74,6 +74,18 @@ function AdminNav() {
                   </div>
                 )
               })}
+              {/* 分隔线之下是流程外的目的地。它不归任何组，因为它不是
+                  「最后一步」，是每一步的落点。 */}
+              <div className="my-1 border-t border-subtle" />
+              {NAV_STANDALONE.map((item) => (
+                <NavLink key={item.path} to={item.path} className={navLinkClass}>
+                  <item.icon aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
+                  {item.label}
+                  {/* 规模，不是待办——顺带回答了「这个租户到底有多少数据」，
+                      这个问题此前必须点进去才知道。 */}
+                  <NavBadge label={item.label} count={badges[item.path]} kind="scale" />
+                </NavLink>
+              ))}
             </nav>
   )
 }

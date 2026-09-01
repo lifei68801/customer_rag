@@ -5,7 +5,7 @@ import App from './App'
 import { SkinProvider } from './admin/SkinContext'
 import { ConfirmProvider } from './admin/ConfirmContext'
 import { ToastProvider } from './admin/ToastContext'
-import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'
+import { ADMIN_ROUTES, LEGACY_REDIRECTS, NAV_GROUPS, NAV_STANDALONE } from './adminRoutes'
 
 /**
  * 路由接线的集成测试：断言旧书签真的落在新页面上、敲错 URL 真的看到
@@ -62,13 +62,16 @@ describe('未匹配路径', () => {
     expect(screen.getByTestId('not-found')).toBeTruthy()
   })
 
-  it('404 页给出四个阶段的入口，不是死胡同', () => {
+  it('404 页把每个去处都摊开，不是死胡同', () => {
     // 空状态的规矩：必须回答"下一步做什么"。404 尤其如此——用户是迷路了，
     // 只告诉他"没找到"等于把他留在原地。
+    //
+    // 断言的是每个叶子而不是分组名：漏掉流程外的实体列表，等于那个页面
+    // 在这里也是藏着的。
     renderAt('/admin/乱敲')
     const page = within(screen.getByTestId('not-found'))
-    for (const label of ['接入数据', '建模', '审核', '浏览']) {
-      expect(page.getByText(label)).toBeTruthy()
+    for (const item of [...NAV_GROUPS.flatMap((g) => g.items), ...NAV_STANDALONE]) {
+      expect(page.getByRole('link', { name: item.label })).toBeTruthy()
     }
   })
 
