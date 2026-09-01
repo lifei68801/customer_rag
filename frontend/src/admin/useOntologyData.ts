@@ -13,18 +13,25 @@ import type { Constraint, RelationType, TermType, ViewMode } from './ontologyTyp
  * `withGraphOverlay` 控制要不要顺带拉扇出。扇出要逐条查 Neo4j，比约束表
  * 本身慢得多，表格视图不该被它拖住首屏；扇出失败也不算失败，图照常渲染，
  * 只是不标红——没有红边好过标错红边。
+ *
+ * `reloadKey` 变化时重新拉一次，给"确认 schema 之后要看到新数据"这类场景
+ * 用。首次加载 hook 自己会触发：把它留给调用方的话，每个新调用方都得记得
+ * 调一次，而忘了的表现是页面一直转圈、不报错——本体图刚上线时就是这样，
+ * 请求全部 200，页面永远是骨架屏。
  */
 export function useOntologyData({
   sessionToken,
   tenantId,
   view,
   withGraphOverlay,
+  reloadKey = 0,
   onError,
 }: {
   sessionToken: string | null
   tenantId: string
   view: ViewMode
   withGraphOverlay: boolean
+  reloadKey?: number
   onError: (msg: string | null) => void
 }) {
   const [constraints, setConstraints] = useState<Constraint[]>([])
@@ -71,6 +78,10 @@ export function useOntologyData({
       setLoaded(true)
     }
   }, [sessionToken, tenantId, view, onError])
+
+  useEffect(() => {
+    refresh().catch((err) => console.error('本体数据加载失败', err))
+  }, [refresh, reloadKey])
 
   useEffect(() => {
     if (!withGraphOverlay || !sessionToken) return

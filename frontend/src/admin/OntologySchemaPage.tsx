@@ -1214,11 +1214,14 @@ function ConstraintsTab({
   const [shape, setShape] = useState<'table' | 'graph'>('table')
 
   const { constraints, termTypes, draftRelationTypes, fanout, entityCounts, loaded, refresh } =
-    useOntologyData({ sessionToken, tenantId, view, withGraphOverlay: shape === 'graph', onError })
-
-  useEffect(() => {
-    refresh().catch((err) => console.error('约束列表刷新失败', err))
-  }, [refresh, confirmVersion])
+    useOntologyData({
+      sessionToken,
+      tenantId,
+      view,
+      withGraphOverlay: shape === 'graph',
+      reloadKey: confirmVersion,
+      onError,
+    })
 
   const constraintKey = (c: Constraint) => `${c.subject_term_type}|${c.relation_type}|${c.object_term_type}`
 
