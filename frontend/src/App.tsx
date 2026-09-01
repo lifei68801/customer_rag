@@ -7,6 +7,8 @@ import { GraphReviewsPage } from './admin/GraphReviewsPage'
 import { TermsPage } from './admin/TermsPage'
 import { SchemaEtlPage } from './admin/SchemaEtlPage'
 import { OntologySchemaPage } from './admin/OntologySchemaPage'
+import { DuplicatesPage } from './admin/DuplicatesPage'
+import { OntologyGraphPage } from './admin/OntologyGraphPage'
 import { NotFoundPage } from './admin/NotFoundPage'
 import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'
 
@@ -27,12 +29,9 @@ function App() {
         <Route path="model/ontology" element={<OntologySchemaPage />} />
         {/* 本体图和疑似重复此前埋在别人的 tab 里。先给它们自己的 URL，
             页面本体的拆分是下一步的事——先有地址才谈得上被发现。 */}
-        <Route
-          path="model/graph"
-          element={<OntologySchemaPage initialTab="constraints" initialShape="graph" />}
-        />
+        <Route path="model/graph" element={<OntologyGraphPage />} />
         <Route path="review/relations" element={<GraphReviewsPage />} />
-        <Route path="review/duplicates" element={<GraphReviewsPage initialTab="duplicates" />} />
+        <Route path="review/duplicates" element={<DuplicatesPage />} />
         <Route path="browse/terms" element={<TermsPage />} />
 
         {/* 旧书签。每条一跳直达，不经过中间那一代。 */}

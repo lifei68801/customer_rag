@@ -8,7 +8,6 @@ import { useAdminDensity } from './DensityContext'
 import { Skeleton } from './Skeleton'
 // 图只在约束 tab 的「图」形态下用到，而 sigma + graphology 有几百 kB。
 // 静态导入会让它进首屏包、让所有页面替这一个视图买单，所以按需加载。
-import type { FanoutEntry } from './ontologyGraph/buildScene'
 import { buildOntologyDiff, type OntologyDiff } from './ontologyDiff'
 
 const OntologyGraph = lazy(() =>
@@ -16,33 +15,16 @@ const OntologyGraph = lazy(() =>
 )
 import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
+import { useOntologyData } from './useOntologyData'
+import type {
+  Constraint,
+  ExtraFieldSpec,
+  RelationType,
+  TermType,
+  ViewMode,
+} from './ontologyTypes'
 
 type Tab = 'term-types' | 'relation-types' | 'constraints'
-type ViewMode = 'draft' | 'confirmed'
-
-interface ExtraFieldSpec {
-  name: string
-  value_type: string
-}
-
-interface TermType {
-  value: string
-  extra_fields: ExtraFieldSpec[]
-  standard_name_value_type: string
-}
-
-interface RelationType {
-  relation_type: string
-  example_phrase: string
-  description: string
-  allow_chain_query: boolean
-}
-
-interface Constraint {
-  subject_term_type: string
-  relation_type: string
-  object_term_type: string
-}
 
 /**
  * 把差异渲染成确认框里的一段文字。
@@ -119,26 +101,12 @@ const emptyRelationTypeDraft = (): RelationType => ({
   allow_chain_query: false,
 })
 
-/**
- * `initialTab` / `initialShape` 让路由决定进来时落在哪一屏。
- *
- * 本体图此前只存在于「约束 tab → 图形态」，是第三层——侧边栏上看不到，
- * 不点两下发现不了。给它一条自己的 URL（/admin/model/graph）之后，它才
- * 能进侧边栏、进 ⌘K、被分享。这两个 prop 是最小的接线方式；把图彻底
- * 拆成独立页面是下一步的事。
- */
-export function OntologySchemaPage({
-  initialTab = 'term-types',
-  initialShape = 'table',
-}: {
-  initialTab?: Tab
-  initialShape?: 'table' | 'graph'
-} = {}) {
+export function OntologySchemaPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const confirm = useConfirm()
   const showToast = useToast()
-  const [tab, setTab] = useState<Tab>(initialTab)
+  const [tab, setTab] = useState<Tab>('term-types')
   const [confirmed, setConfirmed] = useState<boolean | null>(null)
   const [pageError, setPageError] = useState<string | null>(null)
   // view/confirming 是页面级状态而不是各 tab 自己的本地状态——后端
@@ -456,7 +424,6 @@ export function OntologySchemaPage({
           view={view}
           confirmVersion={confirmVersion}
           onDataChanged={bumpReadiness}
-          initialShape={initialShape}
         />
       )}
     </div>
@@ -1266,7 +1233,6 @@ function ConstraintsTab({
   view,
   confirmVersion,
   onDataChanged,
-  initialShape,
 }: {
   sessionToken: string | null
   tenantId: string
@@ -1274,15 +1240,10 @@ function ConstraintsTab({
   view: ViewMode
   confirmVersion: number
   onDataChanged: () => void
-  initialShape: 'table' | 'graph'
 }) {
   const confirm = useConfirm()
   const showToast = useToast()
   const { density } = useAdminDensity()
-  const [constraints, setConstraints] = useState<Constraint[]>([])
-  const [termTypes, setTermTypes] = useState<string[]>([])
-  const [draftRelationTypes, setDraftRelationTypes] = useState<string[]>([])
-  const [loaded, setLoaded] = useState(false)
   const [subject, setSubject] = useState('')
   const [relationType, setRelationType] = useState('')
   const [object, setObject] = useState('')
@@ -1290,51 +1251,10 @@ function ConstraintsTab({
   const [removingKey, setRemovingKey] = useState<string | null>(null)
   // 约束本质是 (主语类型, 关系, 宾语类型) 的边表——图和表是同一份数据的两种
   // 呈现。默认给表：新增/删除都在表上操作，图是只读的全局视图。
-  const [shape, setShape] = useState<'table' | 'graph'>(initialShape)
-  // 扇出来自图谱实际数据，跟约束表分开拉：探测要逐条查 Neo4j，比约束本身慢，
-  // 不该拖住表格视图的首屏。失败时保持空数组——没有红边好过标错红边。
-  const [fanout, setFanout] = useState<FanoutEntry[]>([])
-  const [entityCounts, setEntityCounts] = useState<Record<string, number>>({})
+  const [shape, setShape] = useState<'table' | 'graph'>('table')
 
-  const refresh = useCallback(async () => {
-    if (!sessionToken) return
-    try {
-      const checkoutResponse = await adminFetch(
-        `/api/admin/ontology/${encodeURIComponent(tenantId)}/checkout`,
-        sessionToken,
-        { method: 'POST' },
-      )
-      if (!checkoutResponse.ok) {
-        const body = await checkoutResponse.json().catch(() => ({}))
-        throw new Error(extractErrorDetail(body, 'schema 草稿初始化失败'))
-      }
-      const [constraintsRes, termTypesRes, relationTypesRes] = await Promise.all([
-        adminFetch(
-          `/api/admin/ontology/${encodeURIComponent(tenantId)}/constraints?status=${view}`,
-          sessionToken,
-        ),
-        adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=draft`, sessionToken),
-        // 下拉框的 relation_type 数据源固定拉草稿——不管当前 view 是不是切到已确认，
-        // 新增约束这个动作本身只能作用于草稿（后端 add_allowed_combination 也是
-        // 校验草稿关系类型），与后端 ontology_constraints.py::_validate_references
-        // 的既有校验口径保持一致。
-        adminFetch(`/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types?status=draft`, sessionToken),
-      ])
-      const constraintsData = (await constraintsRes.json()) as { constraints: Constraint[] }
-      const termTypesData = (await termTypesRes.json()) as { term_types: TermType[] }
-      const relationTypesData = (await relationTypesRes.json()) as { relation_types: RelationType[] }
-      setConstraints(constraintsData.constraints)
-      setTermTypes(termTypesData.term_types.map((t) => t.value))
-      setDraftRelationTypes(relationTypesData.relation_types.map((r) => r.relation_type))
-      setLoaded(true)
-    } catch (err) {
-      // Promise.all 里任一并发请求失败都会在这里被捕获——四个 tab 里这是唯一一个
-      // 发多个并发请求的 tab，其余三个 tab 的 refresh() 各自只有一次 fetch，
-      // 用同样的 try/catch/finally 模式即可覆盖单个请求失败的情况。
-      onError(err instanceof Error ? err.message : '约束列表刷新失败')
-      setLoaded(true)
-    }
-  }, [sessionToken, tenantId, view, onError])
+  const { constraints, termTypes, draftRelationTypes, fanout, entityCounts, loaded, refresh } =
+    useOntologyData({ sessionToken, tenantId, view, withGraphOverlay: shape === 'graph', onError })
 
   useEffect(() => {
     refresh().catch((err) => console.error('约束列表刷新失败', err))
@@ -1409,33 +1329,6 @@ function ConstraintsTab({
   }
 
   const cellPadding = density === 'compact' ? 'px-2 py-1' : 'px-3 py-2'
-
-  useEffect(() => {
-    if (shape !== 'graph' || !sessionToken) return
-    let cancelled = false
-    void (async () => {
-      try {
-        const res = await adminFetch(
-          `/api/admin/ontology/${encodeURIComponent(tenantId)}/graph-overlay?status=${view}`,
-          sessionToken,
-        )
-        if (!res.ok) return
-        const body = (await res.json()) as {
-          fanout: FanoutEntry[]
-          entity_counts: Record<string, number>
-        }
-        if (!cancelled) {
-          setFanout(body.fanout)
-          setEntityCounts(body.entity_counts ?? {})
-        }
-      } catch {
-        // 探测失败就不标红，不打断图的渲染——图本身的价值不依赖扇出。
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [shape, sessionToken, tenantId, view, constraints])
 
   const shapeButtonClass = (active: boolean) =>
     `rounded-control border border-subtle px-3 py-1.5 text-sm font-bold transition ${focusRing} ${

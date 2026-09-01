@@ -11,7 +11,6 @@ import { Pager } from './Pager'
 import { StandardNameInput } from './StandardNameInput'
 import { TaskStatusBadge } from './TaskStatusBadge'
 import { fetchGraphTerms, createTerm, type GraphTerm } from './termsApi'
-import { DuplicateTermSuggestionsTab } from './DuplicateTermSuggestionsTab'
 import { useLatestRequestGuard } from './useLatestRequestGuard'
 
 const PAGE_SIZE = 20
@@ -52,23 +51,18 @@ interface CreateEntityDraft {
   error: string | null
 }
 
-type Tab = 'pending' | 'history' | 'duplicates'
+type Tab = 'pending' | 'history'
 type HistoryFilter = 'all' | 'approved' | 'rejected'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
-/**
- * `initialTab` 让路由决定进来时落在哪个 tab。「疑似重复」此前只在
- * 「数据加工 › 文档抽取 › 疑似重复」这个第四层里，侧边栏一个字都看不到；
- * 给它 /admin/review/duplicates 之后才有独立入口。
- */
-export function GraphReviewsPage({ initialTab = 'pending' }: { initialTab?: Tab } = {}) {
+export function GraphReviewsPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const showToast = useToast()
   const { density } = useAdminDensity()
-  const [tab, setTab] = useState<Tab>(initialTab)
+  const [tab, setTab] = useState<Tab>('pending')
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [pending, setPending] = useState<PendingReview[]>([])
   const [pendingLoaded, setPendingLoaded] = useState(false)
@@ -392,13 +386,11 @@ export function GraphReviewsPage({ initialTab = 'pending' }: { initialTab?: Tab 
       refreshPending().catch((err) => {
         console.error('待审核列表刷新失败', err)
       })
-    } else if (tab === 'history') {
+    } else {
       refreshHistory().catch((err) => {
         console.error('历史记录刷新失败', err)
       })
     }
-    // tab === 'duplicates'：DuplicateTermSuggestionsTab 自己管理数据加载，
-    // 这里不需要（也不应该）触发 pending/history 的刷新。
   }, [tab, refreshPending, refreshHistory])
 
   const handleApprove = async (reviewId: number) => {
@@ -660,15 +652,6 @@ export function GraphReviewsPage({ initialTab = 'pending' }: { initialTab?: Tab 
           }`}
         >
           历史记录
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('duplicates')}
-          className={`min-h-[44px] cursor-pointer rounded-control border border-subtle px-4 py-2 text-sm font-bold transition ${focusRing} ${
-            tab === 'duplicates' ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink'
-          }`}
-        >
-          疑似重复术语
         </button>
       </div>
 
@@ -1133,7 +1116,6 @@ export function GraphReviewsPage({ initialTab = 'pending' }: { initialTab?: Tab 
         />
       )}
 
-      {tab === 'duplicates' && <DuplicateTermSuggestionsTab />}
     </div>
   )
 }
