@@ -9,6 +9,7 @@ import { TenantProvider } from './TenantContext'
 import { TenantSwitcher } from './TenantSwitcher'
 import { CommandPalette } from './CommandPalette'
 import { useNavGroups } from './useNavGroups'
+import { VersionSwitcher } from './VersionSwitcher'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -20,7 +21,8 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
 
 export function AdminLayout() {
   const { sessionToken, logout } = useAdminAuth()
-  const { isExpanded, toggle } = useNavGroups(useLocation().pathname)
+  const { pathname, search } = useLocation()
+  const { isExpanded, toggle } = useNavGroups(pathname)
 
   if (!sessionToken) {
     return <Navigate to="/admin/login" replace />
@@ -63,9 +65,16 @@ export function AdminLayout() {
                         className={`h-3.5 w-3.5 transition-transform ${expanded ? '' : '-rotate-90'}`}
                       />
                     </button>
+                    {expanded && group.id === 'model' && <VersionSwitcher />}
                     {expanded &&
                       group.items.map((item) => (
-                        <NavLink key={item.path} to={item.path} className={navLinkClass}>
+                        <NavLink
+                          key={item.path}
+                          // 只有建模组内部带上 version：它对别的组没有意义，
+                          // 带着跑只会让 URL 说谎——看起来那些页面也有版本概念。
+                          to={{ pathname: item.path, search: group.id === 'model' ? search : '' }}
+                          className={navLinkClass}
+                        >
                           <item.icon aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
                           {item.label}
                         </NavLink>

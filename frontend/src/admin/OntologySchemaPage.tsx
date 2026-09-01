@@ -16,6 +16,7 @@ const OntologyGraph = lazy(() =>
 import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 import { useOntologyData } from './useOntologyData'
+import { useOntologyVersion } from './useOntologyVersion'
 import type {
   Constraint,
   ExtraFieldSpec,
@@ -82,17 +83,6 @@ const tabButtonClass = (active: boolean) =>
     active ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
-// 草稿/已确认是"二选一浏览视图"，不是"开关某个功能"，语义上属于分段控件
-// （segmented control），不该用 checkbox 表达——用深色反色（bg-ink）而不是
-// 顶部一级 tab 同款的 bg-accent-primary，是为了和"实体类型/关系类型/约束"
-// 那一级导航拉开视觉层级：一级 tab 决定看哪块数据，这个二级分段
-// 控件决定同一块数据看草稿还是已确认快照，二者不能长得一样，不然分不清
-// 哪个在切页面、哪个在切版本。
-const viewSegmentClass = (active: boolean) =>
-  `min-h-[36px] cursor-pointer px-3 text-xs font-bold uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-50 ${focusRing} ${
-    active ? 'bg-ink text-paper' : 'bg-paper text-ink hover:bg-interactive-hover'
-  }`
-
 const emptyTermTypeDraft = (): TermType => ({ value: '', extra_fields: [], standard_name_value_type: 'string' })
 const emptyRelationTypeDraft = (): RelationType => ({
   relation_type: '',
@@ -115,7 +105,7 @@ export function OntologySchemaPage() {
   // ontology_lifecycle.py），是同一个 schema 草稿生命周期的两个视图，不是
   // 关系类型 tab 独有的概念，所以"查看已确认版本"和"确认 schema"提到页面
   // 外层，两个 tab 共用同一份状态。
-  const [view, setView] = useState<ViewMode>('draft')
+  const [view] = useOntologyVersion()
   const [confirming, setConfirming] = useState(false)
   // 确认成功后用来"踢"一下当前挂载的 tab 重新拉取数据——两个 tab 互斥挂载
   // （tab === 'relation-types' 时约束 tab 是卸载状态，反之亦然），只需要让
@@ -151,12 +141,6 @@ export function OntologySchemaPage() {
   useEffect(() => {
     refreshStatus().catch((err) => console.error('查询 schema 确认状态失败', err))
   }, [refreshStatus])
-
-  // 切换租户时"查看已确认版本"回到草稿视图——不然带着上一个租户的视图状态
-  // 切过去，容易看着已确认数据却以为在编辑草稿。
-  useEffect(() => {
-    setView('draft')
-  }, [tenantId])
 
   useEffect(() => {
     if (!sessionToken) return
@@ -313,30 +297,6 @@ export function OntologySchemaPage() {
           >
             {confirmed === null ? '加载中…' : confirmed ? '已确认' : '草稿中（未确认）'}
           </span>
-          <div
-            role="group"
-            aria-label="查看版本"
-            className="flex divide-x divide-subtle overflow-hidden rounded-control border border-subtle"
-          >
-            <button
-              type="button"
-              aria-pressed={view === 'draft'}
-              onClick={() => setView('draft')}
-              disabled={!isLifecycleTab}
-              className={viewSegmentClass(view === 'draft')}
-            >
-              草稿
-            </button>
-            <button
-              type="button"
-              aria-pressed={view === 'confirmed'}
-              onClick={() => setView('confirmed')}
-              disabled={!isLifecycleTab}
-              className={viewSegmentClass(view === 'confirmed')}
-            >
-              已确认版本
-            </button>
-          </div>
           <div className="flex flex-col gap-1">
             <button
               type="button"

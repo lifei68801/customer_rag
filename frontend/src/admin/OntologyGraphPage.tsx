@@ -3,7 +3,7 @@ import { Skeleton } from './Skeleton'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { useOntologyData } from './useOntologyData'
-import type { ViewMode } from './ontologyTypes'
+import { useOntologyVersion } from './useOntologyVersion'
 
 // 图不在主包里：sigma + graphology 有几百 kB，而大部分会话根本不打开它。
 const OntologyGraph = lazy(() =>
@@ -23,8 +23,8 @@ const OntologyGraph = lazy(() =>
 export function OntologyGraphPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
-  const [view, setView] = useState<ViewMode>('draft')
   const [error, setError] = useState<string | null>(null)
+  const [view] = useOntologyVersion()
 
   const { termTypes, constraints, fanout, entityCounts, loaded } = useOntologyData({
     sessionToken,
@@ -34,38 +34,13 @@ export function OntologyGraphPage() {
     onError: setError,
   })
 
-  const segmentClass = (active: boolean) =>
-    `min-h-[36px] cursor-pointer px-3 text-xs font-bold uppercase tracking-wide transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink ${
-      active ? 'bg-ink text-paper' : 'bg-paper text-ink hover:bg-interactive-hover'
-    }`
-
   return (
     <div data-testid="ontology-graph-page" className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex flex-col gap-1">
-          <h1 className="font-mono text-xl font-semibold text-ink">本体图</h1>
-          <p className="text-sm text-ink-soft">
-            实体类型之间允许存在哪些关系。红边表示图谱里实际数据的扇出超过一对多，做路径统计时会重复计数。
-          </p>
-        </div>
-        {/* 草稿/已确认跟约束页是同一个轴，样式也保持一致，免得同一个概念在
-            两个页面上长得不一样。 */}
-        <div
-          className="flex overflow-hidden rounded-control border border-subtle"
-          role="group"
-          aria-label="本体版本"
-        >
-          <button type="button" className={segmentClass(view === 'draft')} onClick={() => setView('draft')}>
-            草稿
-          </button>
-          <button
-            type="button"
-            className={segmentClass(view === 'confirmed')}
-            onClick={() => setView('confirmed')}
-          >
-            已确认
-          </button>
-        </div>
+      <div className="flex flex-col gap-1">
+        <h1 className="font-mono text-xl font-semibold text-ink">本体图</h1>
+        <p className="text-sm text-ink-soft">
+          实体类型之间允许存在哪些关系。红边表示图谱里实际数据的扇出超过一对多，做路径统计时会重复计数。
+        </p>
       </div>
 
       {error && (
