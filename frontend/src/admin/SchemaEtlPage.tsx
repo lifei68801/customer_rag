@@ -8,6 +8,7 @@ import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 import { CopyButton } from './CopyButton'
 import { TaskStatusBadge } from './TaskStatusBadge'
+import { PAGE_TITLES } from '../adminRoutes'
 
 // etl_runs 表的 status 只有这三种取值（app/graphrag/etl_runs_store.py），
 // 映射成统一的徽章语气 + 中文文案。
@@ -321,7 +322,7 @@ export function SchemaEtlPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="font-mono text-xl font-semibold text-ink">表格导入（租户：{tenantId}）</h1>
+      <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.etl}</h1>
 
       {confirmed === false && (
         <div className="rounded-card border border-accent-secondary bg-card px-3 py-2 text-sm text-ink">

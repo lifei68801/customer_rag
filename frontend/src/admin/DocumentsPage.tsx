@@ -13,6 +13,7 @@ import { useToast } from './ToastContext'
 import { Pager } from './Pager'
 import { useLatestRequestGuard } from './useLatestRequestGuard'
 import { ADMIN_ROUTES } from '../adminRoutes'
+import { PAGE_TITLES } from '../adminRoutes'
 
 const PAGE_SIZE = 20
 
@@ -365,7 +366,7 @@ export function DocumentsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="font-mono text-xl font-semibold text-ink">文档管理（租户：{tenantId}）</h1>
+      <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.documents}</h1>
 
       <form
         onSubmit={handleUpload}

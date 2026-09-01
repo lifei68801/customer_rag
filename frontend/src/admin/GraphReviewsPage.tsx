@@ -12,6 +12,7 @@ import { StandardNameInput } from './StandardNameInput'
 import { TaskStatusBadge } from './TaskStatusBadge'
 import { fetchGraphTerms, createTerm, type GraphTerm } from './termsApi'
 import { useLatestRequestGuard } from './useLatestRequestGuard'
+import { PAGE_TITLES } from '../adminRoutes'
 
 const PAGE_SIZE = 20
 
@@ -632,7 +633,7 @@ export function GraphReviewsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="font-mono text-xl font-semibold text-ink">文档抽取（租户：{tenantId}）</h1>
+      <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.reviewRelations}</h1>
 
       <div className="flex gap-2">
         <button

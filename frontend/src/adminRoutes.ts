@@ -102,3 +102,19 @@ export const NAV_GROUPS: NavGroup[] = [
 export function groupIdForPath(pathname: string): NavGroup['id'] | null {
   return NAV_GROUPS.find((group) => group.items.some((i) => pathname.startsWith(i.path)))?.id ?? null
 }
+
+/**
+ * 页面标题，取自侧边栏的名字。
+ *
+ * 手写第二份就会重演上一次：导航改名时改了标签、忘了标题，用户点「待审
+ * 关系」落到一个叫「文档抽取」的页面上，第一反应是自己点错了。
+ *
+ * 标题里不带租户。它已经在侧边栏顶部常驻，每个页面再说一遍是噪音——
+ * 而且原先三个页面带、一个不带，四个页面三种写法。
+ */
+export const PAGE_TITLES: Record<keyof typeof ADMIN_ROUTES, string> = Object.fromEntries(
+  Object.entries(ADMIN_ROUTES).map(([key, path]) => [
+    key,
+    NAV_GROUPS.flatMap((g) => g.items).find((i) => i.path === path)!.label,
+  ]),
+) as Record<keyof typeof ADMIN_ROUTES, string>

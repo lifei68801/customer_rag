@@ -17,6 +17,7 @@ import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 import { useOntologyData } from './useOntologyData'
 import { useOntologyVersion } from './useOntologyVersion'
+import { PAGE_TITLES } from '../adminRoutes'
 import type {
   Constraint,
   ExtraFieldSpec,
@@ -279,7 +280,7 @@ export function OntologySchemaPage() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-mono text-xl font-semibold text-ink">本体管理（租户：{tenantId}）</h1>
+        <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.ontology}</h1>
         {/* 状态徽章、草稿/已确认分段切换、确认按钮同处一个视觉层级——徽章是
             "这个租户有没有确认过 schema"的持久状态（跟当前在哪个 tab、看
             草稿还是已确认无关，来自 GET .../status），分段控件+确认按钮是

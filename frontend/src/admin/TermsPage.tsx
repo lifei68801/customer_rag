@@ -13,6 +13,7 @@ import { adminFetch } from './adminApi'
 import { Pager } from './Pager'
 import { usePaginatedAdminList } from './usePaginatedAdminList'
 import { ADMIN_ROUTES } from '../adminRoutes'
+import { PAGE_TITLES } from '../adminRoutes'
 
 // 50 而不是 20：20017 条实体在 20/页 下是 1001 页。搜索已经解决了「找特定
 // 一条」（90% 的实际需求），剩下的浏览场景把每页调大就拿到了虚拟滚动八成的
@@ -259,7 +260,7 @@ export function TermsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="font-mono text-xl font-semibold text-ink">实体列表</h1>
+      <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.terms}</h1>
 
       <div className="flex flex-wrap items-center gap-2">
         <label htmlFor="term-search" className="text-sm font-bold text-ink">

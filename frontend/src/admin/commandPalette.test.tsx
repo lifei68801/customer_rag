@@ -43,8 +43,10 @@ function renderAt(path: string) {
 
 async function openPalette(user: ReturnType<typeof userEvent.setup>) {
   await user.keyboard('{Meta>}k{/Meta}')
-  // 面板是懒加载的，第一次按下要等它到位。
-  await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy())
+  // 面板是懒加载的，第一次按下要等它到位。超时给到 5s：全量并发跑时
+  // 这个 chunk 的加载会超过 waitFor 默认的 1s，单独跑却总是通过——
+  // 典型的只在 CI 上红的那种 flaky。
+  await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy(), { timeout: 5000 })
 }
 
 describe('导航命令', () => {
