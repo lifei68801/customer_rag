@@ -16,7 +16,7 @@ import {
  */
 
 describe('新路由表', () => {
-  it('七个工作流目的地加一个设置页', () => {
+  it('七个工作流目的地，加上流程外的诊断页和设置页', () => {
     expect(ADMIN_ROUTES).toEqual({
       ontology: '/admin/model/ontology',
       ontologyGraph: '/admin/model/graph',
@@ -25,6 +25,7 @@ describe('新路由表', () => {
       reviewRelations: '/admin/review/relations',
       reviewDuplicates: '/admin/review/duplicates',
       terms: '/admin/terms',
+      diagnostics: '/admin/diagnostics',
       settings: '/admin/settings',
     })
   })
@@ -132,12 +133,17 @@ describe('导航分组', () => {
 })
 
 describe('流程外的独立项', () => {
-  it('只有实体列表', () => {
-    // 建模、接入、审核是流程步骤，有先后；实体列表是结果视图，任何一步
-    // 之后都可能用到。塞进流程末尾会让人以为它是「最后一步」。
+  it('实体列表和问答诊断', () => {
+    // 建模、接入、审核是流程步骤，有先后；这两个不是——实体列表是结果
+    // 视图，任何一步之后都可能用到；问答诊断是出问题时才来的地方。塞进
+    // 流程末尾会让人以为它们是「最后一步」。
+    //
     // Foundry 也是这么分的：Ontology Manager 管定义，Object Explorer 查
     // 实例，是两个独立应用。
-    expect(NAV_STANDALONE.map((i) => i.path)).toEqual([ADMIN_ROUTES.terms])
+    expect(NAV_STANDALONE.map((i) => i.path)).toEqual([
+      ADMIN_ROUTES.terms,
+      ADMIN_ROUTES.diagnostics,
+    ])
   })
 
   it('不属于任何分组', () => {

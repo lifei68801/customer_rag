@@ -5,6 +5,7 @@ import {
   GitPullRequestArrow,
   Network,
   ScanSearch,
+  Stethoscope,
   Table2,
   Waypoints,
 } from 'lucide-react'
@@ -31,6 +32,9 @@ export const ADMIN_ROUTES = {
   // 两段式：实体列表不属于任何阶段，路径里留一个「browse」段就是个孤儿
   // ——侧边栏没有那个组，URL 里却有。形状本身说清楚它不在流程里。
   terms: '/admin/terms',
+  // 问答诊断：从「这次答错了」反查到「哪个实体不对」。跟实体列表一样是
+  // 流程外的——它不是某一步，是出问题时才来的地方。
+  diagnostics: '/admin/diagnostics',
   // 账号设置。不在任何导航分组里——它不是流程的一站，是账号级的偏好。
   settings: '/admin/settings',
 } as const
@@ -123,6 +127,7 @@ export const NAV_GROUPS: NavGroup[] = [
  */
 export const NAV_STANDALONE: NavItem[] = [
   { path: ADMIN_ROUTES.terms, label: '实体列表', icon: Boxes },
+  { path: ADMIN_ROUTES.diagnostics, label: '问答诊断', icon: Stethoscope },
 ]
 
 /** 当前 URL 落在哪个分组里——侧边栏用它决定默认展开哪一组。 */
