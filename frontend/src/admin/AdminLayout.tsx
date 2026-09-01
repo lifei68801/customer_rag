@@ -1,4 +1,5 @@
-import { Link, NavLink, Navigate, Outlet } from 'react-router-dom'
+import { ChevronDown } from 'lucide-react'
+import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { NAV_GROUPS } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
 import { DensityProvider } from './DensityContext'
@@ -7,17 +8,19 @@ import { SkinSwitcher } from './SkinSwitcher'
 import { TenantProvider } from './TenantContext'
 import { TenantSwitcher } from './TenantSwitcher'
 import { CommandPalette } from './CommandPalette'
+import { useNavGroups } from './useNavGroups'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-  `rounded-control border border-subtle px-3 py-2.5 text-sm font-bold transition ${focusRing} ${
+  `flex items-center gap-2 rounded-control border border-subtle px-3 py-2.5 text-sm font-bold transition ${focusRing} ${
     isActive ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink hover:bg-interactive-hover'
   }`
 
 export function AdminLayout() {
   const { sessionToken, logout } = useAdminAuth()
+  const { isExpanded, toggle } = useNavGroups(useLocation().pathname)
 
   if (!sessionToken) {
     return <Navigate to="/admin/login" replace />
@@ -40,19 +43,38 @@ export function AdminLayout() {
         <CommandPalette />
         <div className="flex min-h-dvh flex-col bg-paper md:flex-row">
           <aside className="flex flex-col gap-3 border-b border-subtle bg-card p-4 md:w-56 md:flex-shrink-0 md:flex-col md:justify-between md:border-b-0 md:border-r">
-            {/* 七个目的地全部平铺，一个都不藏。此前只有三条顶层链接，
-                「表格导入」「文档抽取」在「数据加工」的二级 tab 里，
-                「本体图」「疑似重复」更深一层——侧边栏上完全看不到。
-                分组和折叠是下一步，先把可发现性补上。 */}
-            <nav className="flex flex-row flex-wrap gap-2 md:flex-col">
-              {NAV_GROUPS.flatMap((group) => group.items).map((item) => (
-                <NavLink key={item.path} to={item.path} className={navLinkClass}>
-                  {item.label}
-                </NavLink>
-              ))}
+            {/* 租户排在最上面：它决定后面看到的每一条数据。排在导航下面的
+                话，用户会先挑页面、再发现自己在错的租户里，得重来一次。 */}
+            <TenantSwitcher />
+            <nav aria-label="后台导航" className="flex flex-col gap-1">
+              {NAV_GROUPS.map((group) => {
+                const expanded = isExpanded(group)
+                return (
+                  <div key={group.id} className="flex flex-col gap-1">
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      onClick={() => toggle(group)}
+                      className={`flex min-h-[36px] cursor-pointer items-center justify-between rounded-control px-2 text-xs font-bold uppercase tracking-wide text-ink-soft transition hover:bg-interactive-hover ${focusRing}`}
+                    >
+                      {group.label}
+                      <ChevronDown
+                        aria-hidden="true"
+                        className={`h-3.5 w-3.5 transition-transform ${expanded ? '' : '-rotate-90'}`}
+                      />
+                    </button>
+                    {expanded &&
+                      group.items.map((item) => (
+                        <NavLink key={item.path} to={item.path} className={navLinkClass}>
+                          <item.icon aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
+                          {item.label}
+                        </NavLink>
+                      ))}
+                  </div>
+                )
+              })}
             </nav>
             <div className="flex flex-row flex-wrap gap-3 md:flex-col">
-              <TenantSwitcher />
               <SkinSwitcher />
               <DensitySwitcher />
               {/* 快捷键不告诉用户等于不存在。用 kbd 而不是纯文本，让它看起来
