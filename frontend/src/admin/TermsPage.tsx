@@ -12,6 +12,7 @@ import { useToast } from './ToastContext'
 import { adminFetch } from './adminApi'
 import { Pager } from './Pager'
 import { usePaginatedAdminList } from './usePaginatedAdminList'
+import { ADMIN_ROUTES } from '../adminRoutes'
 
 // 50 而不是 20：20017 条实体在 20/页 下是 1001 页。搜索已经解决了「找特定
 // 一条」（90% 的实际需求），剩下的浏览场景把每页调大就拿到了虚拟滚动八成的
@@ -490,11 +491,11 @@ export function TermsPage() {
             action={
               <>
                 实体创建只能通过「
-                <Link to="/admin/data-entry/etl" className="font-bold underline">
+                <Link to={ADMIN_ROUTES.etl} className="font-bold underline">
                   表格导入
                 </Link>
                 」或「
-                <Link to="/admin/data-entry/review" className="font-bold underline">
+                <Link to={ADMIN_ROUTES.reviewRelations} className="font-bold underline">
                   文档抽取
                 </Link>
                 」完成。

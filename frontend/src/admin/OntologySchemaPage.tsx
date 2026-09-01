@@ -119,12 +119,26 @@ const emptyRelationTypeDraft = (): RelationType => ({
   allow_chain_query: false,
 })
 
-export function OntologySchemaPage() {
+/**
+ * `initialTab` / `initialShape` 让路由决定进来时落在哪一屏。
+ *
+ * 本体图此前只存在于「约束 tab → 图形态」，是第三层——侧边栏上看不到，
+ * 不点两下发现不了。给它一条自己的 URL（/admin/model/graph）之后，它才
+ * 能进侧边栏、进 ⌘K、被分享。这两个 prop 是最小的接线方式；把图彻底
+ * 拆成独立页面是下一步的事。
+ */
+export function OntologySchemaPage({
+  initialTab = 'term-types',
+  initialShape = 'table',
+}: {
+  initialTab?: Tab
+  initialShape?: 'table' | 'graph'
+} = {}) {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const confirm = useConfirm()
   const showToast = useToast()
-  const [tab, setTab] = useState<Tab>('term-types')
+  const [tab, setTab] = useState<Tab>(initialTab)
   const [confirmed, setConfirmed] = useState<boolean | null>(null)
   const [pageError, setPageError] = useState<string | null>(null)
   // view/confirming 是页面级状态而不是各 tab 自己的本地状态——后端
@@ -442,6 +456,7 @@ export function OntologySchemaPage() {
           view={view}
           confirmVersion={confirmVersion}
           onDataChanged={bumpReadiness}
+          initialShape={initialShape}
         />
       )}
     </div>
@@ -1251,6 +1266,7 @@ function ConstraintsTab({
   view,
   confirmVersion,
   onDataChanged,
+  initialShape,
 }: {
   sessionToken: string | null
   tenantId: string
@@ -1258,6 +1274,7 @@ function ConstraintsTab({
   view: ViewMode
   confirmVersion: number
   onDataChanged: () => void
+  initialShape: 'table' | 'graph'
 }) {
   const confirm = useConfirm()
   const showToast = useToast()
@@ -1273,7 +1290,7 @@ function ConstraintsTab({
   const [removingKey, setRemovingKey] = useState<string | null>(null)
   // 约束本质是 (主语类型, 关系, 宾语类型) 的边表——图和表是同一份数据的两种
   // 呈现。默认给表：新增/删除都在表上操作，图是只读的全局视图。
-  const [shape, setShape] = useState<'table' | 'graph'>('table')
+  const [shape, setShape] = useState<'table' | 'graph'>(initialShape)
   // 扇出来自图谱实际数据，跟约束表分开拉：探测要逐条查 Neo4j，比约束本身慢，
   // 不该拖住表格视图的首屏。失败时保持空数组——没有红边好过标错红边。
   const [fanout, setFanout] = useState<FanoutEntry[]>([])

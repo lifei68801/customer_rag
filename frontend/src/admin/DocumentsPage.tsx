@@ -12,6 +12,7 @@ import { TaskStatusBadge } from './TaskStatusBadge'
 import { useToast } from './ToastContext'
 import { Pager } from './Pager'
 import { useLatestRequestGuard } from './useLatestRequestGuard'
+import { ADMIN_ROUTES } from '../adminRoutes'
 
 const PAGE_SIZE = 20
 
@@ -547,7 +548,7 @@ export function DocumentsPage() {
             action={
               <>
                 去
-                <Link to="/admin/data-entry" className="mx-1 font-bold underline">
+                <Link to={ADMIN_ROUTES.reviewRelations} className="mx-1 font-bold underline">
                   数据加工
                 </Link>
                 上传一份试试。

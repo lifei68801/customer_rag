@@ -16,6 +16,7 @@ import { useAdminDensity } from './DensityContext'
 import { useAdminSkin, type SkinId } from './SkinContext'
 import { useAdminTenant } from './TenantContext'
 import { adminFetch } from './adminApi'
+import { ADMIN_ROUTES } from '../adminRoutes'
 
 interface TenantOption {
   tenant_id: string
@@ -81,24 +82,24 @@ export function CommandPaletteDialog({ onClose }: { onClose: () => void }) {
     {
       id: 'nav-ontology', group: '导航', icon: Boxes, label: '本体管理',
       hint: '实体类型 / 关系类型 / 约束',
-      run: withClose(() => navigate('/admin/ontology')),
+      run: withClose(() => navigate(ADMIN_ROUTES.ontology)),
     },
     {
       id: 'nav-documents', group: '导航', icon: FileText, label: '文档管理',
-      run: withClose(() => navigate('/admin/documents')),
+      run: withClose(() => navigate(ADMIN_ROUTES.documents)),
     },
     {
       id: 'nav-data-entry', group: '导航', icon: Table2, label: '数据加工',
       hint: '表格导入 / 文档抽取',
-      run: withClose(() => navigate('/admin/data-entry')),
+      run: withClose(() => navigate(ADMIN_ROUTES.terms)),
     },
     {
       id: 'nav-terms', group: '导航', icon: Boxes, label: '实体列表',
-      run: withClose(() => navigate('/admin/data-entry/terms')),
+      run: withClose(() => navigate(ADMIN_ROUTES.terms)),
     },
     {
       id: 'nav-reviews', group: '导航', icon: GitPullRequestArrow, label: '知识图谱审核',
-      run: withClose(() => navigate('/admin/data-entry/review')),
+      run: withClose(() => navigate(ADMIN_ROUTES.reviewRelations)),
     },
     ...tenants.map((t) => ({
       id: `tenant-${t.tenant_id}`,

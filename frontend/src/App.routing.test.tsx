@@ -1,0 +1,82 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { render, screen, within } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
+import App from './App'
+import { SkinProvider } from './admin/SkinContext'
+import { ConfirmProvider } from './admin/ConfirmContext'
+import { ToastProvider } from './admin/ToastContext'
+import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'
+
+/**
+ * 路由接线的集成测试：断言旧书签真的落在新页面上、敲错 URL 真的看到
+ * 404 而不是白屏。
+ *
+ * 上面 adminRoutes.test.ts 断言的是**数据**（映射表指向哪里），这里断言
+ * 的是**接线**（App.tsx 有没有真的把那张表用上）。两者都错过的话，一张
+ * 正确的映射表配一个没接的路由树，测试全绿而功能不通。
+ */
+
+// 页面组件会在挂载时发请求。这里只关心路由落点，把 fetch 打桩成永远
+// pending，避免测试去碰真实网络，也避免未处理的 rejection 污染输出。
+beforeEach(() => {
+  sessionStorage.setItem('admin_session_token', 'test-token')
+  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+})
+
+// 这三个 Provider 挂在 main.tsx 的根节点（站点级能力，前台后台共用），
+// 不在 App 内部，所以测试要自己补上。
+// 落点探针。断言"没出现 404 文案"是不够的——在路由还没接线时页面上
+// 本来就没有那段文案，测试会假绿。这里直接把当前 URL 渲染出来断言。
+function LocationProbe() {
+  return <span data-testid="pathname">{useLocation().pathname}</span>
+}
+
+function renderAt(path: string) {
+  return render(
+    <SkinProvider>
+      <ConfirmProvider>
+        <ToastProvider>
+          <MemoryRouter initialEntries={[path]}>
+            <LocationProbe />
+            <App />
+          </MemoryRouter>
+        </ToastProvider>
+      </ConfirmProvider>
+    </SkinProvider>,
+  )
+}
+
+describe('旧路径重定向', () => {
+  // 每条垫片都要真的走通，不能只在映射表里写对。
+  for (const [legacy, target] of Object.entries(LEGACY_REDIRECTS)) {
+    it(`${legacy} 落到 ${target}`, () => {
+      renderAt(legacy)
+      expect(screen.getByTestId('pathname').textContent).toBe(target)
+    })
+  }
+})
+
+describe('未匹配路径', () => {
+  it('敲错的 admin 路径显示 404，而不是白屏', () => {
+    renderAt('/admin/这个页面不存在的路径')
+    expect(screen.getByTestId('not-found')).toBeTruthy()
+  })
+
+  it('404 页给出四个阶段的入口，不是死胡同', () => {
+    // 空状态的规矩：必须回答"下一步做什么"。404 尤其如此——用户是迷路了，
+    // 只告诉他"没找到"等于把他留在原地。
+    renderAt('/admin/乱敲')
+    const page = within(screen.getByTestId('not-found'))
+    for (const label of ['接入数据', '建模', '审核', '浏览']) {
+      expect(page.getByText(label)).toBeTruthy()
+    }
+  })
+
+  it('新路径本身不会误判成 404', () => {
+    for (const path of Object.values(ADMIN_ROUTES)) {
+      const { unmount } = renderAt(path)
+      expect(screen.queryByTestId('not-found'), `${path} 被误判成 404`).toBeNull()
+      unmount()
+    }
+  })
+})

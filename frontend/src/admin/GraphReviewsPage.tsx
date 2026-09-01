@@ -58,12 +58,17 @@ type HistoryFilter = 'all' | 'approved' | 'rejected'
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
-export function GraphReviewsPage() {
+/**
+ * `initialTab` 让路由决定进来时落在哪个 tab。「疑似重复」此前只在
+ * 「数据加工 › 文档抽取 › 疑似重复」这个第四层里，侧边栏一个字都看不到；
+ * 给它 /admin/review/duplicates 之后才有独立入口。
+ */
+export function GraphReviewsPage({ initialTab = 'pending' }: { initialTab?: Tab } = {}) {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const showToast = useToast()
   const { density } = useAdminDensity()
-  const [tab, setTab] = useState<Tab>('pending')
+  const [tab, setTab] = useState<Tab>(initialTab)
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [pending, setPending] = useState<PendingReview[]>([])
   const [pendingLoaded, setPendingLoaded] = useState(false)

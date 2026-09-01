@@ -1,4 +1,5 @@
 import { Link, NavLink, Navigate, Outlet } from 'react-router-dom'
+import { NAV_GROUPS } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
 import { DensityProvider } from './DensityContext'
 import { DensitySwitcher } from './DensitySwitcher'
@@ -39,16 +40,16 @@ export function AdminLayout() {
         <CommandPalette />
         <div className="flex min-h-dvh flex-col bg-paper md:flex-row">
           <aside className="flex flex-col gap-3 border-b border-subtle bg-card p-4 md:w-56 md:flex-shrink-0 md:flex-col md:justify-between md:border-b-0 md:border-r">
+            {/* 七个目的地全部平铺，一个都不藏。此前只有三条顶层链接，
+                「表格导入」「文档抽取」在「数据加工」的二级 tab 里，
+                「本体图」「疑似重复」更深一层——侧边栏上完全看不到。
+                分组和折叠是下一步，先把可发现性补上。 */}
             <nav className="flex flex-row flex-wrap gap-2 md:flex-col">
-              <NavLink to="/admin/ontology" className={navLinkClass}>
-                本体管理
-              </NavLink>
-              <NavLink to="/admin/documents" className={navLinkClass}>
-                文档管理
-              </NavLink>
-              <NavLink to="/admin/data-entry" className={navLinkClass}>
-                数据加工
-              </NavLink>
+              {NAV_GROUPS.flatMap((group) => group.items).map((item) => (
+                <NavLink key={item.path} to={item.path} className={navLinkClass}>
+                  {item.label}
+                </NavLink>
+              ))}
             </nav>
             <div className="flex flex-row flex-wrap gap-3 md:flex-col">
               <TenantSwitcher />
