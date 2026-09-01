@@ -25,6 +25,7 @@ from app.graphrag.terms_store import (
     TermNotFoundError,
     UnknownCategoryError,
     count_terms_merged,
+    count_terms_merged_by_term_type,
     get_term_by_node_key,
     get_term_merged_by_node_key,
     is_tombstoned,
@@ -123,6 +124,42 @@ class TermDetailResponse(TermResponse):
     relations: list[TermRelation] | None = None
 
 
+class TermTypeGroup(BaseModel):
+    term_type: str
+    total: int
+
+
+class TermSummaryResponse(BaseModel):
+    groups: list[TermTypeGroup]
+
+
+@router.get("/summary", response_model=TermSummaryResponse)
+async def get_terms_summary(
+    tenant_id: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> TermSummaryResponse:
+    """按实体类型分组的条数。
+
+    实体列表默认第一页永远是按 standard_name 排序的前 50 个——在一个
+    20000 条订单号 + 17 条维度实体的租户里，那一页对任何任务都没用。分组
+    之后，大基数类型折叠成一行、小基数直接列全部。
+
+    大类型排前面：一条 ETL 映射规则错了就是上万条错，那是最可能出问题的
+    地方；小类型人扫一眼就看完了。
+
+    走合并视图：摘要行的数字必须跟点进去看到的条数对得上，对不上的话用户
+    会以为自己漏看了几条。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    counts = await count_terms_merged_by_term_type(review_conn, tenant_id)
+    groups = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return TermSummaryResponse(
+        groups=[TermTypeGroup(term_type=t, total=n) for t, n in groups]
+    )
+
+
+# 注意：这条必须排在 /summary 后面。FastAPI 按定义顺序匹配，反过来的话
+# "summary" 会被当成一个 node_key，摘要接口永远走不到。
 @router.get("/{node_key:path}", response_model=TermDetailResponse)
 async def get_term_detail(
     tenant_id: str,
@@ -161,6 +198,7 @@ async def list_all_terms(
     page: int | None = None,
     page_size: int | None = None,
     source: str | None = None,
+    term_type: str | None = None,
     q: str | None = None,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> TermListResponse:
@@ -195,6 +233,22 @@ async def list_all_terms(
             ],
             # 搜索路径下 total 是命中数，跟列表内容一致——不走下面那个
             # count_terms（它数的是 terms 原始表，见函数末尾的说明）。
+            total=len(matched),
+        )
+    if term_type is not None:
+        # 按类型筛不能走 SQL 分页：过滤发生在合并之后（人工改过类型的实体
+        # 要出现在新类型下），而「公司」可能只有 3 条散落在 20000 条订单号
+        # 里——先取一页再过滤会一条都取不到。
+        #
+        # 代价是全量载入，跟上面的搜索路径一样。可以接受：list_terms 本来
+        # 就在别的路径上（agent 每轮消歧、摄取管线）以全量方式被调用。
+        matched = await list_terms_merged(review_conn, tenant_id, source=source, term_type=term_type)
+        effective_page_size = page_size or 20
+        offset = ((page or 1) - 1) * effective_page_size
+        return TermListResponse(
+            terms=[_to_response(t) for t in matched[offset : offset + effective_page_size]],
+            # total 是这个类型下的条数，跟摘要行上的数字同一口径——对不上的
+            # 话用户会以为自己漏看了几条。
             total=len(matched),
         )
     if page is None and page_size is None:

@@ -354,6 +354,7 @@ async def list_terms_merged(
     limit: int | None = None,
     offset: int = 0,
     source: str | None = None,
+    term_type: str | None = None,
 ) -> list[Term]:
     """管道产出叠加人工编辑之后的术语列表——**所有读路径都该走这个**，
     而不是 list_terms。
@@ -374,6 +375,11 @@ async def list_terms_merged(
     merged = apply_edits(terms, edits, tenant_id=tenant_id)
     if source is not None:
         merged = [term for term in merged if term.source == source]
+    if term_type is not None:
+        # 跟 source 同理，在合并之后过滤：人工把一个实体的类型从 A 改成 B
+        # 之后，它就该出现在 B 下面。在 SQL 层筛会认原始值，等于让编辑层
+        # 对这个视图失效。
+        merged = [term for term in merged if term.term_type == term_type]
     return merged
 
 
@@ -397,6 +403,65 @@ async def get_term_merged_by_node_key(
     if not merged:
         raise TermNotFoundError(f"术语已被人工删除: {node_key}")
     return merged[0]
+
+
+async def count_terms_merged_by_term_type(
+    conn: aiosqlite.Connection, tenant_id: str
+) -> dict[str, int]:
+    """合并视图下每个 term_type 有多少实体——**列表页的分组摘要用这个**。
+
+    跟 count_terms_by_term_type 的区别跟 count_terms_merged 之于 count_terms
+    一样：那个数的是原始表（"管道往这里写了多少"），这个数的是列表里看得见
+    的条数。摘要行的数字必须跟点进去看到的条数对得上，对不上的话用户会以为
+    自己漏看了几条。
+
+    实现上不走"全量合并再分组"：那要把整张表载入内存。改为在 SQL 的分组
+    基数上按编辑层增减——term_edits 只包含被人工碰过的行，通常远小于 terms。
+    被删空的类型不出现在结果里：挂一个 0 条的类型在列表上是个死链，点进去
+    什么都没有。
+    """
+    counts = dict(await count_terms_by_term_type(conn, tenant_id))
+    edits = await list_term_edits(conn, tenant_id)
+    if not edits:
+        return counts
+
+    # 只查被编辑过的那几行在 terms 里的原始 term_type——要知道它们该从哪个
+    # 类型里减掉。
+    keys = list(edits.keys())
+    placeholders = ",".join("?" * len(keys))
+    cursor = await conn.execute(
+        f"SELECT node_key, term_type FROM terms WHERE tenant_id = ? AND node_key IN ({placeholders})",
+        (tenant_id, *keys),
+    )
+    original = {row[0]: row[1] for row in await cursor.fetchall()}
+
+    for node_key, fields in edits.items():
+        base_type = original.get(node_key)
+        if FIELD_DELETED in fields:
+            if base_type is not None:
+                counts[base_type] = counts.get(base_type, 0) - 1
+            continue
+        # 编辑层改过类型：从原类型减掉，加到新类型上。纯编辑层创建的实体
+        # （terms 里没有对应行）只加不减。
+        # 编辑层用裸字段名存可替换字段（见 term_merge._REPLACEABLE_FIELDS），
+        # term_type 没有专门的常量。
+        new_type = fields.get("term_type", base_type)
+        if new_type is None:
+            continue
+        if base_type is None:
+            # 纯编辑层创建：terms 里没有对应行，只加不减。创建时的类型在
+            # __created__ 的整对象里，不在裸字段上。
+            created = fields.get(FIELD_CREATED)
+            if isinstance(created, dict):
+                new_type = created.get("term_type", new_type)
+            if new_type is None:
+                continue
+            counts[new_type] = counts.get(new_type, 0) + 1
+        elif new_type != base_type:
+            counts[base_type] = counts.get(base_type, 0) - 1
+            counts[new_type] = counts.get(new_type, 0) + 1
+
+    return {term_type: count for term_type, count in counts.items() if count > 0}
 
 
 async def count_terms_merged(

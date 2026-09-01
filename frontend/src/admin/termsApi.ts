@@ -36,6 +36,27 @@ export interface TermPage {
   total: number
 }
 
+export interface TermTypeGroup {
+  term_type: string
+  total: number
+}
+
+/** 按实体类型分组的条数，实体列表的分组摘要用。 */
+export async function fetchTermsSummary(
+  sessionToken: string,
+  tenantId: string,
+): Promise<TermTypeGroup[]> {
+  const response = await adminFetch(
+    `/api/admin/${encodeURIComponent(tenantId)}/terms/summary`,
+    sessionToken,
+  )
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(extractErrorDetail(body, '加载分组失败'))
+  }
+  return ((await response.json()) as { groups: TermTypeGroup[] }).groups
+}
+
 export async function fetchTermsPage(
   sessionToken: string,
   tenantId: string,
@@ -43,14 +64,16 @@ export async function fetchTermsPage(
   pageSize: number,
   source?: string,
   query?: string,
+  termType?: string,
 ): Promise<TermPage> {
   const sourceParam = source ? `&source=${encodeURIComponent(source)}` : ''
+  const typeParam = termType ? `&term_type=${encodeURIComponent(termType)}` : ''
   // 搜索在后端作用于**合并视图**（terms + 人工编辑），所以人工改过展示名的
   // 术语能用界面上看到的新名字搜到。别改成前端过滤——当前页只有 20 条，
   // 前端过滤等于只搜这一页。
   const queryParam = query?.trim() ? `&q=${encodeURIComponent(query.trim())}` : ''
   const response = await adminFetch(
-    `/api/admin/${encodeURIComponent(tenantId)}/terms?page=${page}&page_size=${pageSize}${sourceParam}${queryParam}`,
+    `/api/admin/${encodeURIComponent(tenantId)}/terms?page=${page}&page_size=${pageSize}${sourceParam}${queryParam}${typeParam}`,
     sessionToken,
   )
   if (!response.ok) {

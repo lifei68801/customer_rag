@@ -17,6 +17,7 @@ from app.graphrag.term_edits_store import (
 )
 from app.graphrag.terms_store import (
     InvalidExtraPropertyTypeError,
+    count_terms_merged_by_term_type,
     TermNameConflictError,
     TermNotFoundError,
     UnknownCategoryError,
@@ -1649,3 +1650,121 @@ async def test_list_terms_merged_without_source_filter_includes_edit_layer_creat
     merged = await list_terms_merged(conn, "default")
 
     assert {t.node_key for t in merged} == {"t:A", "t:NEW"}
+
+
+async def _key_of(conn, standard_name: str, tenant_id: str = "default") -> str:
+    """按展示名找 node_key。create_term 自己生成 node_key，测试里不该猜它
+    的拼法——那是 ADR-0003 明确区分开的两个概念。"""
+    for term in await list_terms(conn, tenant_id):
+        if term.standard_name == standard_name:
+            return term.node_key
+    raise AssertionError(f"没有找到 {standard_name}")
+
+
+# ── 按类型分组的摘要 ────────────────────────────────────────────────────
+#
+# 实体列表默认第一页永远是按 standard_name 排序的前 50 个订单号——对任何
+# 任务都没用。改成按类型分组：小基数类型直接列全部，大基数折叠成摘要行。
+#
+# 计数必须走合并视图。count_terms_by_term_type 数的是原始表（它自己的注释
+# 说明了这是"管道写了多少"），跟列表里看得见的对不上。
+
+
+async def test_counts_by_term_type_reflect_the_merged_view():
+    conn = await _connect()
+    await create_term(conn, tenant_id="default", standard_name="E1", aliases=[], term_type="error_code")
+    await create_term(conn, tenant_id="default", standard_name="M1", aliases=[], term_type="module")
+
+    counts = await count_terms_merged_by_term_type(conn, "default")
+
+    assert counts == {"error_code": 1, "module": 1}
+    await conn.close()
+
+
+async def test_deleted_terms_leave_their_type():
+    """人工删除的实体在 terms 表里还在，但列表看不见它。摘要行的数字必须
+    跟点进去看到的条数对得上——对不上的话，用户会以为自己漏看了几条。"""
+    conn = await _connect()
+    await create_term(conn, tenant_id="default", standard_name="E1", aliases=[], term_type="error_code")
+    await create_term(conn, tenant_id="default", standard_name="E2", aliases=[], term_type="error_code")
+    await delete_term(conn, tenant_id="default", node_key=await _key_of(conn, "E1"))
+
+    counts = await count_terms_merged_by_term_type(conn, "default")
+
+    assert counts == {"error_code": 1}
+    await conn.close()
+
+
+async def test_a_type_emptied_by_deletion_disappears():
+    """删光之后这个类型不该还挂在列表上显示 0 条——那是个死链，点进去
+    什么都没有。"""
+    conn = await _connect()
+    await create_term(conn, tenant_id="default", standard_name="E1", aliases=[], term_type="error_code")
+    await delete_term(conn, tenant_id="default", node_key=await _key_of(conn, "E1"))
+
+    assert await count_terms_merged_by_term_type(conn, "default") == {}
+    await conn.close()
+
+
+async def test_edit_layer_created_terms_are_counted():
+    conn = await _connect()
+    await create_term(conn, tenant_id="default", standard_name="M1", aliases=[], term_type="module")
+
+    counts = await count_terms_merged_by_term_type(conn, "default")
+
+    assert counts["module"] == 1
+    await conn.close()
+
+
+async def test_counts_are_scoped_to_the_tenant():
+    conn = await _connect()
+    # 第二个租户要自己注册并确认分类——_connect() 只预置了 default 的。
+    await create_term_type(conn, tenant_id="other_tenant", value="module")
+    await confirm_ontology(conn, "other_tenant")
+    await create_term(conn, tenant_id="default", standard_name="M1", aliases=[], term_type="module")
+    await create_term(conn, tenant_id="other_tenant", standard_name="M2", aliases=[], term_type="module")
+
+    assert await count_terms_merged_by_term_type(conn, "default") == {"module": 1}
+    await conn.close()
+
+
+# ── 按类型取实体 ────────────────────────────────────────────────────────
+
+
+async def test_lists_only_the_requested_type():
+    conn = await _connect()
+    await create_term(conn, tenant_id="default", standard_name="E1", aliases=[], term_type="error_code")
+    await create_term(conn, tenant_id="default", standard_name="M1", aliases=[], term_type="module")
+
+    terms = await list_terms_merged(conn, "default", term_type="module")
+
+    assert [t.standard_name for t in terms] == ["M1"]
+    await conn.close()
+
+
+async def test_type_filter_follows_the_edit_layer():
+    """人工把一个实体的类型从 A 改成 B，它就该出现在 B 下面而不是 A。
+    在 SQL 层过滤会漏掉这件事——那是编辑层的意义所在。"""
+    conn = await _connect()
+    await create_term(conn, tenant_id="default", standard_name="E1", aliases=[], term_type="error_code")
+    await update_term(
+        conn, tenant_id="default", node_key=await _key_of(conn, "E1"),
+        new_standard_name="E1", aliases=[], term_type="module",
+    )
+
+    assert [t.standard_name for t in await list_terms_merged(conn, "default", term_type="module")] == ["E1"]
+    assert await list_terms_merged(conn, "default", term_type="error_code") == []
+    await conn.close()
+
+
+async def test_counts_follow_the_edit_layer_too():
+    """计数和列表必须用同一套口径，否则摘要说 3 条、点进去 2 条。"""
+    conn = await _connect()
+    await create_term(conn, tenant_id="default", standard_name="E1", aliases=[], term_type="error_code")
+    await update_term(
+        conn, tenant_id="default", node_key=await _key_of(conn, "E1"),
+        new_standard_name="E1", aliases=[], term_type="module",
+    )
+
+    assert await count_terms_merged_by_term_type(conn, "default") == {"module": 1}
+    await conn.close()

@@ -136,7 +136,15 @@ describe('从列表进来', () => {
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input)
-        if (url.includes('/terms?') || url.endsWith('/terms')) {
+        // 列表页现在按类型分组，先拉 summary 再按类型取实体。
+        if (url.includes('/terms/summary')) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ groups: [{ term_type: '公司', total: 1 }] }), {
+              status: 200,
+            }),
+          )
+        }
+        if (url.includes('/terms')) {
           return Promise.resolve(
             new Response(
               JSON.stringify({

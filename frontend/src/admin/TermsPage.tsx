@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Boxes, SearchX } from 'lucide-react'
 import { EmptyState } from './EmptyState'
 import { Link } from 'react-router-dom'
@@ -7,7 +7,7 @@ import { useConfirm } from './ConfirmContext'
 import { useAdminDensity } from './DensityContext'
 import { Skeleton } from './Skeleton'
 import { useAdminTenant } from './TenantContext'
-import { deleteTerm, fetchTermsPage, updateTerm, type TermRecord } from './termsApi'
+import { deleteTerm, fetchTermsPage, fetchTermsSummary, updateTerm, type TermRecord } from './termsApi'
 import { useToast } from './ToastContext'
 import { adminFetch } from './adminApi'
 import { Pager } from './Pager'
@@ -20,6 +20,10 @@ import { PAGE_TITLES } from '../adminRoutes'
 // 一条」（90% 的实际需求），剩下的浏览场景把每页调大就拿到了虚拟滚动八成的
 // 收益，而不用重做分页器、来源筛选、密度切换三处交互。
 const PAGE_SIZE = 50
+//: 小于等于这个数的类型直接列出全部——人扫一眼就看完了，不该还要点一下。
+const SMALL_TYPE_LIMIT = 20
+//: 大基数类型展开后取多少条。它是样本不是全部，界面上必须说清楚。
+const SAMPLE_SIZE = 20
 
 type SourceFilter = 'all' | 'manual' | 'etl' | 'review' | 'unknown'
 
@@ -179,6 +183,67 @@ export function TermsPage() {
     items: terms, total, loaded, error, setError, page, setPage, refresh,
   } = usePaginatedAdminList(fetchPage)
 
+  // 分组视图：没在搜索、也没按来源筛的时候，按实体类型分组。
+  //
+  // 平铺列表的默认第一页永远是按 standard_name 排序的前 50 个——在一个
+  // 20000 条订单号 + 17 条维度实体的租户里，那一页对任何任务都没用。搜索
+  // 和来源筛选是「我知道自己在找什么」，那时分组只碍事。
+  const grouping = !search && sourceFilter === 'all'
+  // 编辑或删除之后分组数据要重拉——摘要上的条数和展开的那批都会变。
+  const [refreshVersion, setRefreshVersion] = useState(0)
+  const [summary, setSummary] = useState<{ term_type: string; total: number }[]>([])
+  const [summaryLoaded, setSummaryLoaded] = useState(false)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [byType, setByType] = useState<Record<string, TermRecord[]>>({})
+
+  useEffect(() => {
+    if (!sessionToken || !grouping) return
+    let cancelled = false
+    setSummaryLoaded(false)
+    void (async () => {
+      try {
+        const data = await fetchTermsSummary(sessionToken, tenantId)
+        if (!cancelled) setSummary(data)
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : '加载分组失败')
+      } finally {
+        if (!cancelled) setSummaryLoaded(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionToken, tenantId, grouping, setError, refreshVersion])
+
+  // 小基数类型自动展开：3 条公司不该还要点一下才看得到。大基数点开才拉——
+  // 10000 条订单号，拉回来也看不完。
+  const visibleTypes = useMemo(
+    () =>
+      summary
+        .filter((g) => g.total <= SMALL_TYPE_LIMIT || expanded.has(g.term_type))
+        .map((g) => g.term_type),
+    [summary, expanded],
+  )
+
+  useEffect(() => {
+    if (!sessionToken || !grouping || visibleTypes.length === 0) return
+    let cancelled = false
+    void (async () => {
+      const loadedTypes = await Promise.all(
+        visibleTypes.map(async (termType) => {
+          const data = await fetchTermsPage(
+            sessionToken, tenantId, 1, SAMPLE_SIZE, undefined, undefined, termType,
+          )
+          return [termType, data.terms] as const
+        }),
+      )
+      if (!cancelled) setByType(Object.fromEntries(loadedTypes))
+    })().catch((err) => console.error('加载分组实体失败', err))
+    return () => {
+      cancelled = true
+    }
+  }, [sessionToken, tenantId, grouping, visibleTypes, refreshVersion])
+
   useEffect(() => {
     setPage(1)
   }, [tenantId, setPage])
@@ -235,6 +300,7 @@ export function TermsPage() {
       setEditingKey(null)
       setEditDraft(null)
       await refresh()
+      setRefreshVersion((v) => v + 1)
     } catch (err) {
       setError(err instanceof Error ? err.message : '更新术语失败')
     } finally {
@@ -252,6 +318,7 @@ export function TermsPage() {
       await deleteTerm(sessionToken, tenantId, term.node_key)
       showToast('已删除实体')
       await refresh()
+      setRefreshVersion((v) => v + 1)
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除术语失败')
     } finally {
@@ -259,67 +326,9 @@ export function TermsPage() {
     }
   }
 
-  return (
-    <div className="flex flex-col gap-6">
-      <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.terms}</h1>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <label htmlFor="term-search" className="text-sm font-bold text-ink">
-          搜索
-        </label>
-        <input
-          id="term-search"
-          type="search"
-          value={searchInput}
-          onChange={(event) => setSearchInput(event.target.value)}
-          placeholder="按名称或别名"
-          aria-describedby="term-search-hint"
-          className={`w-56 rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:outline-none ${focusRing}`}
-        />
-        {searchInput && (
-          <button
-            type="button"
-            onClick={() => setSearchInput('')}
-            className={`rounded-control border border-subtle bg-paper px-3 py-2 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
-          >
-            清除
-          </button>
-        )}
-        <span id="term-search-hint" className="text-xs text-ink-soft">
-          搜标准名和别名，不区分大小写
-        </span>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <label htmlFor="source-filter" className="text-sm font-bold text-ink">
-          来源
-        </label>
-        <select
-          id="source-filter"
-          value={sourceFilter}
-          onChange={(event) => setSourceFilter(event.target.value as SourceFilter)}
-          className={`rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:outline-none ${focusRing}`}
-        >
-          <option value="all">全部</option>
-          <option value="manual">手工</option>
-          <option value="etl">表格导入</option>
-          <option value="review">文档抽取</option>
-          <option value="unknown">未知（历史数据）</option>
-        </select>
-      </div>
-
-      {error && (
-        <p
-          role="alert"
-          className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink"
-        >
-          {error}
-        </p>
-      )}
-
-      {!loaded && <Skeleton variant="table-rows" count={5} />}
-      {loaded &&
-        terms.map((term) => {
+  // 一行实体（含就地编辑）。分组视图和搜索结果都用它——复制一份的话，
+  // 编辑逻辑就会有两处需要同步改。
+  const renderTerm = (term: TermRecord) => {
           const key = termKey(term)
           const isEditing = editingKey === key
           return (
@@ -482,7 +491,118 @@ export function TermsPage() {
               )}
             </div>
           )
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.terms}</h1>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor="term-search" className="text-sm font-bold text-ink">
+          搜索
+        </label>
+        <input
+          id="term-search"
+          type="search"
+          value={searchInput}
+          onChange={(event) => setSearchInput(event.target.value)}
+          placeholder="按名称或别名"
+          aria-describedby="term-search-hint"
+          className={`w-56 rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:outline-none ${focusRing}`}
+        />
+        {searchInput && (
+          <button
+            type="button"
+            onClick={() => setSearchInput('')}
+            className={`rounded-control border border-subtle bg-paper px-3 py-2 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
+          >
+            清除
+          </button>
+        )}
+        <span id="term-search-hint" className="text-xs text-ink-soft">
+          搜标准名和别名，不区分大小写
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <label htmlFor="source-filter" className="text-sm font-bold text-ink">
+          来源
+        </label>
+        <select
+          id="source-filter"
+          value={sourceFilter}
+          onChange={(event) => setSourceFilter(event.target.value as SourceFilter)}
+          className={`rounded-control border border-subtle bg-paper px-3 py-2 text-ink focus:outline-none ${focusRing}`}
+        >
+          <option value="all">全部</option>
+          <option value="manual">手工</option>
+          <option value="etl">表格导入</option>
+          <option value="review">文档抽取</option>
+          <option value="unknown">未知（历史数据）</option>
+        </select>
+      </div>
+
+      {error && (
+        <p
+          role="alert"
+          className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink"
+        >
+          {error}
+        </p>
+      )}
+
+      {grouping && !summaryLoaded && <Skeleton variant="table-rows" count={5} />}
+      {grouping &&
+        summaryLoaded &&
+        summary.map((group) => {
+          const isSmall = group.total <= SMALL_TYPE_LIMIT
+          const isOpen = isSmall || expanded.has(group.term_type)
+          const rows = byType[group.term_type] ?? []
+          return (
+            <section
+              key={group.term_type}
+              role="group"
+              aria-label={`${group.term_type}，${group.total} 条`}
+              className="flex flex-col gap-2"
+            >
+              <div className="flex flex-wrap items-center gap-3">
+                <h2 className="font-mono font-semibold text-ink">{group.term_type}</h2>
+                <span className="font-mono text-sm tabular-nums text-ink-soft">
+                  {group.total.toLocaleString()}
+                </span>
+                {!isSmall && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpanded((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(group.term_type)) next.delete(group.term_type)
+                        else next.add(group.term_type)
+                        return next
+                      })
+                    }
+                    className={`min-h-[36px] cursor-pointer rounded-control border border-subtle bg-paper px-3 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
+                  >
+                    {isOpen ? '收起' : '看样本'}
+                  </button>
+                )}
+              </div>
+              {isOpen && !isSmall && (
+                // 看到 20 条会默认「就这些」。10000 条里的 20 条不说清楚，
+                // 用户会据此得出错误结论。
+                <p className="text-xs text-ink-soft">
+                  共 {group.total.toLocaleString()} 条，这里是其中 {rows.length} 条样本。
+                  这类实体的正确性由导入规则决定——规则对就全对，逐条看没有收益；
+                  要找具体某一条用上面的搜索。
+                </p>
+              )}
+              {isOpen && rows.map(renderTerm)}
+            </section>
+          )
         })}
+      {!grouping && !loaded && <Skeleton variant="table-rows" count={5} />}
+      {!grouping && !loaded && <Skeleton variant="table-rows" count={5} />}
+      {!grouping && loaded && terms.map(renderTerm)}
       {loaded && !error && terms.length === 0 && (
         // 搜索无结果和"一条实体都没有"是两回事。加搜索之前这里只有后者，
         // 搜索之后如果还只说"还没有任何实体"，用户会以为数据没了——明明有
