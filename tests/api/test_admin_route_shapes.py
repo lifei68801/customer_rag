@@ -12,8 +12,10 @@ from fastapi.routing import APIRoute
 from app.main import app
 
 
-def _walk_routes(routes, prefix: str = "") -> list[tuple[str, APIRoute]]:
-    """展开成 (完整路径, APIRoute) 列表。
+def _walk_routes(
+    routes, prefix: str = "", inherited: frozenset = frozenset()
+) -> list[tuple[str, APIRoute, frozenset]]:
+    """展开成 (完整路径, APIRoute, 继承到的依赖函数集合) 列表。
 
     **必须递归展开**：FastAPI 0.141 起，`include_router()` 不再把子路由
     摊平进 `app.routes`，而是放一个 `_IncludedRouter` 包装对象，真正的
@@ -24,19 +26,30 @@ def _walk_routes(routes, prefix: str = "") -> list[tuple[str, APIRoute]]:
     只能拿到 `/health` 一条——本文件的每条断言都会因为"没有路由可查"而
     静静地通过。那是这类结构测试最典型的死法：它测的东西一个都不存在，
     而它是绿的。
+
+    第三项是沿途每一层 include_context 上 `dependencies=[...]` 的累积。
+    同一个版本变更还带来第二个坑：挂在父 router 上的依赖**不会**合并进
+    各条 `APIRoute.dependant`（已实测确认恒为 False），但运行时照常执行
+    （也已实测：父 router 依赖抛 403 时请求真的返回 403）。按 dependant
+    查的话，"每条租户路由都挂了校验"会全部报红，而反向那条"非租户路由
+    没挂校验"会全部通过——一条永远为真的断言。
     """
-    found: list[tuple[str, APIRoute]] = []
+    found: list[tuple[str, APIRoute, frozenset]] = []
     for route in routes:
         if isinstance(route, APIRoute):
-            found.append((prefix + route.path, route))
+            found.append((prefix + route.path, route, inherited))
         elif type(route).__name__ == "_IncludedRouter":
-            sub_prefix = getattr(route.include_context, "prefix", "") or ""
-            found.extend(_walk_routes(route.original_router.routes, prefix + sub_prefix))
+            ctx = route.include_context
+            sub_prefix = getattr(ctx, "prefix", "") or ""
+            deps = {d.dependency for d in (getattr(ctx, "dependencies", None) or [])}
+            found.extend(
+                _walk_routes(route.original_router.routes, prefix + sub_prefix, inherited | deps)
+            )
     return found
 
 
 def _admin_paths() -> list[str]:
-    return [p for p, _ in _walk_routes(app.routes) if p.startswith("/api/admin")]
+    return [p for p, _, _ in _walk_routes(app.routes) if p.startswith("/api/admin")]
 
 
 def test_the_walker_actually_finds_routes():
@@ -131,3 +144,35 @@ def test_no_static_admin_route_is_shadowed_by_the_tenant_wildcard():
         and p.split("/")[4] in wildcard_suffixes
     ]
     assert not shadowed, f"这些路由会被租户通配路径遮蔽：{shadowed}"
+
+
+def test_every_tenant_scoped_route_checks_tenant_access():
+    """挂载层强制的兜底。
+
+    人的记性在第 9 个 router 上一定会失效，而漏掉的那条不会有任何运行时
+    报错——请求照常 200，只是返回的是别人租户的数据。
+    """
+    from app.api.deps import require_tenant_access
+
+    checked = 0
+    for path, _route, inherited in _walk_routes(app.routes):
+        if not path.startswith(_TENANT_SCOPED_PREFIXES):
+            continue
+        assert require_tenant_access in inherited, f"{path} 没有挂租户权限校验"
+        checked += 1
+    # 一条都没查到的话，上面的循环体从没执行过，这个断言就是空的。
+    assert checked > 20, f"只检查了 {checked} 条租户路由，遍历器多半失效了"
+
+
+def test_non_tenant_routes_do_not_check_tenant_access():
+    """反向断言。
+
+    给登录接口挂上租户校验会让 FastAPI 把 tenant_id 当成必填查询参数，
+    登录直接 422——那时谁也进不来。
+    """
+    from app.api.deps import require_tenant_access
+
+    for path, _route, inherited in _walk_routes(app.routes):
+        if not path.startswith("/api/admin") or path.startswith(_TENANT_SCOPED_PREFIXES):
+            continue
+        assert require_tenant_access not in inherited, f"{path} 不该挂租户权限校验"

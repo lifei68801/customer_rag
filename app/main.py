@@ -2,7 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 
 from app.api import deps
 from app.api.admin_auth_routes import router as admin_auth_router
@@ -96,16 +96,31 @@ app.include_router(qa_router)
 app.include_router(agent_router)
 app.include_router(session_router)
 app.include_router(voice_router)
+
+# 不属于任何租户：登录、租户管理。给它们挂租户校验会让 FastAPI 把
+# tenant_id 当成必填查询参数，登录接口直接 422——那时谁也进不来。
+#
+# 租户管理也在这里，尽管 /api/admin/tenants/{tenant_id}/disable 路径里有
+# tenant_id：那是**被操作的对象**（停用哪个租户），不是**操作发生的作用
+# 域**。按租户作用域校验的话，member 对自己所属的租户会顺利通过，于是就
+# 能把自己所在的租户停掉。它靠 require_admin_role 保护。
 app.include_router(admin_auth_router)
-app.include_router(admin_document_router)
-app.include_router(admin_graph_review_router)
-app.include_router(admin_duplicate_review_router)
-app.include_router(admin_nav_badges_router)
-app.include_router(admin_diagnostics_router)
-app.include_router(admin_ontology_router)
-app.include_router(admin_terms_router)
-app.include_router(admin_schema_etl_router)
 app.include_router(admin_tenant_router)
+
+# 租户作用域的路由统一收在这个父 router 下，而不是各挂各的依赖。各挂各的
+# 一定会漏，而漏掉的那条是越权读写，且不会有任何报错——请求照常 200，只是
+# 返回的是别人租户的数据。tests/api/test_admin_route_shapes.py 里的结构测试
+# 兜住新增路由忘记归类的情况。
+tenant_scoped = APIRouter(dependencies=[Depends(deps.require_tenant_access)])
+tenant_scoped.include_router(admin_document_router)
+tenant_scoped.include_router(admin_graph_review_router)
+tenant_scoped.include_router(admin_duplicate_review_router)
+tenant_scoped.include_router(admin_nav_badges_router)
+tenant_scoped.include_router(admin_diagnostics_router)
+tenant_scoped.include_router(admin_ontology_router)
+tenant_scoped.include_router(admin_terms_router)
+tenant_scoped.include_router(admin_schema_etl_router)
+app.include_router(tenant_scoped)
 
 
 @app.get("/health")

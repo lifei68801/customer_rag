@@ -5,10 +5,24 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import deps
+from app.api.admin_session import AdminSession
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
+
+
+def _fake_admin_session() -> AdminSession:
+    """跳过鉴权用的假身份。
+
+    以前这里是 `lambda: None`——那时 require_admin_session 的返回值没人用。
+    现在 require_tenant_access 要读它的 role/tenant_id，返回 None 会让每条
+    请求都撞上 AttributeError。用 admin 身份：这些测试关心的是路由逻辑，
+    不是权限，admin 能进任意租户。
+    """
+    return AdminSession(username="admin", role="admin", tenant_id=None, expires_at=1e18)
+
+
 
 pytestmark = pytest.mark.anyio
 
@@ -102,7 +116,7 @@ def client(monkeypatch, conn_for_testing):
         return conn_for_testing["conn"]
 
     app.dependency_overrides[deps.get_review_conn] = _get_conn
-    app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.require_admin_session] = _fake_admin_session
     app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
     yield TestClient(app)
     app.dependency_overrides.clear()

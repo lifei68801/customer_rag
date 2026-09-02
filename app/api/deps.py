@@ -69,7 +69,9 @@ __all__ = [
     "get_vector_store",
     "parse_banned_terms",
     "AdminSession",
+    "require_admin_role",
     "require_admin_session",
+    "require_tenant_access",
     "resolve_tenant_id",
 ]
 
@@ -361,6 +363,49 @@ async def require_admin_session(
     if user is None or user["status"] != "active":
         session_store.revoke_session(token)
         raise HTTPException(status_code=401, detail="账号已停用")
+    return session
+
+
+async def require_tenant_access(
+    tenant_id: str,
+    session: AdminSession = Depends(require_admin_session),
+) -> str:
+    """校验登录者有权操作 URL 里的这个租户。
+
+    admin（tenant_id 为 None）放行任意租户——它得能进入自己新建的租户，
+    否则建完就管不了。member 只能操作自己那一个。
+
+    这是整个账号体系唯一真正的安全边界。改造之前，任何登录者把请求里的
+    tenant_id 换成别的值就能读写另一个租户，返回 200，没有日志也没有报错。
+
+    注意它和 tenant_guard.require_active_tenant_or_404 是正交的两件事：
+    那个管的是"这个租户还启用着吗"，这个管的是"你有没有资格碰它"。
+    """
+    if session.role == "admin":
+        return tenant_id
+    if session.tenant_id != tenant_id:
+        logger.warning(
+            "越权访问被拒：username=%s 属于 %s，试图访问 %s",
+            session.username,
+            session.tenant_id,
+            tenant_id,
+        )
+        raise HTTPException(status_code=403, detail="无权访问该租户")
+    return tenant_id
+
+
+async def require_admin_role(
+    session: AdminSession = Depends(require_admin_session),
+) -> AdminSession:
+    """只有 admin 能过。用在账号管理与租户管理上。
+
+    租户管理（新建/停用租户）也归这里，不归 require_tenant_access：
+    /api/admin/tenants/{tenant_id}/disable 路径里那个 tenant_id 是**被操作
+    的对象**，不是**操作发生的作用域**。按租户作用域校验的话，member 对
+    自己所属的租户会顺利通过，于是就能把自己所在的租户停掉。
+    """
+    if session.role != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")
     return session
 
 

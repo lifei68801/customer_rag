@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import deps
+from app.api.admin_session import AdminSession
 from app.api.admin_schema_etl_routes import _sanitize_data_filename
 from app.graphrag.etl_runs_store import (
     create_etl_run,
@@ -21,6 +22,19 @@ from app.graphrag.schema_etl import ETLRunReport
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
+
+
+def _fake_admin_session() -> AdminSession:
+    """跳过鉴权用的假身份。
+
+    以前这里是 `lambda: None`——那时 require_admin_session 的返回值没人用。
+    现在 require_tenant_access 要读它的 role/tenant_id，返回 None 会让每条
+    请求都撞上 AttributeError。用 admin 身份：这些测试关心的是路由逻辑，
+    不是权限，admin 能进任意租户。
+    """
+    return AdminSession(username="admin", role="admin", tenant_id=None, expires_at=1e18)
+
+
 
 
 class _FakeGraphClient:
@@ -68,7 +82,7 @@ def review_conn():
 @pytest.fixture
 def client(review_conn, tmp_path):
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
-    app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.require_admin_session] = _fake_admin_session
     app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
     app.dependency_overrides[deps.get_upload_dir] = lambda: tmp_path / "uploads"
     yield TestClient(app)
@@ -284,7 +298,7 @@ def test_get_sample_returns_400_when_ontology_not_confirmed():
         await conn.close()
 
     app.dependency_overrides[deps.get_review_conn] = override_review_conn
-    app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.require_admin_session] = _fake_admin_session
     app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
     client = TestClient(app)
     try:
@@ -305,7 +319,7 @@ def test_get_sample_returns_400_when_schema_confirmed_but_has_no_term_types():
         await conn.close()
 
     app.dependency_overrides[deps.get_review_conn] = override_review_conn
-    app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.require_admin_session] = _fake_admin_session
     app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
     client = TestClient(app)
     try:
@@ -327,7 +341,7 @@ def test_get_sample_returns_files_with_config_yaml_first():
         await conn.close()
 
     app.dependency_overrides[deps.get_review_conn] = override_review_conn
-    app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.require_admin_session] = _fake_admin_session
     app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
     client = TestClient(app)
     try:
@@ -354,7 +368,7 @@ def test_download_sample_zip_returns_a_valid_zip_containing_the_same_files():
         await conn.close()
 
     app.dependency_overrides[deps.get_review_conn] = override_review_conn
-    app.dependency_overrides[deps.require_admin_session] = lambda: None
+    app.dependency_overrides[deps.require_admin_session] = _fake_admin_session
     app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
     client = TestClient(app)
     try:
