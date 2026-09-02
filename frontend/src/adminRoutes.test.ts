@@ -20,6 +20,7 @@ describe('新路由表', () => {
     expect(ADMIN_ROUTES).toEqual({
       ontology: '/admin/model/ontology',
       ontologyGraph: '/admin/model/graph',
+      guidedOntology: '/admin/model/guided',
       documents: '/admin/ingest/documents',
       etl: '/admin/ingest/etl',
       reviewRelations: '/admin/review/relations',
@@ -120,6 +121,7 @@ describe('导航分组', () => {
       settings: '账号级偏好，不是流程的一站；入口在底部账号菜单',
       accounts: '对 member 根本不存在；放进侧边栏会让两种角色看到不同的侧边栏',
       tenants: '同上，admin 专属；入口在账号菜单',
+      guidedOntology: '首次建模的入口，从本体结构页进入；不是常驻目的地',
     }
     const inNav = [
       ...NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path)),

@@ -25,6 +25,9 @@ import {
 export const ADMIN_ROUTES = {
   ontology: '/admin/model/ontology',
   ontologyGraph: '/admin/model/graph',
+  // 首次建模的入口，从本体结构页进入；不常驻导航，见 NAV_GROUPS 上方
+  // 的注释和 adminRoutes.test.ts 里的 NOT_IN_NAV。
+  guidedOntology: '/admin/model/guided',
   documents: '/admin/ingest/documents',
   etl: '/admin/ingest/etl',
   reviewRelations: '/admin/review/relations',
@@ -159,6 +162,8 @@ const EXTRA_TITLES: Partial<Record<keyof typeof ADMIN_ROUTES, string>> = {
   accounts: '账号',
   tenants: '租户',
   settings: '设置',
+  // 入口不在侧边栏，也就不在 ALL_NAV_ITEMS 里；标题只能在这里手写一份。
+  guidedOntology: '引导建模',
 }
 
 export const PAGE_TITLES: Record<keyof typeof ADMIN_ROUTES, string> = Object.fromEntries(
