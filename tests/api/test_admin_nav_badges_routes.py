@@ -82,8 +82,7 @@ def _get(review_conn, *, tenant_id: str):
     try:
         client = TestClient(app)
         return client.get(
-            "/api/admin/nav-badges",
-            params={"tenant_id": tenant_id},
+            f"/api/admin/{tenant_id}/nav-badges",
             headers=_authed_headers(session_store),
         )
     finally:
@@ -130,7 +129,7 @@ def test_requires_authentication(review_conn):
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
-        response = TestClient(app).get("/api/admin/nav-badges", params={"tenant_id": "demo"})
+        response = TestClient(app).get("/api/admin/demo/nav-badges")
         assert response.status_code == 401
     finally:
         app.dependency_overrides.clear()
@@ -153,3 +152,21 @@ def test_reports_entity_count_for_the_tenant(review_conn):
     asyncio.run(_seed_terms(review_conn, tenant_id="other", count=9))
 
     assert _get(review_conn, tenant_id="demo").json()["total_terms"] == 4
+
+
+def test_old_query_param_path_is_gone(review_conn):
+    """旧路径必须 404。留着它等于留一条不受租户校验的旁路——而那条旁路
+    不会有任何报错，只会安静地返回数据。"""
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        response = TestClient(app).get(
+            "/api/admin/nav-badges",
+            params={"tenant_id": "demo"},
+            headers=_authed_headers(session_store),
+        )
+        assert response.status_code == 404
+    finally:
+        app.dependency_overrides.clear()

@@ -10,7 +10,8 @@ from app.graphrag.review_queue import count_pending_reviews
 from app.graphrag.terms_store import count_terms_merged
 
 router = APIRouter(
-    prefix="/api/admin/nav-badges", dependencies=[Depends(deps.require_admin_session)]
+    prefix="/api/admin/{tenant_id}/nav-badges",
+    dependencies=[Depends(deps.require_admin_session)],
 )
 
 
