@@ -10,6 +10,7 @@ from fastapi import Depends, Header, HTTPException
 from app.agent.tool_registry import ToolRegistry, discover_tools
 from app.api.admin_session import AdminSession, AdminSessionStore
 from app.auth.admin_users_store import get_admin_user
+from app.auth.login_throttle import LoginThrottle
 from app.config.settings import Settings
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
 from app.ingestion.ocr_factory import build_ocr_from_settings
@@ -55,6 +56,7 @@ __all__ = [
     "get_graph_client",
     "get_ingestion_conn",
     "get_llm_registry",
+    "get_login_throttle",
     "get_memory_conn",
     "get_ocr_function",
     "get_rerank_provider",
@@ -256,6 +258,17 @@ def get_tts_provider(
 
 
 _admin_session_store_cache: AdminSessionStore | None = None
+
+
+_login_throttle_cache: LoginThrottle | None = None
+
+
+def get_login_throttle() -> LoginThrottle:
+    """进程内单例：失败计数必须跨请求累积，每次新建等于没有限流。"""
+    global _login_throttle_cache
+    if _login_throttle_cache is None:
+        _login_throttle_cache = LoginThrottle()
+    return _login_throttle_cache
 
 
 def get_admin_session_store() -> AdminSessionStore:

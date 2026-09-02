@@ -1,59 +1,123 @@
 from __future__ import annotations
 
 import logging
-import secrets
 
+import aiosqlite
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from app.api import deps
-from app.api.admin_session import AdminSessionStore
-from app.config.settings import Settings
+from app.api.admin_session import AdminSession, AdminSessionStore
+from app.auth.admin_users_store import (
+    get_admin_user,
+    set_admin_user_password,
+    touch_last_login,
+)
+from app.auth.login_throttle import LoginLockedError, LoginThrottle
+from app.auth.password import verify_password
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/auth")
 
+#: 三种失败（用户不存在 / 密码错 / 账号已禁用）共用同一条文案和同一个
+#: 状态码。区分它们等于把这个接口变成用户名枚举器——攻击者只要看响应
+#: 就能列出所有真实存在的账号。原因分别记进服务端日志。
+_LOGIN_FAILED_DETAIL = "用户名或密码不正确"
+
 
 class LoginRequest(BaseModel):
-    admin_token: str
+    username: str
+    password: str
 
 
 class LoginResponse(BaseModel):
     session_token: str
+    username: str
+    role: str
+    tenant_id: str | None
+
+
+class WhoAmIResponse(BaseModel):
+    username: str
+    role: str
+    tenant_id: str | None
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
 
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
     payload: LoginRequest,
-    settings: Settings = Depends(deps.get_settings),
     session_store: AdminSessionStore = Depends(deps.get_admin_session_store),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    throttle: LoginThrottle = Depends(deps.get_login_throttle),
 ) -> LoginResponse:
-    # 常量时间比较：普通的 != 会在第一个不同字节处提前返回，攻击者可以按
-    # 响应耗时逐字节爆破这个 token——而它是全租户唯一的写权限凭证（上传、
-    # 删除、把关系批准进 Neo4j）。compare_digest 对 str 只接受 ASCII，
-    # 统一编码成 bytes 比较，避免管理员 token 含非 ASCII 字符时抛 TypeError。
-    if not settings.admin_token or not secrets.compare_digest(
-        payload.admin_token.encode("utf-8"), settings.admin_token.encode("utf-8")
-    ):
-        # 只记录"发生了失败登录"，绝不记录尝试的 token 值——日志本身通常比
-        # 环境变量更容易泄露。目前没有限流/锁定，这条日志是唯一的审计线索。
-        logger.warning(
-            "管理员登录失败：admin_token 不匹配（admin_token 未配置=%s）",
-            not settings.admin_token,
-        )
-        raise HTTPException(status_code=401, detail="管理员 token 不正确")
-    # 旧的 admin_token 登录路径：暂时以 admin 身份签发 session。这条路径
-    # 在账号体系落地时整个删除（用户名 + 密码取代它）。
+    try:
+        throttle.check(payload.username)
+    except LoginLockedError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+
+    user = await get_admin_user(review_conn, payload.username)
+    # 只记录"发生了失败登录"和原因，绝不记录尝试的密码——日志本身通常比
+    # 数据库更容易泄露。
+    if user is None:
+        logger.warning("管理员登录失败：用户不存在 username=%s", payload.username)
+        raise HTTPException(status_code=401, detail=_LOGIN_FAILED_DETAIL)
+    if not verify_password(payload.password, user["password_hash"]):
+        # 只在用户确实存在时计数。给任意伪造用户名都建槽位会让内存被撑爆
+        # ——这条取舍连同它的局限记在 login_throttle.py 的 docstring 里。
+        throttle.record_failure(payload.username)
+        logger.warning("管理员登录失败：密码不正确 username=%s", payload.username)
+        raise HTTPException(status_code=401, detail=_LOGIN_FAILED_DETAIL)
+    if user["status"] != "active":
+        logger.warning("管理员登录失败：账号已停用 username=%s", payload.username)
+        raise HTTPException(status_code=401, detail=_LOGIN_FAILED_DETAIL)
+
+    throttle.record_success(payload.username)
+    await touch_last_login(review_conn, payload.username)
     session_token = session_store.create_session(
-        username="admin", role="admin", tenant_id=None
+        username=user["username"], role=user["role"], tenant_id=user["tenant_id"]
     )
-    return LoginResponse(session_token=session_token)
+    return LoginResponse(
+        session_token=session_token,
+        username=user["username"],
+        role=user["role"],
+        tenant_id=user["tenant_id"],
+    )
 
 
-@router.get("/whoami", dependencies=[Depends(deps.require_admin_session)])
-async def whoami() -> dict[str, bool]:
-    return {"authenticated": True}
+@router.get("/whoami", response_model=WhoAmIResponse)
+async def whoami(
+    session: AdminSession = Depends(deps.require_admin_session),
+) -> WhoAmIResponse:
+    return WhoAmIResponse(
+        username=session.username, role=session.role, tenant_id=session.tenant_id
+    )
+
+
+@router.put("/password")
+async def change_own_password(
+    payload: ChangePasswordRequest,
+    session: AdminSession = Depends(deps.require_admin_session),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict[str, bool]:
+    """改自己的密码，必须验旧密码。
+
+    不验旧密码的话，任何拿到 session 的人（比如一台没锁屏的电脑）都能把
+    这个账号锁给自己。
+    """
+    user = await get_admin_user(review_conn, session.username)
+    if user is None or not verify_password(payload.old_password, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="原密码不正确")
+    try:
+        await set_admin_user_password(review_conn, session.username, payload.new_password)
+    except ValueError as exc:  # PasswordTooShortError / PasswordTooLongError
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"changed": True}
 
 
 @router.post("/logout", dependencies=[Depends(deps.require_admin_session)])
