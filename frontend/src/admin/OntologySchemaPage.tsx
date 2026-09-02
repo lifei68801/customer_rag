@@ -194,7 +194,6 @@ export function OntologySchemaPage() {
     }
   }, [sessionToken, tenantId, readinessVersion])
 
-  const isLifecycleTab = tab === 'term-types' || tab === 'relation-types' || tab === 'constraints'
   const missingCategories = readiness
     ? ([
         !readiness.termTypes && '实体类型',
@@ -202,9 +201,11 @@ export function OntologySchemaPage() {
         !readiness.constraints && '约束',
       ].filter(Boolean) as string[])
     : []
-  const confirmDisabledReason = !isLifecycleTab
-    ? '该分类直接生效，无需确认'
-    : readiness === null
+  // 三个 tab 都在 schema 草稿的生命周期里，确认的前置条件也是同一套，
+  // 所以这个原因跟当前在哪个 tab 无关。（此前这里还有一个"该分类直接生效，
+  // 无需确认"的分支，是页面还有第四个 tab 时留下的，早已不可达。）
+  const confirmDisabledReason =
+    readiness === null
       ? '检查前置条件中…'
       : missingCategories.length > 0
         ? `还缺少：${missingCategories.join('、')}（各至少一条）`

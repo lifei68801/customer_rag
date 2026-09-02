@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { MessageSquareOff, Stethoscope } from 'lucide-react'
-import { PAGE_TITLES } from '../adminRoutes'
+import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
-import { termDetailPath } from './TermDetailPage'
+import { termDetailLink } from './TermDetailPage'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 
@@ -56,14 +56,24 @@ export function DiagnosticsPage() {
   const [selected, setSelected] = useState<DiagnosticDetail | null>(null)
   const [listLoaded, setListLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 选中哪一条存在 URL 里。此前它只活在组件 state 里：刷新一下就散了，
+  // 截图发给同事对方打开是空的，从这里点进实体详情也没法再回到这一条。
+  const [params, setParams] = useSearchParams()
+  const selectedId = params.get('d')
 
   const base = `/api/admin/${encodeURIComponent(tenantId)}/diagnostics`
+
+  const select = (id: number | null) => {
+    const next = new URLSearchParams(params)
+    if (id === null) next.delete('d')
+    else next.set('d', String(id))
+    setParams(next, { replace: true })
+  }
 
   useEffect(() => {
     if (!sessionToken) return
     let cancelled = false
     setListLoaded(false)
-    setSelected(null)
     void (async () => {
       try {
         const response = await adminFetch(base, sessionToken)
@@ -87,23 +97,46 @@ export function DiagnosticsPage() {
     }
   }, [sessionToken, base])
 
-  const open = useCallback(
-    async (id: number) => {
-      if (!sessionToken) return
+  // 换租户时清掉选中项——上一个租户的诊断 id 在这个租户里查不到。跳过
+  // 首次挂载：那不是切换，而且会把带着 ?d= 直接打开的链接当场清掉。
+  const lastTenant = useRef(tenantId)
+  useEffect(() => {
+    if (lastTenant.current === tenantId) return
+    lastTenant.current = tenantId
+    select(null)
+    setSelected(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId])
+
+  // 详情跟着 URL 走，而不是跟着点击走：带着 ?d= 直接打开、后退回来，走的
+  // 都是这一条路径，不需要各写一遍。
+  useEffect(() => {
+    if (!sessionToken) return
+    if (!selectedId) {
+      setSelected(null)
+      return
+    }
+    let cancelled = false
+    void (async () => {
       try {
-        const response = await adminFetch(`${base}/${id}`, sessionToken)
+        const response = await adminFetch(`${base}/${selectedId}`, sessionToken)
         if (!response.ok) {
           const body = await response.json().catch(() => ({}))
           throw new Error(extractErrorDetail(body, '加载诊断详情失败'))
         }
-        setSelected((await response.json()) as DiagnosticDetail)
-        setError(null)
+        const detail = (await response.json()) as DiagnosticDetail
+        if (!cancelled) {
+          setSelected(detail)
+          setError(null)
+        }
       } catch (err) {
-        setError(err instanceof Error ? err.message : '加载诊断详情失败')
+        if (!cancelled) setError(err instanceof Error ? err.message : '加载诊断详情失败')
       }
-    },
-    [sessionToken, base],
-  )
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionToken, base, selectedId])
 
   return (
     <div data-testid="diagnostics" className="flex flex-col gap-6">
@@ -142,7 +175,7 @@ export function DiagnosticsPage() {
               <li key={item.id}>
                 <button
                   type="button"
-                  onClick={() => open(item.id)}
+                  onClick={() => select(item.id)}
                   aria-current={selected?.id === item.id}
                   className={`flex w-full cursor-pointer flex-col gap-1 rounded-card border px-4 py-3 text-left transition ${
                     selected?.id === item.id
@@ -178,7 +211,10 @@ export function DiagnosticsPage() {
                   {selected.mentioned_terms.map((term) => (
                     <li key={term.node_key}>
                       <Link
-                        to={termDetailPath(term.node_key)}
+                        {...termDetailLink(term.node_key, {
+                          path: `${ADMIN_ROUTES.diagnostics}?d=${selected.id}`,
+                          label: PAGE_TITLES.diagnostics,
+                        })}
                         className="flex items-center gap-1.5 rounded-chip border border-subtle bg-card px-2.5 py-1 text-sm text-ink transition hover:bg-interactive-hover"
                       >
                         <span className="font-bold underline underline-offset-2">

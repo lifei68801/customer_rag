@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, Unlink } from 'lucide-react'
 import { ADMIN_ROUTES } from '../adminRoutes'
 import { adminFetch, extractErrorDetail } from './adminApi'
@@ -33,6 +33,28 @@ export function termDetailPath(nodeKey: string): string {
   return `${ADMIN_ROUTES.terms}/${encodeURIComponent(nodeKey)}`
 }
 
+/**
+ * 用户是从哪儿点进详情页的。
+ *
+ * 返回键写死指向实体列表的话，从问答诊断点进来的人会被送到一个跟当前
+ * 调查无关的页面，还得回头在几十条问答里找回刚才那一条。
+ */
+export interface TermOrigin {
+  path: string
+  label: string
+}
+
+const DEFAULT_ORIGIN: TermOrigin = { path: ADMIN_ROUTES.terms, label: '实体列表' }
+
+/**
+ * 详情页链接的 to + state。来路走 router state 而不是 query：URL 干净，
+ * 而且丢了也只是退回默认去处（分享出去的链接就是这种情况），不会变成
+ * 一个没有出口的页面。
+ */
+export function termDetailLink(nodeKey: string, origin?: TermOrigin) {
+  return { to: termDetailPath(nodeKey), state: origin ? { origin } : undefined }
+}
+
 const card = 'rounded-card border border-subtle bg-card p-4'
 const sectionTitle = 'font-mono text-sm font-bold uppercase tracking-wide text-ink-soft'
 
@@ -46,6 +68,8 @@ const sectionTitle = 'font-mono text-sm font-bold uppercase tracking-wide text-i
  */
 export function TermDetailPage() {
   const { nodeKey = '' } = useParams()
+  const { state } = useLocation()
+  const origin = (state as { origin?: TermOrigin } | null)?.origin ?? DEFAULT_ORIGIN
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const [term, setTerm] = useState<TermDetail | null>(null)
@@ -86,8 +110,8 @@ export function TermDetailPage() {
         <p role="alert" className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
           {error ?? '加载实体失败'}
         </p>
-        <Link to={ADMIN_ROUTES.terms} className="self-start font-bold text-ink underline">
-          返回实体列表
+        <Link to={origin.path} className="self-start font-bold text-ink underline">
+          返回{origin.label}
         </Link>
       </div>
     )
@@ -101,11 +125,12 @@ export function TermDetailPage() {
     <div data-testid="term-detail" className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
         <Link
-          to={ADMIN_ROUTES.terms}
+          data-testid="term-back-link"
+          to={origin.path}
           className="flex items-center gap-1 self-start text-sm text-ink-soft hover:text-ink"
         >
           <ArrowLeft aria-hidden="true" className="h-4 w-4" />
-          实体列表
+          {origin.label}
         </Link>
         <h1 className="font-mono text-xl font-semibold text-ink">{term.standard_name}</h1>
         <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -190,12 +215,14 @@ export function TermDetailPage() {
               icon={ArrowRight}
               relations={outgoing}
               emptyHint="没有从这个实体出发的关系。"
+              origin={origin}
             />
             <RelationGroup
               title="指向它"
               icon={ArrowLeft}
               relations={incoming}
               emptyHint="没有指向这个实体的关系。"
+              origin={origin}
             />
           </div>
         )}
@@ -209,11 +236,15 @@ function RelationGroup({
   icon: Icon,
   relations,
   emptyHint,
+  origin,
 }: {
   title: string
   icon: typeof ArrowRight
   relations: TermRelation[]
   emptyHint: string
+  // 沿着关系一路点下去，返回键还得指回最初的起点——每跳一次就把来路
+  // 换成上一个实体的话，回去要点的次数和跳的次数一样多。
+  origin: TermOrigin
 }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -234,7 +265,7 @@ function RelationGroup({
                 {relation.relation_type}
               </span>
               <Link
-                to={termDetailPath(relation.node_key)}
+                {...termDetailLink(relation.node_key, origin)}
                 className="font-bold text-ink underline underline-offset-2 hover:text-accent-primary"
               >
                 {relation.standard_name}
