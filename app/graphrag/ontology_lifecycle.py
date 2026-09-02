@@ -250,7 +250,8 @@ async def replace_draft(
     relation_types: list[dict],
     constraints: list[dict],
 ) -> None:
-    """把该租户的三张草稿表整份替换成提交的内容。一个事务，要么全成要么全不动。
+    """把该租户的三张草稿表整份替换成提交的内容。先把所有会失败的校验做完，
+    再动手写；写入阶段不会再失败，因此不需要（也不应该）用显式事务包裹。
 
     为什么需要这个函数，而不是让调用方逐个调 create_term_type /
     create_relation_type / add_allowed_combination：
@@ -263,90 +264,150 @@ async def replace_draft(
     就重新提交整份）。增量合并的话，用户删掉的那个实体类型会留在草稿里
     ——界面上没有了，库里还在，确认时又冒出来。
 
-    校验顺序是先类型后约束：约束引用实体类型和关系类型，反过来先插约束会
-    撞上"引用的类型不存在"，而那时前面的类型已经写进去了。
+    为什么不用 BEGIN/COMMIT/ROLLBACK 包住整个函数（这里曾经这样写过）：
+    deps.get_review_conn 是进程内单例连接，所有并发请求的协程共用它。
+    checkout_draft 的 docstring 记录过实测的并发穿插——管理后台本体页面
+    三个 tab 各自发一次 checkout，实测会几乎同时到达同一个连接，在 await
+    让出点之间互相插入执行——并且明确否决过"用事务/加锁解决"这条路：
+    「用加锁或包事务也能解决，但那会把单例连接上的并发请求串行化，代价更大」。
+    显式 BEGIN 会撞上更具体的问题：BEGIN 和 COMMIT 之间，同一连接上另一个
+    协程的 execute 可能插进来，撞见 sqlite3 报的
+    "cannot start a transaction within a transaction"，或者它的 commit()
+    把这边尚未校验完的写入提前提交掉——不可靠的事务比没有事务更糟，因为它
+    给人一种"出错会自动回滚"的保证错觉，而这个保证在这个连接模型下根本不
+    成立。
+
+    所以改成：原子性靠"先校验、后写入"来保证，而不是靠数据库事务。校验阶段
+    （见下面 term_types/relation_types/constraints 三段）任何一项失败就直接
+    抛异常，此时一行都还没写，草稿保持原样，效果跟"回滚"一样，但不需要真的
+    有事务。校验全部通过后才做 DELETE + INSERT，这个阶段的每条语句本身都
+    不会因为业务规则失败（该失败的都在校验阶段失败过了）。
+
+    诚实的代价：写入阶段仍可能撞上 SQLite 层面的硬错误（磁盘满、数据库文件
+    损坏等），届时可能留下一份不完整的草稿。但 replace_draft 本身是幂等的
+    整份替换——用户在引导页重新提交一次就能覆盖回一致状态，不需要人工清理，
+    这也是为什么 Global Constraints/brief 反复强调"整份替换而不是增量合并"
+    ：增量合并没有这个自愈性质，整份替换有。
+
+    校验顺序是先类型后约束：约束引用实体类型和关系类型，反过来先校验约束会
+    撞上"引用的类型不存在"，而那时还不知道类型列表到底是什么。
+
+    校验阶段同时检查提交内部的重复项（同一份提交里两个同名 term_type / 两个
+    同名 relation_type / 两个相同的约束三元组）——这三张草稿表的主键都包含
+    这些字段，重复项如果留到写入阶段才被发现，会以 aiosqlite.IntegrityError
+    的形式出现，调用方（API 层）没法区分这跟其它数据库错误，只能报未分类的
+    500；在校验阶段查出来则可以报一条可读的 400。
     """
     await _ensure_checkout_state_schema(conn)
-    try:
-        await conn.execute("BEGIN")
-        for table in (
-            "ontology_term_types",
-            "tenant_relation_types",
-            "term_type_relation_allowlist",
-        ):
-            await conn.execute(
-                f"DELETE FROM {table} WHERE tenant_id = ? AND status = 'draft'", (tenant_id,)
-            )
 
-        for term_type in term_types:
-            # term_type 的 value（分类名字）本身没有格式校验——真实的
-            # create_term_type 也不校验它，是自由文本（跟关系类型名/字段名不同，
-            # 后两者要落进 Cypher 拼接或结构化查询字段名，前者只是显示用的分类
-            # 标签），这里如实保持一致，不额外发明一条真实实现里不存在的规则。
-            extra_fields = _validate_draft_extra_fields(term_type.get("extra_fields", []))
-            standard_name_value_type = term_type.get("standard_name_value_type", "string")
-            _validate_draft_standard_name_value_type(standard_name_value_type)
-            await conn.execute(
-                "INSERT INTO ontology_term_types"
-                " (tenant_id, value, extra_fields, standard_name_value_type, status)"
-                " VALUES (?, ?, ?, ?, 'draft')",
-                (
-                    tenant_id,
-                    term_type["value"],
-                    json.dumps(extra_fields, ensure_ascii=False),
-                    standard_name_value_type,
-                ),
-            )
+    # ---- 校验阶段：只读、只算，不写库。任何一项失败此时都还没写过一行。----
+    normalized_term_types: list[tuple[str, list[dict], str]] = []
+    declared_types: set[str] = set()
+    for term_type in term_types:
+        value = term_type["value"]
+        if value in declared_types:
+            raise ValueError(f"提交里有重复的实体类型: {value!r}")
+        declared_types.add(value)
+        # term_type 的 value（分类名字）本身没有格式校验——真实的
+        # create_term_type 也不校验它，是自由文本（跟关系类型名/字段名不同，
+        # 后两者要落进 Cypher 拼接或结构化查询字段名，前者只是显示用的分类
+        # 标签），这里如实保持一致，不额外发明一条真实实现里不存在的规则。
+        extra_fields = _validate_draft_extra_fields(term_type.get("extra_fields", []))
+        standard_name_value_type = term_type.get("standard_name_value_type", "string")
+        _validate_draft_standard_name_value_type(standard_name_value_type)
+        normalized_term_types.append((value, extra_fields, standard_name_value_type))
 
-        for relation_type in relation_types:
-            example_phrase = relation_type.get("example_phrase", "")
-            _validate_draft_relation_type(relation_type["relation_type"], example_phrase)
-            await conn.execute(
-                "INSERT INTO tenant_relation_types"
-                " (tenant_id, relation_type, example_phrase, description, allow_chain_query,"
-                "  source, status) VALUES (?, ?, ?, ?, ?, 'custom', 'draft')",
-                (
-                    tenant_id,
-                    relation_type["relation_type"],
-                    example_phrase,
-                    relation_type.get("description", ""),
-                    1 if relation_type.get("allow_chain_query", True) else 0,
-                ),
+    normalized_relation_types: list[tuple[str, str, str, bool]] = []
+    declared_relations: set[str] = set()
+    for relation_type in relation_types:
+        relation_type_name = relation_type["relation_type"]
+        if relation_type_name in declared_relations:
+            raise ValueError(f"提交里有重复的关系类型: {relation_type_name!r}")
+        declared_relations.add(relation_type_name)
+        example_phrase = relation_type.get("example_phrase", "")
+        _validate_draft_relation_type(relation_type_name, example_phrase)
+        normalized_relation_types.append(
+            (
+                relation_type_name,
+                example_phrase,
+                relation_type.get("description", ""),
+                relation_type.get("allow_chain_query", True),
             )
-
-        declared_types = {t["value"] for t in term_types}
-        declared_relations = {r["relation_type"] for r in relation_types}
-        for constraint in constraints:
-            # 引用检查放在这里而不是靠外键：SQLite 默认不强制外键，靠它等于
-            # 没检查。引用不存在的类型会让 ETL 在跑批时才炸，那时已经晚了。
-            for key, pool, label in (
-                ("subject_term_type", declared_types, "实体类型"),
-                ("object_term_type", declared_types, "实体类型"),
-                ("relation_type", declared_relations, "关系类型"),
-            ):
-                if constraint[key] not in pool:
-                    raise UnknownCategoryError(
-                        f"约束引用了未声明的{label}：{constraint[key]}"
-                    )
-            await conn.execute(
-                "INSERT INTO term_type_relation_allowlist"
-                " (tenant_id, subject_term_type, relation_type, object_term_type, status)"
-                " VALUES (?, ?, ?, ?, 'draft')",
-                (
-                    tenant_id,
-                    constraint["subject_term_type"],
-                    constraint["relation_type"],
-                    constraint["object_term_type"],
-                ),
-            )
-
-        # 写过草稿就意味着已检出。不标记的话，下一次 checkout_draft 会以为
-        # "还没检出过"，把已确认版本复制回来盖在引导刚写的草稿上。
-        await conn.execute(
-            "INSERT OR IGNORE INTO ontology_draft_checkout_state (tenant_id) VALUES (?)",
-            (tenant_id,),
         )
-        await conn.commit()
-    except Exception:
-        await conn.rollback()
-        raise
+
+    normalized_constraints: list[tuple[str, str, str]] = []
+    declared_constraint_triples: set[tuple[str, str, str]] = set()
+    for constraint in constraints:
+        # 引用检查放在这里而不是靠外键：SQLite 默认不强制外键，靠它等于
+        # 没检查。引用不存在的类型会让 ETL 在跑批时才炸，那时已经晚了。
+        for key, pool, label in (
+            ("subject_term_type", declared_types, "实体类型"),
+            ("object_term_type", declared_types, "实体类型"),
+            ("relation_type", declared_relations, "关系类型"),
+        ):
+            if constraint[key] not in pool:
+                raise UnknownCategoryError(
+                    f"约束引用了未声明的{label}：{constraint[key]}"
+                )
+        triple = (
+            constraint["subject_term_type"],
+            constraint["relation_type"],
+            constraint["object_term_type"],
+        )
+        if triple in declared_constraint_triples:
+            raise ValueError(f"提交里有重复的约束: {triple}")
+        declared_constraint_triples.add(triple)
+        normalized_constraints.append(triple)
+
+    # ---- 写入阶段：校验已经全部通过，这里的每条语句都不会再因为业务规则失败。----
+    for table in (
+        "ontology_term_types",
+        "tenant_relation_types",
+        "term_type_relation_allowlist",
+    ):
+        await conn.execute(
+            f"DELETE FROM {table} WHERE tenant_id = ? AND status = 'draft'", (tenant_id,)
+        )
+
+    for value, extra_fields, standard_name_value_type in normalized_term_types:
+        await conn.execute(
+            "INSERT INTO ontology_term_types"
+            " (tenant_id, value, extra_fields, standard_name_value_type, status)"
+            " VALUES (?, ?, ?, ?, 'draft')",
+            (
+                tenant_id,
+                value,
+                json.dumps(extra_fields, ensure_ascii=False),
+                standard_name_value_type,
+            ),
+        )
+
+    for relation_type_name, example_phrase, description, allow_chain_query in normalized_relation_types:
+        await conn.execute(
+            "INSERT INTO tenant_relation_types"
+            " (tenant_id, relation_type, example_phrase, description, allow_chain_query,"
+            "  source, status) VALUES (?, ?, ?, ?, ?, 'custom', 'draft')",
+            (
+                tenant_id,
+                relation_type_name,
+                example_phrase,
+                description,
+                1 if allow_chain_query else 0,
+            ),
+        )
+
+    for subject_term_type, relation_type_name, object_term_type in normalized_constraints:
+        await conn.execute(
+            "INSERT INTO term_type_relation_allowlist"
+            " (tenant_id, subject_term_type, relation_type, object_term_type, status)"
+            " VALUES (?, ?, ?, ?, 'draft')",
+            (tenant_id, subject_term_type, relation_type_name, object_term_type),
+        )
+
+    # 写过草稿就意味着已检出。不标记的话，下一次 checkout_draft 会以为
+    # "还没检出过"，把已确认版本复制回来盖在引导刚写的草稿上。
+    await conn.execute(
+        "INSERT OR IGNORE INTO ontology_draft_checkout_state (tenant_id) VALUES (?)",
+        (tenant_id,),
+    )
+    await conn.commit()

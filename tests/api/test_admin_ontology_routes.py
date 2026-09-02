@@ -813,3 +813,44 @@ def test_replace_draft_rejects_constraint_referencing_undeclared_type(client):
         headers={"Authorization": "Bearer x"},
     )
     assert response.status_code == 400
+
+
+def test_replace_draft_rejects_duplicate_term_type_in_same_submission(client):
+    """同一份提交里出现两个同名 term_type，现在会撞 (tenant_id, value, status)
+    这个主键——写入阶段查出来就是裸 500，校验阶段查出来才能是可读的 400。
+
+    这条用例还断言草稿在拒绝后保持原样：先用一次成功提交建立一份已知草稿，
+    再提交一份带重复项的草案，确认失败后旧草稿没有被动过（校验先于任何
+    DELETE/INSERT，所以这个"未改动"是自动满足的，但值得显式断言防回归）。
+    """
+    setup = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [
+                {"value": "订单号", "extra_fields": [], "standard_name_value_type": "string"}
+            ],
+            "relation_types": [],
+            "constraints": [],
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert setup.status_code == 200
+
+    response = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [
+                {"value": "重复类型", "extra_fields": [], "standard_name_value_type": "string"},
+                {"value": "重复类型", "extra_fields": [], "standard_name_value_type": "string"},
+            ],
+            "relation_types": [],
+            "constraints": [],
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert response.status_code == 400
+
+    listed = client.get(
+        "/api/admin/ontology/t1/term-types?status=draft", headers={"Authorization": "Bearer x"}
+    ).json()
+    assert {t["value"] for t in listed["term_types"]} == {"订单号"}, "失败的提交不该改动既有草稿"
