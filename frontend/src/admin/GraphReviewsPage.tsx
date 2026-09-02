@@ -174,7 +174,7 @@ export function GraphReviewsPage() {
     const requestId = pendingGuard.next()
     try {
       const response = await adminFetch(
-        `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=pending&page=${pendingPage}&page_size=${PAGE_SIZE}`,
+        `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews?status=pending&page=${pendingPage}&page_size=${PAGE_SIZE}`,
         sessionToken,
       )
       if (!response.ok) {
@@ -360,7 +360,7 @@ export function GraphReviewsPage() {
     const requestId = historyGuard.next()
     try {
       const response = await adminFetch(
-        `/api/admin/graph-reviews?tenant_id=${encodeURIComponent(tenantId)}&status=${historyFilter}&page=${historyPage}&page_size=${PAGE_SIZE}`,
+        `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews?status=${historyFilter}&page=${historyPage}&page_size=${PAGE_SIZE}`,
         sessionToken,
       )
       if (!response.ok) {
@@ -405,21 +405,24 @@ export function GraphReviewsPage() {
     setError(null)
     setProcessingId(reviewId)
     try {
-      const response = await adminFetch(`/api/admin/graph-reviews/${reviewId}/approve`, sessionToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tenant_id: tenantId,
-          subject_standard_name: draft.subject,
-          object_standard_name: draft.object,
-          subject_term_type: resolveApprovalTermType(
-            reviewId, 'subject', review?.subject_type_candidate,
-          ),
-          object_term_type: resolveApprovalTermType(
-            reviewId, 'object', review?.object_type_candidate,
-          ),
-        }),
-      })
+      const response = await adminFetch(
+        `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews/${reviewId}/approve`,
+        sessionToken,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            subject_standard_name: draft.subject,
+            object_standard_name: draft.object,
+            subject_term_type: resolveApprovalTermType(
+              reviewId, 'subject', review?.subject_type_candidate,
+            ),
+            object_term_type: resolveApprovalTermType(
+              reviewId, 'object', review?.object_type_candidate,
+            ),
+          }),
+        },
+      )
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '批准失败'))
@@ -439,11 +442,15 @@ export function GraphReviewsPage() {
     setError(null)
     setProcessingId(reviewId)
     try {
-      const response = await adminFetch(`/api/admin/graph-reviews/${reviewId}/reject`, sessionToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenant_id: tenantId, note: rejectNotes[reviewId] || null }),
-      })
+      const response = await adminFetch(
+        `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews/${reviewId}/reject`,
+        sessionToken,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ note: rejectNotes[reviewId] || null }),
+        },
+      )
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '驳回失败'))
@@ -473,13 +480,12 @@ export function GraphReviewsPage() {
       const draft = drafts[review.review_id]
       try {
         const response = await adminFetch(
-          `/api/admin/graph-reviews/${review.review_id}/approve`,
+          `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews/${review.review_id}/approve`,
           sessionToken,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              tenant_id: tenantId,
               subject_standard_name: draft.subject,
               object_standard_name: draft.object,
               subject_term_type: resolveApprovalTermType(
@@ -520,12 +526,12 @@ export function GraphReviewsPage() {
     for (const review of selectedReviews) {
       try {
         const response = await adminFetch(
-          `/api/admin/graph-reviews/${review.review_id}/reject`,
+          `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews/${review.review_id}/reject`,
           sessionToken,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tenant_id: tenantId, note: batchRejectNote || null }),
+            body: JSON.stringify({ note: batchRejectNote || null }),
           },
         )
         if (!response.ok) {

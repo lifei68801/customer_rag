@@ -23,7 +23,7 @@ export function useNavBadges(): Record<string, number> {
     void (async () => {
       try {
         const res = await adminFetch(
-          `/api/admin/nav-badges?tenant_id=${encodeURIComponent(tenantId)}`,
+          `/api/admin/${encodeURIComponent(tenantId)}/nav-badges`,
           sessionToken,
         )
         if (!res.ok) return

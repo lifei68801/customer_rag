@@ -128,7 +128,7 @@ export function DocumentsPage() {
     if (!sessionToken) return
     const requestId = requestGuard.next()
     const response = await adminFetch(
-      `/api/admin/documents?tenant_id=${encodeURIComponent(tenantId)}&page=${page}&page_size=${PAGE_SIZE}`,
+      `/api/admin/${encodeURIComponent(tenantId)}/documents?page=${page}&page_size=${PAGE_SIZE}`,
       sessionToken,
     )
     const data = (await response.json()) as {
@@ -194,9 +194,8 @@ export function DocumentsPage() {
     try {
       const formData = new FormData()
       formData.append('file', file)
-      formData.append('tenant_id', tenantId)
       formData.append('build_graph', String(buildGraph))
-      const response = await adminFetch('/api/admin/documents', sessionToken, {
+      const response = await adminFetch(`/api/admin/${encodeURIComponent(tenantId)}/documents`, sessionToken, {
         method: 'POST',
         body: formData,
       })
@@ -227,7 +226,7 @@ export function DocumentsPage() {
     setDeletingPath(filePath)
     try {
       const response = await adminFetch(
-        `/api/admin/documents?tenant_id=${encodeURIComponent(tenantId)}&file_path=${encodeURIComponent(filePath)}`,
+        `/api/admin/${encodeURIComponent(tenantId)}/documents?file_path=${encodeURIComponent(filePath)}`,
         sessionToken,
         { method: 'DELETE' },
       )
@@ -250,7 +249,7 @@ export function DocumentsPage() {
     setJobActionId(jobId)
     try {
       const response = await adminFetch(
-        `/api/admin/documents/jobs/${jobId}/retry?tenant_id=${encodeURIComponent(tenantId)}`,
+        `/api/admin/${encodeURIComponent(tenantId)}/documents/jobs/${jobId}/retry`,
         sessionToken,
         { method: 'POST' },
       )
@@ -280,7 +279,7 @@ export function DocumentsPage() {
     setJobActionId(jobId)
     try {
       const response = await adminFetch(
-        `/api/admin/documents/jobs/${jobId}?tenant_id=${encodeURIComponent(tenantId)}`,
+        `/api/admin/${encodeURIComponent(tenantId)}/documents/jobs/${jobId}`,
         sessionToken,
         { method: 'DELETE' },
       )
@@ -313,7 +312,7 @@ export function DocumentsPage() {
     setExpandedChunks((prev) => ({ ...prev, [filePath]: 'loading' }))
     try {
       const response = await adminFetch(
-        `/api/admin/documents/chunks?tenant_id=${encodeURIComponent(tenantId)}&file_path=${encodeURIComponent(filePath)}`,
+        `/api/admin/${encodeURIComponent(tenantId)}/documents/chunks?file_path=${encodeURIComponent(filePath)}`,
         sessionToken,
       )
       if (!response.ok) {
@@ -341,7 +340,7 @@ export function DocumentsPage() {
     setDownloadingPath(filePath)
     try {
       const response = await adminFetch(
-        `/api/admin/documents/file?tenant_id=${encodeURIComponent(tenantId)}&file_path=${encodeURIComponent(filePath)}`,
+        `/api/admin/${encodeURIComponent(tenantId)}/documents/file?file_path=${encodeURIComponent(filePath)}`,
         sessionToken,
       )
       if (!response.ok) {

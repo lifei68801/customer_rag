@@ -34,7 +34,7 @@ export function DuplicateTermSuggestionsTab() {
     async (page: number) => {
       if (!sessionToken) return { items: [], total: 0 }
       const response = await adminFetch(
-        `/api/admin/duplicate-reviews?tenant_id=${encodeURIComponent(tenantId)}&page=${page}&page_size=${PAGE_SIZE}`,
+        `/api/admin/${encodeURIComponent(tenantId)}/duplicate-reviews?page=${page}&page_size=${PAGE_SIZE}`,
         sessionToken,
       )
       if (!response.ok) {
@@ -64,11 +64,15 @@ export function DuplicateTermSuggestionsTab() {
     setError(null)
     setProcessingId(reviewId)
     try {
-      const response = await adminFetch(`/api/admin/duplicate-reviews/${reviewId}/approve`, sessionToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenant_id: tenantId, keep_node_key: keepNodeKey }),
-      })
+      const response = await adminFetch(
+        `/api/admin/${encodeURIComponent(tenantId)}/duplicate-reviews/${reviewId}/approve`,
+        sessionToken,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keep_node_key: keepNodeKey }),
+        },
+      )
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '合并失败'))
@@ -87,11 +91,15 @@ export function DuplicateTermSuggestionsTab() {
     setError(null)
     setProcessingId(reviewId)
     try {
-      const response = await adminFetch(`/api/admin/duplicate-reviews/${reviewId}/reject`, sessionToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenant_id: tenantId, note: null }),
-      })
+      const response = await adminFetch(
+        `/api/admin/${encodeURIComponent(tenantId)}/duplicate-reviews/${reviewId}/reject`,
+        sessionToken,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ note: null }),
+        },
+      )
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '驳回失败'))
