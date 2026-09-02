@@ -138,7 +138,7 @@ cp .env.example .env
 | `CUSTOMER_RAG_LLM_API_KEY` | LLM 的 key |
 | `CUSTOMER_RAG_EMBEDDING_API_KEY` | Embedding 的 key |
 | `CUSTOMER_RAG_EMBEDDING_DIMENSION` | **必须和所选模型的实际输出维度一致**，否则建 collection 会失败 |
-| `CUSTOMER_RAG_ADMIN_TOKEN` | 管理后台登录凭证。留空 = 所有登录请求一律 401，后台完全不可用 |
+| `CUSTOMER_RAG_ADMIN_TOKEN` | 管理后台 `admin` 账号的**初始密码**，仅首次启动播种时使用。留空 = 进程直接启动失败 |
 
 其余（Rerank / OCR / ASR / TTS / 网关密钥）都是可选项，留空则对应功能自动跳过。
 
@@ -196,7 +196,9 @@ python -m app.ingestion.main --dir path/to/docs --build-graph    # 同时做 LLM
 
 ## 管理后台
 
-浏览器打开 `http://localhost:5173/admin`，用 `CUSTOMER_RAG_ADMIN_TOKEN` 的值登录。
+浏览器打开 `http://localhost:5173/admin`，用户名 `admin`，密码是首次启动时 `CUSTOMER_RAG_ADMIN_TOKEN` 的值。
+
+登录后请在「设置」页改密码——**改完之后 `.env` 里的旧值不再是当前密码**，那个变量只在首次播种时用一次。
 
 侧边栏按**数据依赖顺序**排列，不是按使用频率——先有本体，才谈得上往里灌数据：
 
@@ -301,7 +303,32 @@ Milvus 没起来。检查 Docker Desktop 是否在运行，然后 `docker compos
 
 **管理后台登录一直 401**
 
-`CUSTOMER_RAG_ADMIN_TOKEN` 没配。这一项没有「不配也能跑」的降级——后台能直接写库，留空时所有登录请求一律拒绝。
+用户名 + 密码登录，首个账号是 `admin`，初始密码来自首次启动时的
+`CUSTOMER_RAG_ADMIN_TOKEN`。注意：**改过密码之后 `.env` 里的旧值不再是当前
+密码**——那个变量只在首次播种时用一次。
+
+失败响应不区分「用户不存在」「密码错误」「账号已停用」，一律同一条文案——
+那是有意的，区分它们等于把登录接口变成用户名枚举器。具体原因看后端日志。
+
+连续失败 5 次会锁定 15 分钟（按用户名计），重启服务可以解锁。
+
+忘记密码的恢复路径：清空本体库（`data/graph_review_queue.sqlite3`）里的
+`admin_users` 表后重启，系统会按 `CUSTOMER_RAG_ADMIN_TOKEN` 重新播种 `admin`。
+
+**后端启动就失败，日志说「无法播种初始管理员」**
+
+`CUSTOMER_RAG_ADMIN_TOKEN` 没配，而数据库里还没有任何管理员账号。这是故意让
+进程起不来的——启动成功但无人能登录是更坏的形态，运维会以为是自己记错了
+密码，而不是去看配置。
+
+**某个租户在下拉框里不见了**
+
+首次启动会自动停用 6 个测试残留租户（`t_verify` / `t_verify2` /
+`review-test` / `review-ontology-test` / `e2e_concurrency_test` /
+`table_extract_test`）——它们在业务表里零记录，挂在下拉框里会让人把数据建
+错地方。停用可逆，在「账号」页旁边的租户管理里可以重新启用；但要长期保留
+某个，得改 `app/auth/bootstrap.py` 里的 `STALE_TEST_TENANTS` 常量，否则下次
+启动又会被停掉。
 
 **建 collection 报维度错误**
 

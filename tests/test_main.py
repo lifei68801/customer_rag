@@ -28,6 +28,9 @@ def isolate_startup_databases(monkeypatch, tmp_path):
     monkeypatch.setenv(
         "CUSTOMER_RAG_INGESTION_DB_PATH", str(tmp_path / "ingestion.sqlite3")
     )
+    # lifespan 现在还会播种初始管理员，没有这个值进程直接起不来（有意的，
+    # 见 app/auth/bootstrap.py）。长度要够 8 位。
+    monkeypatch.setenv("CUSTOMER_RAG_ADMIN_TOKEN", "startup-seed-secret")
     monkeypatch.setattr(deps, "_review_conn_cache", None)
     monkeypatch.setattr(deps, "_ingestion_conn_cache", None)
     yield

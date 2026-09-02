@@ -5,6 +5,8 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, FastAPI
 
 from app.api import deps
+from app.auth.admin_users_store import ensure_admin_users_schema
+from app.auth.bootstrap import disable_stale_test_tenants, seed_admin_user
 from app.api.admin_account_routes import router as admin_account_router
 from app.api.admin_auth_routes import router as admin_auth_router
 from app.api.admin_document_routes import router as admin_document_router
@@ -79,6 +81,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("租户注册表回填完成")
     except Exception:
         logger.warning("启动回填租户注册表失败，租户列表可能不完整", exc_info=True)
+
+    # 账号体系的引导。与 BM25 预热/租户回填不同，这里**不吞异常**——没有
+    # 管理员账号意味着后台完全不可用，是需要立刻发现并修复的部署错误，不是
+    # "暂时不可用、稍后自动恢复"的瞬时故障。处理方式同下面的工具注册表。
+    admin_conn = await deps.get_review_conn(settings)
+    await ensure_admin_users_schema(admin_conn)
+    await seed_admin_user(admin_conn, settings.admin_token)
+    await disable_stale_test_tenants(admin_conn)
 
     # 工具注册表必须在启动阶段构建成功——manifest 格式错误/tool.py 缺 TOOL
     # 导出/工具名重复这三类问题，按插件化计划的 Global Constraints 要求
