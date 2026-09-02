@@ -12,3 +12,12 @@ export interface ColumnStats {
   samples: string[]
   inferredType: InferredType
 }
+
+export type ColumnRole = 'identifier' | 'measure' | 'freetext' | 'date' | 'dimension'
+
+export interface RoledColumn {
+  stats: ColumnStats
+  role: ColumnRole
+  /** 判定依据。必须带具体数字——用户要能据此推翻它。 */
+  reason: string
+}
