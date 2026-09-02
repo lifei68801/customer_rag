@@ -6,6 +6,7 @@ import aiosqlite
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.graphrag.duplicate_review_queue import (
@@ -31,6 +32,12 @@ async def _open_review_conn() -> aiosqlite.Connection:
     await ensure_terms_schema(conn)
     await ensure_term_edits_schema(conn)
     await create_tenants_table(conn)
+    # require_admin_session 现在每个请求都要确认账号仍是 active，
+    # 所以本体库里必须有这张表和一个可用的管理员。
+    await ensure_admin_users_schema(conn)
+    await create_admin_user(
+        conn, username="admin", password="password1", role="admin", tenant_id=None
+    )
     await create_tenant(conn, tenant_id="demo", name="demo")
     await create_tenant(conn, tenant_id="other", name="other")
     return conn
@@ -49,7 +56,7 @@ def review_conn():
 
 
 def _authed_headers(session_store: AdminSessionStore) -> dict[str, str]:
-    return {"Authorization": f"Bearer {session_store.create_session()}"}
+    return {"Authorization": f"Bearer {session_store.create_session(username="admin", role="admin", tenant_id=None)}"}
 
 
 async def _seed(conn: aiosqlite.Connection, *, tenant_id: str, relations: int, duplicates: int) -> None:

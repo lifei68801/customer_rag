@@ -71,7 +71,7 @@ def _call(memory_conn, path: str):
     app.dependency_overrides[deps.get_memory_conn] = lambda: memory_conn
     try:
         client = TestClient(app)
-        token = session_store.create_session()
+        token = session_store.create_session(username="admin", role="admin", tenant_id=None)
         return client.get(path, headers={"Authorization": f"Bearer {token}"})
     finally:
         app.dependency_overrides.clear()

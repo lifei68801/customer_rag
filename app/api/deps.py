@@ -8,7 +8,8 @@ from pathlib import Path
 from fastapi import Depends, Header, HTTPException
 
 from app.agent.tool_registry import ToolRegistry, discover_tools
-from app.api.admin_session import AdminSessionStore
+from app.api.admin_session import AdminSession, AdminSessionStore
+from app.auth.admin_users_store import get_admin_user
 from app.config.settings import Settings
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
 from app.ingestion.ocr_factory import build_ocr_from_settings
@@ -65,6 +66,7 @@ __all__ = [
     "get_upload_dir",
     "get_vector_store",
     "parse_banned_terms",
+    "AdminSession",
     "require_admin_session",
     "resolve_tenant_id",
 ]
@@ -264,21 +266,6 @@ def get_admin_session_store() -> AdminSessionStore:
     return _admin_session_store_cache
 
 
-async def require_admin_session(
-    authorization: str | None = Header(default=None),
-    session_store: AdminSessionStore = Depends(get_admin_session_store),
-) -> None:
-    """校验 Authorization: Bearer <token> 是否是有效的管理员 session。
-
-    所有 /api/admin/* 路由（登录接口本身除外）都应该依赖这个函数。
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="缺少管理员登录凭证")
-    token = authorization.removeprefix("Bearer ")
-    if not session_store.verify_session(token):
-        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
-
-
 _ingestion_conn_cache: aiosqlite.Connection | None = None
 _ingestion_conn_lock = asyncio.Lock()
 
@@ -331,6 +318,37 @@ async def get_review_conn(
             if _review_conn_cache is None:
                 _review_conn_cache = await open_ontology_store_conn(settings)
     return _review_conn_cache
+
+
+async def require_admin_session(
+    authorization: str | None = Header(default=None),
+    session_store: AdminSessionStore = Depends(get_admin_session_store),
+    review_conn: aiosqlite.Connection = Depends(get_review_conn),
+) -> AdminSession:
+    """校验 Authorization: Bearer <token>，返回这个 session 的身份。
+
+    所有 /api/admin/* 路由（登录接口本身除外）都应该依赖这个函数。
+
+    除了校验 session 本身，还要确认这个账号当前仍是 active——「禁用账号」
+    必须立即生效，而不是等 session 自然过期（默认 8 小时，被禁的人在那期间
+    还能继续动数据，而禁用的场景通常正是"这个人现在就不该再动了"）。
+
+    代价是每个请求多一次 SQLite 查询。替代方案"禁用时主动撤销该用户的所有
+    session"只对本进程内已知的 session 有效，多进程部署时另一个进程里的
+    session 撤销不掉，会退化成静默失效。查库是唯一在各种部署形态下都成立
+    的做法。
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="缺少管理员登录凭证")
+    token = authorization.removeprefix("Bearer ")
+    session = session_store.get_session(token)
+    if session is None:
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+    user = await get_admin_user(review_conn, session.username)
+    if user is None or user["status"] != "active":
+        session_store.revoke_session(token)
+        raise HTTPException(status_code=401, detail="账号已停用")
+    return session
 
 
 # get_terms/get_confirmed_relation_types/get_term_type_schema（曾经横跨

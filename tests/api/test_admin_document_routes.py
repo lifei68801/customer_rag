@@ -6,6 +6,7 @@ import aiosqlite
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.graphrag.ontology import Term
@@ -173,6 +174,12 @@ async def _open_review_conn() -> aiosqlite.Connection:
     # （"t1"，本文件所有写接口调用都用这个值），否则校验会因为表不存在
     # 报底层 SQL 错误，或者查不到租户返回假的 404。
     await create_tenants_table(conn)
+    # require_admin_session 现在每个请求都要确认账号仍是 active，
+    # 所以本体库里必须有这张表和一个可用的管理员。
+    await ensure_admin_users_schema(conn)
+    await create_admin_user(
+        conn, username="admin", password="password1", role="admin", tenant_id=None
+    )
     await create_tenant(conn, tenant_id="t1", name="t1")
     return conn
 
@@ -210,7 +217,7 @@ async def _seed_terms(conn: aiosqlite.Connection, terms: list[Term]) -> None:
 
 
 def _authed_headers(session_store: AdminSessionStore) -> dict[str, str]:
-    token = session_store.create_session()
+    token = session_store.create_session(username="admin", role="admin", tenant_id=None)
     return {"Authorization": f"Bearer {token}"}
 
 

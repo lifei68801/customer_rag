@@ -4,6 +4,7 @@ import aiosqlite
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.graphrag.ontology_categories import create_term_type
@@ -56,6 +57,12 @@ async def _open_terms_conn() -> aiosqlite.Connection:
     # 建表 + 注册本文件用例里出现过的 tenant_id（"t1"/"tenant_a"/"tenant_b"，
     # 和上面 term_type 分类注册用的租户集合保持一致）。
     await create_tenants_table(conn)
+    # require_admin_session 现在每个请求都要确认账号仍是 active，
+    # 所以本体库里必须有这张表和一个可用的管理员。
+    await ensure_admin_users_schema(conn)
+    await create_admin_user(
+        conn, username="admin", password="password1", role="admin", tenant_id=None
+    )
     for tenant_id in ("t1", "tenant_a", "tenant_b"):
         await create_tenant(conn, tenant_id=tenant_id, name=tenant_id)
     return conn
@@ -77,7 +84,7 @@ def terms_conn():
 
 
 def _authed_headers(session_store: AdminSessionStore) -> dict[str, str]:
-    token = session_store.create_session()
+    token = session_store.create_session(username="admin", role="admin", tenant_id=None)
     return {"Authorization": f"Bearer {token}"}
 
 

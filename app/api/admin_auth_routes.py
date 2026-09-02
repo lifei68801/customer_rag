@@ -43,7 +43,11 @@ async def login(
             not settings.admin_token,
         )
         raise HTTPException(status_code=401, detail="管理员 token 不正确")
-    session_token = session_store.create_session()
+    # 旧的 admin_token 登录路径：暂时以 admin 身份签发 session。这条路径
+    # 在账号体系落地时整个删除（用户名 + 密码取代它）。
+    session_token = session_store.create_session(
+        username="admin", role="admin", tenant_id=None
+    )
     return LoginResponse(session_token=session_token)
 
 

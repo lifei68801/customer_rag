@@ -5,6 +5,7 @@ import aiosqlite
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.graphrag.ontology import Term
@@ -34,6 +35,12 @@ async def _open_review_conn() -> aiosqlite.Connection:
     # tenants 表并回填历史租户，这里是手工建表的测试连接，绕开了那条路径，
     # 必须显式建表 + 注册本文件所有用例用到的 tenant_id（"t1"）。
     await create_tenants_table(conn)
+    # require_admin_session 现在每个请求都要确认账号仍是 active，
+    # 所以本体库里必须有这张表和一个可用的管理员。
+    await ensure_admin_users_schema(conn)
+    await create_admin_user(
+        conn, username="admin", password="password1", role="admin", tenant_id=None
+    )
     await create_tenant(conn, tenant_id="t1", name="t1")
     # approve 路由现在还会查该租户 status="confirmed" 的关系类型/类型组合
     # 白名单（Fix 1：approve_review 补齐了跟 normalize_and_write_relations
@@ -102,7 +109,7 @@ async def _seed_terms(conn: aiosqlite.Connection, terms: list[Term]) -> None:
 
 
 def _authed_headers(session_store: AdminSessionStore) -> dict[str, str]:
-    token = session_store.create_session()
+    token = session_store.create_session(username="admin", role="admin", tenant_id=None)
     return {"Authorization": f"Bearer {token}"}
 
 

@@ -7,6 +7,7 @@ import aiosqlite
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.graphrag.ontology import Term
@@ -34,6 +35,12 @@ async def _open_conn() -> aiosqlite.Connection:
     await ensure_term_edits_schema(conn)
     await ensure_ontology_schema(conn)
     await create_tenants_table(conn)
+    # require_admin_session 现在每个请求都要确认账号仍是 active，
+    # 所以本体库里必须有这张表和一个可用的管理员。
+    await ensure_admin_users_schema(conn)
+    await create_admin_user(
+        conn, username="admin", password="password1", role="admin", tenant_id=None
+    )
     await create_tenant(conn, tenant_id="demo", name="demo")
     return conn
 
@@ -86,7 +93,7 @@ def _get(review_conn, graph_client, node_key: str, tenant_id: str = "demo"):
     app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
     try:
         client = TestClient(app)
-        token = session_store.create_session()
+        token = session_store.create_session(username="admin", role="admin", tenant_id=None)
         return client.get(
             f"/api/admin/{tenant_id}/terms/{node_key}",
             headers={"Authorization": f"Bearer {token}"},
