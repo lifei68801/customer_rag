@@ -28,7 +28,11 @@ async function readDelimitedHeaderColumns(file: File, delimiter: string): Promis
 // 对齐——如果表头列名里本身带分隔符，必须用双引号包裹（如 "A,B"），双引号
 // 内部的字面双引号写成两个连续双引号（""）转义，这里同样处理这两种情况。
 // TSV 复用同一套引号规则，只是把逗号换成传入的 delimiter。
-function parseDelimitedHeaderLine(line: string, delimiter: string): string[] {
+//
+// 导出给 guidedOntology/columnStats.ts 复用：那边扫描整份文件的数据行，
+// 需要跟这里表头解析完全一致的引号规则，不能另写一份、让两处标准悄悄
+// 分叉。
+export function parseDelimitedHeaderLine(line: string, delimiter: string): string[] {
   const columns: string[] = []
   let current = ''
   let inQuotes = false
