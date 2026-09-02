@@ -89,6 +89,7 @@ _TENANT_SCOPED_PREFIXES = (
 _NON_TENANT_PREFIXES = (
     "/api/admin/auth/",
     "/api/admin/tenants",
+    "/api/admin/accounts",
 )
 
 

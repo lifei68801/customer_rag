@@ -15,7 +15,11 @@ from app.graphrag.tenants_store import (
     set_tenant_status,
 )
 
-router = APIRouter(prefix="/api/admin/tenants", dependencies=[Depends(deps.require_admin_session)])
+# 新建/停用租户是 admin 专属。member 建了租户也进不去（它绑死在自己那个
+# 上），只会留下一个没人能用的空租户；而停用租户对 member 更危险——按租户
+# 作用域校验的话，它对自己所属的租户会通过校验，于是能把自己所在的租户
+# 停掉。
+router = APIRouter(prefix="/api/admin/tenants", dependencies=[Depends(deps.require_admin_role)])
 
 
 class TenantResponse(BaseModel):

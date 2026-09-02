@@ -5,6 +5,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, FastAPI
 
 from app.api import deps
+from app.api.admin_account_routes import router as admin_account_router
 from app.api.admin_auth_routes import router as admin_auth_router
 from app.api.admin_document_routes import router as admin_document_router
 from app.api.admin_duplicate_review_routes import router as admin_duplicate_review_router
@@ -105,6 +106,7 @@ app.include_router(voice_router)
 # 域**。按租户作用域校验的话，member 对自己所属的租户会顺利通过，于是就
 # 能把自己所在的租户停掉。它靠 require_admin_role 保护。
 app.include_router(admin_auth_router)
+app.include_router(admin_account_router)
 app.include_router(admin_tenant_router)
 
 # 租户作用域的路由统一收在这个父 router 下，而不是各挂各的依赖。各挂各的
