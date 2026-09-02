@@ -27,7 +27,12 @@ from app.graphrag.ontology_constraints import (
     list_allowed_combinations,
     remove_allowed_combination,
 )
-from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, is_ontology_confirmed
+from app.graphrag.ontology_lifecycle import (
+    checkout_draft,
+    confirm_ontology,
+    is_ontology_confirmed,
+    replace_draft,
+)
 from app.graphrag.ontology_relations import (
     InvalidRelationTypeNameError,
     RelationTypeNameConflictError,
@@ -442,3 +447,66 @@ async def get_tenant_ontology_status(
     tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
     return {"confirmed": await is_ontology_confirmed(review_conn, tenant_id)}
+
+
+class DraftTermTypePayload(BaseModel):
+    value: str
+    extra_fields: list[dict] = []
+    standard_name_value_type: str = "string"
+
+
+class DraftRelationTypePayload(BaseModel):
+    relation_type: str
+    example_phrase: str = ""
+    description: str = ""
+    allow_chain_query: bool = True
+
+
+class DraftConstraintPayload(BaseModel):
+    subject_term_type: str
+    relation_type: str
+    object_term_type: str
+
+
+class ReplaceDraftRequest(BaseModel):
+    term_types: list[DraftTermTypePayload]
+    relation_types: list[DraftRelationTypePayload]
+    constraints: list[DraftConstraintPayload]
+
+
+@router.post("/{tenant_id}/draft/replace")
+async def replace_ontology_draft(
+    tenant_id: str,
+    payload: ReplaceDraftRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict[str, bool]:
+    """整份替换草稿。引导页用它一次写入整套本体。
+
+    没有对应的"增量"端点：引导每次提交的都是完整草案，增量合并会让用户
+    删掉的东西留在库里。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    try:
+        await replace_draft(
+            review_conn,
+            tenant_id,
+            term_types=[t.model_dump() for t in payload.term_types],
+            relation_types=[r.model_dump() for r in payload.relation_types],
+            constraints=[c.model_dump() for c in payload.constraints],
+        )
+    # replace_draft 内部除了引用未声明类型的 ConstraintUnknownCategoryError，
+    # 还会对 extra_fields / standard_name_value_type / relation_type 做跟单条
+    # 创建接口同样的格式校验，抛的是 InvalidExtraFieldTypeError /
+    # InvalidRelationTypeNameError——这两个不是 ValueError 的子类，brief 示例
+    # 里只捕获 (UnknownCategoryError, ValueError) 会漏掉它们，导致校验失败时
+    # 变成裸 500 而不是 400。这里比示例多捕获这两个类型，跟本文件其它端点
+    # （create_term_type_category / create_tenant_relation_type）的错误映射
+    # 保持一致。
+    except (
+        ConstraintUnknownCategoryError,
+        InvalidExtraFieldTypeError,
+        InvalidRelationTypeNameError,
+        ValueError,
+    ) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"replaced": True}

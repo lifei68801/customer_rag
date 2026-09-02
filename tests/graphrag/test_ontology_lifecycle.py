@@ -10,6 +10,7 @@ from app.graphrag.ontology_lifecycle import (
     confirm_ontology,
     ensure_ontology_schema,
     is_ontology_confirmed,
+    replace_draft,
 )
 from app.graphrag.ontology_relations import create_relation_type, list_relation_types
 
@@ -291,3 +292,108 @@ async def test_concurrent_checkout_draft_does_not_violate_primary_key():
     assert len(await list_relation_types(conn, "t1", status="draft")) == 1
     assert len(await list_term_types(conn, "t1", status="draft")) == 1
     assert len(await list_allowed_combinations(conn, "t1", status="draft")) == 1
+
+
+async def test_replace_draft_swaps_the_whole_draft():
+    conn = await _conn()
+    """整份替换，不是增量合并。
+
+    引导每次提交的都是一份完整草案（用户改了一条边就重新提交整份），
+    增量合并的话，用户删掉的那个实体类型会留在草稿里——界面上没有了，
+    库里还在，确认时又冒出来。
+    """
+    await checkout_draft(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="旧类型")
+
+    await replace_draft(
+        conn,
+        "t1",
+        term_types=[{"value": "订单号", "extra_fields": [], "standard_name_value_type": "string"}],
+        relation_types=[],
+        constraints=[],
+    )
+
+    values = [t.value for t in await list_term_types(conn, "t1", status="draft")]
+    assert values == ["订单号"]
+
+
+async def test_replace_draft_is_atomic():
+    conn = await _conn()
+    """中途失败必须整份回滚。
+
+    留下半份草稿是最糟的形态：用户看到一个残缺的本体，而 checkout_draft
+    **不会**清空它（它只在"还没检出过"时才从已确认版复制），所以用户没有
+    干净的重来方式，只能去三个 tab 逐个删。
+    """
+    await checkout_draft(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="原有类型")
+
+    with pytest.raises(Exception):
+        await replace_draft(
+            conn,
+            "t1",
+            term_types=[
+                {"value": "订单号", "extra_fields": [], "standard_name_value_type": "string"},
+            ],
+            # 引用了不存在的实体类型，必然失败
+            relation_types=[],
+            constraints=[
+                {"subject_term_type": "订单号", "relation_type": "NOPE", "object_term_type": "幽灵"}
+            ],
+        )
+
+    values = [t.value for t in await list_term_types(conn, "t1", status="draft")]
+    assert values == ["原有类型"], "失败后草稿必须保持原样"
+
+
+async def test_replace_draft_does_not_touch_confirmed():
+    conn = await _conn()
+    """已确认版本是只读快照。替换草稿动到它，等于绕过了确认这道关。"""
+    await checkout_draft(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="已确认的")
+    await confirm_ontology(conn, "t1")
+
+    await replace_draft(
+        conn,
+        "t1",
+        term_types=[{"value": "新的", "extra_fields": [], "standard_name_value_type": "string"}],
+        relation_types=[],
+        constraints=[],
+    )
+
+    confirmed = [t.value for t in await list_term_types(conn, "t1", status="confirmed")]
+    assert confirmed == ["已确认的"]
+
+
+async def test_replace_draft_marks_the_tenant_as_checked_out():
+    conn = await _conn()
+    """写过草稿就意味着已检出。
+
+    不标记的话，下一次 checkout_draft 会以为"还没检出过"，把已确认版本
+    复制回来盖在引导刚写的草稿上——用户点完引导，回头一看草稿变回了旧的。
+
+    注：只断言 term_types 不足以暴露这个 bug——checkout_draft 对三张表各自
+    独立判断"draft 是否为空"，term_types 这张表在 replace_draft 之后本来就
+    非空（"引导建的"），即使不标记检出状态，checkout_draft 也会因为
+    "draft 非空"跳过重新播种，term_types 断言不受影响。真正会被撒谎的是
+    relation_types：这次提交的是空列表（用户主动清空），如果检出状态没
+    标记，checkout_draft 会把它误判成"全新租户"，按 extraction 模式的默认
+    值重新播种 10 条通用关系类型——所以要断言它保持为空。
+    """
+    await checkout_draft(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="已确认的")
+    await confirm_ontology(conn, "t1")
+
+    await replace_draft(
+        conn,
+        "t1",
+        term_types=[{"value": "引导建的", "extra_fields": [], "standard_name_value_type": "string"}],
+        relation_types=[],
+        constraints=[],
+    )
+    await checkout_draft(conn, "t1")
+
+    values = [t.value for t in await list_term_types(conn, "t1", status="draft")]
+    assert values == ["引导建的"]
+    relation_values = [r.relation_type for r in await list_relation_types(conn, "t1", status="draft")]
+    assert relation_values == [], "标记了检出状态的话，第二次 checkout_draft 应该什么都不做"

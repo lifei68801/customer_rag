@@ -765,3 +765,51 @@ def test_graph_overlay_degrades_fanout_to_null_when_probe_fails(client):
 
     assert resp.status_code == 200
     assert resp.json()["fanout"][0]["fanout"] is None
+
+
+def test_replace_draft_writes_the_whole_ontology(client):
+    """一次请求写入整套本体。"""
+    response = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [
+                {"value": "订单号", "extra_fields": [], "standard_name_value_type": "string"},
+                {"value": "产品", "extra_fields": [], "standard_name_value_type": "string"},
+            ],
+            "relation_types": [
+                {"relation_type": "CONTAINS", "example_phrase": "订单 CONTAINS 产品"}
+            ],
+            "constraints": [
+                {"subject_term_type": "订单号", "relation_type": "CONTAINS", "object_term_type": "产品"}
+            ],
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert response.status_code == 200
+
+    listed = client.get(
+        "/api/admin/ontology/t1/term-types?status=draft", headers={"Authorization": "Bearer x"}
+    ).json()
+    assert {t["value"] for t in listed["term_types"]} == {"订单号", "产品"}
+
+
+def test_replace_draft_rejects_constraint_referencing_undeclared_type(client):
+    """引用未声明的类型必须 400，不能静静写进去。
+
+    写进去的话，ETL 跑批时才会炸——那时用户已经在等结果了，而错误信息
+    指向的是 ETL，不是本体。
+    """
+    response = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [
+                {"value": "订单号", "extra_fields": [], "standard_name_value_type": "string"}
+            ],
+            "relation_types": [{"relation_type": "CONTAINS", "example_phrase": "订单 CONTAINS 产品"}],
+            "constraints": [
+                {"subject_term_type": "订单号", "relation_type": "CONTAINS", "object_term_type": "幽灵"}
+            ],
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert response.status_code == 400

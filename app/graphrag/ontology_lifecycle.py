@@ -1,11 +1,75 @@
 from __future__ import annotations
 
+import json
+import re
+
 import aiosqlite
 
-from app.graphrag.ontology_categories import ensure_categories_schema
-from app.graphrag.ontology_constraints import ensure_constraints_schema
-from app.graphrag.ontology_relations import ensure_relations_schema, seed_default_relation_types
+from app.graphrag.ontology_categories import InvalidExtraFieldTypeError, ensure_categories_schema
+from app.graphrag.ontology_constraints import UnknownCategoryError, ensure_constraints_schema
+from app.graphrag.ontology_relations import (
+    InvalidRelationTypeNameError,
+    ensure_relations_schema,
+    seed_default_relation_types,
+)
 from app.graphrag.tenant_ingestion_config import ensure_ingestion_config_schema, get_ingestion_mode
+
+# 下面这几条正则/常量、_validate_draft_* 三个函数，是 ontology_categories.py 的
+# _validate_extra_field_specs/_validate_standard_name_value_type 和
+# ontology_relations.py 的 _validate_relation_type 的复制品，不是导入。
+#
+# 为什么不直接跨模块导入：那三个函数名带下划线前缀，是各自模块明确标记的"模块
+# 私有实现细节"，不是对外契约——它们的签名（比如接收 list[ExtraFieldSpec] 还是
+# list[dict]）随时可能因为各自模块内部重构而改变，不为外部调用方的稳定性负责。
+# 这里的输入形状也确实不同：单条创建接口按参数逐个传（value / extra_fields /
+# standard_name_value_type），而这里收到的是整份草案里的原始 dict 列表，直接传
+# 给对方的私有函数类型对不上。
+#
+# 代价是两处规则要保持同步：如果以后 ontology_categories.py 或
+# ontology_relations.py 改了合法性规则（比如放宽字段名格式），这里也要跟着改，
+# 否则会出现"单条创建时报错，整份替换草稿时放行"的不一致体验。
+_EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
+_VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]"})
+_VALID_STANDARD_NAME_VALUE_TYPES = frozenset({"string", "number", "integer"})
+_RELATION_TYPE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
+
+
+def _validate_draft_extra_fields(extra_fields: list[dict]) -> list[dict]:
+    """校验并规整一个 term_type 的 extra_fields 声明，返回只含 name/value_type
+    两个键的规整列表（原始 dict 里混入的多余键不落库）。"""
+    normalized: list[dict] = []
+    for field in extra_fields:
+        name = field["name"]
+        value_type = field["value_type"]
+        if not _EXTRA_FIELD_NAME_PATTERN.match(name):
+            raise InvalidExtraFieldTypeError(
+                f"字段名 {name!r} 不合法，必须满足 ^[a-zA-Z_][a-zA-Z0-9_]{{0,63}}$"
+            )
+        if value_type not in _VALID_EXTRA_FIELD_VALUE_TYPES:
+            raise InvalidExtraFieldTypeError(
+                f"字段 {name!r} 声明的类型 {value_type!r} 不合法，"
+                f"仅支持: {sorted(_VALID_EXTRA_FIELD_VALUE_TYPES)}"
+            )
+        normalized.append({"name": name, "value_type": value_type})
+    return normalized
+
+
+def _validate_draft_standard_name_value_type(value_type: str) -> None:
+    if value_type not in _VALID_STANDARD_NAME_VALUE_TYPES:
+        raise InvalidExtraFieldTypeError(
+            f"term type 自身取值类型 {value_type!r} 不合法，"
+            f"仅支持: {sorted(_VALID_STANDARD_NAME_VALUE_TYPES)}"
+        )
+
+
+def _validate_draft_relation_type(relation_type: str, example_phrase: str) -> None:
+    if not _RELATION_TYPE_PATTERN.match(relation_type):
+        raise InvalidRelationTypeNameError(
+            f"关系类型名字不合法: {relation_type!r}，必须满足 ^[A-Z][A-Z0-9_]{{0,63}}$"
+        )
+    if not example_phrase.strip():
+        raise InvalidRelationTypeNameError("example_phrase 不能为空")
+
 
 _TABLES_WITH_TENANT_LIFECYCLE = (
     "tenant_relation_types", "term_type_relation_allowlist", "ontology_term_types",
@@ -176,3 +240,113 @@ async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
 
 async def is_ontology_confirmed(conn: aiosqlite.Connection, tenant_id: str) -> bool:
     return await _has_any_row(conn, "tenant_relation_types", tenant_id, "confirmed")
+
+
+async def replace_draft(
+    conn: aiosqlite.Connection,
+    tenant_id: str,
+    *,
+    term_types: list[dict],
+    relation_types: list[dict],
+    constraints: list[dict],
+) -> None:
+    """把该租户的三张草稿表整份替换成提交的内容。一个事务，要么全成要么全不动。
+
+    为什么需要这个函数，而不是让调用方逐个调 create_term_type /
+    create_relation_type / add_allowed_combination：
+
+    引导一次要写入十几个对象，逐个调的话中途失败会留下半份草稿。而
+    checkout_draft **不会**清空草稿（它只在"还没检出过"时才从已确认版
+    复制），所以用户没有干净的重来方式，只能去三个 tab 逐个删。
+
+    整份替换而不是增量合并：引导每次提交的都是一份完整草案（用户改一条边
+    就重新提交整份）。增量合并的话，用户删掉的那个实体类型会留在草稿里
+    ——界面上没有了，库里还在，确认时又冒出来。
+
+    校验顺序是先类型后约束：约束引用实体类型和关系类型，反过来先插约束会
+    撞上"引用的类型不存在"，而那时前面的类型已经写进去了。
+    """
+    await _ensure_checkout_state_schema(conn)
+    try:
+        await conn.execute("BEGIN")
+        for table in (
+            "ontology_term_types",
+            "tenant_relation_types",
+            "term_type_relation_allowlist",
+        ):
+            await conn.execute(
+                f"DELETE FROM {table} WHERE tenant_id = ? AND status = 'draft'", (tenant_id,)
+            )
+
+        for term_type in term_types:
+            # term_type 的 value（分类名字）本身没有格式校验——真实的
+            # create_term_type 也不校验它，是自由文本（跟关系类型名/字段名不同，
+            # 后两者要落进 Cypher 拼接或结构化查询字段名，前者只是显示用的分类
+            # 标签），这里如实保持一致，不额外发明一条真实实现里不存在的规则。
+            extra_fields = _validate_draft_extra_fields(term_type.get("extra_fields", []))
+            standard_name_value_type = term_type.get("standard_name_value_type", "string")
+            _validate_draft_standard_name_value_type(standard_name_value_type)
+            await conn.execute(
+                "INSERT INTO ontology_term_types"
+                " (tenant_id, value, extra_fields, standard_name_value_type, status)"
+                " VALUES (?, ?, ?, ?, 'draft')",
+                (
+                    tenant_id,
+                    term_type["value"],
+                    json.dumps(extra_fields, ensure_ascii=False),
+                    standard_name_value_type,
+                ),
+            )
+
+        for relation_type in relation_types:
+            example_phrase = relation_type.get("example_phrase", "")
+            _validate_draft_relation_type(relation_type["relation_type"], example_phrase)
+            await conn.execute(
+                "INSERT INTO tenant_relation_types"
+                " (tenant_id, relation_type, example_phrase, description, allow_chain_query,"
+                "  source, status) VALUES (?, ?, ?, ?, ?, 'custom', 'draft')",
+                (
+                    tenant_id,
+                    relation_type["relation_type"],
+                    example_phrase,
+                    relation_type.get("description", ""),
+                    1 if relation_type.get("allow_chain_query", True) else 0,
+                ),
+            )
+
+        declared_types = {t["value"] for t in term_types}
+        declared_relations = {r["relation_type"] for r in relation_types}
+        for constraint in constraints:
+            # 引用检查放在这里而不是靠外键：SQLite 默认不强制外键，靠它等于
+            # 没检查。引用不存在的类型会让 ETL 在跑批时才炸，那时已经晚了。
+            for key, pool, label in (
+                ("subject_term_type", declared_types, "实体类型"),
+                ("object_term_type", declared_types, "实体类型"),
+                ("relation_type", declared_relations, "关系类型"),
+            ):
+                if constraint[key] not in pool:
+                    raise UnknownCategoryError(
+                        f"约束引用了未声明的{label}：{constraint[key]}"
+                    )
+            await conn.execute(
+                "INSERT INTO term_type_relation_allowlist"
+                " (tenant_id, subject_term_type, relation_type, object_term_type, status)"
+                " VALUES (?, ?, ?, ?, 'draft')",
+                (
+                    tenant_id,
+                    constraint["subject_term_type"],
+                    constraint["relation_type"],
+                    constraint["object_term_type"],
+                ),
+            )
+
+        # 写过草稿就意味着已检出。不标记的话，下一次 checkout_draft 会以为
+        # "还没检出过"，把已确认版本复制回来盖在引导刚写的草稿上。
+        await conn.execute(
+            "INSERT OR IGNORE INTO ontology_draft_checkout_state (tenant_id) VALUES (?)",
+            (tenant_id,),
+        )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
