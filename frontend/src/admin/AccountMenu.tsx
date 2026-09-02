@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Building2,
   Check,
   ChevronUp,
   LogOut,
-  Plus,
   Settings,
   Users,
 } from 'lucide-react'
@@ -28,23 +27,19 @@ const itemClass = `flex min-h-[40px] w-full cursor-pointer items-center gap-2 ro
  *
  * click 触发而不是 hover：hover 菜单在触屏上打不开，而且左下角这个位置
  * 容易被路过——用户去点状态栏或滚动条时就会扫过。
+ *
+ * 这里只做"我是谁、我在哪个租户"以及去处。新建租户不在这儿——它是一次性
+ * 的管理动作，归「租户管理」页；同一个动作留两个入口，改起来就得记得改
+ * 两处。
  */
 export function AccountMenu({ onLogout }: { onLogout: () => void }) {
   const [open, setOpen] = useState(false)
-  const [creating, setCreating] = useState(false)
-  const [newId, setNewId] = useState('')
-  const [newName, setNewName] = useState('')
-  const [busy, setBusy] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
-  const { options, current, tenantId, setTenantId, create, error, setError } = useTenants()
+  const { options, current, tenantId, setTenantId } = useTenants()
   const { role, username } = useAdminAuth()
   const isAdmin = role === 'admin'
 
-  const close = () => {
-    setOpen(false)
-    setCreating(false)
-    setError(null)
-  }
+  const close = () => setOpen(false)
 
   useEffect(() => {
     if (!open) return
@@ -62,22 +57,6 @@ export function AccountMenu({ onLogout }: { onLogout: () => void }) {
       window.removeEventListener('pointerdown', onPointerDown)
     }
   }, [open])
-
-  const handleCreate = async (event: FormEvent) => {
-    event.preventDefault()
-    if (busy || !newId.trim() || !newName.trim()) return
-    setBusy(true)
-    try {
-      await create(newId.trim(), newName.trim())
-      setNewId('')
-      setNewName('')
-      close()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '新建租户失败')
-    } finally {
-      setBusy(false)
-    }
-  }
 
   return (
     <div ref={rootRef} className="relative flex flex-col gap-1">
@@ -118,65 +97,6 @@ export function AccountMenu({ onLogout }: { onLogout: () => void }) {
               </button>
             ))}
 
-            {!creating && (
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => setCreating(true)}
-                className={itemClass}
-              >
-                <Plus aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
-                新建租户
-              </button>
-            )}
-            {creating && (
-              // 表单就地展开，菜单不关——还没填完就关掉等于让用户重来。
-              <form
-                onSubmit={handleCreate}
-                className="flex flex-col gap-2 rounded-control bg-paper p-2"
-              >
-                <input
-                  value={newId}
-                  onChange={(event) => setNewId(event.target.value)}
-                  placeholder="tenant_id"
-                  aria-label="新租户 ID"
-                  autoFocus
-                  className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-xs text-ink placeholder:text-ink-soft ${focusRing}`}
-                />
-                <input
-                  value={newName}
-                  onChange={(event) => setNewName(event.target.value)}
-                  placeholder="显示名"
-                  aria-label="新租户显示名"
-                  className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-xs text-ink placeholder:text-ink-soft ${focusRing}`}
-                />
-                <div className="flex gap-2">
-                  <button
-                    type="submit"
-                    disabled={busy || !newId.trim() || !newName.trim()}
-                    className={`min-h-[32px] flex-1 cursor-pointer rounded-control border border-subtle bg-accent-primary px-2 text-xs font-bold text-on-accent transition disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
-                  >
-                    {busy ? '创建中…' : '创建'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCreating(false)
-                      setError(null)
-                    }}
-                    disabled={busy}
-                    className={`min-h-[32px] cursor-pointer rounded-control border border-subtle bg-card px-2 text-xs font-bold text-ink transition ${focusRing}`}
-                  >
-                    取消
-                  </button>
-                </div>
-              </form>
-            )}
-            {error && (
-              <p role="alert" className="px-3 text-xs text-status-error">
-                {error}
-              </p>
-            )}
             </>
           )}
 

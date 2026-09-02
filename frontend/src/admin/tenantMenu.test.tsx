@@ -111,12 +111,12 @@ describe('菜单内容', () => {
     expect(menu().getByRole('menuitemradio', { name: /ACME/ }).getAttribute('aria-checked')).toBe('false')
   })
 
-  it('新建租户、设置、登出都在', async () => {
+  it('设置和登出都在', async () => {
     const user = userEvent.setup()
     renderPage()
     await open(user)
-    // 「返回前台」已经搬到顶栏右上角常驻，不再在这个菜单里。
-    for (const label of ['新建租户', '设置', '登出']) {
+    // 「返回前台」已经搬到顶栏右上角常驻；「新建租户」搬到了租户管理页。
+    for (const label of ['设置', '登出']) {
       expect(menu().getByRole('menuitem', { name: label })).toBeTruthy()
     }
   })
@@ -140,25 +140,19 @@ describe('切换租户', () => {
   })
 })
 
-describe('新建租户', () => {
-  it('点开表单，菜单不关——还没填完', async () => {
+describe('新建租户不在这个菜单里', () => {
+  it('入口已经搬到租户管理页', async () => {
+    // 这个菜单管的是"我是谁、我在哪个租户"以及去处；新建是一次性的管理
+    // 动作。同一个动作留两个入口，改起来就得记得改两处。
+    //
+    // 随之消失的还有"建完自动切过去"——那在这里是对的（在菜单里建租户，
+    // 意图就是马上要用它），在租户管理页则不对：那是管理上下文，可能一次
+    // 建好几个，自动切走会把人从管理列表弹到别的租户里去。
     const user = userEvent.setup()
     renderPage()
     await open(user)
-    await user.click(menu().getByRole('menuitem', { name: '新建租户' }))
-    expect(menu().getByLabelText('新租户 ID')).toBeTruthy()
-    expect(menu().getByLabelText('新租户显示名')).toBeTruthy()
-  })
-
-  it('建完自动切过去——新建的意图就是要用它', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await open(user)
-    await user.click(menu().getByRole('menuitem', { name: '新建租户' }))
-    await user.type(menu().getByLabelText('新租户 ID'), 'newco')
-    await user.type(menu().getByLabelText('新租户显示名'), '新公司')
-    await user.click(menu().getByRole('button', { name: '创建' }))
-    await waitFor(() => expect(trigger().textContent).toMatch(/新公司/))
+    expect(menu().queryByRole('menuitem', { name: '新建租户' })).toBeNull()
+    expect(menu().queryByLabelText('新租户 ID')).toBeNull()
   })
 })
 

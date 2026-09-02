@@ -75,13 +75,13 @@ const menu = () => within(screen.getByRole('menu', { name: '账号与租户' }))
 describe('member 的菜单', () => {
   beforeEach(() => signIn('member'))
 
-  it('没有租户切换、新建租户、账号管理', async () => {
+  it('没有租户切换、账号管理、租户管理', async () => {
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.documents)
     await user.click(trigger())
     expect(menu().queryByRole('menuitemradio')).toBeNull()
-    expect(menu().queryByRole('menuitem', { name: '新建租户' })).toBeNull()
     expect(menu().queryByRole('menuitem', { name: '账号管理' })).toBeNull()
+    expect(menu().queryByRole('menuitem', { name: '租户管理' })).toBeNull()
   })
 
   it('设置和登出还在——菜单不是整个消失', async () => {
@@ -114,15 +114,26 @@ describe('member 的菜单', () => {
 describe('admin 的菜单', () => {
   beforeEach(() => signIn('admin'))
 
-  it('五项齐全', async () => {
+  it('该有的都在', async () => {
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.documents)
     await waitFor(() => expect(trigger().textContent).toMatch(/演示租户/))
     await user.click(trigger())
     expect(menu().getAllByRole('menuitemradio').length).toBe(2)
-    for (const name of ['新建租户', '账号管理', '设置', '登出']) {
+    for (const name of ['账号管理', '租户管理', '设置', '登出']) {
       expect(menu().getByRole('menuitem', { name })).toBeTruthy()
     }
+  })
+
+  it('菜单里不再有「新建租户」——它归租户管理页', async () => {
+    // 这个菜单管的是"我是谁、我在哪个租户"，新建是一次性的管理动作，
+    // 属于租户管理页。同一个动作留两个入口，改起来就得记得改两处。
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.documents)
+    await waitFor(() => expect(trigger().textContent).toMatch(/演示租户/))
+    await user.click(trigger())
+    expect(menu().queryByRole('menuitem', { name: '新建租户' })).toBeNull()
+    expect(menu().queryByRole('button', { name: '新建租户' })).toBeNull()
   })
 
   it('可以切换到另一个租户', async () => {

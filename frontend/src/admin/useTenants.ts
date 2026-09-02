@@ -10,10 +10,15 @@ export interface TenantOption {
 }
 
 /**
- * 租户列表 + 新建。
+ * 租户列表（只有启用中的）。
  *
  * 从 TenantSwitcher 抽出来的：租户切换搬进账号菜单之后，取数逻辑和渲染
  * 得分开，否则菜单要连着那个下拉框的样式一起继承。
+ *
+ * 只读。新建/停用租户在「租户管理」页，那一页直接调接口——它还要看到
+ * 停用的租户（include_disabled=true），跟这里的用途正好相反：这里的列表
+ * 是给"切到哪个租户去工作"用的，列出停用的会让人切过去之后发现写操作
+ * 全是 404。
  */
 export function useTenants() {
   const { sessionToken } = useAdminAuth()
@@ -52,27 +57,6 @@ export function useTenants() {
     refresh().catch((err) => console.error('租户列表刷新失败', err))
   }, [refresh])
 
-  const create = useCallback(
-    async (id: string, name: string) => {
-      if (!sessionToken) return
-      setError(null)
-      const response = await adminFetch('/api/admin/tenants', sessionToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenant_id: id, name }),
-      })
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
-        throw new Error(extractErrorDetail(body, '新建租户失败'))
-      }
-      const created = (await response.json()) as TenantOption
-      setTenants((prev) => [...prev, created])
-      // 建完就切过去：新建一个租户的意图就是要用它。
-      setTenantId(created.tenant_id)
-    },
-    [sessionToken, setTenantId],
-  )
-
   // 列表接口挂了的兜底：至少保留当前 tenantId 这一项，不让菜单整个空掉、
   // 彻底没法操作——tenantId 来自 TenantContext 的 sessionStorage 缓存，
   // 即使列表拉取失败也还在。
@@ -81,5 +65,5 @@ export function useTenants() {
 
   const current = options.find((t) => t.tenant_id === tenantId)
 
-  return { options, current, tenantId, setTenantId, create, error, setError }
+  return { options, current, tenantId, setTenantId, error }
 }
