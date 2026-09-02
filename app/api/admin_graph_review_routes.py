@@ -31,7 +31,8 @@ from app.graphrag.terms_store import list_terms_merged
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/api/admin/graph-reviews", dependencies=[Depends(deps.require_admin_session)]
+    prefix="/api/admin/{tenant_id}/graph-reviews",
+    dependencies=[Depends(deps.require_admin_session)],
 )
 
 
@@ -41,7 +42,6 @@ class ReviewListResponse(BaseModel):
 
 
 class ApproveRequest(BaseModel):
-    tenant_id: str
     subject_standard_name: str
     object_standard_name: str
     subject_term_type: str | None = None
@@ -49,7 +49,6 @@ class ApproveRequest(BaseModel):
 
 
 class RejectRequest(BaseModel):
-    tenant_id: str
     note: str | None = None
 
 
@@ -87,26 +86,27 @@ async def list_reviews(
 
 @router.post("/{review_id}/approve")
 async def approve(
+    tenant_id: str,
     review_id: int,
     payload: ApproveRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> dict[str, bool]:
-    await require_active_tenant_or_404(review_conn, payload.tenant_id)
-    # 这个路由自己的权威 tenant_id 是 payload.tenant_id，不用 deps.get_terms
-    # 那套独立的 gateway_tenant_id 解析——两者在这条请求里可能不是同一个
-    # 值，直接按 payload.tenant_id 加载术语表，避免跨租户读到错的术语表。
-    terms: list[Term] = await list_terms_merged(review_conn, payload.tenant_id)
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    # 这个路由的权威 tenant_id 是路径里的这个，不走 deps.get_terms 那套
+    # 独立的 gateway_tenant_id 解析——两者在这条请求里可能不是同一个值，
+    # 直接按路径参数加载术语表，避免跨租户读到错的术语表。
+    terms: list[Term] = await list_terms_merged(review_conn, tenant_id)
     # 与 normalize_and_write_relations() 的自动写入路径共用同一套"已确认
     # 本体范围"数据源：这里查的是 status="confirmed"，不是草稿——审核员
     # 批准动作最终写图谱，必须过跟自动路径一样的闸门，见
     # RelationNotInConfirmedOntologyError 的说明。
     confirmed_relation_types = {
         rt.relation_type
-        for rt in await list_relation_types(review_conn, payload.tenant_id, status="confirmed")
+        for rt in await list_relation_types(review_conn, tenant_id, status="confirmed")
     }
     allowed_combinations = to_combination_keys(
-        await list_allowed_combinations(review_conn, payload.tenant_id, status="confirmed")
+        await list_allowed_combinations(review_conn, tenant_id, status="confirmed")
     )
     try:
         await approve_review(
@@ -114,7 +114,7 @@ async def approve(
             review_id=review_id,
             subject_standard_name=payload.subject_standard_name,
             object_standard_name=payload.object_standard_name,
-            tenant_id=payload.tenant_id,
+            tenant_id=tenant_id,
             graph_client=graph_client,
             terms=terms,
             now=datetime.now(),
@@ -152,7 +152,7 @@ async def approve(
         # 写入顺序）。merge_relation 是 MERGE、幂等，重试安全。
         logger.exception(
             "批准候选 %s（租户 %r）时图谱写入失败——记录仍在待审队列，可重试",
-            review_id, payload.tenant_id,
+            review_id, tenant_id,
         )
         raise HTTPException(
             status_code=503,
@@ -163,14 +163,15 @@ async def approve(
 
 @router.post("/{review_id}/reject")
 async def reject(
+    tenant_id: str,
     review_id: int,
     payload: RejectRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict[str, bool]:
-    await require_active_tenant_or_404(review_conn, payload.tenant_id)
+    await require_active_tenant_or_404(review_conn, tenant_id)
     try:
         await reject_review(
-            review_conn, review_id=review_id, tenant_id=payload.tenant_id, note=payload.note
+            review_conn, review_id=review_id, tenant_id=tenant_id, note=payload.note
         )
     except ReviewNotFoundError:
         raise HTTPException(status_code=404, detail="待审核记录不存在")

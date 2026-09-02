@@ -144,7 +144,7 @@ def test_list_pending_reviews_returns_tenant_scoped_rows(review_conn):
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/graph-reviews", params={"tenant_id": "t1"},
+            "/api/admin/t1/graph-reviews", params={},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -191,8 +191,8 @@ def test_approve_review_calls_graph_client_and_moves_to_history(review_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            f"/api/admin/graph-reviews/{review_id}/approve",
-            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            f"/api/admin/t1/graph-reviews/{review_id}/approve",
+            json={"subject_standard_name": "A", "object_standard_name": "B"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -216,7 +216,7 @@ def test_approve_review_calls_graph_client_and_moves_to_history(review_conn):
     try:
         history_response = TestClient(app)
         response = history_response.get(
-            "/api/admin/graph-reviews", params={"tenant_id": "t1", "status": "approved"},
+            "/api/admin/t1/graph-reviews", params={"status": "approved"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -238,8 +238,8 @@ def test_reject_review_marks_rejected(review_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            f"/api/admin/graph-reviews/{review_id}/reject",
-            json={"tenant_id": "t1", "note": "噪声"},
+            f"/api/admin/t1/graph-reviews/{review_id}/reject",
+            json={"note": "噪声"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -266,12 +266,8 @@ def test_approve_with_unknown_tenant_returns_404(review_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            f"/api/admin/graph-reviews/{review_id}/approve",
-            json={
-                "tenant_id": "no-such-tenant",
-                "subject_standard_name": "A",
-                "object_standard_name": "B",
-            },
+            f"/api/admin/no-such-tenant/graph-reviews/{review_id}/approve",
+            json={"subject_standard_name": "A", "object_standard_name": "B"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -289,8 +285,8 @@ def test_approve_nonexistent_review_returns_404(review_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/graph-reviews/999/approve",
-            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            "/api/admin/t1/graph-reviews/999/approve",
+            json={"subject_standard_name": "A", "object_standard_name": "B"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -305,7 +301,7 @@ def test_list_reviews_without_session_token_returns_401(review_conn):
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
-        response = client.get("/api/admin/graph-reviews", params={"tenant_id": "t1"})
+        response = client.get("/api/admin/t1/graph-reviews", params={})
     finally:
         app.dependency_overrides.clear()
 
@@ -347,15 +343,13 @@ def test_approve_already_resolved_review_returns_409(review_conn):
     )
     try:
         client = TestClient(app)
-        payload = {
-            "tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B",
-        }
+        payload = {"subject_standard_name": "A", "object_standard_name": "B"}
         first = client.post(
-            f"/api/admin/graph-reviews/{review_id}/approve",
+            f"/api/admin/t1/graph-reviews/{review_id}/approve",
             json=payload, headers=_authed_headers(session_store),
         )
         second = client.post(
-            f"/api/admin/graph-reviews/{review_id}/approve",
+            f"/api/admin/t1/graph-reviews/{review_id}/approve",
             json=payload, headers=_authed_headers(session_store),
         )
     finally:
@@ -378,13 +372,13 @@ def test_reject_already_resolved_review_returns_409(review_conn):
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
     try:
         client = TestClient(app)
-        payload = {"tenant_id": "t1", "note": "噪声"}
+        payload = {"note": "噪声"}
         first = client.post(
-            f"/api/admin/graph-reviews/{review_id}/reject",
+            f"/api/admin/t1/graph-reviews/{review_id}/reject",
             json=payload, headers=_authed_headers(session_store),
         )
         second = client.post(
-            f"/api/admin/graph-reviews/{review_id}/reject",
+            f"/api/admin/t1/graph-reviews/{review_id}/reject",
             json=payload, headers=_authed_headers(session_store),
         )
     finally:
@@ -436,17 +430,17 @@ def test_list_reviews_status_all_returns_both_approved_and_rejected(review_conn)
     try:
         client = TestClient(app)
         client.post(
-            f"/api/admin/graph-reviews/{approve_id}/approve",
-            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            f"/api/admin/t1/graph-reviews/{approve_id}/approve",
+            json={"subject_standard_name": "A", "object_standard_name": "B"},
             headers=_authed_headers(session_store),
         )
         client.post(
-            f"/api/admin/graph-reviews/{reject_id}/reject",
-            json={"tenant_id": "t1"},
+            f"/api/admin/t1/graph-reviews/{reject_id}/reject",
+            json={},
             headers=_authed_headers(session_store),
         )
         response = client.get(
-            "/api/admin/graph-reviews", params={"tenant_id": "t1", "status": "all"},
+            "/api/admin/t1/graph-reviews", params={"status": "all"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -470,16 +464,16 @@ def test_reject_review_shows_up_in_rejected_history(review_conn):
     try:
         client = TestClient(app)
         reject_response = client.post(
-            f"/api/admin/graph-reviews/{review_id}/reject",
-            json={"tenant_id": "t1", "note": "噪声"},
+            f"/api/admin/t1/graph-reviews/{review_id}/reject",
+            json={"note": "噪声"},
             headers=_authed_headers(session_store),
         )
         history_response = client.get(
-            "/api/admin/graph-reviews", params={"tenant_id": "t1", "status": "rejected"},
+            "/api/admin/t1/graph-reviews", params={"status": "rejected"},
             headers=_authed_headers(session_store),
         )
         pending_response = client.get(
-            "/api/admin/graph-reviews", params={"tenant_id": "t1", "status": "pending"},
+            "/api/admin/t1/graph-reviews", params={"status": "pending"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -507,8 +501,8 @@ def test_list_pending_reviews_returns_total_count_and_respects_page_size(review_
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/graph-reviews",
-            params={"tenant_id": "t1", "status": "pending", "page": 1, "page_size": 2},
+            "/api/admin/t1/graph-reviews",
+            params={"status": "pending", "page": 1, "page_size": 2},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -536,8 +530,8 @@ def test_list_pending_reviews_second_page_returns_remaining_rows(review_conn):
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/graph-reviews",
-            params={"tenant_id": "t1", "status": "pending", "page": 2, "page_size": 2},
+            "/api/admin/t1/graph-reviews",
+            params={"status": "pending", "page": 2, "page_size": 2},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -581,8 +575,8 @@ def test_approve_review_with_invalid_relation_type_returns_400(review_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            f"/api/admin/graph-reviews/{review_id}/approve",
-            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            f"/api/admin/t1/graph-reviews/{review_id}/approve",
+            json={"subject_standard_name": "A", "object_standard_name": "B"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -626,8 +620,8 @@ def test_approve_review_with_relation_type_not_in_confirmed_ontology_returns_400
     try:
         client = TestClient(app)
         response = client.post(
-            f"/api/admin/graph-reviews/{review_id}/approve",
-            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            f"/api/admin/t1/graph-reviews/{review_id}/approve",
+            json={"subject_standard_name": "A", "object_standard_name": "B"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -663,8 +657,8 @@ def test_approve_review_with_standard_name_not_in_terms_returns_400(review_conn)
     try:
         client = TestClient(app)
         response = client.post(
-            f"/api/admin/graph-reviews/{review_id}/approve",
-            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            f"/api/admin/t1/graph-reviews/{review_id}/approve",
+            json={"subject_standard_name": "A", "object_standard_name": "B"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -719,9 +713,8 @@ def test_approve_review_accepts_optional_term_type_hints(review_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            f"/api/admin/graph-reviews/{review_id}/approve",
+            f"/api/admin/t1/graph-reviews/{review_id}/approve",
             json={
-                "tenant_id": "t1",
                 "subject_standard_name": "Coffee",
                 "object_standard_name": "Coffee",
                 "subject_term_type": "产品",
@@ -769,8 +762,8 @@ def test_approve_review_with_ambiguous_standard_name_message_mentions_candidate_
     try:
         client = TestClient(app)
         response = client.post(
-            f"/api/admin/graph-reviews/{review_id}/approve",
-            json={"tenant_id": "t1", "subject_standard_name": "Coffee", "object_standard_name": "B"},
+            f"/api/admin/t1/graph-reviews/{review_id}/approve",
+            json={"subject_standard_name": "Coffee", "object_standard_name": "B"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -822,13 +815,13 @@ def test_approve_returns_503_and_keeps_the_review_pending_when_graph_is_down(rev
         client = TestClient(app)
         headers = _authed_headers(session_store)
         response = client.post(
-            f"/api/admin/graph-reviews/{review_id}/approve",
-            json={"tenant_id": "t1", "subject_standard_name": "A", "object_standard_name": "B"},
+            f"/api/admin/t1/graph-reviews/{review_id}/approve",
+            json={"subject_standard_name": "A", "object_standard_name": "B"},
             headers=headers,
         )
         # 记录必须还在待审列表里——否则用户重试无门。
         pending = client.get(
-            "/api/admin/graph-reviews", params={"tenant_id": "t1"}, headers=headers
+            "/api/admin/t1/graph-reviews", params={}, headers=headers
         ).json()
     finally:
         app.dependency_overrides.clear()
