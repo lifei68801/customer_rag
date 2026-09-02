@@ -11,10 +11,7 @@ export const DIMENSION_MAX_RATIO = 0.2
 /** 高于这个比例就认为"几乎每行一个"，是本行的标识。 */
 const IDENTIFIER_MIN_RATIO = 0.9
 
-export function assignRoles(stats: ColumnStats[], _totalRows: number): RoledColumn[] {
-  // totalRows 是接口的一部分（供未来按总行数而非非空行数判定的场景使用），
-  // 当前判定逻辑只依赖 nonEmptyCount，故此处未使用；重命名为 _totalRows
-  // 以满足 tsconfig 的 noUnusedParameters。
+export function assignRoles(stats: ColumnStats[]): RoledColumn[] {
   return stats.map((column) => {
     const { role, reason } = classify(column)
     return { stats: column, role, reason }
@@ -24,13 +21,16 @@ export function assignRoles(stats: ColumnStats[], _totalRows: number): RoledColu
 function classify(column: ColumnStats): { role: ColumnRole; reason: string } {
   if (column.nonEmptyCount === 0) {
     // 建成实体类型的话，会造出一个没有任何实例的类型。
-    return { role: 'freetext', reason: '这一列全是空的' }
+    return { role: 'freetext', reason: '这一列全是空的（0 个非空值）' }
   }
   if (column.inferredType === 'date') {
     return { role: 'date', reason: `识别为日期，样例 ${column.samples[0] ?? ''}` }
   }
   if (column.inferredType === 'number' || column.inferredType === 'integer') {
-    return { role: 'measure', reason: '数值列，通常是度量' }
+    return {
+      role: 'measure',
+      reason: `数值列，通常是度量（样例 ${column.samples[0] ?? ''}）`,
+    }
   }
 
   const ratio = column.distinctCount / column.nonEmptyCount
