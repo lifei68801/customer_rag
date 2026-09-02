@@ -43,6 +43,9 @@ export function AccountsPage() {
   const [newPassword, setNewPassword] = useState('')
   const [newTenant, setNewTenant] = useState('')
   const [busy, setBusy] = useState(false)
+  // 正在给谁重置密码。null = 没在重置。
+  const [resetting, setResetting] = useState<string | null>(null)
+  const [resetPassword, setResetPassword] = useState('')
 
   const isAdmin = role === 'admin'
 
@@ -152,6 +155,35 @@ export function AccountsPage() {
     }
   }
 
+  const handleReset = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!sessionToken || !resetting || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const response = await adminFetch(
+        `/api/admin/accounts/${encodeURIComponent(resetting)}/password`,
+        sessionToken,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ new_password: resetPassword }),
+        },
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '重置密码失败'))
+      }
+      setResetting(null)
+      setResetPassword('')
+      showToast('密码已重置')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '重置密码失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div data-testid="accounts" className="flex flex-col gap-6">
       <div className="flex flex-col gap-1">
@@ -241,6 +273,41 @@ export function AccountsPage() {
         </form>
       )}
 
+      {resetting && (
+        <form onSubmit={handleReset} className={`${card} flex max-w-md flex-col gap-3`}>
+          <h2 className="font-mono text-sm font-bold uppercase tracking-wide text-ink-soft">
+            重置「{resetting}」的密码
+          </h2>
+          <label htmlFor="reset-password" className="text-sm font-bold text-ink">
+            新密码
+          </label>
+          <input
+            id="reset-password"
+            type="password"
+            autoComplete="new-password"
+            value={resetPassword}
+            onChange={(event) => setResetPassword(event.target.value)}
+            autoFocus
+            className={inputClass}
+          />
+          <p className="text-xs text-ink-soft">
+            新密码由你当面交给对方——系统不会替你发送。对方登录后可以在设置页自行修改。
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={busy || !resetPassword}
+              className={`${buttonClass} bg-accent-primary text-on-accent`}
+            >
+              {busy ? '重置中…' : '确认重置'}
+            </button>
+            <button type="button" onClick={() => setResetting(null)} className={buttonClass}>
+              取消重置
+            </button>
+          </div>
+        </form>
+      )}
+
       {!loaded && <Skeleton variant="card-list" count={3} />}
 
       {loaded && accounts.length === 0 && (
@@ -300,6 +367,20 @@ export function AccountsPage() {
                       className={buttonClass}
                     >
                       {account.status === 'active' ? '停用' : '启用'}
+                    </button>
+                    {/* 重置不需要旧密码——这个按钮就是给"忘了密码"用的。
+                        没有它，admin 在界面上帮不了忘记密码的人，只能手改
+                        数据库。 */}
+                    <button
+                      type="button"
+                      aria-label={`重置 ${account.username} 的密码`}
+                      onClick={() => {
+                        setResetting(account.username)
+                        setResetPassword('')
+                      }}
+                      className={`ml-2 ${buttonClass}`}
+                    >
+                      重置密码
                     </button>
                   </td>
                 </tr>

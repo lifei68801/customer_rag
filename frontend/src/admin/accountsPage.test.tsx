@@ -16,9 +16,11 @@ import { ADMIN_ROUTES } from '../adminRoutes'
  */
 
 let passwordChangeCalls = 0
+let resetPasswordCalls: { username: string; new_password: string }[] = []
 
 function stubApi() {
   passwordChangeCalls = 0
+  resetPasswordCalls = []
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -30,6 +32,14 @@ function stubApi() {
         return json({ changed: true })
       }
       if (url.includes('/api/admin/accounts')) {
+        const reset = url.match(/\/accounts\/([^/]+)\/password$/)
+        if (reset && init?.method === 'PUT') {
+          resetPasswordCalls.push({
+            username: decodeURIComponent(reset[1]),
+            ...JSON.parse(String(init.body)),
+          })
+          return json({ changed: true })
+        }
         if (init?.method === 'POST') return json({ username: 'bob' }, 201)
         return json({
           accounts: [
@@ -176,5 +186,28 @@ describe('设置页的改密码', () => {
     await user.type(screen.getByLabelText('确认新密码'), 'password2')
     await user.click(screen.getByRole('button', { name: '修改密码' }))
     await waitFor(() => expect(passwordChangeCalls).toBe(1))
+  })
+})
+
+describe('重置密码', () => {
+  it('admin 能给别人重置密码，不需要旧密码', async () => {
+    // 这个接口就是给"忘了密码"用的——要旧密码就等于不能重置。没有它，
+    // admin 在界面上帮不了忘记密码的人，只能手改数据库。
+    signIn('admin')
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.accounts)
+    await user.click(await screen.findByRole('button', { name: '重置 alice 的密码' }))
+    await user.type(screen.getByLabelText('新密码'), 'brandnewpass')
+    await user.click(screen.getByRole('button', { name: '确认重置' }))
+    await waitFor(() => expect(resetPasswordCalls).toEqual([{ username: 'alice', new_password: 'brandnewpass' }]))
+  })
+
+  it('取消就不发请求', async () => {
+    signIn('admin')
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.accounts)
+    await user.click(await screen.findByRole('button', { name: '重置 alice 的密码' }))
+    await user.click(screen.getByRole('button', { name: '取消重置' }))
+    expect(resetPasswordCalls).toEqual([])
   })
 })
