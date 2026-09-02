@@ -1,4 +1,5 @@
 import '@testing-library/jest-dom/vitest'
+import { configure } from '@testing-library/react'
 
 /**
  * jsdom 缺的浏览器 API。
@@ -39,3 +40,8 @@ if (!window.matchMedia) {
     dispatchEvent: () => false,
   })) as unknown as typeof window.matchMedia
 }
+
+// waitFor / findBy* 的默认超时是 1s。全量并发跑的时候，懒加载的命令面板
+// chunk 和整棵树的重渲染经常超过它——单独跑绿、全量跑红，而报出来的是
+// "找不到元素"，指向的地方跟真正的原因毫无关系。
+configure({ asyncUtilTimeout: 5000 })

@@ -7,6 +7,7 @@ import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { ADMIN_ROUTES, NAV_GROUPS } from '../adminRoutes'
+import { commandPaletteHint } from './shortcutHint'
 
 /**
  * ⌘K 里的导航条目。
@@ -74,5 +75,29 @@ describe('导航命令', () => {
     await openPalette(user)
     await user.click(screen.getByRole('option', { name: /疑似重复/ }))
     expect(screen.getByTestId('url').textContent).toBe(ADMIN_ROUTES.reviewDuplicates)
+  })
+})
+
+describe('快捷键提示按平台显示', () => {
+  it('Windows/Linux 上写 Ctrl+K——写死 ⌘K 的话用户照着按不出来', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+    expect(commandPaletteHint()).toBe('Ctrl+K')
+  })
+
+  it('Mac 上写 ⌘K', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    expect(commandPaletteHint()).toBe('⌘K')
+  })
+
+  it('平台判不出来时说 Ctrl——Mac 按 Ctrl+K 也能开，反过来无键可按', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('')
+    expect(commandPaletteHint()).toBe('Ctrl+K')
+  })
+
+  it('侧边栏的提示用的就是这个值，不是另抄一份字面量', async () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+    renderAt(ADMIN_ROUTES.documents)
+    const hint = await screen.findByTestId('command-palette-hint')
+    expect(hint.textContent).toBe('Ctrl+K')
   })
 })

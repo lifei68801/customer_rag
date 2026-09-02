@@ -11,6 +11,11 @@ export default defineConfig({
     globals: true,
     include: ['src/**/*.test.{ts,tsx}'],
     setupFiles: ['src/test-setup.ts'],
+    // 默认 5s 在全量并发下不够：22 个文件同时跑时，懒加载 chunk 和多次
+    // 重渲染会把单条测试推过 5s，表现是"单独跑绿、全量跑红"这种最难查的
+    // 假红。asyncUtilTimeout 提到 5s（见 test-setup.ts），这里必须比它宽，
+    // 否则先撞的是 testTimeout，报出来的错跟真正的原因无关。
+    testTimeout: 15000,
   },
   server: {
     proxy: {

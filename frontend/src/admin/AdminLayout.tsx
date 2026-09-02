@@ -11,6 +11,7 @@ import { useNavGroups } from './useNavGroups'
 import { VersionSwitcher } from './VersionSwitcher'
 import { NavBadge } from './NavBadge'
 import { useNavBadges } from './useNavBadges'
+import { commandPaletteHint } from './shortcutHint'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -170,11 +171,15 @@ export function AdminLayout() {
               <AdminNav />
               <div className="flex flex-col gap-3">
                 {/* 快捷键不告诉用户等于不存在。用 kbd 而不是纯文本，让它看起来
-                    就是个按键提示。 */}
+                    就是个按键提示。修饰键按平台算——监听两个键都认，写死
+                    ⌘K 的话 Windows 用户照着按不出来，然后以为功能坏了。 */}
                 <p className="text-xs text-ink-soft">
                   按
-                  <kbd className="mx-1 rounded-chip border border-subtle bg-paper px-1.5 py-0.5 font-mono">
-                    ⌘K
+                  <kbd
+                    data-testid="command-palette-hint"
+                    className="mx-1 rounded-chip border border-subtle bg-paper px-1.5 py-0.5 font-mono"
+                  >
+                    {commandPaletteHint()}
                   </kbd>
                   打开命令面板
                 </p>
