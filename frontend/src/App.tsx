@@ -11,6 +11,7 @@ import { DuplicatesPage } from './admin/DuplicatesPage'
 import { OntologyGraphPage } from './admin/OntologyGraphPage'
 import { TermDetailPage } from './admin/TermDetailPage'
 import { DiagnosticsPage } from './admin/DiagnosticsPage'
+import { AccountsPage } from './admin/AccountsPage'
 import { SettingsPage } from './admin/SettingsPage'
 import { NotFoundPage } from './admin/NotFoundPage'
 import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'
@@ -40,6 +41,7 @@ function App() {
             过 URL；它不含斜杠，所以 :nodeKey 够用。 */}
         <Route path="terms/:nodeKey" element={<TermDetailPage />} />
         <Route path="diagnostics" element={<DiagnosticsPage />} />
+        <Route path="accounts" element={<AccountsPage />} />
         <Route path="settings" element={<SettingsPage />} />
 
         {/* 旧书签。每条一跳直达，不经过中间那一代。 */}

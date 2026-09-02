@@ -73,6 +73,10 @@ function stubApi(
 
 beforeEach(() => {
   sessionStorage.setItem('admin_session_token', 'test-token')
+  // 这些用例要测的是切租户/导航的行为，需要管理员身份——member 的租户
+  // 是登录时绑定的，切换这个能力对它不存在。
+  sessionStorage.setItem('admin_role', 'admin')
+  sessionStorage.setItem('admin_username', 'admin')
   localStorage.clear()
 })
 

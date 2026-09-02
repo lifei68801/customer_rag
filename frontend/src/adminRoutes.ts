@@ -36,6 +36,7 @@ export const ADMIN_ROUTES = {
   // 流程外的——它不是某一步，是出问题时才来的地方。
   diagnostics: '/admin/diagnostics',
   // 账号设置。不在任何导航分组里——它不是流程的一站，是账号级的偏好。
+  accounts: '/admin/accounts',
   settings: '/admin/settings',
 } as const
 
@@ -151,6 +152,10 @@ const ALL_NAV_ITEMS: NavItem[] = [
 
 /** 导航里没有的页面，标题写在这里。 */
 const EXTRA_TITLES: Partial<Record<keyof typeof ADMIN_ROUTES, string>> = {
+  // 这两个都不在侧边栏里，入口在左下角的账号菜单。账号页对 member 根本
+  // 不存在，放进侧边栏会让两种角色看到不同的侧边栏，破坏"侧边栏是固定
+  // 的"这个心智模型。
+  accounts: '账号',
   settings: '设置',
 }
 

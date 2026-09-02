@@ -16,7 +16,7 @@ import {
  */
 
 describe('新路由表', () => {
-  it('七个工作流目的地，加上流程外的诊断页和设置页', () => {
+  it('七个工作流目的地，加上流程外的诊断页、账号页和设置页', () => {
     expect(ADMIN_ROUTES).toEqual({
       ontology: '/admin/model/ontology',
       ontologyGraph: '/admin/model/graph',
@@ -26,6 +26,9 @@ describe('新路由表', () => {
       reviewDuplicates: '/admin/review/duplicates',
       terms: '/admin/terms',
       diagnostics: '/admin/diagnostics',
+      // 账号页和设置页都不在侧边栏里，入口在左下角的账号菜单。账号页对
+      // member 根本不存在——放进侧边栏会让两种角色看到不同的侧边栏。
+      accounts: '/admin/accounts',
       settings: '/admin/settings',
     })
   })
@@ -110,14 +113,18 @@ describe('导航分组', () => {
     // 这条是这次重构的目的：此前「疑似重复」和「本体图」在第四层，侧边栏
     // 上一个字都看不到。任何新增页面如果忘了挂进导航，这里会失败。
     //
-    // 设置页是唯一的例外，而且是显式的：它不是流程的一站，是账号级的
-    // 偏好，入口在底部的账号菜单里。
+    // 例外必须逐条写明理由。列成具名常量而不是内联的 filter，是为了让
+    // "再加一个例外"这件事有阻力——它本该是罕见的。
+    const NOT_IN_NAV: Record<string, string> = {
+      settings: '账号级偏好，不是流程的一站；入口在底部账号菜单',
+      accounts: '对 member 根本不存在；放进侧边栏会让两种角色看到不同的侧边栏',
+    }
     const inNav = [
       ...NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path)),
       ...NAV_STANDALONE.map((i) => i.path),
     ].sort()
     const shouldBeInNav = Object.entries(ADMIN_ROUTES)
-      .filter(([key]) => key !== 'settings')
+      .filter(([key]) => !(key in NOT_IN_NAV))
       .map(([, path]) => path)
       .sort()
     expect(inNav).toEqual(shouldBeInNav)

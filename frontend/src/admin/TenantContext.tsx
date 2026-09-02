@@ -1,4 +1,5 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
+import { useAdminAuth } from './useAdminAuth'
 
 const TENANT_STORAGE_KEY = 'admin_current_tenant'
 
@@ -19,6 +20,7 @@ const TenantContext = createContext<TenantContextValue | null>(null)
  * 页面既不会重渲染也不会重新拉数据。
  */
 export function TenantProvider({ children }: { children: ReactNode }) {
+  const { role } = useAdminAuth()
   const [tenantId, setTenantIdState] = useState(
     () => sessionStorage.getItem(TENANT_STORAGE_KEY) ?? 'demo',
   )
@@ -27,11 +29,15 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     () => ({
       tenantId,
       setTenantId: (next: string) => {
+        // member 的租户是登录时绑定的，切换这个能力对它不存在——不是把
+        // 按钮藏起来，是这个函数什么也不做。藏起来的按钮还能被别的代码
+        // 路径调用到。真正的门在后端：member 请求别的租户会拿到 403。
+        if (role !== 'admin') return
         sessionStorage.setItem(TENANT_STORAGE_KEY, next)
         setTenantIdState(next)
       },
     }),
-    [tenantId],
+    [tenantId, role],
   )
 
   return <TenantContext.Provider value={value}>{children}</TenantContext.Provider>

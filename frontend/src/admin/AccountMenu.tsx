@@ -7,9 +7,11 @@ import {
   LogOut,
   Plus,
   Settings,
+  Users,
 } from 'lucide-react'
 import { ADMIN_ROUTES } from '../adminRoutes'
 import { useTenants } from './useTenants'
+import { useAdminAuth } from './useAdminAuth'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -35,6 +37,8 @@ export function AccountMenu({ onLogout }: { onLogout: () => void }) {
   const [busy, setBusy] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const { options, current, tenantId, setTenantId, create, error, setError } = useTenants()
+  const { role, username } = useAdminAuth()
+  const isAdmin = role === 'admin'
 
   const close = () => {
     setOpen(false)
@@ -83,93 +87,111 @@ export function AccountMenu({ onLogout }: { onLogout: () => void }) {
           aria-label="账号与租户"
           className="flex max-h-[70vh] flex-col gap-1 overflow-y-auto rounded-card border border-subtle bg-card p-1 shadow-lg"
         >
-          <p className="px-3 pt-1 text-xs font-bold uppercase tracking-wide text-ink-faint">
-            租户
-          </p>
-          {options.map((tenant) => (
-            <button
-              key={tenant.tenant_id}
-              type="button"
-              role="menuitemradio"
-              aria-checked={tenant.tenant_id === tenantId}
-              onClick={() => {
-                setTenantId(tenant.tenant_id)
-                close()
-              }}
-              className={itemClass}
-            >
-              {/* 勾不是唯一的信号：aria-checked 让屏幕阅读器也听得到当前是哪个。 */}
-              <Check
-                aria-hidden="true"
-                className={`h-4 w-4 flex-shrink-0 ${
-                  tenant.tenant_id === tenantId ? '' : 'invisible'
-                }`}
-              />
-              {tenant.name}
-            </button>
-          ))}
-
-          {!creating && (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => setCreating(true)}
-              className={itemClass}
-            >
-              <Plus aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
-              新建租户
-            </button>
-          )}
-          {creating && (
-            // 表单就地展开，菜单不关——还没填完就关掉等于让用户重来。
-            <form
-              onSubmit={handleCreate}
-              className="flex flex-col gap-2 rounded-control bg-paper p-2"
-            >
-              <input
-                value={newId}
-                onChange={(event) => setNewId(event.target.value)}
-                placeholder="tenant_id"
-                aria-label="新租户 ID"
-                autoFocus
-                className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-xs text-ink placeholder:text-ink-soft ${focusRing}`}
-              />
-              <input
-                value={newName}
-                onChange={(event) => setNewName(event.target.value)}
-                placeholder="显示名"
-                aria-label="新租户显示名"
-                className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-xs text-ink placeholder:text-ink-soft ${focusRing}`}
-              />
-              <div className="flex gap-2">
-                <button
-                  type="submit"
-                  disabled={busy || !newId.trim() || !newName.trim()}
-                  className={`min-h-[32px] flex-1 cursor-pointer rounded-control border border-subtle bg-accent-primary px-2 text-xs font-bold text-on-accent transition disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
-                >
-                  {busy ? '创建中…' : '创建'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCreating(false)
-                    setError(null)
-                  }}
-                  disabled={busy}
-                  className={`min-h-[32px] cursor-pointer rounded-control border border-subtle bg-card px-2 text-xs font-bold text-ink transition ${focusRing}`}
-                >
-                  取消
-                </button>
-              </div>
-            </form>
-          )}
-          {error && (
-            <p role="alert" className="px-3 text-xs text-status-error">
-              {error}
+          {/* 租户区整块只对 admin 渲染。member 的租户是登录时绑定的，
+              这里没有它可选的东西——不是把按钮藏起来，是这个能力对它
+              不存在（后端会 403）。 */}
+          {isAdmin && (
+            <>
+            <p className="px-3 pt-1 text-xs font-bold uppercase tracking-wide text-ink-faint">
+              租户
             </p>
+            {options.map((tenant) => (
+              <button
+                key={tenant.tenant_id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={tenant.tenant_id === tenantId}
+                onClick={() => {
+                  setTenantId(tenant.tenant_id)
+                  close()
+                }}
+                className={itemClass}
+              >
+                {/* 勾不是唯一的信号：aria-checked 让屏幕阅读器也听得到当前是哪个。 */}
+                <Check
+                  aria-hidden="true"
+                  className={`h-4 w-4 flex-shrink-0 ${
+                    tenant.tenant_id === tenantId ? '' : 'invisible'
+                  }`}
+                />
+                {tenant.name}
+              </button>
+            ))}
+
+            {!creating && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => setCreating(true)}
+                className={itemClass}
+              >
+                <Plus aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
+                新建租户
+              </button>
+            )}
+            {creating && (
+              // 表单就地展开，菜单不关——还没填完就关掉等于让用户重来。
+              <form
+                onSubmit={handleCreate}
+                className="flex flex-col gap-2 rounded-control bg-paper p-2"
+              >
+                <input
+                  value={newId}
+                  onChange={(event) => setNewId(event.target.value)}
+                  placeholder="tenant_id"
+                  aria-label="新租户 ID"
+                  autoFocus
+                  className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-xs text-ink placeholder:text-ink-soft ${focusRing}`}
+                />
+                <input
+                  value={newName}
+                  onChange={(event) => setNewName(event.target.value)}
+                  placeholder="显示名"
+                  aria-label="新租户显示名"
+                  className={`rounded-control border border-subtle bg-card px-2 py-1.5 text-xs text-ink placeholder:text-ink-soft ${focusRing}`}
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={busy || !newId.trim() || !newName.trim()}
+                    className={`min-h-[32px] flex-1 cursor-pointer rounded-control border border-subtle bg-accent-primary px-2 text-xs font-bold text-on-accent transition disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  >
+                    {busy ? '创建中…' : '创建'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreating(false)
+                      setError(null)
+                    }}
+                    disabled={busy}
+                    className={`min-h-[32px] cursor-pointer rounded-control border border-subtle bg-card px-2 text-xs font-bold text-ink transition ${focusRing}`}
+                  >
+                    取消
+                  </button>
+                </div>
+              </form>
+            )}
+            {error && (
+              <p role="alert" className="px-3 text-xs text-status-error">
+                {error}
+              </p>
+            )}
+            </>
           )}
 
           <div role="separator" className="my-0.5 border-t border-subtle" />
+          {isAdmin && (
+            <Link
+              to={ADMIN_ROUTES.accounts}
+              role="menuitem"
+              className={itemClass}
+              onClick={close}
+            >
+              <Users aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
+              账号管理
+            </Link>
+          )}
           <Link to={ADMIN_ROUTES.settings} role="menuitem" className={itemClass} onClick={close}>
             <Settings aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
             设置
@@ -202,8 +224,12 @@ export function AccountMenu({ onLogout }: { onLogout: () => void }) {
         className={`flex min-h-[44px] cursor-pointer items-center gap-2 rounded-control border border-subtle bg-paper px-3 text-sm text-ink transition hover:bg-interactive-hover ${focusRing}`}
       >
         <Building2 aria-hidden="true" className="h-4 w-4 flex-shrink-0 text-ink-soft" />
-        <span className="min-w-0 flex-1 truncate text-left font-bold">
-          {current?.name ?? tenantId}
+        {/* 租户名在主行：它是数据作用域，弄错了不会报错，只会安静地把数据
+            写到别处。身份弄错则会立刻撞上权限错误。用户名在副行——登录系统
+            做完了，界面上却看不出自己是谁，同样说不过去。 */}
+        <span className="flex min-w-0 flex-1 flex-col text-left">
+          <span className="truncate font-bold">{current?.name ?? tenantId}</span>
+          <span className="truncate text-xs font-normal text-ink-soft">{username}</span>
         </span>
         <ChevronUp
           aria-hidden="true"
