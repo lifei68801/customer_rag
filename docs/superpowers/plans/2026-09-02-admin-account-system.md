@@ -1688,36 +1688,58 @@ def test_every_tenant_route_group_blocks_cross_tenant_access(review_conn, path):
     assert response.status_code == 403
 ```
 
-扩展 `tests/api/test_admin_route_shapes.py`（前置计划已创建该文件），追加：
+扩展 `tests/api/test_admin_route_shapes.py`（前置计划已创建该文件，里面已有
+`_walk_routes` 与 `_TENANT_SCOPED_PREFIXES` / `_NON_TENANT_PREFIXES` 白名单，
+直接复用）。
+
+**注意查法**：FastAPI 0.141 起，挂在父 router 上的 `dependencies=[...]`
+**不会**合并进各个 `APIRoute.dependant`——已实测确认 `require_tenant_access
+in route.dependant` 恒为 `False`。它存在 `_IncludedRouter.include_context
+.dependencies` 里，运行时照常执行（也已实测：父 router 依赖抛 403 时请求
+真的返回 403）。所以要在递归展开路由时**累积**沿途 include_context 的依赖。
+
+按 `route.dependant` 查的话，`test_every_tenant_scoped_route_checks_tenant_access`
+会对每一条路由都判定"没挂校验"而全部报红；反向那条则会**全部通过**——
+一条永远为真的断言，正是防线二本该防住的那种假绿。
+
+先把 `_walk_routes` 改成同时返回继承来的依赖：
 
 ```python
-def _dependency_functions(route: APIRoute) -> set:
-    """路由依赖链上的全部函数，含 router 级依赖与嵌套依赖。"""
-    found = set()
+def _walk_routes(routes, prefix: str = "", inherited: frozenset = frozenset()):
+    """展开成 (完整路径, APIRoute, 继承到的依赖函数集合) 列表。
 
-    def walk(dependant):
-        if dependant.call is not None:
-            found.add(dependant.call)
-        for sub in dependant.dependencies:
-            walk(sub)
-
-    walk(route.dependant)
+    第三项是沿途每一层 include_context 上 `dependencies=[...]` 的累积。
+    FastAPI 0.141 起这些依赖不进 APIRoute.dependant（实测确认），但运行时
+    照常执行——查错地方会得到一条永远为真的断言。
+    """
+    found = []
+    for route in routes:
+        if isinstance(route, APIRoute):
+            found.append((prefix + route.path, route, inherited))
+        elif type(route).__name__ == "_IncludedRouter":
+            ctx = route.include_context
+            sub_prefix = getattr(ctx, "prefix", "") or ""
+            deps = {d.dependency for d in (getattr(ctx, "dependencies", None) or [])}
+            found.extend(
+                _walk_routes(route.original_router.routes, prefix + sub_prefix, inherited | deps)
+            )
     return found
+```
 
+（既有的 `_admin_paths()` 相应改成 `[p for p, _, _ in _walk_routes(app.routes) ...]`。）
 
+然后追加两条断言：
+
+```python
 def test_every_tenant_scoped_route_checks_tenant_access():
     """挂载层强制的兜底。人的记性在第 9 个 router 上一定会失效，而漏掉的
     那条不会有任何运行时报错——请求照常 200，只是返回的是别人的数据。"""
     from app.api.deps import require_tenant_access
 
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
+    for path, _route, inherited in _walk_routes(app.routes):
+        if not path.startswith(_TENANT_SCOPED_PREFIXES):
             continue
-        if "{tenant_id}" not in route.path:
-            continue
-        assert require_tenant_access in _dependency_functions(route), (
-            f"{route.path} 没有挂租户权限校验"
-        )
+        assert require_tenant_access in inherited, f"{path} 没有挂租户权限校验"
 
 
 def test_non_tenant_routes_do_not_check_tenant_access():
@@ -1725,14 +1747,10 @@ def test_non_tenant_routes_do_not_check_tenant_access():
     必填查询参数，登录直接 422——那时谁也进不来。"""
     from app.api.deps import require_tenant_access
 
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
+    for path, _route, inherited in _walk_routes(app.routes):
+        if not path.startswith("/api/admin") or path.startswith(_TENANT_SCOPED_PREFIXES):
             continue
-        if not route.path.startswith("/api/admin") or "{tenant_id}" in route.path:
-            continue
-        assert require_tenant_access not in _dependency_functions(route), (
-            f"{route.path} 不该挂租户权限校验"
-        )
+        assert require_tenant_access not in inherited, f"{path} 不该挂租户权限校验"
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
