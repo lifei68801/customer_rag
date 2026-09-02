@@ -22,7 +22,8 @@ from app.graphrag.terms_store import (
 )
 
 router = APIRouter(
-    prefix="/api/admin/duplicate-reviews", dependencies=[Depends(deps.require_admin_session)]
+    prefix="/api/admin/{tenant_id}/duplicate-reviews",
+    dependencies=[Depends(deps.require_admin_session)],
 )
 
 
@@ -32,12 +33,10 @@ class DuplicateSuggestionListResponse(BaseModel):
 
 
 class ApproveDuplicateRequest(BaseModel):
-    tenant_id: str
     keep_node_key: str
 
 
 class RejectDuplicateRequest(BaseModel):
-    tenant_id: str
     note: str | None = None
 
 
@@ -58,16 +57,17 @@ async def list_duplicate_suggestions(
 
 @router.post("/{review_id}/approve")
 async def approve(
+    tenant_id: str,
     review_id: int,
     payload: ApproveDuplicateRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict[str, bool]:
-    await require_active_tenant_or_404(review_conn, payload.tenant_id)
+    await require_active_tenant_or_404(review_conn, tenant_id)
     try:
         await approve_duplicate_suggestion(
             review_conn,
             review_id=review_id,
-            tenant_id=payload.tenant_id,
+            tenant_id=tenant_id,
             keep_node_key=payload.keep_node_key,
         )
     except DuplicateReviewNotFoundError as exc:
@@ -99,14 +99,15 @@ async def approve(
 
 @router.post("/{review_id}/reject")
 async def reject(
+    tenant_id: str,
     review_id: int,
     payload: RejectDuplicateRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict[str, bool]:
-    await require_active_tenant_or_404(review_conn, payload.tenant_id)
+    await require_active_tenant_or_404(review_conn, tenant_id)
     try:
         await reject_duplicate_suggestion(
-            review_conn, review_id=review_id, tenant_id=payload.tenant_id, note=payload.note
+            review_conn, review_id=review_id, tenant_id=tenant_id, note=payload.note
         )
     except DuplicateReviewNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

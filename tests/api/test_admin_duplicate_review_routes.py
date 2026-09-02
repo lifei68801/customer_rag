@@ -145,7 +145,7 @@ def test_list_and_approve_duplicate_suggestion(review_conn):
         client = TestClient(app)
         headers = _authed_headers(session_store)
         response = client.get(
-            "/api/admin/duplicate-reviews", params={"tenant_id": "demo"}, headers=headers,
+            "/api/admin/demo/duplicate-reviews", headers=headers,
         )
         assert response.status_code == 200
         body = response.json()
@@ -154,8 +154,8 @@ def test_list_and_approve_duplicate_suggestion(review_conn):
         keep_node_key = body["suggestions"][0]["candidate_a_node_key"]
 
         approve_response = client.post(
-            f"/api/admin/duplicate-reviews/{review_id}/approve",
-            json={"tenant_id": "demo", "keep_node_key": keep_node_key},
+            f"/api/admin/demo/duplicate-reviews/{review_id}/approve",
+            json={"keep_node_key": keep_node_key},
             headers=headers,
         )
     finally:
@@ -185,14 +185,14 @@ def test_reject_duplicate_suggestion(review_conn):
         client = TestClient(app)
         headers = _authed_headers(session_store)
         list_response = client.get(
-            "/api/admin/duplicate-reviews", params={"tenant_id": "demo"}, headers=headers,
+            "/api/admin/demo/duplicate-reviews", headers=headers,
         )
         assert list_response.status_code == 200
         review_id = list_response.json()["suggestions"][0]["review_id"]
 
         reject_response = client.post(
-            f"/api/admin/duplicate-reviews/{review_id}/reject",
-            json={"tenant_id": "demo", "note": "误判，不是重复项"},
+            f"/api/admin/demo/duplicate-reviews/{review_id}/reject",
+            json={"note": "误判，不是重复项"},
             headers=headers,
         )
     finally:
@@ -210,11 +210,49 @@ def test_approve_unknown_review_id_returns_404(review_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/duplicate-reviews/999999/approve",
-            json={"tenant_id": "demo", "keep_node_key": "x"},
+            "/api/admin/demo/duplicate-reviews/999999/approve",
+            json={"keep_node_key": "x"},
             headers=_authed_headers(session_store),
         )
     finally:
         app.dependency_overrides.clear()
 
     assert response.status_code == 404
+
+
+def test_tenant_id_in_body_no_longer_steers_the_request(review_conn):
+    """body 里塞 tenant_id 必须无效。它还被读的话，路径参数就只是装饰，
+    调用方仍能用 body 指向别的租户——而这正是统一寻址要消灭的东西。
+
+    构造法：记录建在 demo，请求打到 demo 的路径上，body 里写 other。
+    落在 demo 就成功；若 body 生效，会在 other 里找不到这条记录而 404。
+    """
+    asyncio.run(
+        enqueue_duplicate_suggestion(
+            review_conn,
+            tenant_id="demo",
+            candidate_a_node_key="公司:A",
+            candidate_b_node_key="公司:B",
+            similarity_score=0.9,
+            reason="alias_overlap",
+        )
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        headers = _authed_headers(session_store)
+        review_id = client.get(
+            "/api/admin/demo/duplicate-reviews", headers=headers
+        ).json()["suggestions"][0]["review_id"]
+        response = client.post(
+            f"/api/admin/demo/duplicate-reviews/{review_id}/reject",
+            json={"note": "n", "tenant_id": "other"},
+            headers=headers,
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
