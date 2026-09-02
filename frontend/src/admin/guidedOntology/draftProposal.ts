@@ -17,6 +17,12 @@ import type {
  * 中文列名产不出有意义的英文名，退回 RELATES_TO；用户可以在界面上改。
  */
 export function suggestRelationName(subject: string, object: string): string {
+  // 函数的定义域天然是双端的（从 subject 指向 object 的关系），当前实现
+  // 只用了 object 是简化版：中文列名暂时产不出比 RELATES_TO 更好的名字。
+  // subject 留给将来产出更贴切的关系名（比如「订单号 -> 公司」该产出
+  // SOLD_BY 而不是泛泛的 HAS_公司）——调用方（initialDecision 的 root、
+  // buildProposal 的 parent）已经天然持有这个值，删掉参数只会让将来这个
+  // 改进要重改两处调用签名。
   void subject
   const ascii = object
     .replace(/[^a-zA-Z0-9]+/g, '_')
@@ -33,10 +39,17 @@ export function suggestRelationName(subject: string, object: string): string {
  * （app/graphrag/ontology_categories.py:26）。中文列名会被清成空串，那时
  * 退回一个带序号的占位名——丢掉这一列更糟，用户至少能在界面上看到它被
  * 改成了什么。
+ *
+ * 注意：第一步把每个非法字符换成下划线，这一步本身不会产出空串——一个
+ * 纯中文列名会变成一串下划线（"客户备注" -> "____"），而下划线本身合法，
+ * 不会被第二步的"去掉不合法的前导字符"清掉。所以不能只判断
+ * `cleaned === ''`：必须判断清洗结果里有没有至少一个字母或数字，没有就
+ * 说明这个"合法字符串"其实是空壳——两个不同的中文列名很可能都清成
+ * "____"，静默撞成同一个字段名，比空串更隐蔽。
  */
 export function sanitizeFieldName(column: string, index: number): string {
   const cleaned = column.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^[^a-zA-Z_]+/, '')
-  if (cleaned === '') return `field_${index + 1}`
+  if (cleaned === '' || !/[a-zA-Z0-9]/.test(cleaned)) return `field_${index + 1}`
   return cleaned.slice(0, 64)
 }
 
@@ -88,10 +101,19 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     }
   }
 
-  // 属性一律挂在根实体上。度量、日期、以及被用户取消选中的维度列，描述的
-  // 都是"这一行"，而这一行的身份就是根。
+  // 属性挂在哪个实体上：优先挂根。但根可能是猜的（没有标识列时拿第一个
+  // 维度列顶替），用户完全可以把这个猜测根重新判成属性——这时 root 自己
+  // 就不在 entityNames 里了，属性没处挂。顺延给列顺序里第一个还留在
+  // entityNames 里的实体；一个实体都不剩时（entityNames 空），属性列
+  // 干脆没有本体可进，那就必须落进 unusedColumns。任何一列最终只能是
+  // 「进了某个实体的 extra_fields」或「进了 unusedColumns」这两种下场之
+  // 一，不允许第三种——第三种就是静默丢列。
+  const attributeHost = entityNames.has(root)
+    ? root
+    : roled.find((c) => entityNames.has(c.stats.name))?.stats.name
+
   const renamedFields: Record<string, string> = {}
-  const rootFields: DraftExtraField[] = []
+  const hostFields: DraftExtraField[] = []
   const unusedColumns: string[] = []
 
   roled.forEach((column, index) => {
@@ -101,20 +123,22 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
       column.role === 'measure' ||
       column.role === 'date' ||
       (column.role === 'dimension' && !decision.dimensionsAsEntity[name])
-    if (!isAttribute) {
-      // 自由文本、空列：不进本体。必须列出来——不显示等于静默丢弃。
+    if (!isAttribute || !attributeHost) {
+      // 自由文本、空列，或者没有任何实体可以挂：不进本体。必须列出来
+      // ——不显示等于静默丢弃。
       unusedColumns.push(name)
       return
     }
     const fieldName = sanitizeFieldName(name, index)
     if (fieldName !== name) renamedFields[name] = fieldName
-    rootFields.push({ name: fieldName, value_type: measureValueType(column) })
+    hostFields.push({ name: fieldName, value_type: measureValueType(column) })
   })
 
   const termTypes: DraftTermType[] = [...entityNames].map((value) => ({
     value,
-    // 属性只挂在根上。别的实体是维度，它们自己的属性得从别的表来。
-    extra_fields: value === root ? rootFields : [],
+    // 属性只挂在 attributeHost 上。别的实体是维度，它们自己的属性得从
+    // 别的表来。
+    extra_fields: value === attributeHost ? hostFields : [],
     standard_name_value_type: 'string',
   }))
 

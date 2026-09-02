@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { buildProposal, initialDecision, suggestRelationName, toEtlBuilder } from './draftProposal'
+import {
+  buildProposal,
+  initialDecision,
+  sanitizeFieldName,
+  suggestRelationName,
+  toEtlBuilder,
+} from './draftProposal'
 import type { RoledColumn } from './types'
 
-/** demo 租户那张电商订单宽表，本项目里真实存在的形状。 */
-function demoColumns(): RoledColumn[] {
-  const col = (name: string, role: RoledColumn['role'], distinctCount: number): RoledColumn => ({
+function makeColumn(name: string, role: RoledColumn['role'], distinctCount: number): RoledColumn {
+  return {
     stats: {
       name,
       nonEmptyCount: 10000,
@@ -15,18 +20,35 @@ function demoColumns(): RoledColumn[] {
     },
     role,
     reason: '',
-  })
+  }
+}
+
+/** demo 租户那张电商订单宽表，本项目里真实存在的形状。 */
+function demoColumns(): RoledColumn[] {
   return [
-    col('订单号', 'identifier', 9998),
-    col('产品', 'dimension', 10),
-    col('公司', 'dimension', 3),
-    col('类目', 'dimension', 4),
-    col('用户名', 'dimension', 800),
-    col('revenue', 'measure', 500),
-    col('units_sold', 'measure', 20),
-    col('purchase_date', 'date', 300),
-    col('customer_state', 'dimension', 50),
-    col('internal_note', 'freetext', 6000),
+    makeColumn('订单号', 'identifier', 9998),
+    makeColumn('产品', 'dimension', 10),
+    makeColumn('公司', 'dimension', 3),
+    makeColumn('类目', 'dimension', 4),
+    makeColumn('用户名', 'dimension', 800),
+    makeColumn('revenue', 'measure', 500),
+    makeColumn('units_sold', 'measure', 20),
+    makeColumn('purchase_date', 'date', 300),
+    makeColumn('customer_state', 'dimension', 50),
+    makeColumn('internal_note', 'freetext', 6000),
+  ]
+}
+
+/**
+ * 纯维度表（产品主数据这类），没有标识列——root 是猜的。用来覆盖「猜测根
+ * 被用户取消勾选」这条路径。
+ */
+function noIdentifierColumns(): RoledColumn[] {
+  return [
+    makeColumn('产品', 'dimension', 10), // 猜测根
+    makeColumn('类目', 'dimension', 4),
+    makeColumn('revenue', 'measure', 500),
+    makeColumn('purchase_date', 'date', 300),
   ]
 }
 
@@ -128,9 +150,58 @@ describe('生成草案', () => {
 
   it('关系类型一律 allow_chain_query', () => {
     const proposal = buildProposal(demoColumns(), initialDecision(demoColumns()))
+    // for...of 遍历空数组时循环体一次都不会执行，断言也就形同虚设——
+    // 得先证明数组非空，下面的 for...of 才是在真的验证什么。
+    expect(proposal.relationTypes.length).toBeGreaterThan(0)
     for (const relation of proposal.relationTypes) {
       expect(relation.allow_chain_query).toBe(true)
     }
+  })
+
+  it('有标识列时 rootIsGuessed 是 false', () => {
+    const proposal = buildProposal(demoColumns(), initialDecision(demoColumns()))
+    expect(proposal.rootIsGuessed).toBe(false)
+  })
+
+  it('没有标识列时 rootIsGuessed 是 true，UI 要提示用户确认', () => {
+    const roled = noIdentifierColumns()
+    const proposal = buildProposal(roled, initialDecision(roled))
+    expect(proposal.rootIsGuessed).toBe(true)
+  })
+
+  it('猜测根被用户取消勾选时，属性顺延挂到剩下的实体上，不会静默消失', () => {
+    // 触发路径：没有标识列 -> root 是猜的第一个维度列 -> 用户把它改判
+    // 成属性 -> root 自己已经不在 entityNames 里了，度量/日期属性不能
+    // 再指望挂在 root 上，得顺延给还留着的实体。
+    const roled = noIdentifierColumns()
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['产品'] = false
+
+    const proposal = buildProposal(roled, decision)
+
+    const category = proposal.termTypes.find((t) => t.value === '类目')!
+    const fieldNames = category.extra_fields.map((f) => f.name)
+    expect(fieldNames).toContain('revenue')
+    expect(fieldNames).toContain('purchase_date')
+    // 任何一列最终只能是「进了某个实体的 extra_fields」或「进了
+    // unusedColumns」，不允许两头都不沾。
+    expect(proposal.unusedColumns).not.toContain('revenue')
+    expect(proposal.unusedColumns).not.toContain('purchase_date')
+  })
+
+  it('实体一个都不剩时，属性列全部落进未使用清单，不会凭空消失', () => {
+    const roled: RoledColumn[] = [
+      makeColumn('产品', 'dimension', 10),
+      makeColumn('revenue', 'measure', 500),
+    ]
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['产品'] = false
+
+    const proposal = buildProposal(roled, decision)
+
+    expect(proposal.termTypes).toEqual([])
+    expect(proposal.unusedColumns).toContain('revenue')
+    expect(proposal.unusedColumns).toContain('产品')
   })
 })
 
@@ -144,6 +215,41 @@ describe('关系命名建议', () => {
 
   it('中文列名也能产出合规的名字', () => {
     expect(suggestRelationName('订单号', '用户名')).toMatch(/^[A-Z][A-Z0-9_]{0,63}$/)
+  })
+
+  it('英文列名产出 HAS_ 前缀、全大写的具体名字', () => {
+    // 上面两条中文用例清洗后 ascii 恒为空串，两次都退到 fallback
+    // RELATES_TO——而 RELATES_TO 本身也满足正则，所以只验证了 fallback
+    // 合规，从没走过 HAS_ 这条主分支。这里断言具体值，不只是"匹配正则"。
+    expect(suggestRelationName('order_id', 'customer_state')).toBe('HAS_CUSTOMER_STATE')
+  })
+
+  it('超长英文列名截断到 64 字符', () => {
+    const longName = 'x'.repeat(70)
+    const result = suggestRelationName('order_id', longName)
+    expect(result).toBe('HAS_' + 'X'.repeat(60))
+    expect(result.length).toBe(64)
+  })
+})
+
+describe('字段名清洗', () => {
+  it('纯中文列名——清洗后没有一个字母数字——退回带序号的占位名', () => {
+    // 第一步把每个非法字符换成下划线，本身不会产出空串："客户备注" 会
+    // 变成 "____"，而下划线合法，不会被第二步的"去掉不合法前导字符"
+    // 清掉。必须判断"有没有至少一个字母/数字"，不能只判断是否空串。
+    expect(sanitizeFieldName('客户备注', 0)).toBe('field_1')
+  })
+
+  it('非法字符换成下划线，只要还剩字母数字就保留清洗结果', () => {
+    expect(sanitizeFieldName('unit price($)', 2)).toBe('unit_price___')
+  })
+
+  it('数字开头的列名，去掉前导数字', () => {
+    expect(sanitizeFieldName('123abc', 0)).toBe('abc')
+  })
+
+  it('纯数字列名退回占位名', () => {
+    expect(sanitizeFieldName('123', 0)).toBe('field_1')
   })
 })
 
@@ -166,5 +272,26 @@ describe('顺带产出 ETL 映射', () => {
     expect(relations).toContainEqual(
       expect.objectContaining({ subjectTermType: '订单号', objectTermType: '产品' }),
     )
+  })
+
+  it('中文维度列改成属性后，字段名被清洗，ETL 映射能反查回原列名', () => {
+    // demoColumns 里所有会成为属性的列本身就是合法英文标识符，清洗前后
+    // 名字不变，renamedFields 一直是空对象——toEtlBuilder 里
+    // `columnOfField.get(field.name) ?? field.name` 的反查分支
+    // （?? 左边那个）从来没被触发过。这里故意把中文维度列（类目）改判
+    // 成属性，逼它走清洗 + 反查这条路。
+    const roled = demoColumns()
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['类目'] = false
+
+    const proposal = buildProposal(roled, decision)
+    const order = proposal.termTypes.find((t) => t.value === '订单号')!
+    const fieldName = proposal.renamedFields['类目']
+    expect(fieldName).toBeDefined()
+    expect(order.extra_fields.map((f) => f.name)).toContain(fieldName)
+
+    const { entities } = toEtlBuilder(roled, decision, 'file-1')
+    const orderEntity = entities.find((e) => e.termType === '订单号')!
+    expect(orderEntity.fieldMappings[fieldName!]).toBe('类目')
   })
 })
