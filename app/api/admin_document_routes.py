@@ -52,7 +52,8 @@ from app.tenancy import is_valid_tenant_id
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/api/admin/documents", dependencies=[Depends(deps.require_admin_session)]
+    prefix="/api/admin/{tenant_id}/documents",
+    dependencies=[Depends(deps.require_admin_session)],
 )
 
 _MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100MB
@@ -179,10 +180,10 @@ def _reject_oversized_by_content_length(request: Request) -> None:
 
 @router.post("", response_model=UploadResponse)
 async def upload_document(
+    tenant_id: str,
     request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile,
-    tenant_id: str = Form(...),
     build_graph: bool = Form(False),
     upload_dir: Path = Depends(deps.get_upload_dir),
     ingestion_conn: aiosqlite.Connection = Depends(deps.get_ingestion_conn),
@@ -195,15 +196,18 @@ async def upload_document(
     table_extractor: TableExtractionFunction | None = Depends(deps.get_table_extractor),
     settings: Settings = Depends(deps.get_settings),
 ) -> UploadResponse:
-    # tenant_id/build_graph 必须显式标 Form(...)：混用 UploadFile 和裸标量参数时
+    # build_graph 必须显式标 Form(...)：混用 UploadFile 和裸标量参数时
     # FastAPI 默认把裸标量参数当 query 参数解析，不会去读 multipart body 里
-    # 同名的表单字段——前端是把这两个值和文件一起放进同一个 FormData 提交的
-    # （见 Task 8 DocumentsPage.tsx），不标 Form(...) 会导致后端读到 422。
+    # 同名的表单字段——前端是把它和文件一起放进同一个 FormData 提交的
+    # （见 DocumentsPage.tsx），不标 Form(...) 会导致后端读到 422。
+    #
+    # tenant_id 不在此列：它是路径参数（2026-09-02 的统一租户寻址改造），
+    # FastAPI 从路径模板里取，不碰 multipart body。
     _reject_oversized_by_content_length(request)
     _validate_tenant_id(tenant_id)
     await require_active_tenant_or_404(review_conn, tenant_id)
     _validate_upload_suffix(file.filename)
-    # 这个路由自己已经有权威的 tenant_id（Form 字段），不用 deps.get_terms
+    # 这个路由自己已经有权威的 tenant_id（路径参数），不用 deps.get_terms
     # 那套独立的 gateway_tenant_id 解析——两者在这条请求里可能不是同一个
     # 值，直接按本路由的 tenant_id 加载术语表，避免跨租户读到错的术语表。
     terms: list[Term] = await list_terms_merged(review_conn, tenant_id)

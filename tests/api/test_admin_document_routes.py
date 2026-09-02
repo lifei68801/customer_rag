@@ -262,9 +262,9 @@ def test_upload_without_session_returns_401():
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/documents",
+            "/api/admin/t1/documents",
             files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
-            data={"tenant_id": "t1", "build_graph": "false"},
+            data={"build_graph": "false"},
         )
     finally:
         app.dependency_overrides.clear()
@@ -280,9 +280,9 @@ def test_upload_rejects_file_larger_than_100mb(tmp_path, ingestion_conn):
         client = TestClient(app)
         oversized = io.BytesIO(b"0" * (101 * 1024 * 1024))
         response = client.post(
-            "/api/admin/documents",
+            "/api/admin/t1/documents",
             files={"file": ("big.md", oversized, "text/markdown")},
-            data={"tenant_id": "t1", "build_graph": "false"},
+            data={"build_graph": "false"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -298,9 +298,9 @@ def test_upload_enqueues_job_and_returns_job_id(tmp_path, ingestion_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/documents",
+            "/api/admin/t1/documents",
             files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
-            data={"tenant_id": "t1", "build_graph": "false"},
+            data={"build_graph": "false"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -323,9 +323,9 @@ def test_upload_sanitizes_traversal_in_filename(tmp_path, ingestion_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/documents",
+            "/api/admin/t1/documents",
             files={"file": ("../../pwned.md", b"## t\ncontent", "text/markdown")},
-            data={"tenant_id": "t1", "build_graph": "false"},
+            data={"build_graph": "false"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -349,16 +349,19 @@ def test_upload_rejects_tenant_id_with_path_separators(tmp_path, ingestion_conn)
     _upload_overrides(session_store, ingestion_conn, upload_dir)
     try:
         client = TestClient(app)
+        # tenant_id 现在是一个路径段，含 "/" 的值在结构上就到不了这个路由
+        # ——连编码过的 %2F 也一样（实测 Starlette 仍按分隔符处理）。这比
+        # 应用层的 400 更强：请求根本没进来。
         response = client.post(
-            "/api/admin/documents",
+            "/api/admin/%2E%2E%2F%2E%2E%2Fpwned/documents",
             files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
-            data={"tenant_id": "../../pwned", "build_graph": "false"},
+            data={"build_graph": "false"},
             headers=_authed_headers(session_store),
         )
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 400
+    assert response.status_code == 404
     assert list(upload_dir.iterdir()) == []
     assert [p.name for p in root.iterdir()] == ["uploads"]
 
@@ -371,10 +374,13 @@ def test_upload_rejects_dot_only_tenant_id(tmp_path, ingestion_conn):
     _upload_overrides(session_store, ingestion_conn, upload_dir)
     try:
         client = TestClient(app)
+        # 未编码的 ".." 会被 URL 规范化掉（打不到路由），编码成 %2E%2E 就能
+        # 穿透到应用层——这一层必须由 _validate_tenant_id 挡住，不能只靠
+        # URL 规范化。
         response = client.post(
-            "/api/admin/documents",
+            "/api/admin/%2E%2E/documents",
             files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
-            data={"tenant_id": "..", "build_graph": "false"},
+            data={"build_graph": "false"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -397,8 +403,8 @@ def test_list_documents_returns_tracked_files_for_tenant(ingestion_conn):
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/documents",
-            params={"tenant_id": "t1"},
+            "/api/admin/t1/documents",
+            
             headers=_authed_headers(session_store),
         )
     finally:
@@ -437,8 +443,8 @@ def test_list_documents_paginates_with_page_and_page_size(ingestion_conn):
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/documents",
-            params={"tenant_id": "t1", "page": 2, "page_size": 1},
+            "/api/admin/t1/documents",
+            params={"page": 2, "page_size": 1},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -477,8 +483,8 @@ def test_list_documents_without_page_params_returns_full_list_beyond_default_pag
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/documents",
-            params={"tenant_id": "t1"},
+            "/api/admin/t1/documents",
+            
             headers=_authed_headers(session_store),
         )
     finally:
@@ -513,8 +519,8 @@ def test_list_documents_excludes_other_tenants_pending_jobs(ingestion_conn):
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/documents",
-            params={"tenant_id": "t1"},
+            "/api/admin/t1/documents",
+            
             headers=_authed_headers(session_store),
         )
     finally:
@@ -556,8 +562,8 @@ def test_delete_document_removes_tracking_and_vectors(tmp_path, ingestion_conn, 
         client = TestClient(app)
         response = client.request(
             "DELETE",
-            "/api/admin/documents",
-            params={"tenant_id": "t1", "file_path": "a.md"},
+            "/api/admin/t1/documents",
+            params={"file_path": "a.md"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -596,8 +602,8 @@ def test_delete_document_also_unlinks_uploaded_file(tmp_path, ingestion_conn, re
         client = TestClient(app)
         response = client.request(
             "DELETE",
-            "/api/admin/documents",
-            params={"tenant_id": "t1", "file_path": str(uploaded)},
+            "/api/admin/t1/documents",
+            params={"file_path": str(uploaded)},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -634,8 +640,8 @@ def test_delete_document_returns_502_with_clear_message_when_vector_store_fails(
         client = TestClient(app)
         response = client.request(
             "DELETE",
-            "/api/admin/documents",
-            params={"tenant_id": "t1", "file_path": "a.md"},
+            "/api/admin/t1/documents",
+            params={"file_path": "a.md"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -677,8 +683,8 @@ def test_delete_document_returns_502_when_tracking_cleanup_fails_after_vector_de
         client = TestClient(app)
         response = client.request(
             "DELETE",
-            "/api/admin/documents",
-            params={"tenant_id": "t1", "file_path": "a.md"},
+            "/api/admin/t1/documents",
+            params={"file_path": "a.md"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -713,8 +719,8 @@ def test_delete_document_keeps_files_outside_upload_dir(tmp_path, ingestion_conn
         client = TestClient(app)
         response = client.request(
             "DELETE",
-            "/api/admin/documents",
-            params={"tenant_id": "t1", "file_path": str(outside)},
+            "/api/admin/t1/documents",
+            params={"file_path": str(outside)},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -733,9 +739,9 @@ def test_upload_rejects_unsupported_file_type(tmp_path, ingestion_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/documents",
+            "/api/admin/t1/documents",
             files={"file": ("payload.exe", b"MZ\x00\x00", "application/octet-stream")},
-            data={"tenant_id": "t1", "build_graph": "false"},
+            data={"build_graph": "false"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -758,9 +764,9 @@ def test_upload_rejects_tenant_id_outside_milvus_charset(tmp_path, ingestion_con
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/documents",
+            "/api/admin/租户.一/documents",
             files={"file": ("a.md", b"## t\ncontent", "text/markdown")},
-            data={"tenant_id": "租户.一", "build_graph": "false"},
+            data={"build_graph": "false"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -794,7 +800,7 @@ def test_upload_with_build_graph_true_runs_graph_extraction(
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/documents",
+            "/api/admin/t1/documents",
             files={
                 "file": (
                     "a.md",
@@ -802,7 +808,7 @@ def test_upload_with_build_graph_true_runs_graph_extraction(
                     "text/markdown",
                 )
             },
-            data={"tenant_id": "t1", "build_graph": "true"},
+            data={"build_graph": "true"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -837,7 +843,7 @@ def test_upload_with_build_graph_false_skips_graph_extraction(
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/documents",
+            "/api/admin/t1/documents",
             files={
                 "file": (
                     "a.md",
@@ -845,7 +851,7 @@ def test_upload_with_build_graph_false_skips_graph_extraction(
                     "text/markdown",
                 )
             },
-            data={"tenant_id": "t1", "build_graph": "false"},
+            data={"build_graph": "false"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -887,7 +893,7 @@ def test_list_documents_includes_dead_jobs(ingestion_conn):
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/documents", params={"tenant_id": "t1"},
+            "/api/admin/t1/documents", 
             headers=_authed_headers(session_store),
         )
     finally:
@@ -933,8 +939,8 @@ def test_retry_job_resets_to_pending_and_returns_200(tmp_path, ingestion_conn, r
     try:
         client = TestClient(app)
         response = client.post(
-            f"/api/admin/documents/jobs/{job_id}/retry",
-            params={"tenant_id": "t1"},
+            f"/api/admin/t1/documents/jobs/{job_id}/retry",
+            
             headers=_authed_headers(session_store),
         )
     finally:
@@ -966,8 +972,8 @@ def test_retry_job_returns_404_for_unknown_job(ingestion_conn, review_conn):
     try:
         client = TestClient(app)
         response = client.post(
-            "/api/admin/documents/jobs/unknown-id/retry",
-            params={"tenant_id": "t1"},
+            "/api/admin/t1/documents/jobs/unknown-id/retry",
+            
             headers=_authed_headers(session_store),
         )
     finally:
@@ -998,8 +1004,8 @@ def test_retry_job_returns_409_when_job_is_not_dead(ingestion_conn, review_conn)
     try:
         client = TestClient(app)
         response = client.post(
-            f"/api/admin/documents/jobs/{job_id}/retry",
-            params={"tenant_id": "t1"},
+            f"/api/admin/t1/documents/jobs/{job_id}/retry",
+            
             headers=_authed_headers(session_store),
         )
     finally:
@@ -1035,8 +1041,8 @@ def test_delete_job_removes_it_and_unlinks_orphaned_file(tmp_path, ingestion_con
         client = TestClient(app)
         response = client.request(
             "DELETE",
-            f"/api/admin/documents/jobs/{job_id}",
-            params={"tenant_id": "t1"},
+            f"/api/admin/t1/documents/jobs/{job_id}",
+            
             headers=_authed_headers(session_store),
         )
     finally:
@@ -1088,8 +1094,8 @@ def test_delete_job_removes_orphaned_vector_chunks(tmp_path, ingestion_conn, rev
         client = TestClient(app)
         response = client.request(
             "DELETE",
-            f"/api/admin/documents/jobs/{job_id}",
-            params={"tenant_id": "t1"},
+            f"/api/admin/t1/documents/jobs/{job_id}",
+            
             headers=_authed_headers(session_store),
         )
     finally:
@@ -1123,8 +1129,8 @@ def test_delete_job_returns_409_when_job_is_not_dead(ingestion_conn, review_conn
         client = TestClient(app)
         response = client.request(
             "DELETE",
-            f"/api/admin/documents/jobs/{job_id}",
-            params={"tenant_id": "t1"},
+            f"/api/admin/t1/documents/jobs/{job_id}",
+            
             headers=_authed_headers(session_store),
         )
     finally:
@@ -1158,8 +1164,8 @@ def test_delete_document_does_not_unlink_file_under_a_different_tenant_directory
         client = TestClient(app)
         response = client.request(
             "DELETE",
-            "/api/admin/documents",
-            params={"tenant_id": "t1", "file_path": str(other_tenants_file)},
+            "/api/admin/t1/documents",
+            params={"file_path": str(other_tenants_file)},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -1187,8 +1193,8 @@ def test_delete_document_returns_404_for_unknown_tenant(tmp_path, ingestion_conn
         client = TestClient(app)
         response = client.request(
             "DELETE",
-            "/api/admin/documents",
-            params={"tenant_id": "no-such-tenant", "file_path": "a.md"},
+            "/api/admin/no-such-tenant/documents",
+            params={"file_path": "a.md"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -1221,8 +1227,8 @@ def test_list_document_chunks_returns_texts_and_total(ingestion_conn):
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/documents/chunks",
-            params={"tenant_id": "t1", "file_path": "a.md"},
+            "/api/admin/t1/documents/chunks",
+            params={"file_path": "a.md"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -1255,8 +1261,8 @@ def test_list_document_chunks_caps_at_200_but_reports_true_total(ingestion_conn)
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/documents/chunks",
-            params={"tenant_id": "t1", "file_path": "a.md"},
+            "/api/admin/t1/documents/chunks",
+            params={"file_path": "a.md"},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -1281,8 +1287,8 @@ def test_download_document_file_returns_file_content(tmp_path, ingestion_conn):
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/documents/file",
-            params={"tenant_id": "t1", "file_path": str(the_file)},
+            "/api/admin/t1/documents/file",
+            params={"file_path": str(the_file)},
             headers=_authed_headers(session_store),
         )
     finally:
@@ -1308,8 +1314,8 @@ def test_download_document_file_returns_404_for_file_outside_own_tenant_director
     try:
         client = TestClient(app)
         response = client.get(
-            "/api/admin/documents/file",
-            params={"tenant_id": "t1", "file_path": str(other_tenants_file)},
+            "/api/admin/t1/documents/file",
+            params={"file_path": str(other_tenants_file)},
             headers=_authed_headers(session_store),
         )
     finally:
