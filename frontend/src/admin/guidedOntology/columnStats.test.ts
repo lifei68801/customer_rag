@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import * as XLSX from 'xlsx'
 import {
   DISTINCT_LIMIT,
   MAX_XLSX_BYTES,
+  TEXT_CHUNK_BYTES,
   accumulateRow,
   createAccumulator,
   finalizeStats,
@@ -110,5 +112,74 @@ describe('scanTableFile', () => {
     // 该怎么办；一条明确的错误信息至少告诉他换个小一点的文件。
     const big = new File([new Uint8Array(MAX_XLSX_BYTES + 1)], 'big.xlsx')
     await expect(scanTableFile(big)).rejects.toThrow(/过大|太大/)
+  })
+
+  it('xlsx 里真实的日期列被识别成 date，不是数值序列号', async () => {
+    // SheetJS 默认（不传 cellDates: true）把日期单元格读成 Excel 内部的
+    // 浮点序列号（比如 45678），不是 JS Date——那样 DATE_PATTERN 匹配不上，
+    // 日期列会被静默判成 integer/string。这条测试直接构造一个带真实
+    // Date 单元格的 xlsx，走 scanTableFile 的真实读取路径断言最终类型，
+    // 不满足于走查代码。
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['order_date', 'amount', 'note'],
+      [new Date(2026, 0, 15), 100, 'a'],
+      [new Date(2026, 1, 3), 200, 'b'],
+      [new Date(2026, 2, 20), 300, 'c'],
+    ])
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1')
+    const buffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer
+    const file = new File([buffer], 'orders.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const byName = Object.fromEntries((await scanTableFile(file)).map((s) => [s.name, s]))
+    expect(byName.order_date.inferredType).toBe('date')
+    expect(byName.amount.inferredType).toBe('integer')
+  })
+})
+
+describe('CSV 分块读取', () => {
+  it('跨多个分块的大文件，行数与基数不因切块而失真', async () => {
+    // Step 8 原有的三个测试都远小于 TEXT_CHUNK_BYTES，从没真正触发过第二
+    // 次循环。一行被切成两半、两半各自当成一行统计，会静默污染基数——这类
+    // bug 不报错，必须专门造一个跨块的大文件才能测到。
+    const states = ['CA', 'TX', 'NY', 'FL', 'WA']
+    const rowCount = 200_000
+    const lines = ['state,idx']
+    for (let i = 0; i < rowCount; i++) {
+      lines.push(`${states[i % states.length]},${i}`)
+    }
+    const csv = lines.join('\n') + '\n'
+    expect(new TextEncoder().encode(csv).length).toBeGreaterThan(TEXT_CHUNK_BYTES * 1.5)
+
+    const file = new File([csv], 'big.csv', { type: 'text/csv' })
+    const byName = Object.fromEntries((await scanTableFile(file)).map((s) => [s.name, s]))
+    expect(byName.state.nonEmptyCount).toBe(rowCount)
+    expect(byName.state.distinctCount).toBe(states.length)
+    expect(byName.idx.nonEmptyCount).toBe(rowCount)
+  })
+
+  it('多字节 UTF-8 字符正好切在块边界上，不产生乱码', async () => {
+    // 精确控制前面内容的字节数，让"中"这个三字节字符的第一个字节正好是
+    // 第一块的最后一个字节，后两个字节落进第二块。如果分块逻辑丢了跨块
+    // 状态（比如每次循环重置 pending），这个字符会被拆散成乱码或替换字符。
+    const header = 'id,text\n'
+    const rowPrefix = '1,'
+    const paddingLength = TEXT_CHUNK_BYTES - 1 - header.length - rowPrefix.length
+    const padding = 'x'.repeat(paddingLength)
+    const tail = '中AB\n'
+    const csv = header + rowPrefix + padding + tail
+    const expectedValue = padding + '中AB'
+
+    // 校验边界确实卡在预期位置：padding 结束处正是 TEXT_CHUNK_BYTES - 1
+    // 字节，"中"的第一个字节落在第一块的最后一个字节上。
+    const prefixBytes = new TextEncoder().encode(header + rowPrefix + padding).length
+    expect(prefixBytes).toBe(TEXT_CHUNK_BYTES - 1)
+
+    const file = new File([csv], 'boundary.csv', { type: 'text/csv' })
+    const byName = Object.fromEntries((await scanTableFile(file)).map((s) => [s.name, s]))
+    expect(byName.text.nonEmptyCount).toBe(1)
+    expect(byName.text.samples[0]).toBe(expectedValue)
+    expect(byName.text.samples[0]).not.toContain('�')
   })
 })

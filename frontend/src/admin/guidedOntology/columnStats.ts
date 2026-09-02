@@ -97,8 +97,13 @@ export function finalizeStats(acc: StatsAccumulator): ColumnStats[] {
  */
 export const MAX_XLSX_BYTES = 20 * 1024 * 1024
 
-/** CSV/TSV 分块读取的块大小。按字节切片，不按行——文件多大都只占这一块内存。 */
-const TEXT_CHUNK_BYTES = 1024 * 1024
+/**
+ * CSV/TSV 分块读取的块大小。按字节切片，不按行——文件多大都只占这一块内存。
+ *
+ * 导出给测试用，好让测试精确控制"一行/一个多字节字符正好切在块边界上"
+ * 这种场景，而不用去猜实现里的常量。
+ */
+export const TEXT_CHUNK_BYTES = 1024 * 1024
 
 /**
  * 扫描整个文件，产出每列统计量。文件不上传——建模阶段数据不出用户的机器。
@@ -131,7 +136,12 @@ async function scanExcelFile(file: File): Promise<ColumnStats[]> {
   // 应该触发下载，不能拖累所有页面的首屏包体积。
   const XLSX = await import('xlsx')
   const buffer = await file.arrayBuffer()
-  const workbook = XLSX.read(buffer, { type: 'array' })
+  // cellDates: true——不传的话 SheetJS 默认把日期格式的单元格读成 Excel
+  // 内部的浮点序列号（比如 45678），不是 JS Date。那样 cellToString 里
+  // `cell instanceof Date` 分支永远不命中，日期列会被 DATE_PATTERN 判不
+  // 通过，退化成按整数/字符串处理——不报错，只是"下单日期"这种列悄悄
+  // 不再被认成日期列，后续按日期列做的范围过滤处理也就用不上了。
+  const workbook = XLSX.read(buffer, { type: 'array', cellDates: true })
   const firstSheetName = workbook.SheetNames[0]
   if (!firstSheetName) return []
   const sheet = workbook.Sheets[firstSheetName]
