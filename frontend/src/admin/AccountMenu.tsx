@@ -7,7 +7,6 @@ import {
   LogOut,
   Plus,
   Settings,
-  SquareArrowOutUpRight,
 } from 'lucide-react'
 import { ADMIN_ROUTES } from '../adminRoutes'
 import { useTenants } from './useTenants'
@@ -174,10 +173,6 @@ export function AccountMenu({ onLogout }: { onLogout: () => void }) {
           <Link to={ADMIN_ROUTES.settings} role="menuitem" className={itemClass} onClick={close}>
             <Settings aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
             设置
-          </Link>
-          <Link to="/" role="menuitem" className={itemClass} onClick={close}>
-            <SquareArrowOutUpRight aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
-            返回前台
           </Link>
 
           {/* 登出是有代价的误触：再隔一条线 + 危险色，跟上面拉开距离。 */}

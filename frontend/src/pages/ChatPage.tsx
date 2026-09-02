@@ -50,7 +50,10 @@ export function ChatPage() {
       <div className="border-b border-subtle bg-card px-4 py-2 text-center font-mono text-xs uppercase tracking-widest text-ink-soft">
         知识驱动的企业数字员工
       </div>
-      <nav className="flex items-center justify-between border-b border-subtle bg-card px-6 py-4">
+      <nav
+        data-testid="site-topbar"
+        className="flex items-center justify-between border-b border-subtle bg-card px-6 py-4"
+      >
         <span className="font-mono font-semibold text-ink">企业数字员工</span>
         <Link
           to="/admin"

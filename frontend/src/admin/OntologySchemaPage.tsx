@@ -204,13 +204,11 @@ export function OntologySchemaPage() {
     : []
   const confirmDisabledReason = !isLifecycleTab
     ? '该分类直接生效，无需确认'
-    : view === 'confirmed'
-      ? '正在查看已确认版本（只读），切到「草稿」才能确认'
-      : readiness === null
-        ? '检查前置条件中…'
-        : missingCategories.length > 0
-          ? `还缺少：${missingCategories.join('、')}（各至少一条）`
-          : null
+    : readiness === null
+      ? '检查前置条件中…'
+      : missingCategories.length > 0
+        ? `还缺少：${missingCategories.join('、')}（各至少一条）`
+        : null
   const confirmDisabled = confirming || confirmDisabledReason !== null
 
   /** 拉一份 status 下的本体三件套，供 diff 用。 */
@@ -282,46 +280,9 @@ export function OntologySchemaPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.ontology}</h1>
-        {/* 状态徽章、草稿/已确认分段切换、确认按钮同处一个视觉层级——徽章是
-            "这个租户有没有确认过 schema"的持久状态（跟当前在哪个 tab、看
-            草稿还是已确认无关，来自 GET .../status），分段控件+确认按钮是
-            "当前在浏览/操作哪份数据"的即时控制，两者语义不同但都是同一件
-            事（schema 生命周期）在页面头部的呈现，放在一起才读得出关联：
-            徽章告诉你结果，右边的控件告诉你怎么改变这个结果。
-            三个 tab 下这一整块的位置和形状都不变，不随 tab 切换而出现/
-            消失——前置条件不满足时，用 disabled + 下方一行小字说明原因，
-            而不是让控件凭空消失，用户分不清是没做完还是压根没做出来。 */}
-        <div className="flex flex-wrap items-center gap-3">
-          <span
-            className={`rounded-chip border border-subtle px-3 py-1.5 text-sm font-bold ${
-              confirmed ? 'bg-status-success text-on-accent' : 'bg-accent-secondary text-on-accent'
-            }`}
-          >
-            {confirmed === null ? '加载中…' : confirmed ? '已确认' : '草稿中（未确认）'}
-          </span>
-          <div className="flex flex-col gap-1">
-            <button
-              type="button"
-              onClick={handleConfirm}
-              disabled={confirmDisabled}
-              // 禁用时说明为什么点不了，可用时说明点下去会发生什么。颜色
-              // 不能是唯一的信号——色觉障碍的用户看到的是两个灰按钮。
-              title={confirmDisabledReason ?? CONFIRM_IRREVERSIBLE_HINT}
-              // 危险色而不是成功色。这个动作确实会"成功"，但它的效果是
-              // 「旧的已确认版本会被换掉、无法恢复」。确认弹窗把后果写得
-              // 很清楚，可用户在点开弹窗之前就已经形成了预期。
-              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
-            >
-              {confirming ? '确认中…' : '确认 schema'}
-            </button>
-            {confirmDisabledReason && !confirming && (
-              <span className="text-xs text-ink-soft">{confirmDisabledReason}</span>
-            )}
-          </div>
-        </div>
-      </div>
+      {/* 页头只有标题。草稿/已确认这个轴归侧边栏的版本切换器——同一个轴在
+          两个地方各摆一份控件，用户会以为它们管的不是同一件事。 */}
+      <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.ontology}</h1>
 
       {pageError && (
         <p role="alert" className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
@@ -329,7 +290,7 @@ export function OntologySchemaPage() {
         </p>
       )}
 
-      <nav className="flex flex-row flex-wrap gap-2">
+      <nav data-testid="ontology-tabs" className="flex flex-row flex-wrap gap-2">
         <button
           type="button"
           className={tabButtonClass(tab === 'term-types')}
@@ -362,38 +323,77 @@ export function OntologySchemaPage() {
         </button>
       </nav>
 
-      {tab === 'term-types' && (
-        <TermTypesTab
-          key={tenantId}
-          sessionToken={sessionToken}
-          tenantId={tenantId}
-          onError={setPageError}
-          view={view}
-          confirmVersion={confirmVersion}
-          onDataChanged={bumpReadiness}
-        />
+      {/* 已确认视图是只读快照。快照压根不存在时，三个空列表和"确认过但
+          是空的"长得一模一样——不说清楚，用户会掉头去查数据哪儿去了。 */}
+      {view === 'confirmed' && confirmed === false && (
+        <p
+          data-testid="never-confirmed-notice"
+          className="rounded-card border border-subtle bg-card px-3 py-2 text-sm text-ink"
+        >
+          这个租户还没确认过 schema，已确认版本是空的。下面看到的空列表不是数据丢了——
+          切回侧边栏的「草稿」编辑，录完再确认。
+        </p>
       )}
-      {tab === 'relation-types' && (
-        <RelationTypesTab
-          key={tenantId}
-          sessionToken={sessionToken}
-          tenantId={tenantId}
-          onError={setPageError}
-          view={view}
-          confirmVersion={confirmVersion}
-          onDataChanged={bumpReadiness}
-        />
-      )}
-      {tab === 'constraints' && (
-        <ConstraintsTab
-          key={tenantId}
-          sessionToken={sessionToken}
-          tenantId={tenantId}
-          onError={setPageError}
-          view={view}
-          confirmVersion={confirmVersion}
-          onDataChanged={bumpReadiness}
-        />
+
+      <div data-testid="ontology-tab-panel" className="flex flex-col gap-6">
+        {tab === 'term-types' && (
+          <TermTypesTab
+            key={tenantId}
+            sessionToken={sessionToken}
+            tenantId={tenantId}
+            onError={setPageError}
+            view={view}
+            confirmVersion={confirmVersion}
+            onDataChanged={bumpReadiness}
+          />
+        )}
+        {tab === 'relation-types' && (
+          <RelationTypesTab
+            key={tenantId}
+            sessionToken={sessionToken}
+            tenantId={tenantId}
+            onError={setPageError}
+            view={view}
+            confirmVersion={confirmVersion}
+            onDataChanged={bumpReadiness}
+          />
+        )}
+        {tab === 'constraints' && (
+          <ConstraintsTab
+            key={tenantId}
+            sessionToken={sessionToken}
+            tenantId={tenantId}
+            onError={setPageError}
+            view={view}
+            confirmVersion={confirmVersion}
+            onDataChanged={bumpReadiness}
+          />
+        )}
+      </div>
+
+      {/* 确认动作跟着录入信息走：用户是在这下面录完的，让他回到页面顶部
+          去点，中间隔着一整页内容。只在草稿视图出现——已确认是只读快照，
+          那里摆一个点不动的按钮，只会让人怀疑自己哪一步做错了。 */}
+      {view === 'draft' && (
+        <div className="flex flex-col gap-1 border-t border-subtle pt-4">
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={confirmDisabled}
+            // 禁用时说明为什么点不了，可用时说明点下去会发生什么。颜色
+            // 不能是唯一的信号——色觉障碍的用户看到的是两个灰按钮。
+            title={confirmDisabledReason ?? CONFIRM_IRREVERSIBLE_HINT}
+            // 危险色而不是成功色。这个动作确实会"成功"，但它的效果是
+            // 「旧的已确认版本会被换掉、无法恢复」。确认弹窗把后果写得
+            // 很清楚，可用户在点开弹窗之前就已经形成了预期。
+            className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-status-error px-4 py-2 text-sm font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          >
+            {confirming ? '确认中…' : '确认 schema'}
+          </button>
+          <span className="text-xs text-ink-soft">
+            {confirming ? '确认中…' : (confirmDisabledReason ?? CONFIRM_IRREVERSIBLE_HINT)}
+          </span>
+        </div>
       )}
     </div>
   )

@@ -23,3 +23,19 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = function scrollIntoView() {}
 }
 
+
+// 前台聊天窗滚到底之前会问一句 prefers-reduced-motion，jsdom 里没有
+// matchMedia。默认答"不减少动效"——这是绝大多数用户的真实设置，测试里
+// 也就走到平时走的那条分支。
+if (!window.matchMedia) {
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia
+}

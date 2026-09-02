@@ -1,6 +1,6 @@
-import { ChevronDown, Menu, X } from 'lucide-react'
+import { ChevronDown, Menu, SquareArrowOutUpRight, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
+import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { NAV_GROUPS, NAV_STANDALONE } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
 import { DensityProvider } from './DensityContext'
@@ -115,9 +115,9 @@ export function AdminLayout() {
   // TenantProvider 必须包住侧边栏（租户下拉框）和 <Outlet />（各页面）两者，
   // 它们才共用同一份租户状态；只包其中一边等于没修。
   //
-  // 侧边栏在窄屏（<768px）下改成顶部横条：flex-col 让 aside 和 main 上下堆叠、
-  // aside 内部改 flex-row 排布，避免固定 w-56 的侧边栏在手机宽度下把主内容区
-  // 挤到不到 150px 宽、必须横向滚动才能看全的问题。
+  // 顶栏在最外层、跨满宽度，和前台那条对齐；侧边栏从它下面开始。窄屏
+  // （<768px）下侧边栏收成抽屉，由顶栏左端的汉堡开关——固定 w-56 的侧边栏
+  // 在手机宽度下会把主内容区挤到不到 150px，必须横向滚动才看得全。
   //
   // SkinProvider/ConfirmProvider 现在都挂载在 main.tsx 的根节点（站点级
   // 能力，前台/后台共用），这里不再重复包一层。
@@ -127,48 +127,66 @@ export function AdminLayout() {
         {/* 挂在两个 Provider 内部——命令面板要调用 TenantContext /
             DensityContext / SkinContext 的方法，挂在外面拿不到。 */}
         <CommandPalette />
-        <div className="flex min-h-dvh flex-col bg-paper md:flex-row">
-          {/* 窄屏专用的开关条。宽屏上侧边栏常驻，不需要它。 */}
-          <div className="flex items-center gap-2 border-b border-subtle bg-card p-3 md:hidden">
-            <button
-              type="button"
-              aria-label="导航菜单"
-              aria-expanded={drawerOpen}
-              onClick={() => setDrawerOpen((v) => !v)}
-              className={`flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-control border border-subtle bg-paper text-ink transition active:scale-95 ${focusRing}`}
-            >
-              {drawerOpen ? <X aria-hidden="true" className="h-5 w-5" /> : <Menu aria-hidden="true" className="h-5 w-5" />}
-            </button>
-            <span className="font-mono text-sm font-bold text-ink">管理后台</span>
-          </div>
-          {/* data-open 是语义状态，显示与否交给断点：宽屏 md:flex 永远展开，
-              窄屏由它决定。用 hidden 而不是不渲染，是为了让宽屏那份始终在
-              DOM 里——否则跨断点缩放窗口时侧边栏的展开状态会被重置。 */}
-          <aside
-            data-open={drawerOpen}
-            className={`flex-col gap-3 border-b border-subtle bg-card p-4 md:flex md:w-56 md:flex-shrink-0 md:justify-between md:border-b-0 md:border-r ${
-              drawerOpen ? 'flex' : 'hidden'
-            }`}
+        <div className="flex min-h-dvh flex-col bg-paper">
+          {/* 顶栏跨满整个宽度，和前台那条同一个位置、同一个形状。右端是
+              「返回前台」，正对前台右端的「管理后台」——两个方向的入口落
+              在屏幕上的同一个点，回去这件事不用重新找。它常驻在每一页，
+              没有哪一页是走进去出不来的。 */}
+          <header
+            data-testid="admin-topbar"
+            className="flex items-center justify-between gap-2 border-b border-subtle bg-card px-4 py-3 md:px-6 md:py-4"
           >
-            <AdminNav />
-            <div className="flex flex-col gap-3">
-              {/* 快捷键不告诉用户等于不存在。用 kbd 而不是纯文本，让它看起来
-                  就是个按键提示。 */}
-              <p className="text-xs text-ink-soft">
-                按
-                <kbd className="mx-1 rounded-chip border border-subtle bg-paper px-1.5 py-0.5 font-mono">
-                  ⌘K
-                </kbd>
-                打开命令面板
-              </p>
-              {/* 当前租户 + 账号动作。租户名常驻在按钮上——它是数据作用域，
-                  看不到它的话用户会在错的租户里导数据。 */}
-              <AccountMenu onLogout={logout} />
+            <div className="flex items-center gap-2">
+              {/* 抽屉开关只在窄屏有意义——宽屏侧边栏常驻。 */}
+              <button
+                type="button"
+                aria-label="导航菜单"
+                aria-expanded={drawerOpen}
+                onClick={() => setDrawerOpen((v) => !v)}
+                className={`flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-control border border-subtle bg-paper text-ink transition active:scale-95 md:hidden ${focusRing}`}
+              >
+                {drawerOpen ? <X aria-hidden="true" className="h-5 w-5" /> : <Menu aria-hidden="true" className="h-5 w-5" />}
+              </button>
+              <span className="font-mono font-semibold text-ink">管理后台</span>
             </div>
-          </aside>
-          <main className="flex-1 overflow-y-auto p-6">
-            <Outlet />
-          </main>
+            <Link
+              to="/"
+              className={`flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 ${focusRing}`}
+            >
+              <SquareArrowOutUpRight aria-hidden="true" className="h-4 w-4" />
+              返回前台
+            </Link>
+          </header>
+          <div className="flex flex-1 flex-col md:flex-row">
+            {/* data-open 是语义状态，显示与否交给断点：宽屏 md:flex 永远展开，
+                窄屏由它决定。用 hidden 而不是不渲染，是为了让宽屏那份始终在
+                DOM 里——否则跨断点缩放窗口时侧边栏的展开状态会被重置。 */}
+            <aside
+              data-open={drawerOpen}
+              className={`flex-col gap-3 border-b border-subtle bg-card p-4 md:flex md:w-56 md:flex-shrink-0 md:justify-between md:border-b-0 md:border-r ${
+                drawerOpen ? 'flex' : 'hidden'
+              }`}
+            >
+              <AdminNav />
+              <div className="flex flex-col gap-3">
+                {/* 快捷键不告诉用户等于不存在。用 kbd 而不是纯文本，让它看起来
+                    就是个按键提示。 */}
+                <p className="text-xs text-ink-soft">
+                  按
+                  <kbd className="mx-1 rounded-chip border border-subtle bg-paper px-1.5 py-0.5 font-mono">
+                    ⌘K
+                  </kbd>
+                  打开命令面板
+                </p>
+                {/* 当前租户 + 账号动作。租户名常驻在按钮上——它是数据作用域，
+                    看不到它的话用户会在错的租户里导数据。 */}
+                <AccountMenu onLogout={logout} />
+              </div>
+            </aside>
+            <main className="min-w-0 flex-1 overflow-y-auto p-6">
+              <Outlet />
+            </main>
+          </div>
         </div>
       </DensityProvider>
     </TenantProvider>

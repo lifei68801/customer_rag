@@ -107,11 +107,12 @@ describe('菜单内容', () => {
     expect(menu().getByRole('menuitemradio', { name: /ACME/ }).getAttribute('aria-checked')).toBe('false')
   })
 
-  it('新建租户、设置、返回前台、登出都在', async () => {
+  it('新建租户、设置、登出都在', async () => {
     const user = userEvent.setup()
     renderPage()
     await open(user)
-    for (const label of ['新建租户', '设置', '返回前台', '登出']) {
+    // 「返回前台」已经搬到顶栏右上角常驻，不再在这个菜单里。
+    for (const label of ['新建租户', '设置', '登出']) {
       expect(menu().getByRole('menuitem', { name: label })).toBeTruthy()
     }
   })

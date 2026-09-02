@@ -81,14 +81,15 @@ describe('账号菜单', () => {
     expect(screen.queryByRole('menu', { name: '账号与租户' })).toBeNull()
   })
 
-  it('点开有设置、返回前台、登出', async () => {
+  it('点开有设置和登出', async () => {
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.documents)
     await user.click(aside().getByRole('button', { name: /账号与租户/ }))
     // 菜单里它们的角色是 menuitem，不是 link/button——role 属性覆盖了
     // 元素的隐含角色，这正是屏幕阅读器听到的。
     const menu = within(screen.getByRole('menu', { name: '账号与租户' }))
-    for (const label of ['设置', '返回前台', '登出']) {
+    // 「返回前台」不在这里——它常驻顶栏右上角（见 adminChrome.test.tsx）。
+    for (const label of ['设置', '登出']) {
       expect(menu.getByRole('menuitem', { name: label })).toBeTruthy()
     }
   })
