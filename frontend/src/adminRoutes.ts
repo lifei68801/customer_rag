@@ -37,6 +37,7 @@ export const ADMIN_ROUTES = {
   diagnostics: '/admin/diagnostics',
   // 账号设置。不在任何导航分组里——它不是流程的一站，是账号级的偏好。
   accounts: '/admin/accounts',
+  tenants: '/admin/tenants',
   settings: '/admin/settings',
 } as const
 
@@ -156,6 +157,7 @@ const EXTRA_TITLES: Partial<Record<keyof typeof ADMIN_ROUTES, string>> = {
   // 不存在，放进侧边栏会让两种角色看到不同的侧边栏，破坏"侧边栏是固定
   // 的"这个心智模型。
   accounts: '账号',
+  tenants: '租户',
   settings: '设置',
 }
 

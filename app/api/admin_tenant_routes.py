@@ -54,9 +54,19 @@ class TenantCreateRequest(BaseModel):
 
 @router.get("", response_model=TenantListResponse)
 async def list_all_tenants(
+    include_disabled: bool = False,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> TenantListResponse:
-    tenants = await list_tenants(review_conn)
+    """默认只返回启用中的租户。
+
+    账号菜单的切换下拉框用的就是这个默认值——列出停用的租户会让用户切过去
+    之后发现读得到、写全是 404（tenant_guard 那条"读放行、写不放行"的
+    策略），那是最难查的一类状态：界面看着正常，操作却一个都不成功。
+
+    只有租户管理页传 include_disabled=true：它要能看到停用的租户，否则就
+    没法把它们启用回来。
+    """
+    tenants = await list_tenants(review_conn, include_disabled=include_disabled)
     return TenantListResponse(tenants=[TenantResponse(**t) for t in tenants])
 
 

@@ -149,3 +149,33 @@ def test_enable_nonexistent_tenant_returns_404(client):
         "/api/admin/tenants/does_not_exist/enable", headers={"Authorization": "Bearer x"}
     )
     assert resp.status_code == 404
+
+
+async def test_list_can_include_disabled_tenants(client, conn_for_testing):
+    """租户管理页要能看到停用的——看不到就没法启用它们。
+
+    默认值仍然只返回启用中的（见上一条）：账号菜单的切换下拉框用的就是那个
+    默认值，列出停用的租户会让用户切过去之后发现读得到、写全是 404
+    （tenant_guard 那条"读放行、写不放行"的策略），那是最难查的一类状态。
+    """
+    conn_for_testing["conn"] = await _review_conn()
+    await conn_for_testing["conn"].execute(
+        "INSERT INTO tenants (tenant_id, name, status) VALUES (?, ?, ?)",
+        ("active_tenant", "Active Tenant", "active"),
+    )
+    await conn_for_testing["conn"].execute(
+        "INSERT INTO tenants (tenant_id, name, status) VALUES (?, ?, ?)",
+        ("disabled_tenant", "Disabled Tenant", "disabled"),
+    )
+    await conn_for_testing["conn"].commit()
+
+    resp = client.get(
+        "/api/admin/tenants",
+        params={"include_disabled": "true"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert resp.status_code == 200
+    by_id = {t["tenant_id"]: t for t in resp.json()["tenants"]}
+    assert by_id["active_tenant"]["status"] == "active"
+    assert by_id["disabled_tenant"]["status"] == "disabled"

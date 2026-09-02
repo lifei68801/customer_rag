@@ -29,6 +29,7 @@ describe('新路由表', () => {
       // 账号页和设置页都不在侧边栏里，入口在左下角的账号菜单。账号页对
       // member 根本不存在——放进侧边栏会让两种角色看到不同的侧边栏。
       accounts: '/admin/accounts',
+      tenants: '/admin/tenants',
       settings: '/admin/settings',
     })
   })
@@ -118,6 +119,7 @@ describe('导航分组', () => {
     const NOT_IN_NAV: Record<string, string> = {
       settings: '账号级偏好，不是流程的一站；入口在底部账号菜单',
       accounts: '对 member 根本不存在；放进侧边栏会让两种角色看到不同的侧边栏',
+      tenants: '同上，admin 专属；入口在账号菜单',
     }
     const inNav = [
       ...NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path)),

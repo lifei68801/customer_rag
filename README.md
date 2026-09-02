@@ -229,6 +229,11 @@ python -m app.ingestion.main --dir path/to/docs --build-graph    # 同时做 LLM
 账号只停用不删除：这个系统里的写操作不可逆，账号删了之后「这批数据是谁批准
 的」就查不出来了。停用**立即生效**，被停的人下一个请求就会被踢回登录页。
 
+「租户管理」页管另一件事：新建租户、停用/启用租户。注意两者的后果不同——
+停用**账号**是立刻把人挡在门外；停用**租户**之后，属于它的成员仍能登录、
+仍能读数据，只是所有写操作会失败，那个租户也会从切换列表里消失。租户同样
+只停用不删除：它的数据散在向量库、图谱和几个 SQLite 库里，删除是另一件事。
+
 右上角常驻「返回前台」，和前台右上角的「管理后台」互为往返入口。按 `Ctrl+K`（Mac 是 `⌘K`）打开命令面板，可以直接跳页面、切租户、换皮肤。
 
 ---
@@ -342,11 +347,10 @@ Milvus 没起来。检查 Docker Desktop 是否在运行，然后 `docker compos
 首次启动会自动停用 6 个测试残留租户（`t_verify` / `t_verify2` /
 `review-test` / `review-ontology-test` / `e2e_concurrency_test` /
 `table_extract_test`）——它们在业务表里零记录，挂在下拉框里会让人把数据建
-错地方。停用可逆，但**目前没有对应的界面**——后端有
-`POST /api/admin/tenants/{tenant_id}/enable`（需要管理员 session），前端还没
-接这个接口。要恢复某个租户，眼下只能直接调它。
+错地方。停用可逆：左下角账号菜单 →「租户管理」，那一页会连停用的租户一起列出来
+（切换下拉框里则只有启用中的），点「启用」即可。
 
-要长期保留其中某个，得改 `app/auth/bootstrap.py` 里的 `STALE_TEST_TENANTS`
+但要长期保留其中某个，得改 `app/auth/bootstrap.py` 里的 `STALE_TEST_TENANTS`
 常量——否则每次启动都会把它重新停掉。
 
 **建 collection 报维度错误**

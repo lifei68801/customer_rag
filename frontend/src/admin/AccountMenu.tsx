@@ -192,6 +192,17 @@ export function AccountMenu({ onLogout }: { onLogout: () => void }) {
               账号管理
             </Link>
           )}
+          {isAdmin && (
+            <Link
+              to={ADMIN_ROUTES.tenants}
+              role="menuitem"
+              className={itemClass}
+              onClick={close}
+            >
+              <Building2 aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
+              租户管理
+            </Link>
+          )}
           <Link to={ADMIN_ROUTES.settings} role="menuitem" className={itemClass} onClick={close}>
             <Settings aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
             设置

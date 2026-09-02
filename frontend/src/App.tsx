@@ -12,6 +12,7 @@ import { OntologyGraphPage } from './admin/OntologyGraphPage'
 import { TermDetailPage } from './admin/TermDetailPage'
 import { DiagnosticsPage } from './admin/DiagnosticsPage'
 import { AccountsPage } from './admin/AccountsPage'
+import { TenantsPage } from './admin/TenantsPage'
 import { SettingsPage } from './admin/SettingsPage'
 import { NotFoundPage } from './admin/NotFoundPage'
 import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'
@@ -42,6 +43,7 @@ function App() {
         <Route path="terms/:nodeKey" element={<TermDetailPage />} />
         <Route path="diagnostics" element={<DiagnosticsPage />} />
         <Route path="accounts" element={<AccountsPage />} />
+        <Route path="tenants" element={<TenantsPage />} />
         <Route path="settings" element={<SettingsPage />} />
 
         {/* 旧书签。每条一跳直达，不经过中间那一代。 */}
