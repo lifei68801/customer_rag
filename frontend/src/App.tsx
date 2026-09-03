@@ -16,7 +16,8 @@ import { TenantsPage } from './admin/TenantsPage'
 import { SettingsPage } from './admin/SettingsPage'
 import { NotFoundPage } from './admin/NotFoundPage'
 import { GuidedOntologyPage } from './admin/guidedOntology/GuidedOntologyPage'
-import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'
+import { AdminLanding } from './admin/AdminLanding'
+import { LEGACY_REDIRECTS } from './adminRoutes'
 
 /**
  * 路径直接取自 adminRoutes.ts，不在这里另写一份字面量——侧边栏、⌘K、
@@ -28,7 +29,7 @@ function App() {
       <Route path="/" element={<ChatPage />} />
       <Route path="/admin/login" element={<LoginPage />} />
       <Route path="/admin" element={<AdminLayout />}>
-        <Route index element={<Navigate to={ADMIN_ROUTES.documents} replace />} />
+        <Route index element={<AdminLanding />} />
 
         <Route path="ingest/documents" element={<DocumentsPage />} />
         <Route path="ingest/etl" element={<SchemaEtlPage />} />
