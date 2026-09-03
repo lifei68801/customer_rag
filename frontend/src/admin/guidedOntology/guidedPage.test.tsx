@@ -8,6 +8,7 @@ import { ConfirmProvider } from '../ConfirmContext'
 import { ToastProvider } from '../ToastContext'
 import { ADMIN_ROUTES } from '../../adminRoutes'
 import * as columnStats from './columnStats'
+import { MAX_XLSX_BYTES } from './columnStats'
 
 // 默认透传真实实现：只有「扫描中显示进度」这一条测试需要手动控制这个
 // mock 何时 resolve，其余测试（尤其是 oversizedXlsx 那条，验证的就是真实
@@ -168,7 +169,13 @@ describe('引导页第一步', () => {
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.guidedOntology)
     await user.upload(await screen.findByLabelText(/选择一张表/), oversizedXlsx())
-    expect(await screen.findByRole('alert')).toBeTruthy()
+    const alert = await screen.findByRole('alert')
+    // 只断言 alert 存在测不出任何东西：实测过把 setError(err.message) 换成
+    // 常量 '出错了' 之后全部测试依旧全绿，而这条测试的名字承诺的是"说清
+    // 原因"。要断言的是原因本身——是哪个限制、超了多少。
+    expect(alert.textContent).toMatch(/xlsx/)
+    expect(alert.textContent).toMatch(/上限/)
+    expect(alert.textContent).toMatch(new RegExp(String(MAX_XLSX_BYTES)))
   })
 
   it('member 看到的是无权限提示，不是 404', async () => {

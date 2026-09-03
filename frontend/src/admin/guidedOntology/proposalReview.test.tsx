@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -23,14 +24,13 @@ import type { ColumnStats, GuidedDecision, Proposal, RoledColumn } from './types
  * 用 `within(screen.getByTestId('dimension-customer_state'))` 把查询限定
  * 在一个 dimension 块内部消歧义，而不是把 fixture 缩成只剩一列。
  *
- * 但要如实记一句：这份多维度 fixture 本身**不会**捕获 radio 的 `name`
- * 分组写错这类 bug（比如把 `name={\`dim-${name}\`}` 改成常量
- * `"dim"`，让 5 组单选被浏览器当成同一组）。实测过：这么改之后全部测试
- * 依旧全绿，因为测试里 `onDecisionChange` 是 `vi.fn()`，组件是不受控
- * 的——`decision` prop 不会因为点击而更新，点击不触发第二次渲染，
- * 分组串扰也就不会以 DOM `checked` 状态的形式暴露出来。这个缺口目前没
- * 有任何测试覆盖，见下面"点一列的 radio 不会带翻另一列的决定"那条测试
- * 旁边的说明。
+ * 但要如实记一句：这些用例里 `onDecisionChange` 是 `vi.fn()`，组件是
+ * **不受控**的——`decision` prop 不会因为点击而更新，点击不触发第二次
+ * 渲染，所以 radio 的 `name` 分组写错（比如把 `name={\`dim-${name}\`}`
+ * 改成常量 `"dim"`，让所有单选被浏览器当成同一组）不会以 DOM `checked`
+ * 状态的形式暴露出来。实测过：这么改之后其余测试全绿。钉住它的是文件
+ * 末尾"单选按钮按列分组"那一组——那里用一个受控包装组件把 `decision`
+ * 提成真实 state。
  */
 
 function stat(
@@ -145,11 +145,11 @@ describe('低基数列的选择', () => {
     // 传给 onDecisionChange 的新对象不会把别的列的决定弄丢。
     //
     // 它守不住的是 radio 的 name 分组——name 必须按列拼
-    // （name={`dim-${name}`}），写成常量会让 5 组单选被浏览器当成同一
-    // 组，选中一列会连带取消另一列。这个缺口目前没有任何测试覆盖：
-    // 组件在这里是不受控的（onDecisionChange 是 mock，decision prop 不
-    // 会因为点击回流），点击不会触发第二次渲染，分组串扰也就不会以 DOM
-    // checked 状态的形式暴露出来。
+    // （name={`dim-${name}`}），写成常量会让所有单选被浏览器当成同一组，
+    // 选中一列会连带取消另一列。这条测不出来：组件在这里是不受控的
+    // （onDecisionChange 是 mock，decision prop 不会因为点击回流），点击
+    // 不会触发第二次渲染，分组串扰也就不会以 DOM checked 状态的形式暴露
+    // 出来。钉住它的是文件末尾"单选按钮按列分组"那一组。
     const user = userEvent.setup()
     const onChange = vi.fn()
     renderReview({ onDecisionChange: onChange })
@@ -657,5 +657,53 @@ describe('挂在下拉框没有对应 constraint 时', () => {
     expect(select.value).not.toBe('品牌')
     const optionLabels = [...select.options].map((o) => o.textContent)
     expect(optionLabels).toContain('未连接')
+  })
+})
+
+describe('单选按钮按列分组', () => {
+  /**
+   * 受控包装：把 decision 提成真实 state，改判之后组件真的重渲染。
+   *
+   * 这是这条缺口唯一测得出来的写法。别的用例里 onDecisionChange 是
+   * vi.fn()，decision prop 不回流，点击不触发第二次渲染——原生 radio
+   * group 的串扰（浏览器把同 name 的单选当成一组，选中一个就把同组其余
+   * 的置为未选中）就永远不会以 DOM checked 状态的形式暴露出来。
+   */
+  function ControlledReview() {
+    const [current, setCurrent] = useState(baseDecision)
+    return (
+      <ProposalReview
+        roled={roled}
+        decision={current}
+        onDecisionChange={setCurrent}
+        proposal={buildProposal(roled, current)}
+      />
+    )
+  }
+
+  it('点一列的「做成属性」，别的列的选择不会被带翻', async () => {
+    // name 写成常量时：点 customer_state 的「做成属性」会把同组的其余
+    // 单选（产品、公司、类目、用户名的「建成实体」，还有订单号的）一并
+    // 置为未选中，而 React 不会把它们改回来——props 没变就不重设 DOM。
+    const user = userEvent.setup()
+    render(<ControlledReview />)
+    const state = await screen.findByTestId('dimension-customer_state')
+    await user.click(within(state).getByRole('radio', { name: /做成属性/ }))
+
+    // 前提：这次点击真的生效了（组件确实是受控的），否则下面的断言在
+    // 原理上测不出问题。
+    expect(
+      (within(state).getByRole('radio', { name: /做成属性/ }) as HTMLInputElement).checked,
+    ).toBe(true)
+
+    const product = screen.getByTestId('dimension-产品')
+    expect(
+      (within(product).getByRole('radio', { name: /建成实体/ }) as HTMLInputElement).checked,
+    ).toBe(true)
+    // 标识列的那一组用的是同一套 name，一并钉住。
+    const identifier = screen.getByTestId('identifier-订单号')
+    expect(
+      (within(identifier).getByRole('radio', { name: /建成实体/ }) as HTMLInputElement).checked,
+    ).toBe(true)
   })
 })
