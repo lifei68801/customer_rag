@@ -18,6 +18,9 @@ import { PAGE_TITLES } from '../adminRoutes'
  */
 
 let ontologyStatusResponse: { confirmed: boolean } | null = null
+// true 时 /ontology/demo/status 直接 reject——模拟状态接口读取失败(网络
+// 错误、连接被断等),用来走到 AdminLanding 的 catch 分支。
+let ontologyStatusShouldFail = false
 
 function stubApi() {
   vi.stubGlobal(
@@ -29,8 +32,9 @@ function stubApi() {
       if (url.includes('/nav-badges')) {
         return json({ pending_relations: 0, pending_duplicates: 0, total_terms: 0 })
       }
-      if (url.includes('/ontology/demo/status') && ontologyStatusResponse !== null) {
-        return json(ontologyStatusResponse)
+      if (url.includes('/ontology/demo/status')) {
+        if (ontologyStatusShouldFail) return Promise.reject(new Error('network down'))
+        if (ontologyStatusResponse !== null) return json(ontologyStatusResponse)
       }
       // 未匹配的 URL(以及故意不 stub 状态接口的情形)永不 resolve——这就是
       // 「状态未知」的天然造法,不需要另写一个 never-resolve 辅助函数。
@@ -41,6 +45,10 @@ function stubApi() {
 
 function stubOntologyStatus(body: { confirmed: boolean }) {
   ontologyStatusResponse = body
+}
+
+function stubOntologyStatusFailure() {
+  ontologyStatusShouldFail = true
 }
 
 function signIn(role: 'admin' | 'member') {
@@ -54,6 +62,7 @@ beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
   ontologyStatusResponse = null
+  ontologyStatusShouldFail = false
   stubApi()
 })
 
@@ -99,5 +108,15 @@ describe('后台落地路由', () => {
     expect(await screen.findByTestId('admin-landing-loading')).toBeTruthy()
     expect(screen.queryByRole('heading', { name: PAGE_TITLES.documents })).toBeNull()
     expect(screen.queryByRole('heading', { name: PAGE_TITLES.ontology })).toBeNull()
+  })
+
+  it('状态接口读取失败时降级到本体结构页', async () => {
+    // catch 分支此前没有任何测试走到。降级到本体结构页是因为那一页对
+    // 两种租户都完全可用,而文档上传页在本体未确认时主能力是禁用的——
+    // 读失败时选代价小的那边。
+    signIn('admin')
+    stubOntologyStatusFailure()
+    renderAt('/admin')
+    expect(await screen.findByRole('heading', { name: PAGE_TITLES.ontology })).toBeTruthy()
   })
 })

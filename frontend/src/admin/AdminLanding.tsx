@@ -37,8 +37,14 @@ export function AdminLanding() {
         const body = (await res.json()) as { confirmed: boolean }
         if (!cancelled) setConfirmed(body.confirmed)
       } catch {
-        // 读不到状态时落在本体结构页:那一页对两种租户都是完全可用的,而
-        // 文档上传页在本体未确认时主能力是禁用的。读失败时选代价小的那边。
+        // 只有 401(adminFetch 内部显式 throw)或请求本身失败(网络错误、
+        // res.json() 解析非法 JSON)才会走到这里。实测过一种容易被当作
+        // "同一条路径"的情形:后端返回 500 但带一个解析得出的 JSON body
+        // (例如 {"detail": "..."})——这种响应不会抛错,会走上面的 try
+        // 分支,body.confirmed 是 undefined(falsy),同样落到本体结构页,
+        // 但走的是 try 分支而不是这里。这里落到本体结构页,是因为那一页
+        // 对两种租户都完全可用,而文档上传页在本体未确认时主能力是禁用
+        // 的——读失败时选代价小的那边。
         if (!cancelled) setConfirmed(false)
       }
     }
@@ -48,6 +54,11 @@ export function AdminLanding() {
     }
   }, [sessionToken, tenantId])
 
+  // 这个分支不只是渲染加载文案。实测过:删掉它、把 null 当 false 处理后,
+  // 组件首帧就会用初始值 null(falsy)去 <Navigate> 并卸载自己——随后
+  // effect 完成时的 setConfirmed(true) 落在一个已经不在树上的组件上,
+  // 不会再生效。这个分支同时让组件在 effect 完成前保持挂载,状态才有
+  // 地方落。
   if (confirmed === null) {
     return (
       <div data-testid="admin-landing-loading" className="text-sm text-ink-soft">
