@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import App from '../App'
@@ -18,12 +19,16 @@ import type { EtlMapping } from './etlMappingApi'
 
 let etlMappingStubbed = false
 let etlMappingValue: EtlMapping | null = null
+let runsListResponse: { run_id: string; status: string; started_at: string; finished_at: string | null }[] = []
+let runDetailResponse: Record<string, unknown> | null = null
+let requests: { url: string; init?: RequestInit }[] = []
 
 function stubApi() {
   vi.stubGlobal(
     'fetch',
-    vi.fn((input: RequestInfo | URL) => {
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      requests.push({ url, init })
       const json = (body: unknown, status = 200) =>
         Promise.resolve(new Response(JSON.stringify(body), { status }))
       if (url.includes('/nav-badges')) {
@@ -32,8 +37,14 @@ function stubApi() {
       if (url.includes('/schema-etl/status')) {
         return json({ ontology_confirmed: true })
       }
+      if (/\/promote$/.test(url)) {
+        return json({ run_id: 'promoted-run' })
+      }
+      if (/\/schema-etl\/runs\/[^/]+$/.test(url)) {
+        return json(runDetailResponse ?? {})
+      }
       if (url.includes('/schema-etl/runs')) {
-        return json({ runs: [] })
+        return json({ runs: runsListResponse })
       }
       if (url.includes('/schema-etl/sample')) {
         return json({ files: [] })
@@ -53,6 +64,43 @@ function stubEtlMapping(mapping: EtlMapping | null) {
   etlMappingValue = mapping
 }
 
+// stubCompletedRun（forwardLinks.test.tsx）的同款写法：一条已完成跑批，
+// dry_run/status 由调用方指定，跑批详情要点了 run_id 那一行才会挂载。
+function stubSelectedRun(report: { dry_run: boolean; status: string }) {
+  runsListResponse = [
+    { run_id: 'run-1', status: report.status, started_at: '2026-09-03T00:00:00', finished_at: '2026-09-03T00:05:00' },
+  ]
+  runDetailResponse = {
+    run_id: 'run-1',
+    status: report.status,
+    started_at: '2026-09-03T00:00:00',
+    finished_at: '2026-09-03T00:05:00',
+    error: null,
+    report: {
+      entities_written: 10,
+      entities_skipped: 0,
+      relations_written: 5,
+      relations_skipped: 0,
+      written_by_type: {},
+      skipped_by_type: {},
+      skipped_rows: [],
+      skipped_mappings: [],
+      entities_removed: 0,
+      entities_removed_by_type: {},
+      relations_removed: 0,
+      dry_run: report.dry_run,
+    },
+  }
+}
+
+// 最近一次「点了按钮才会发生」的请求——不是字面意义的最后一次 fetch。
+// 正式执行成功后会立刻踢一次轮询（pollNowRef），那个 GET /runs 紧跟着
+// POST /promote 发生，字面上的"最后一次"会变成轮询请求，测试真正想问的
+// 是"点击触发的是哪个写操作"，所以只看非 GET 请求里最新的一条。
+function lastRequest() {
+  return [...requests].reverse().find((r) => (r.init?.method ?? 'GET') !== 'GET')
+}
+
 function signIn(role: 'admin' | 'member') {
   sessionStorage.setItem('admin_session_token', 'tok')
   sessionStorage.setItem('admin_username', role === 'admin' ? 'admin' : 'alice')
@@ -65,6 +113,9 @@ beforeEach(() => {
   localStorage.clear()
   etlMappingStubbed = false
   etlMappingValue = null
+  runsListResponse = []
+  runDetailResponse = null
+  requests = []
   stubApi()
 })
 
@@ -121,5 +172,30 @@ describe('表格导入页首屏', () => {
     expect(await screen.findByTestId('etl-mapping-loading')).toBeTruthy()
     expect(screen.queryByText(/引导流程已为这个本体配好映射/)).toBeNull()
     expect(screen.queryByRole('button', { name: /把这张表映射到已有本体/ })).toBeNull()
+  })
+})
+
+describe('预演转正式执行', () => {
+  it('预演报告页能直接正式执行，不用重传文件', async () => {
+    signIn('admin')
+    stubSelectedRun({ dry_run: true, status: 'completed' })
+    renderAt(ADMIN_ROUTES.etl)
+    const user = userEvent.setup()
+    // 选中这条跑批记录，才会渲染详情区——按钮挂在详情区里。
+    await user.click(await screen.findByText('run-1'))
+    await user.click(await screen.findByRole('button', { name: '按这次预演正式执行' }))
+    expect(lastRequest()?.url).toMatch(/\/promote$/)
+  })
+
+  it('正式运行的报告页没有这个按钮', async () => {
+    signIn('admin')
+    stubSelectedRun({ dry_run: false, status: 'completed' })
+    renderAt(ADMIN_ROUTES.etl)
+    const user = userEvent.setup()
+    // 跟第一条用例一样先选中这条跑批——不选中的话详情区（按钮所在的地方）
+    // 根本不会挂载，断言会在"实现对不对都通过"的假位置上，等于没测。
+    await user.click(await screen.findByText('run-1'))
+    await screen.findByText(/已完成/)
+    expect(screen.queryByRole('button', { name: '按这次预演正式执行' })).toBeNull()
   })
 })

@@ -266,6 +266,69 @@ async def start_schema_etl_run(
     return StartRunResponse(run_id=run_id)
 
 
+@router.post("/runs/{run_id}/promote", response_model=StartRunResponse)
+async def promote_dry_run(
+    tenant_id: str,
+    run_id: str,
+    background_tasks: BackgroundTasks,
+    upload_dir: Path = Depends(deps.get_upload_dir),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: SchemaEtlGraphProtocol = Depends(deps.get_graph_client),
+) -> StartRunResponse:
+    """把一次预演按原样正式执行一遍，复用它已经保存在磁盘上的输入。
+
+    为什么不是"重跑同一个 run_id"：create_etl_run 用一条部分唯一索引保证同
+    租户串行，而历史里也应该同时留下预演和正式两条记录——预演报告说的是
+    "将会发生什么"，正式那条说的是"发生了什么"，合并成一条会丢掉前者。
+
+    为什么只允许预演转正：对一次已经真正写入过的运行再点一次是重复执行，
+    那要走正常的新建运行路径，让用户显式确认。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    if not await is_ontology_confirmed(review_conn, tenant_id):
+        raise HTTPException(
+            status_code=400, detail=f"租户 {tenant_id!r} 的本体 schema 还没有确认"
+        )
+
+    source_dir = upload_dir / "schema-etl" / tenant_id / run_id
+    try:
+        detail = await get_etl_run(review_conn, tenant_id=tenant_id, run_id=run_id)
+    except EtlRunNotFoundError:
+        raise HTTPException(status_code=404, detail="找不到这次运行，无法正式执行")
+    if not source_dir.is_dir():
+        # 运行记录还在但输入目录没了（人工清理过磁盘）。说清是哪一半没了，
+        # 别让用户对着一条看得见的历史记录点一个永远失败的按钮。
+        raise HTTPException(status_code=404, detail="这次运行的输入文件已不在磁盘上，无法正式执行")
+    if not (detail.report or {}).get("dry_run"):
+        raise HTTPException(status_code=400, detail="只有预演可以转成正式执行")
+
+    new_run_id = uuid.uuid4().hex
+    new_dir = upload_dir / "schema-etl" / tenant_id / new_run_id
+    shutil.copytree(source_dir, new_dir)
+
+    started_at = datetime.now().isoformat()
+    try:
+        await create_etl_run(
+            review_conn, run_id=new_run_id, tenant_id=tenant_id, started_at=started_at
+        )
+    except EtlRunAlreadyRunningError as exc:
+        shutil.rmtree(new_dir, ignore_errors=True)
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    background_tasks.add_task(
+        _run_schema_etl_job,
+        conn=review_conn,
+        graph_client=graph_client,
+        run_id=new_run_id,
+        tenant_id=tenant_id,
+        config_path=new_dir / "config.yaml",
+        data_dir=new_dir,
+        dry_run=False,
+        allow_large_sweep=False,
+    )
+    return StartRunResponse(run_id=new_run_id)
+
+
 @router.get("/runs", response_model=RunListResponse)
 async def list_schema_etl_runs(
     tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn)

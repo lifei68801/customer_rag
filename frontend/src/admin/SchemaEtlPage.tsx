@@ -84,6 +84,8 @@ export function SchemaEtlPage() {
   const [selectedRun, setSelectedRun] = useState<RunDetail | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [promoting, setPromoting] = useState(false)
+  const [promoteError, setPromoteError] = useState<string | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [downloadingReport, setDownloadingReport] = useState(false)
   const [sampleFiles, setSampleFiles] = useState<SampleFile[] | null>(null)
@@ -294,6 +296,31 @@ export function SchemaEtlPage() {
       setUploadError(err instanceof Error ? err.message : '启动失败')
     } finally {
       setUploading(false)
+    }
+  }
+
+  const handlePromote = async () => {
+    if (!sessionToken || !selectedRun || promoting) return
+    setPromoteError(null)
+    setPromoting(true)
+    try {
+      const response = await adminFetch(
+        `/api/admin/${encodeURIComponent(tenantId)}/schema-etl/runs/${encodeURIComponent(selectedRun.run_id)}/promote`,
+        sessionToken,
+        { method: 'POST' },
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '正式执行失败'))
+      }
+      showToast('已按这次预演提交正式执行')
+      // 复用既有的轮询踢一脚：新运行马上出现在历史列表里，不用等最坏
+      // 15 秒的退避间隔。
+      await pollNowRef.current()
+    } catch (err) {
+      setPromoteError(err instanceof Error ? err.message : '正式执行失败')
+    } finally {
+      setPromoting(false)
     }
   }
 
@@ -608,13 +635,28 @@ export function SchemaEtlPage() {
                 </p>
               )}
               {selectedRun.report.dry_run && (
-                <p className="rounded-card border border-subtle bg-card px-3 py-2 text-sm text-ink">
-                  <strong className="font-bold">这是一次预演</strong>
-                  ——terms 和 Neo4j 都零写入，下面的移除数量是「将要移除多少」而不是
-                  「已经移除了多少」。预演只覆盖实体侧，关系侧的清理数量无法预演
-                  （见运行报告字段说明），所以关系移除恒为 0，那个 0 不代表关系侧
-                  没有要删的。
-                </p>
+                <div className="rounded-card border border-subtle bg-card px-3 py-2 text-sm text-ink">
+                  <p>
+                    <strong className="font-bold">这是一次预演</strong>
+                    ——terms 和 Neo4j 都零写入，下面的移除数量是「将要移除多少」而不是
+                    「已经移除了多少」。预演只覆盖实体侧，关系侧的清理数量无法预演
+                    （见运行报告字段说明），所以关系移除恒为 0，那个 0 不代表关系侧
+                    没有要删的。
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handlePromote}
+                    disabled={promoting}
+                    className={`mt-2 min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-4 py-2 font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                  >
+                    {promoting ? '正在正式执行…' : '按这次预演正式执行'}
+                  </button>
+                  {promoteError && (
+                    <p role="alert" className="mt-2 text-status-error">
+                      {promoteError}
+                    </p>
+                  )}
+                </div>
               )}
               <p className="text-sm text-ink">
                 实体写入 {selectedRun.report.entities_written ?? 0} 条，跳过{' '}

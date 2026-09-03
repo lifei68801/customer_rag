@@ -466,6 +466,45 @@ def test_start_run_passes_dry_run_and_allow_large_sweep_through(client, review_c
     assert captured == {"dry_run": True, "allow_large_sweep": True}
 
 
+def test_promote_dry_run_reuses_stored_inputs(client, review_conn, tmp_path):
+    """预演转正式不要求重新上传。
+
+    输入已经在磁盘上（start_schema_etl_run 写进 run_dir，成功路径不清理）。
+    让用户再传一遍，等于产品推荐的路比它不推荐的路更贵。
+    """
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = {"config": ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")}
+    dry_response = client.post(
+        "/api/admin/muji/schema-etl/runs", files=files, data={"dry_run": "true"}
+    )
+    dry_run_id = dry_response.json()["run_id"]
+
+    response = client.post(f"/api/admin/muji/schema-etl/runs/{dry_run_id}/promote")
+
+    assert response.status_code == 200
+    new_run_id = response.json()["run_id"]
+    assert new_run_id != dry_run_id
+    # 新运行有自己的输入副本。
+    assert (tmp_path / "uploads" / "schema-etl" / "muji" / new_run_id / "config.yaml").exists()
+
+
+def test_promote_rejects_a_real_run(client, review_conn):
+    """只有预演能被转正。
+
+    对一次已经真正写入过的运行再点一次是重复执行，那要走正常的新建运行
+    路径，让用户显式确认。
+    """
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = {"config": ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")}
+    real_response = client.post("/api/admin/muji/schema-etl/runs", files=files)
+    real_run_id = real_response.json()["run_id"]
+
+    response = client.post(f"/api/admin/muji/schema-etl/runs/{real_run_id}/promote")
+
+    assert response.status_code == 400
+    assert "预演" in response.json()["detail"]
+
+
 def test_start_run_defaults_both_switches_to_false(client, review_conn, monkeypatch):
     """不传两个字段时必须默认关闭——安全阀默认生效，dry-run 默认不生效。
     默认值搞反会让安全阀形同虚设。"""
