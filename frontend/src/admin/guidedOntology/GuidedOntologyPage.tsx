@@ -76,6 +76,25 @@ export function GuidedOntologyPage() {
   }
 
   /**
+   * 换一张表：回到第一步，并清空上一张表留下的全部状态。
+   *
+   * 以前"换一张表"只是审阅视图里的一句文案——review 步骤没有任何回退控件，
+   * 文件输入框只在 step === 'upload' 时渲染，用户读到那句话会去找一个不
+   * 存在的按钮，最后只能刷新页面（连带丢掉全部改判）。文案只许承诺这个
+   * 界面真做得到的动作，所以把动作补上。
+   *
+   * 必须连 roled/decision/uploadedFile 一起清掉：留着的话下一张表扫描失败
+   * 时，界面会拿上一张表的判定继续渲染审阅视图。
+   */
+  const handleStartOver = () => {
+    setStep('upload')
+    setError(null)
+    setRoled(null)
+    setDecision(null)
+    setUploadedFile(null)
+  }
+
+  /**
    * 一次请求写入整套本体。逐个 term/relation 分别发请求的话，中途失败会
    * 留下半份草稿，而 checkout_draft **不会**清空它（只在"还没检出过"时
    * 才从已确认版复制）——用户没有干净的重来方式。
@@ -190,7 +209,19 @@ export function GuidedOntologyPage() {
 
       {(step === 'review' || step === 'submitting') && roled && decision && (
         <div className="flex flex-col gap-6">
-          <p className="text-sm text-ink-soft">扫描完成，共 {roled.length} 列。</p>
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-sm text-ink-soft">扫描完成，共 {roled.length} 列。</p>
+            {/* 审阅视图的「没有用到的列」一节指着这个按钮说"换一张表"。
+                它不在的话那句话就是一个做不到的承诺。 */}
+            <button
+              type="button"
+              onClick={handleStartOver}
+              disabled={step === 'submitting'}
+              className={secondaryButtonClass}
+            >
+              换一张表
+            </button>
+          </div>
           <ProposalReview
             roled={roled}
             decision={decision}

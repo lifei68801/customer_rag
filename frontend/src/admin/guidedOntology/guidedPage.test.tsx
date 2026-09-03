@@ -145,6 +145,24 @@ describe('引导页第一步', () => {
     expect(unused.textContent).not.toMatch(/订单号/)
   })
 
+  it('复核时能换一张表，不用刷新页面', async () => {
+    // 审阅视图的「没有用到的列」一节写着"用上面的「换一张表」重传一张更
+    // 聚焦的表"。review 步骤此前没有任何回退控件（文件输入框只在
+    // step === 'upload' 时渲染），那句话是一个做不到的承诺，用户只能刷新
+    // 页面重来、连带丢掉全部改判。
+    signIn('admin')
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.guidedOntology)
+    await user.upload(await screen.findByLabelText(/选择一张表/), csvFile())
+    await screen.findByText(/扫描完成，共 3 列/)
+
+    await user.click(screen.getByRole('button', { name: '换一张表' }))
+    // 回到第一步：文件输入框在，上一张表的审阅视图不在。
+    expect(await screen.findByLabelText(/选择一张表/)).toBeTruthy()
+    expect(screen.queryByText(/扫描完成/)).toBeNull()
+    expect(screen.queryByTestId('unused-columns')).toBeNull()
+  })
+
   it('扫描失败时说清原因，不是静静停住', async () => {
     signIn('admin')
     const user = userEvent.setup()

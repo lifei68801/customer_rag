@@ -379,9 +379,15 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
                 原因，对空列或整数列（比如 3 行整数金额，ratio 恰好是 1.0，
                 只是行数不够）是假的。真正的原因见每一列后面那句，来自
                 columnRoles.ts 的 reason，不是这里编一句能覆盖所有情况的话。 */}
+            {/* 文案只许承诺这个界面真做得到的动作。「回上一步」做不到——
+                review 步骤没有回退控件，文件输入框只在 step === 'upload'
+                时渲染，用户读到那句话只能去刷新页面。现在页面顶上有一个
+                「换一张表」按钮（GuidedOntologyPage 的 handleStartOver），
+                guidedPage.test.tsx 里有一条测试钉住它确实存在并回到第一步。 */}
             <p className="text-sm text-ink-soft">
               这些列没有进入本体，原因见每一列后面的说明。如果其中有你需要的，
-              回上一步换一张更聚焦的表，或者建完之后去「本体结构」页手工加。
+              用上面的「换一张表」重传一张更聚焦的表，或者建完之后去「本体结构」
+              页手工加。
             </p>
             <ul className="flex flex-col gap-1">
               {proposal.unusedColumns.map((name) => (

@@ -304,6 +304,17 @@ describe('未使用的列', () => {
     expect(unused.textContent).toMatch(/internal_note/)
   })
 
+  it('文案不指向一个界面上不存在的「上一步」', async () => {
+    // review 步骤没有回退控件——「回上一步换一张表」是一个做不到的承诺，
+    // 用户会去找一个不存在的按钮，最后只能刷新页面重来。页面顶上真做得到
+    // 的动作是「换一张表」（GuidedOntologyPage 的 handleStartOver，
+    // guidedPage.test.tsx 里有一条测试钉住它）。
+    renderReview()
+    const unused = await screen.findByTestId('unused-columns')
+    expect(unused.textContent).not.toMatch(/回上一步/)
+    expect(unused.textContent).toMatch(/换一张表/)
+  })
+
   it('未使用列为空时也要说一句，不是留白', async () => {
     renderReview({ proposal: { ...baseProposal, unusedColumns: [] } })
     expect((await screen.findByTestId('unused-columns')).textContent).toMatch(/都用上了|没有/)
