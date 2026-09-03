@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { ProposalReview } from './ProposalReview'
 import { buildProposal, initialDecision } from './draftProposal'
 import { assignRoles } from './columnRoles'
+import { accumulateRow, createAccumulator, finalizeStats } from './columnStats'
 import type { ColumnStats, GuidedDecision, Proposal, RoledColumn } from './types'
 
 /**
@@ -158,6 +159,100 @@ describe('低基数列的选择', () => {
     const next = onChange.mock.calls[onChange.mock.calls.length - 1][0] as GuidedDecision
     expect(next.dimensionsAsEntity['产品']).toBe(true)
     expect(next.dimensionsAsEntity['类目']).toBe(true)
+  })
+})
+
+describe('被当成标识的列', () => {
+  it('标识列连同判定依据一起展示出来，不是只在别人的「挂在」下拉框里露个名字', async () => {
+    renderReview()
+    const block = await screen.findByTestId('identifier-订单号')
+    // 依据要带具体数字——用户要能据此推翻它。
+    expect(block.textContent).toMatch(/9998/)
+  })
+
+  it('能把标识列改判成「做成属性」', async () => {
+    // 判错成标识的代价最重：这一列会成为本体的中心，ETL 给每一个值建一个
+    // 节点。没有这个入口，用户看得见也纠正不了。
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    renderReview({ onDecisionChange: onChange })
+    const block = await screen.findByTestId('identifier-订单号')
+    await user.click(within(block).getByRole('radio', { name: /做成属性/ }))
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dimensionsAsEntity: expect.objectContaining({ 订单号: false }),
+      }),
+    )
+  })
+
+  it('默认选中「建成实体」', async () => {
+    renderReview()
+    const block = await screen.findByTestId('identifier-订单号')
+    const radio = within(block).getByRole('radio', { name: /建成实体/ }) as HTMLInputElement
+    expect(radio.checked).toBe(true)
+  })
+
+  it('走真实扫描链路的高基数整数金额列，在界面上可见且可改判', async () => {
+    // 这条走 columnStats → columnRoles → buildProposal → 界面的整条链路，
+    // 复现复审实测出的那个 Critical：2000 行、每行一个不同值的「金额分」
+    // 在扫描阶段 distinct 封顶，inferredType 被改判成 'string'，于是行数
+    // 下限管不着它，columnRoles 判成 identifier，它直接成了本体的中心，
+    // 而 rootIsGuessed 是 false——连"中心是猜的"那条告警都不出。
+    // 阈值救不了这件事（一列金额和一列真订单号在分布上无法区分），
+    // 唯一站得住的兜底是它在审阅视图里可见、可改判。
+    const acc = createAccumulator(['金额分', '产品'])
+    for (let i = 0; i < 2000; i += 1) {
+      accumulateRow(acc, [String(100000 + i), ['咖啡', '茶', '可乐'][i % 3]])
+    }
+    const moneyRoled = assignRoles(finalizeStats(acc))
+    const decision = initialDecision(moneyRoled)
+    const proposal = buildProposal(moneyRoled, decision)
+    // 前提：确实落进了那个 Critical 的形状，不然下面的断言测不出问题。
+    expect(moneyRoled[0].stats.inferredType).toBe('string')
+    expect(moneyRoled[0].role).toBe('identifier')
+    expect(proposal.rootName).toBe('金额分')
+    expect(proposal.rootIsGuessed).toBe(false)
+
+    const onChange = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <ProposalReview
+        roled={moneyRoled}
+        decision={decision}
+        onDecisionChange={onChange}
+        proposal={proposal}
+      />,
+    )
+    const block = await screen.findByTestId('identifier-金额分')
+    await user.click(within(block).getByRole('radio', { name: /做成属性/ }))
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dimensionsAsEntity: expect.objectContaining({ 金额分: false }),
+      }),
+    )
+  })
+})
+
+describe('会成为属性的列', () => {
+  it('度量列和日期列的去向可见，不是从界面上消失', async () => {
+    // 这两类列此前在审阅视图里一处都不出现：一列本该建成实体的数值列被
+    // 判成度量时，用户既看不见也无从纠正。
+    renderReview()
+    const block = await screen.findByTestId('attribute-columns')
+    expect(block.textContent).toMatch(/revenue/)
+    expect(block.textContent).toMatch(/purchase_date/)
+  })
+
+  it('说清它们挂在谁身上，以及真做得到的改法', async () => {
+    renderReview()
+    const block = await screen.findByTestId('attribute-columns')
+    expect(block.textContent).toMatch(/订单号/)
+    expect(block.textContent).toMatch(/本体结构/)
+  })
+
+  it('一个属性都没有时不显示这个小节', async () => {
+    renderReview({ proposal: { ...baseProposal, attributeColumns: [] } })
+    expect(screen.queryByTestId('attribute-columns')).toBeNull()
   })
 })
 
@@ -441,6 +536,7 @@ describe('一条关系都没有时', () => {
     relationTypes: [],
     constraints: [],
     unusedColumns: [],
+    attributeColumns: [],
     renamedFields: {},
     rootIsGuessed: false,
     rootName: '品牌',
@@ -513,6 +609,7 @@ describe('挂在下拉框没有对应 constraint 时', () => {
       { subject_term_type: '品牌', relation_type: 'HAS_颜色', object_term_type: '颜色' },
     ],
     unusedColumns: [],
+    attributeColumns: [],
     renamedFields: {},
     rootIsGuessed: false,
     rootName: '品牌',

@@ -206,6 +206,96 @@ describe('生成草案', () => {
   })
 })
 
+describe('标识列可以被改判成属性', () => {
+  // 一列 10000 行 / 9800 个不同值的「金额分」和一列真订单号在分布上无法
+  // 区分，columnRoles 只能猜。猜错时唯一站得住的兜底是用户能改判——所以
+  // 标识列必须和维度列走同一张决策表。
+  function moneyFirstColumns(): RoledColumn[] {
+    return [
+      makeColumn('金额分', 'identifier', 9800), // 其实是以分为单位的金额
+      makeColumn('产品', 'dimension', 10),
+      makeColumn('revenue', 'measure', 500),
+    ]
+  }
+
+  it('默认仍然建成实体——改判入口不改变默认判定', () => {
+    const roled = moneyFirstColumns()
+    const proposal = buildProposal(roled, initialDecision(roled))
+    expect(proposal.termTypes.map((t) => t.value)).toContain('金额分')
+  })
+
+  it('改判成属性后不再是实体类型，而是挂在中心上的属性', () => {
+    const roled = moneyFirstColumns()
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['金额分'] = false
+    const proposal = buildProposal(roled, decision)
+    expect(proposal.termTypes.map((t) => t.value)).toEqual(['产品'])
+    // 不能扔进未使用清单——那等于吞掉用户刚做的决定。
+    expect(proposal.unusedColumns).not.toContain('金额分')
+    expect(proposal.attributeColumns).toContain('金额分')
+  })
+
+  it('改判掉唯一的标识列之后，中心是猜的——告警要出来', () => {
+    // 中心现在是「产品」这个维度列。rootIsGuessed 只看"有没有标识列存在过"
+    // 的话，这里会答 false，界面上一条提示都不出。
+    const roled = moneyFirstColumns()
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['金额分'] = false
+    const proposal = buildProposal(roled, decision)
+    expect(proposal.rootName).toBe('产品')
+    expect(proposal.rootIsGuessed).toBe(true)
+  })
+
+  it('无小数数值的标识列改判后存成 integer，不是 string', () => {
+    // 它落到属性这条路上的典型情形就是"其实是以分为单位的金额"。存成
+    // string 的话，聚合和范围过滤在数据层就做不了了。
+    const money = makeColumn('金额分', 'identifier', 9800)
+    money.stats.isWholeNumber = true
+    const roled = [money, makeColumn('产品', 'dimension', 10)]
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['金额分'] = false
+    const proposal = buildProposal(roled, decision)
+    const host = proposal.termTypes.find((t) => t.value === '产品')
+    expect(host?.extra_fields).toHaveLength(1)
+    expect(host?.extra_fields[0].value_type).toBe('integer')
+  })
+
+  it('真编号（带字母）改判后存成 string', () => {
+    // isWholeNumber 为假的标识列，存成 integer 会在 ETL 层炸掉。
+    const roled = [makeColumn('订单号', 'identifier', 9998), makeColumn('产品', 'dimension', 10)]
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['订单号'] = false
+    const proposal = buildProposal(roled, decision)
+    const host = proposal.termTypes.find((t) => t.value === '产品')
+    expect(host?.extra_fields[0].value_type).toBe('string')
+  })
+
+  it('decision 里没有标识列这一条时，仍然建成实体', () => {
+    // buildProposal 也会拿到别处构造的 decision。缺键按 false 处理会把标识
+    // 列静默踢出本体——那比误判更糟。
+    const roled = moneyFirstColumns()
+    const proposal = buildProposal(roled, {
+      dimensionsAsEntity: { 产品: true },
+      parentOf: {},
+      relationNameOf: {},
+    })
+    expect(proposal.termTypes.map((t) => t.value)).toContain('金额分')
+  })
+})
+
+describe('会成为属性的列要能被界面点名', () => {
+  it('attributeColumns 按原列名列出度量列和日期列', () => {
+    const roled = demoColumns()
+    const proposal = buildProposal(roled, initialDecision(roled))
+    expect(proposal.attributeColumns).toContain('revenue')
+    expect(proposal.attributeColumns).toContain('purchase_date')
+    // 自由文本列不在其中——它进的是未使用清单。
+    expect(proposal.attributeColumns).not.toContain('internal_note')
+    // 实体列也不在其中。
+    expect(proposal.attributeColumns).not.toContain('订单号')
+  })
+})
+
 describe('表头重名', () => {
   // 「任何一列最终只能是『进了某个实体的 extra_fields』或『进了
   // unusedColumns』」——buildProposal 里明写着不允许第三种下场。按名字判断

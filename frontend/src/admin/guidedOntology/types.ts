@@ -59,7 +59,12 @@ export interface DraftConstraint {
 }
 
 export interface GuidedDecision {
-  /** 每个维度列：建成实体类型（true）还是做成属性（false）。 */
+  /**
+   * 每个可改判的列：建成实体类型（true）还是做成属性（false）。
+   *
+   * 维度列**和标识列**共用这一张表——两者的改判语义完全一样，审阅视图里
+   * 也是同一组单选。标识列缺键时按 true 处理（见 isEntityColumn）。
+   */
   dimensionsAsEntity: Record<string, boolean>
   /** 每个非根实体挂在谁下面。键是实体名，值是父实体名。 */
   parentOf: Record<string, string>
@@ -73,6 +78,14 @@ export interface Proposal {
   constraints: DraftConstraint[]
   /** 没进本体的列。不显示等于静默丢弃。 */
   unusedColumns: string[]
+  /**
+   * 成了中心实体属性的列，按原列名、按列顺序。
+   *
+   * 供审阅视图展示：度量列和日期列此前在界面上一处都不出现，判错了用户
+   * 既看不见也无从纠正。extra_fields 里的名字是清洗过的，跟列名可能对不
+   * 上，所以这里单独记原列名。
+   */
+  attributeColumns: string[]
   /** 属性名被清洗过的列：原列名 -> 清洗后的字段名。ETL 映射要用它对回去。 */
   renamedFields: Record<string, string>
   /** 没有标识列，根是猜的。UI 要提示用户确认。 */

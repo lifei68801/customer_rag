@@ -183,8 +183,8 @@ describe('数值列按分布判定，不是一律当度量', () => {
 describe('整数列判成标识需要够多的行', () => {
   it('3 行整数全不重复，不足以当标识', () => {
     // ratio 1.0 但只有 3 行——那不是"每行一个值"的证据，只是样本太小。
-    // 判成 identifier 的后果最重：这一列会直接成为本体的中心，而审阅视图
-    // 里根本不展示标识列，用户看不见也推不翻。
+    // 判成 identifier 的后果最重：这一列会直接成为本体的中心，ETL 给它的
+    // 每一个值建一个节点。
     const column = realStats('revenue', ['10', '20', '30'])
     expect(column.inferredType).toBe('integer')
     expect(roleOf(column)).not.toBe('identifier')

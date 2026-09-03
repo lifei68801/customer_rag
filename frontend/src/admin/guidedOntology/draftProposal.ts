@@ -53,24 +53,50 @@ export function sanitizeFieldName(column: string, index: number): string {
   return cleaned.slice(0, 64)
 }
 
-function rootOf(roled: RoledColumn[]): { name: string; guessed: boolean } {
+/**
+ * 这一列要不要建成实体类型。
+ *
+ * 标识列和维度列共用 decision.dimensionsAsEntity 这一张表——两者的改判语义
+ * 完全一样（建成实体 / 做成属性），审阅视图里也用同一组单选渲染。
+ *
+ * 标识列缺省是 true：initialDecision 会显式写进去，但 buildProposal 也可能
+ * 拿到别处构造的 decision（测试、将来的持久化），缺键时按 false 处理会把
+ * 标识列静默踢出本体——那是比误判更糟的失败形态。
+ */
+export function isEntityColumn(column: RoledColumn, decision: GuidedDecision): boolean {
+  const decided = decision.dimensionsAsEntity[column.stats.name]
+  if (column.role === 'identifier') return decided !== false
+  return column.role === 'dimension' && decided === true
+}
+
+/** 初始决策用的中心：第一个标识列，没有标识列时退回第一个维度列。 */
+function defaultRoot(roled: RoledColumn[]): string {
   const identifier = roled.find((c) => c.role === 'identifier')
-  if (identifier) return { name: identifier.stats.name, guessed: false }
-  // 纯维度表（产品主数据这类）没有标识列。拿第一个维度当根，并标记为
-  // 猜的——UI 要提示用户确认，否则结构会莫名其妙。
-  const firstDimension = roled.find((c) => c.role === 'dimension')
-  return { name: firstDimension?.stats.name ?? '', guessed: true }
+  if (identifier) return identifier.stats.name
+  // 纯维度表（产品主数据这类）没有标识列。拿第一个维度当根——buildProposal
+  // 会据此把 rootIsGuessed 置真，UI 要提示用户确认，否则结构会莫名其妙。
+  return roled.find((c) => c.role === 'dimension')?.stats.name ?? ''
 }
 
 export function initialDecision(roled: RoledColumn[]): GuidedDecision {
-  const { name: root } = rootOf(roled)
+  const root = defaultRoot(roled)
   const dimensionsAsEntity: Record<string, boolean> = {}
   const parentOf: Record<string, string> = {}
   const relationNameOf: Record<string, string> = {}
 
   for (const column of roled) {
-    if (column.role !== 'dimension') continue
     const name = column.stats.name
+    if (column.role === 'identifier') {
+      // 标识列默认建成实体（它多半就是中心），但要显式写进决策表里，
+      // 审阅视图才有东西可渲染、用户才推翻得了。高基数的整数度量（以分为
+      // 单位的金额这类）和一列真订单号在分布上无法区分，判错时只有"看得见
+      // 并能改"这一条出路。
+      dimensionsAsEntity[name] = true
+      // 刻意不给标识列写 parentOf：第二个标识列的边由 buildProposal 统一
+      // 改挂到中心下面，并出现在改挂提示里（那条路径有测试守着）。
+      continue
+    }
+    if (column.role !== 'dimension') continue
     // 默认建成实体：少建是静默错误（那类问题就是答不出来，不报错），
     // 多建看得见（实体列表里就有）。
     dimensionsAsEntity[name] = true
@@ -87,12 +113,17 @@ function measureValueType(column: RoledColumn): DraftExtraField['value_type'] {
   // 日期类型。这不是疏忽，是必须向用户明说的限制。
   if (column.role === 'date') return 'string'
   if (column.role === 'dimension') return 'string'
+  if (column.role === 'identifier') {
+    // 被用户改判成属性的标识列。它落到这里的典型情形正是"其实是以分为
+    // 单位的金额"——那时该存成 integer；真的编号（ORD1001、混着字母的
+    // SKU）存成 string。用 isWholeNumber 而不是 inferredType：高基数的
+    // 无小数数值列在扫描阶段已经被改判成 'string' 了。
+    return column.stats.isWholeNumber ? 'integer' : 'string'
+  }
   return column.stats.inferredType === 'integer' ? 'integer' : 'number'
 }
 
 export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): Proposal {
-  const { name: root, guessed: rootIsGuessed } = rootOf(roled)
-
   // 记的是**位置**，不只是名字：一张表里出现两列同名（从电子表格导出的
   // 宽表里不罕见）时，只按名字判断"这一列是不是已经成了实体"会让第二个
   // 同名列在下面的循环里被 return 掉——既不进任何实体的 extra_fields，也
@@ -105,18 +136,14 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
   roled.forEach((column, index) => {
     const name = column.stats.name
     if (entityNames.has(name)) return
-    const isEntity =
-      column.role === 'identifier' ||
-      (column.role === 'dimension' && decision.dimensionsAsEntity[name])
-    if (!isEntity) return
+    if (!isEntityColumn(column, decision)) return
     entityNames.add(name)
     entityColumnIndexes.add(index)
   })
 
-  // 中心实体：优先用 rootOf 的结果。但根可能是猜的（没有标识列时拿第一个
-  // 维度列顶替），用户完全可以把这个猜测根重新判成属性——这时 root 自己
-  // 就不在 entityNames 里了。顺延给列顺序里第一个还留在 entityNames 里的
-  // 实体；一个实体都不剩时是空串。
+  // 中心实体：列顺序里第一个还留在实体列表里的标识列。标识列被用户改判成
+  // 属性（或这张表本来就没有标识列）时，顺延给列顺序里第一个还留在
+  // entityNames 里的实体；一个实体都不剩时是空串。
   //
   // 这个值同时是属性的挂载点和关系的中心，而且要显式给到 UI（Proposal
   // .rootName）：UI 若自己用「不在 parentOf 里的实体」反推，在顺延发生
@@ -125,14 +152,27 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
   // 属性没处挂（entityNames 空）时，属性列必须落进 unusedColumns。任何
   // 一列最终只能是「进了某个实体的 extra_fields」或「进了 unusedColumns」
   // 这两种下场之一，不允许第三种——第三种就是静默丢列。
-  const rootName = entityNames.has(root)
-    ? root
-    : (roled.find((c) => entityNames.has(c.stats.name))?.stats.name ?? '')
+  const rootName =
+    roled.find((c) => c.role === 'identifier' && entityNames.has(c.stats.name))?.stats.name ??
+    roled.find((c) => entityNames.has(c.stats.name))?.stats.name ??
+    ''
   const attributeHost = rootName === '' ? undefined : rootName
+
+  // 中心是猜的 = 中心那一列不是标识列。两种来源：这张表本来就没有标识列
+  // （纯维度表），或者用户把标识列改判成了属性。后一种以前答错：
+  // rootIsGuessed 只看"有没有标识列存在过"，用户把它改判掉之后中心已经是
+  // 一个维度列了，界面却照旧不出"中心是猜的"那条提示。
+  const rootIsGuessed = !roled.some(
+    (c) => c.role === 'identifier' && c.stats.name === rootName,
+  )
 
   const renamedFields: Record<string, string> = {}
   const hostFields: DraftExtraField[] = []
   const unusedColumns: string[] = []
+  // 原列名，给审阅视图用：度量列和日期列在界面上此前一处都不出现，判错了
+  // 用户也看不见。字段名清洗过之后 extra_fields 里的名字可能跟列名对不上，
+  // 所以这里按原列名单独记一份，而不是让 UI 去猜。
+  const attributeColumns: string[] = []
 
   roled.forEach((column, index) => {
     const name = column.stats.name
@@ -140,7 +180,11 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     const isAttribute =
       column.role === 'measure' ||
       column.role === 'date' ||
-      (column.role === 'dimension' && !decision.dimensionsAsEntity[name])
+      // 被改判成属性的维度列 / 标识列。标识列走到这里，说明用户在审阅视图
+      // 里明确说了"这不是标识"——不能再把它扔进未使用清单，那等于吞掉他的
+      // 决定。
+      column.role === 'dimension' ||
+      column.role === 'identifier'
     if (!isAttribute || !attributeHost) {
       // 自由文本、空列，或者没有任何实体可以挂：不进本体。必须列出来
       // ——不显示等于静默丢弃。
@@ -150,6 +194,7 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     const fieldName = sanitizeFieldName(name, index)
     if (fieldName !== name) renamedFields[name] = fieldName
     hostFields.push({ name: fieldName, value_type: measureValueType(column) })
+    attributeColumns.push(name)
   })
 
   const termTypes: DraftTermType[] = [...entityNames].map((value) => ({
@@ -204,6 +249,7 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     relationTypes: [...relationTypeByName.values()],
     constraints,
     unusedColumns,
+    attributeColumns,
     renamedFields,
     rootIsGuessed,
     rootName,

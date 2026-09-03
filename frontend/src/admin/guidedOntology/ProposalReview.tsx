@@ -1,3 +1,4 @@
+import { isEntityColumn } from './draftProposal'
 import type { GuidedDecision, Proposal, RoledColumn } from './types'
 
 const card = 'rounded-card border border-subtle bg-card p-4'
@@ -14,6 +15,7 @@ interface Props {
 
 export function ProposalReview({ roled, decision, onDecisionChange, proposal }: Props) {
   const dimensions = roled.filter((c) => c.role === 'dimension')
+  const identifiers = roled.filter((c) => c.role === 'identifier')
   const dateColumns = roled.filter((c) => c.role === 'date')
   const entityNames = proposal.termTypes.map((t) => t.value)
   // 中心实体读 proposal.rootName，**不再**用「不在 decision.parentOf 里的
@@ -42,6 +44,80 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
 
   return (
     <div className="flex flex-col gap-6">
+      {identifiers.length > 0 && (
+        // 标识列必须出现在这里，而且必须能改判。
+        //
+        // 一列 10000 行 / 9800 个不同值的「金额分」和一列真订单号，在分布上
+        // 无法区分——columnRoles 只能猜，两边都会猜错。以前猜错的代价是
+        // 静默的：标识列在审阅视图里一个控件都没有，它会直接成为本体的中心，
+        // ETL 给每一个金额值建一个节点，而「中心是猜的」那条告警都不出。
+        // 调阈值解决不了这件事（那只是换一种猜法），唯一站得住的做法是让
+        // 用户看见并纠正。
+        <section className="flex flex-col gap-3">
+          <h2 className={sectionTitle}>这几列被当成了标识</h2>
+          <p className="text-sm text-ink-soft">
+            标识列的每一个值都会在图谱里变成一个节点，第一列还会成为整份本体的
+            中心。如果其中有一列其实是金额或计数（比如以分为单位的金额，同样
+            几乎每行都不一样），把它改成「做成属性」——不然图谱里会为每一个
+            金额值建一个节点。
+          </p>
+          {identifiers.map((column, index) => {
+            const name = column.stats.name
+            const asEntity = isEntityColumn(column, decision)
+            return (
+              <div
+                key={`${name}-${index}`}
+                data-testid={`identifier-${name}`}
+                className={`${card} flex flex-col gap-2`}
+              >
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <code className="font-mono font-bold text-ink">{name}</code>
+                  {/* 依据必须带具体数字：用户要能据此推翻它。 */}
+                  <span className="text-xs text-ink-soft">{column.reason}</span>
+                  {column.stats.samples.length > 0 && (
+                    <span className="text-xs text-ink-faint">
+                      样例：{column.stats.samples.slice(0, 3).join('、')}
+                    </span>
+                  )}
+                </div>
+                <label className="flex items-start gap-2 text-sm text-ink">
+                  <input
+                    type="radio"
+                    name={`dim-${name}`}
+                    checked={asEntity}
+                    onChange={() =>
+                      setDecision({
+                        dimensionsAsEntity: { ...decision.dimensionsAsEntity, [name]: true },
+                      })
+                    }
+                  />
+                  <span>
+                    <strong>建成实体</strong>——每一个{name}都是图谱里的一个节点，
+                    别的列挂在它下面
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 text-sm text-ink">
+                  <input
+                    type="radio"
+                    name={`dim-${name}`}
+                    checked={!asEntity}
+                    onChange={() =>
+                      setDecision({
+                        dimensionsAsEntity: { ...decision.dimensionsAsEntity, [name]: false },
+                      })
+                    }
+                  />
+                  <span>
+                    <strong>做成属性</strong>——只作为一个字段挂在中心上，不建节点。
+                    它其实是金额、计数这类数值时选这个
+                  </span>
+                </label>
+              </div>
+            )
+          })}
+        </section>
+      )}
+
       <section className="flex flex-col gap-3">
         <h2 className={sectionTitle}>这几列，你想怎么用</h2>
         {dimensions.map((column, index) => {
@@ -237,6 +313,35 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
             系统目前没有日期类型，所以**按时间范围过滤**（「上个月的」「今年以来的」）
             在图谱层做不了，只能精确匹配。
           </p>
+        </section>
+      )}
+
+      {proposal.attributeColumns.length > 0 && (
+        // 度量列和日期列此前在这个界面上一处都不出现：判错了（一列本该建成
+        // 实体的数值列被当成度量）用户既看不见，也无从纠正。这一节至少让
+        // 它们的去向可见——它们不是不见了，是成了中心的属性。
+        //
+        // 刻意不给度量列改判入口：度量判错的代价有界（数据照常加载，还能
+        // 当过滤条件，只是不成为节点），跟标识判错（给每个值建一个节点、
+        // 还可能顶掉中心）不是一个量级；而每一列都长出一组单选会把真正需要
+        // 决定的那几列淹掉。真要改，下面这句指的「本体结构」页做得到。
+        <section data-testid="attribute-columns" className={`${card} flex flex-col gap-1`}>
+          <h2 className={sectionTitle}>会成为属性的列</h2>
+          <p className="text-sm text-ink-soft">
+            这些列挂在中心「{proposal.rootName}」上，只能当过滤条件，问不出
+            「哪个最多」这类问题。如果其中有一列你想建成实体，建完草稿后去
+            「本体结构」页加。
+          </p>
+          <ul className="flex flex-col gap-1">
+            {proposal.attributeColumns.map((name) => (
+              <li key={name} className="flex flex-wrap items-baseline gap-2 text-xs">
+                <code className="rounded-chip border border-subtle bg-paper px-2 py-0.5 font-mono text-ink-soft">
+                  {name}
+                </code>
+                <span className="text-ink-soft">{reasonByColumn.get(name)}</span>
+              </li>
+            ))}
+          </ul>
         </section>
       )}
 
