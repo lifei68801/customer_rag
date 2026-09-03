@@ -356,10 +356,23 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
             这些列名不是合法的属性字段名，已经清洗成新的名字——ETL 配置
             里用的是清洗后的名字，不是原始列名。
           </p>
+          {proposal.collidedFields.length > 0 && (
+            // 只并排显示改名前后不够：两行都写着 a__ 的时候，用户看不出这
+            // 意味着有一列的数据永远不会被加载。清洗的出口很窄（非法字符
+            // 一律换成下划线），两个不同的中文列名撞成同一个名字很常见。
+            <p className="text-sm text-ink">
+              其中 {proposal.collidedFields.join('、')} 清洗后和别的列撞了名，
+              已经加序号区分。不加的话 ETL 只会加载其中一列，另一列的数据
+              永远不会进图谱。
+            </p>
+          )}
           <ul className="flex flex-col gap-1">
             {Object.entries(proposal.renamedFields).map(([original, cleaned]) => (
               <li key={original} className="font-mono text-xs text-ink-soft">
                 {original} → {cleaned}
+                {proposal.collidedFields.includes(original) && (
+                  <span className="ml-2 font-sans text-ink">（撞名，加了序号）</span>
+                )}
               </li>
             ))}
           </ul>

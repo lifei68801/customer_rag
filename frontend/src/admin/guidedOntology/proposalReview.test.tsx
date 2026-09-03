@@ -341,6 +341,28 @@ describe('字段名被清洗过的列', () => {
     expect(block.textContent).toMatch(/field_1/)
   })
 
+  it('撞名的行要明说撞了，不能只并排显示改名前后', async () => {
+    // 两行都写着 a__ 的时候，用户看不出这意味着有一列的数据永远不会被
+    // ETL 加载。renamedFields 那句文案一个字都没提碰撞。
+    renderReview({
+      proposal: {
+        ...baseProposal,
+        renamedFields: { a订单: 'a__', a客户: 'a___2' },
+        collidedFields: ['a客户'],
+      },
+    })
+    const block = await screen.findByTestId('renamed-fields')
+    expect(block.textContent).toMatch(/撞/)
+    expect(block.textContent).toMatch(/a客户/)
+  })
+
+  it('没有撞名时不吓唬用户', async () => {
+    renderReview({
+      proposal: { ...baseProposal, renamedFields: { 类目: 'field_1' }, collidedFields: [] },
+    })
+    expect((await screen.findByTestId('renamed-fields')).textContent).not.toMatch(/撞/)
+  })
+
   it('renamedFields 为空时不显示这个小节', async () => {
     renderReview({ proposal: { ...baseProposal, renamedFields: {} } })
     expect(screen.queryByTestId('renamed-fields')).toBeNull()
@@ -549,6 +571,7 @@ describe('一条关系都没有时', () => {
     unusedColumns: [],
     attributeColumns: [],
     renamedFields: {},
+    collidedFields: [],
     rootIsGuessed: false,
     rootName: '品牌',
     reparentedTo: { root: '品牌', names: [] },
@@ -622,6 +645,7 @@ describe('挂在下拉框没有对应 constraint 时', () => {
     unusedColumns: [],
     attributeColumns: [],
     renamedFields: {},
+    collidedFields: [],
     rootIsGuessed: false,
     rootName: '品牌',
     reparentedTo: { root: '品牌', names: [] },

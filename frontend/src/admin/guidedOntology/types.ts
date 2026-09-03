@@ -88,6 +88,14 @@ export interface Proposal {
   attributeColumns: string[]
   /** 属性名被清洗过的列：原列名 -> 清洗后的字段名。ETL 映射要用它对回去。 */
   renamedFields: Record<string, string>
+  /**
+   * 清洗后撞了名、因此被加了序号后缀的列（原列名）。
+   *
+   * 界面必须说出来：renamedFields 并排列出改名前后，只有用户逐行比对才可
+   * 能发现两行撞成了同一个名字，而真正的后果（ETL 只加载其中一列）发生在
+   * 下载 YAML 之后。
+   */
+  collidedFields: string[]
   /** 没有标识列，根是猜的。UI 要提示用户确认。 */
   rootIsGuessed: boolean
   /**

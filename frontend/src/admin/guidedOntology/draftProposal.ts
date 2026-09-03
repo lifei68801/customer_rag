@@ -69,6 +69,26 @@ export function isEntityColumn(column: RoledColumn, decision: GuidedDecision): b
   return column.role === 'dimension' && decided === true
 }
 
+/**
+ * 同一份 extra_fields 里字段名必须互不相同，撞了就加序号后缀。
+ *
+ * sanitizeFieldName 的出口很窄：非法字符一律换成下划线，纯中文列名退回
+ * field_N。两列中文名（`a订单` / `a客户`）会双双清成 `a__`。后端
+ * _validate_draft_extra_fields 不查内部重名，两条同名字段原样写进
+ * ontology_term_types.extra_fields；更要命的是 ETL 那边
+ * `Object.fromEntries` 会把同名映射折叠成一条——后一列的数据永远不会被
+ * 加载，而界面上、后端校验里都没有任何异常。
+ */
+function uniqueFieldName(base: string, used: Set<string>): string {
+  if (!used.has(base)) return base
+  for (let n = 2; ; n += 1) {
+    const suffix = `_${n}`
+    // 仍要守住后端的 64 字符上限，所以是截断再拼后缀，不是直接拼。
+    const candidate = base.slice(0, 64 - suffix.length) + suffix
+    if (!used.has(candidate)) return candidate
+  }
+}
+
 /** 初始决策用的中心：第一个标识列，没有标识列时退回第一个维度列。 */
 function defaultRoot(roled: RoledColumn[]): string {
   const identifier = roled.find((c) => c.role === 'identifier')
@@ -173,6 +193,11 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
   // 用户也看不见。字段名清洗过之后 extra_fields 里的名字可能跟列名对不上，
   // 所以这里按原列名单独记一份，而不是让 UI 去猜。
   const attributeColumns: string[] = []
+  const usedFieldNames = new Set<string>()
+  // 撞过名、因此被加了序号后缀的列（原列名）。要在界面上说出来：并排显示
+  // 改名前后不足以让用户看出"这两行撞了"，而真正的后果（ETL 少加载一列）
+  // 发生在下载 YAML 之后。
+  const collidedFields: string[] = []
 
   roled.forEach((column, index) => {
     const name = column.stats.name
@@ -191,7 +216,10 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
       unusedColumns.push(name)
       return
     }
-    const fieldName = sanitizeFieldName(name, index)
+    const base = sanitizeFieldName(name, index)
+    const fieldName = uniqueFieldName(base, usedFieldNames)
+    if (fieldName !== base) collidedFields.push(name)
+    usedFieldNames.add(fieldName)
     if (fieldName !== name) renamedFields[name] = fieldName
     hostFields.push({ name: fieldName, value_type: measureValueType(column) })
     attributeColumns.push(name)
@@ -251,6 +279,7 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     unusedColumns,
     attributeColumns,
     renamedFields,
+    collidedFields,
     rootIsGuessed,
     rootName,
     reparentedTo: { root: rootName, names: reparentedNames },

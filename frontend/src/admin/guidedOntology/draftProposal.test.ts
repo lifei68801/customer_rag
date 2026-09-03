@@ -384,6 +384,58 @@ describe('字段名清洗', () => {
   })
 })
 
+describe('字段名撞车', () => {
+  // sanitizeFieldName 的出口很窄：非法字符一律换成下划线。两个不同的中文
+  // 列名（a订单 / a客户）会双双清成 a__。后端不查 extra_fields 内部重名，
+  // 而 ETL 的 fieldMappings 是 Object.fromEntries——同名映射折叠成一条，
+  // 后一列的数据永远不会被加载，界面上没有任何异常。
+  function collidingColumns(): RoledColumn[] {
+    return [
+      makeColumn('订单号', 'identifier', 9998),
+      makeColumn('a订单', 'dimension', 10),
+      makeColumn('a客户', 'dimension', 10),
+    ]
+  }
+
+  function collidingDecision() {
+    const roled = collidingColumns()
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['a订单'] = false
+    decision.dimensionsAsEntity['a客户'] = false
+    return { roled, decision }
+  }
+
+  it('撞名的字段加序号后缀，extra_fields 里没有重名', () => {
+    const { roled, decision } = collidingDecision()
+    const proposal = buildProposal(roled, decision)
+    const names = proposal.termTypes
+      .find((t) => t.value === '订单号')!
+      .extra_fields.map((f) => f.name)
+    expect(names).toHaveLength(2)
+    expect(new Set(names).size).toBe(2)
+  })
+
+  it('ETL 映射里两列都在，后一列的数据不会消失', () => {
+    const { roled, decision } = collidingDecision()
+    const { entities } = toEtlBuilder(roled, decision, 'f1')
+    const mappings = entities.find((e) => e.termType === '订单号')!.fieldMappings
+    // 折叠成一条时这里只有一个键，a订单 那一列永远不会被加载。
+    expect(Object.keys(mappings)).toHaveLength(2)
+    expect(new Set(Object.values(mappings))).toEqual(new Set(['a订单', 'a客户']))
+  })
+
+  it('撞过名的列被点名，界面才说得出发生了什么', () => {
+    const { roled, decision } = collidingDecision()
+    const proposal = buildProposal(roled, decision)
+    expect(proposal.collidedFields).toEqual(['a客户'])
+  })
+
+  it('没撞名时 collidedFields 是空的', () => {
+    const roled = demoColumns()
+    expect(buildProposal(roled, initialDecision(roled)).collidedFields).toEqual([])
+  })
+})
+
 describe('顺带产出 ETL 映射', () => {
   it('每个实体类型都有对应的映射，属性列一并带上', () => {
     // 引导收集的信息已经够生成映射了。让用户在 ETL 页把同样的判断再做
