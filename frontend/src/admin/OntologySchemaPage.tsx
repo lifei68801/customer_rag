@@ -1,4 +1,4 @@
-import { Boxes, ShieldCheck, Spline, Waypoints } from 'lucide-react'
+import { Boxes, ShieldCheck, Spline, Wand2, Waypoints } from 'lucide-react'
 import { EmptyState } from './EmptyState'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
@@ -284,6 +284,28 @@ export function OntologySchemaPage() {
       {/* 页头只有标题。草稿/已确认这个轴归侧边栏的版本切换器——同一个轴在
           两个地方各摆一份控件，用户会以为它们管的不是同一件事。 */}
       <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.ontology}</h1>
+
+      {/* 引导负责从零到一；三个 tab 负责后续微调。两条路径都留着，因为它们
+          的用户和场景确实不同。
+
+          replace_draft 是整份替换。readiness 还没查完（null）时不知道草稿
+          是不是空的，这时既不能说"安全"也不能说"会覆盖"——猜错的代价是
+          用户被白白吓退，或者手工建的东西没了却不知道是这一步干的，所以
+          三态各自措辞，未知态用中性文案。 */}
+      <Link
+        to={ADMIN_ROUTES.guidedOntology}
+        title={
+          readiness === null
+            ? '从一张业务表开始推导本体'
+            : readiness.termTypes
+              ? '从一张业务表开始重新推导本体——当前草稿会被整份覆盖'
+              : '从一张业务表开始，平台会推荐一套本体草案'
+        }
+        className="flex items-center gap-1.5 self-start rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition hover:bg-interactive-hover"
+      >
+        <Wand2 aria-hidden="true" className="h-4 w-4" />
+        从表格开始引导建模
+      </Link>
 
       {pageError && (
         <p role="alert" className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
