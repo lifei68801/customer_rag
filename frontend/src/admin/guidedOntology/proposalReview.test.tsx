@@ -707,3 +707,44 @@ describe('单选按钮按列分组', () => {
     ).toBe(true)
   })
 })
+
+describe('表头重名', () => {
+  it('两个同名列在"会成为属性的列"和"没有用到的列"里各占一行，不塌成一行', () => {
+    // 表头重名在真实业务表里很常见（导出工具重复表头、两张表 join 后同名）。
+    // 这两节此前用 key={name}，标识列和维度列两个区块上一轮已改成
+    // key={`${name}-${index}`}，这两节漏了。
+    //
+    // 如实记清楚这条测试到底钉住了什么：实测把 key 改回 {name} 之后，
+    // 下面两条"各占一行"的断言**依然通过**——React 遇到重复 key 会照常
+    // 把两行都渲染出来，只在 console.error 里报警。所以真正区分对错实现
+    // 的只有最后那条 same-key 断言；前两条描述的是期望的输出形状，不是
+    // 这个 key 修复的报警器。
+    //
+    // 那为什么还要修：重复 key 坏的是 React 的 reconciliation——重渲染时
+    // 它按 key 匹配新旧元素，两个相同的 key 会让它把这一行的 DOM/状态复用
+    // 到另一行上。这两节眼下是纯静态文本，看不出症状，所以这里没法写出
+    // 一条断言来钉住那个后果；能钉住的就是"React 没有报警"这一条。
+    const errors: unknown[][] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args) => {
+      errors.push(args)
+    })
+    try {
+      renderReview({
+        proposal: {
+          ...baseProposal,
+          attributeColumns: ['备注', '备注'],
+          unusedColumns: ['空列', '空列'],
+        },
+      })
+      const attrs = screen.getByTestId('attribute-columns')
+      expect(within(attrs).getAllByText('备注')).toHaveLength(2)
+      const unused = screen.getByTestId('unused-columns')
+      expect(within(unused).getAllByText('空列')).toHaveLength(2)
+      // key 重复时 React 会在 console.error 里报 "two children with the same key"。
+      // 上面两条断言已经会因为塌成一行而变红，这条是把原因也钉住。
+      expect(errors.flat().join(' ')).not.toMatch(/same key/i)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})

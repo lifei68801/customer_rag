@@ -333,8 +333,8 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
             「本体结构」页加。
           </p>
           <ul className="flex flex-col gap-1">
-            {proposal.attributeColumns.map((name) => (
-              <li key={name} className="flex flex-wrap items-baseline gap-2 text-xs">
+            {proposal.attributeColumns.map((name, index) => (
+              <li key={`${name}-${index}`} className="flex flex-wrap items-baseline gap-2 text-xs">
                 <code className="rounded-chip border border-subtle bg-paper px-2 py-0.5 font-mono text-ink-soft">
                   {name}
                 </code>
@@ -403,8 +403,8 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
               页手工加。
             </p>
             <ul className="flex flex-col gap-1">
-              {proposal.unusedColumns.map((name) => (
-                <li key={name} className="flex flex-wrap items-baseline gap-2 text-xs">
+              {proposal.unusedColumns.map((name, index) => (
+                <li key={`${name}-${index}`} className="flex flex-wrap items-baseline gap-2 text-xs">
                   <code className="rounded-chip border border-subtle bg-paper px-2 py-0.5 font-mono text-ink-soft">
                     {name}
                   </code>

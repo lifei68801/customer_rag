@@ -164,6 +164,34 @@ describe('引导页第一步', () => {
     expect(screen.queryByTestId('unused-columns')).toBeNull()
   })
 
+  it('改判过之后换表要先确认，取消就留在原地', async () => {
+    // 换表清空 roled/decision/uploadedFile，不可撤销。改判是用户在这个页面
+    // 上唯一真正花了力气的东西，一键丢掉而不问，等于把「手滑」和「我确实
+    // 想重来」当成同一件事。本项目其余丢弃工作的入口（AccountsPage /
+    // DocumentsPage / TermsPage / OntologySchemaPage）一律走 useConfirm。
+    signIn('admin')
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.guidedOntology)
+    await user.upload(await screen.findByLabelText(/选择一张表/), csvFile())
+    await screen.findByText(/扫描完成，共 3 列/)
+
+    // 把维度列「产品」改判成属性——这就是不该被静默丢掉的那份工作。
+    const asAttribute = screen.getAllByRole('radio', { name: /做成属性/ })
+    await user.click(asAttribute[asAttribute.length - 1])
+
+    await user.click(screen.getByRole('button', { name: '换一张表' }))
+    // 取消：什么都没丢，仍在审阅视图。
+    await user.click(await screen.findByRole('button', { name: '取消' }))
+    expect(await screen.findByText(/扫描完成，共 3 列/)).toBeTruthy()
+    expect(screen.queryByLabelText(/选择一张表/)).toBeNull()
+
+    // 确认：这才回到第一步。
+    await user.click(screen.getByRole('button', { name: '换一张表' }))
+    await user.click(await screen.findByRole('button', { name: '换表' }))
+    expect(await screen.findByLabelText(/选择一张表/)).toBeTruthy()
+    expect(screen.queryByText(/扫描完成/)).toBeNull()
+  })
+
   it('扫描失败时说清原因，不是静静停住', async () => {
     signIn('admin')
     const user = userEvent.setup()

@@ -4,6 +4,7 @@ import { ADMIN_ROUTES, PAGE_TITLES } from '../../adminRoutes'
 import { adminFetch, extractErrorDetail } from '../adminApi'
 import { useAdminAuth } from '../useAdminAuth'
 import { useAdminTenant } from '../TenantContext'
+import { useConfirm } from '../ConfirmContext'
 import { buildConfigYaml } from '../schemaEtlConfigBuilder/buildConfigYaml'
 import { scanTableFile } from './columnStats'
 import { assignRoles } from './columnRoles'
@@ -37,6 +38,7 @@ const GUIDED_FILE_ID = 'guided-upload'
 export function GuidedOntologyPage() {
   const { role, sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
+  const confirm = useConfirm()
   const [step, setStep] = useState<Step>('upload')
   const [error, setError] = useState<string | null>(null)
   const [roled, setRoled] = useState<RoledColumn[] | null>(null)
@@ -86,7 +88,22 @@ export function GuidedOntologyPage() {
    * 必须连 roled/decision/uploadedFile 一起清掉：留着的话下一张表扫描失败
    * 时，界面会拿上一张表的判定继续渲染审阅视图。
    */
-  const handleStartOver = () => {
+  const handleStartOver = async () => {
+    // 改判是用户真正花了力气的那部分，一键清空且不可撤销。本项目其余丢弃工作的
+    // 入口（AccountsPage / DocumentsPage / TermsPage / OntologySchemaPage）一律走
+    // useConfirm，这里没理由例外。没改过判定就不问——没有东西可丢时
+    // 弹一个确认框只是噪音。
+    if (
+      roled &&
+      decision &&
+      JSON.stringify(decision) !== JSON.stringify(initialDecision(roled)) &&
+      !(await confirm({
+        message: '换一张表会丢掉你在这张表上做的全部改判，且无法撤销。',
+        confirmLabel: '换表',
+      }))
+    ) {
+      return
+    }
     setStep('upload')
     setError(null)
     setRoled(null)
