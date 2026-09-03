@@ -82,10 +82,17 @@ export function GuidedOntologyPage() {
    */
   const handleSubmit = async () => {
     if (!sessionToken || !roled || !decision || step === 'submitting') return
+    const proposal = buildProposal(roled, decision)
+    if (proposal.termTypes.length === 0) {
+      // 没有标识列、又把猜测根和其余维度列都改判成属性时，proposal 里一个
+      // 实体都没有。POST 一份空本体没有意义——挡在这里，说清原因，比让
+      // 后端 400（或者更糟，接受一份空草稿）都更早、更直接地告诉用户。
+      setError('这份草案里一个实体都没有，没法写入草稿。回上面把至少一列改回「建成实体」。')
+      return
+    }
     setStep('submitting')
     setError(null)
     try {
-      const proposal = buildProposal(roled, decision)
       const response = await adminFetch(
         `/api/admin/ontology/${encodeURIComponent(tenantId)}/draft/replace`,
         sessionToken,
@@ -156,6 +163,7 @@ export function GuidedOntologyPage() {
       {error && (
         <p
           role="alert"
+          data-testid="page-error"
           className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink"
         >
           {error}

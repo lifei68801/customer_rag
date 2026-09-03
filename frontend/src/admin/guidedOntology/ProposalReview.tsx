@@ -2,6 +2,8 @@ import type { GuidedDecision, Proposal, RoledColumn } from './types'
 
 const card = 'rounded-card border border-subtle bg-card p-4'
 const sectionTitle = 'font-mono text-sm font-bold uppercase tracking-wide text-ink-soft'
+/** 「挂在」下拉框在没有对应 constraint 时的哨兵值——不是真实实体名。 */
+const UNCONNECTED = '__unconnected__'
 
 interface Props {
   roled: RoledColumn[]
@@ -30,6 +32,10 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
   const relationOfEntity = new Map(
     proposal.constraints.map((c) => [c.object_term_type, c.relation_type]),
   )
+  // 「没有用到的列」小节要显示每一列具体为什么没进本体——一句通用说明
+  // 对所有落进这里的列都成立是做不到的（空列、整数金额、真正的自由
+  // 文本，原因完全不同），只有各列自己的 reason 才是真的。
+  const reasonByColumn = new Map(roled.map((c) => [c.stats.name, c.reason]))
 
   const setDecision = (patch: Partial<GuidedDecision>) =>
     onDecisionChange({ ...decision, ...patch })
@@ -104,7 +110,20 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
             真做得到的只有一件事：把中心那一列在上面改判成「做成属性」，
             中心会顺延给列顺序里下一个还是实体的列（buildProposal 的
             rootName 就是这么算的），原来挂在它下面的实体会自动改挂过去。 */}
-        {proposal.rootIsGuessed && (
+        {proposal.rootIsGuessed && rootName === '' && (
+          // rootName 为空串当且仅当所有维度列都被用户改判成了属性——一个
+          // 实体都不剩。旧文案在这条分支下渲染成「现在拿「」当中心，其余
+          // 实体都挂在它下面」：中心名是空的、没有其余实体、「改成做成
+          // 属性」正是用户刚做完的事，三处都不成立。这条分支专门说清
+          // 「本体是空的，没法提交」，并指回用户能做的事——把某一列改回
+          // 「建成实体」。
+          <p role="alert" data-testid="empty-ontology-warning" className={`${card} text-sm text-ink`}>
+            这张表里没有一列是「每行一个值」的标识，而上面的列又都被改成了
+            「做成属性」，本体里现在一个实体都没有——没有实体就没法写入
+            草稿。把上面至少一列改回「建成实体」。
+          </p>
+        )}
+        {proposal.rootIsGuessed && rootName !== '' && (
           <p role="alert" className={`${card} text-sm text-ink`}>
             这张表里没有一列是「每行一个值」的标识，所以中心是猜的：现在拿「
             {rootName}」当中心，其余实体都挂在它下面。这里换不了中心——如果它
@@ -135,50 +154,64 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
         )}
         {entityNames
           .filter((name) => name !== rootName)
-          .map((name) => (
-            <div key={name} className={`${card} flex flex-wrap items-center gap-2`}>
-              <label htmlFor={`parent-${name}`} className="text-sm font-bold text-ink">
-                {name} 挂在
-              </label>
-              <select
-                id={`parent-${name}`}
-                value={parentOfEntity.get(name) ?? rootName}
-                onChange={(event) =>
-                  setDecision({ parentOf: { ...decision.parentOf, [name]: event.target.value } })
-                }
-                className="rounded-control border border-subtle bg-paper px-2 py-1 text-sm text-ink"
-              >
-                {/* 排掉自己：自环会让约束表里出现 A-[R]->A，图谱查询会
-                    陷进去。 */}
-                {entityNames
-                  .filter((candidate) => candidate !== name)
-                  .map((candidate) => (
-                    <option key={candidate} value={candidate}>
-                      {candidate}
+          .map((name) => {
+            const parent = parentOfEntity.get(name)
+            return (
+              <div key={name} className={`${card} flex flex-wrap items-center gap-2`}>
+                <label htmlFor={`parent-${name}`} className="text-sm font-bold text-ink">
+                  {name} 挂在
+                </label>
+                <select
+                  id={`parent-${name}`}
+                  value={parent ?? UNCONNECTED}
+                  onChange={(event) =>
+                    setDecision({ parentOf: { ...decision.parentOf, [name]: event.target.value } })
+                  }
+                  className="rounded-control border border-subtle bg-paper px-2 py-1 text-sm text-ink"
+                >
+                  {/* 没有对应的 constraint 时不能悄悄兜底成 rootName——那
+                      会画出一条「X 挂在中心」的边，而这条边根本不会被提交
+                      （这轮 Critical 的形态）。当前 buildProposal 的不变量
+                      保证每个非中心实体都有一条边，这条分支此刻应该走不到；
+                      留着它是为了不让将来任何打破那条不变量的改动，重新
+                      变成一次静默失败。 */}
+                  {parent === undefined && (
+                    <option value={UNCONNECTED} disabled>
+                      未连接
                     </option>
-                  ))}
-              </select>
-              <span className="text-sm text-ink-soft">下面，关系叫</span>
-              {/* 带 datalist：已经用过的关系名要能选。SOLD_BY 在 demo 里
-                  用了两次（订单->公司、产品->公司），不给选的话用户第二次
-                  会打出 SELL_BY，建出两个同义关系——图谱里同一件事有两种
-                  边，查询时漏掉一半而不报错。 */}
-              <input
-                aria-label={`${name} 的关系名`}
-                list="guided-relation-names"
-                value={relationOfEntity.get(name) ?? ''}
-                onChange={(event) =>
-                  setDecision({
-                    relationNameOf: {
-                      ...decision.relationNameOf,
-                      [name]: event.target.value.toUpperCase(),
-                    },
-                  })
-                }
-                className="rounded-control border border-subtle bg-paper px-2 py-1 font-mono text-sm text-ink"
-              />
-            </div>
-          ))}
+                  )}
+                  {/* 排掉自己：自环会让约束表里出现 A-[R]->A，图谱查询会
+                      陷进去。 */}
+                  {entityNames
+                    .filter((candidate) => candidate !== name)
+                    .map((candidate) => (
+                      <option key={candidate} value={candidate}>
+                        {candidate}
+                      </option>
+                    ))}
+                </select>
+                <span className="text-sm text-ink-soft">下面，关系叫</span>
+                {/* 带 datalist：已经用过的关系名要能选。SOLD_BY 在 demo 里
+                    用了两次（订单->公司、产品->公司），不给选的话用户第二次
+                    会打出 SELL_BY，建出两个同义关系——图谱里同一件事有两种
+                    边，查询时漏掉一半而不报错。 */}
+                <input
+                  aria-label={`${name} 的关系名`}
+                  list="guided-relation-names"
+                  value={relationOfEntity.get(name) ?? ''}
+                  onChange={(event) =>
+                    setDecision({
+                      relationNameOf: {
+                        ...decision.relationNameOf,
+                        [name]: event.target.value.toUpperCase(),
+                      },
+                    })
+                  }
+                  className="rounded-control border border-subtle bg-paper px-2 py-1 font-mono text-sm text-ink"
+                />
+              </div>
+            )
+          })}
         <datalist id="guided-relation-names">
           {[...new Set(Object.values(decision.relationNameOf))]
             .filter(Boolean)
@@ -230,18 +263,22 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
           <p className="text-sm text-ink-soft">这张表的列都用上了。</p>
         ) : (
           <>
+            {/* 这句是唯一对每一类落进这里的列都成立的说明——「重复度不足以
+                当分类，也没高到每行一个」这类具体理由是维度/自由文本列的
+                原因，对空列或整数列（比如 3 行整数金额，ratio 恰好是 1.0，
+                只是行数不够）是假的。真正的原因见每一列后面那句，来自
+                columnRoles.ts 的 reason，不是这里编一句能覆盖所有情况的话。 */}
             <p className="text-sm text-ink-soft">
-              这些列没有进入本体——它们的重复度既不足以当分类，也没高到每行一个。
-              如果其中有你需要的，回上一步换一张更聚焦的表，或者建完之后去
-              「本体结构」页手工加。
+              这些列没有进入本体，原因见每一列后面的说明。如果其中有你需要的，
+              回上一步换一张更聚焦的表，或者建完之后去「本体结构」页手工加。
             </p>
-            <ul className="flex flex-wrap gap-2">
+            <ul className="flex flex-col gap-1">
               {proposal.unusedColumns.map((name) => (
-                <li
-                  key={name}
-                  className="rounded-chip border border-subtle bg-paper px-2 py-0.5 font-mono text-xs text-ink-soft"
-                >
-                  {name}
+                <li key={name} className="flex flex-wrap items-baseline gap-2 text-xs">
+                  <code className="rounded-chip border border-subtle bg-paper px-2 py-0.5 font-mono text-ink-soft">
+                    {name}
+                  </code>
+                  <span className="text-ink-soft">{reasonByColumn.get(name)}</span>
                 </li>
               ))}
             </ul>

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import App from '../../App'
@@ -88,11 +88,14 @@ function renderAt(path: string) {
   )
 }
 
-// 订单号必须是非纯数字（"ORD" 前缀）：纯数字列会被 columnStats 的
-// NUMERIC_IDENTIFIER_THRESHOLD 逻辑之外的路径判成 integer 类型，从而在
-// classify() 里先走 measure 分支，永远轮不到"高比例=标识"的判定。10 行、
-// 产品只有两个取值，让 产品 的重复度落进 DIMENSION_MAX_RATIO(0.2) 以内，
-// 才会被判成 dimension（而不是"重复度不足以当分类"的 freetext）。
+// 订单号必须是非纯数字（"ORD" 前缀）：这份 fixture 只有 10 行，纯数字列
+// 会保持 integer 类型，而 columnRoles 的 INTEGER_IDENTIFIER_MIN_ROWS(=20)
+// 要求非空行数至少 20 才肯把整数列判成标识——10 行怎么判都够不上这道
+// 门槛，中心就没了。字符串标识不受这道行数下限约束，用 ORD 前缀绕开它。
+// （旧注释说这是因为 integer 在 classify() 里先走 measure 分支，那条短路
+// 在 60ce3b7 就删掉了——纯数字列不能用的真实原因是行数，不是类型短路。）
+// 10 行、产品只有两个取值，让 产品 的重复度落进 DIMENSION_MAX_RATIO(0.2)
+// 以内，才会被判成 dimension（而不是"重复度不足以当分类"的 freetext）。
 const csvFile = () =>
   new File(
     [
@@ -172,5 +175,34 @@ describe('提交草稿', () => {
     renderAtReviewStep()
     await user.click(await screen.findByRole('button', { name: /写入草稿/ }))
     expect(await screen.findByRole('button', { name: /映射配置|下载配置/ })).toBeTruthy()
+  })
+
+  it('本体是空的（没有标识列，唯一的维度列也被改成了属性）时，写入草稿会被挡住，不会 POST 出去', async () => {
+    // 跟 N1 是同一条路径的两个环节：没有标识列时中心是猜的（第一个维度
+    // 列），用户完全可以把它也改判成属性，本体里就一个实体都不剩。
+    // handleSubmit 之前对此没有设防——点「写入草稿」会把一份空本体 POST
+    // 到 /draft/replace。这条测的是"挡住"这个动作本身，不是文案。
+    const noIdentifierCsv = () =>
+      new File(
+        [
+          '产品,revenue\n' +
+            '咖啡,10.5\n咖啡,11.5\n咖啡,12.5\n咖啡,13.5\n咖啡,14.5\n' +
+            '茶,20.5\n茶,21.5\n茶,22.5\n茶,23.5\n茶,24.5\n',
+        ],
+        'products.csv',
+        { type: 'text/csv' },
+      )
+    signIn('admin')
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.guidedOntology)
+    await user.upload(await screen.findByLabelText(/选择一张表/), noIdentifierCsv())
+
+    const block = await screen.findByTestId('dimension-产品')
+    await user.click(within(block).getByRole('radio', { name: /做成属性/ }))
+
+    await user.click(await screen.findByRole('button', { name: /写入草稿/ }))
+    const pageError = await screen.findByTestId('page-error')
+    expect(pageError.textContent).toMatch(/一个实体都没有/)
+    expect(replaceCalls.length).toBe(0)
   })
 })

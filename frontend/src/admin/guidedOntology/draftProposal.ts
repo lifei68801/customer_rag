@@ -160,6 +160,11 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     // 已经不在实体列表里的名字：都不能照单全收，但也**不能跳过**。跳过的
     // 后果是这个实体一条边都没有，而 UI 照样画出「X 挂在 Y」——界面显示
     // 连好了，提交出去是孤儿。改挂到中心下面，并把名字收集起来让 UI 明说。
+    //
+    // 如实记一句没堵住的：两个非中心实体互指的二元环（A 的上级选 B、B 的
+    // 上级选 A）没有检测。两边各自看都是 valid（都指向一个存在、不是自己
+    // 的实体），constraints 非空所以「零关系」告警也不会触发，但中心会被
+    // 晾在一边，图谱里出现一个跟中心不连通的二元环。
     const valid = declared && declared !== child && entityNames.has(declared)
     const parent = valid ? declared : rootName
     if (!valid) reparentedNames.push(child)

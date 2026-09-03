@@ -266,25 +266,52 @@ describe('根节点是猜测的', () => {
  * 都长出一行「挂在」，下拉框的值（那个已消失的旧根）不在 options 里，DOM
  * 静默回落到第一个选项——界面显示「品牌 挂在 颜色」「颜色 挂在 品牌」，
  * 一个不存在的环，而提交出去是零条关系。
+ *
+ * 四个维度列，不是三个：只有两个实体的旧 fixture 里，「颜色」的下拉框
+ * 排掉自己后 options 只剩「品牌」一项——不管值来自 constraints、来自
+ * decision，还是干脆写死，结果都是「品牌」，测不出实现取错了数据源。
+ * 加一个「尺寸」，让「颜色」有两个候选上级（品牌、尺寸），并且让正确
+ * 答案（尺寸）不是 options 里的第一个（品牌是）。
  */
-function threeDimensionStats(): ColumnStats[] {
+function fourDimensionStats(): ColumnStats[] {
   return [
-    stat('产品类目', 10, 'string', ['饮料', '零食']), // 猜测根
-    stat('品牌', 8, 'string', ['甲', '乙']),
+    stat('产品类目', 10, 'string', ['饮料', '零食']), // 猜测根，之后被改判成属性
+    stat('品牌', 8, 'string', ['甲', '乙']), // 顺延后的新中心
     stat('颜色', 5, 'string', ['红', '蓝']),
+    stat('尺寸', 4, 'string', ['S', 'M', 'L']),
     stat('revenue', 500, 'number'),
   ]
 }
 
 function renderWithRootDropped() {
-  const dropped = assignRoles(threeDimensionStats())
+  const dropped = assignRoles(fourDimensionStats())
   const decision = initialDecision(dropped)
   decision.dimensionsAsEntity['产品类目'] = false
+  // 颜色显式挂在「尺寸」下面——尺寸在 entityNames 里排第二（插入顺序是
+  // 品牌、颜色、尺寸），排掉自己后颜色的 options 是 [品牌, 尺寸]，品牌
+  // 排第一。正确答案（尺寸）不是第一个选项，DOM 回落测不出来。
+  decision.parentOf['颜色'] = '尺寸'
+  decision.relationNameOf['颜色'] = 'SIZED_AS'
+  // 尺寸自己保持 initialDecision 给的默认值（旧根「产品类目」），产品类目
+  // 被改判成属性之后这条 parentOf 就失效了——尺寸会被 buildProposal 改挂
+  // 到新中心「品牌」下面，用于覆盖「明说哪些实体被改挂了」那条测试。
   const proposal = buildProposal(dropped, decision)
+
+  // decision 留一份陈旧值：颜色的上级和关系名都被换成了别的东西，但
+  // proposal 是用上面那份决策算出来的，不会跟着变——这就是
+  // decision.parentOf 里"残留指向已经不对的条目"的样子。渲染时把这份
+  // 陈旧 decision 传给组件：如果实现从 decision 取值而不是从
+  // proposal.constraints 反查，界面会显示错的上级和错的关系名。
+  const staleDecision: GuidedDecision = {
+    ...decision,
+    parentOf: { ...decision.parentOf, 颜色: '品牌' },
+    relationNameOf: { ...decision.relationNameOf, 颜色: 'STALE_NAME' },
+  }
+
   render(
     <ProposalReview
       roled={dropped}
-      decision={decision}
+      decision={staleDecision}
       onDecisionChange={vi.fn()}
       proposal={proposal}
     />,
@@ -300,16 +327,28 @@ describe('猜测根被改判成属性之后', () => {
     expect(screen.queryByLabelText(/品牌 挂在/)).toBeNull()
   })
 
-  it('「挂在」显示的上级就是会被提交的那个，不是 DOM 回落出来的第一个选项', async () => {
+  it('「挂在」显示的上级就是会被提交的那个，不是第一个选项，也不是 decision 里的陈旧值', async () => {
     renderWithRootDropped()
     const select = (await screen.findByLabelText(/颜色 挂在/)) as HTMLSelectElement
-    expect(select.value).toBe('品牌')
+    // 前提：第一个选项确实是「品牌」——不然下面 select.value 断言就算凑
+    // 巧读到了 rootName 也测不出问题。
+    expect([...select.options].map((o) => o.value)[0]).toBe('品牌')
+    expect(select.value).toBe('尺寸')
+  })
+
+  it('关系名输入框显示的也是会被提交的那个，不是 decision 里的陈旧值', async () => {
+    renderWithRootDropped()
+    const input = (await screen.findByLabelText('颜色 的关系名')) as HTMLInputElement
+    expect(input.value).toBe('SIZED_AS')
   })
 
   it('明说哪些实体被改挂了，不是悄悄改的', async () => {
     renderWithRootDropped()
+    // 这次被改挂的是「尺寸」（它的旧上级「产品类目」被改判成了属性），
+    // 不是「颜色」——颜色这次有一个显式指定的有效上级（尺寸），不该被
+    // 改挂。
     const notice = await screen.findByTestId('reparented-notice')
-    expect(notice.textContent).toMatch(/颜色/)
+    expect(notice.textContent).toMatch(/尺寸/)
     expect(notice.textContent).toMatch(/品牌/)
   })
 
@@ -353,6 +392,41 @@ describe('猜测根提示的文案只承诺界面做得到的事', () => {
   })
 })
 
+describe('所有维度列都被改判成属性之后，一个实体都不剩', () => {
+  function renderEmptyOntology() {
+    const guessedRoled = assignRoles(noIdentifierStats())
+    const guessedDecision = initialDecision(guessedRoled)
+    // noIdentifierStats 里唯一的维度列是「产品」（猜测根）；把它也改判成
+    // 属性，本体里就一个实体都不剩了。
+    for (const column of guessedRoled) {
+      if (column.role === 'dimension') guessedDecision.dimensionsAsEntity[column.stats.name] = false
+    }
+    const proposal = buildProposal(guessedRoled, guessedDecision)
+    // 前提：确实触发了空中心，不然下面的断言在原理上测不出问题。
+    expect(proposal.rootName).toBe('')
+    expect(proposal.termTypes.length).toBe(0)
+    render(
+      <ProposalReview
+        roled={guessedRoled}
+        decision={guessedDecision}
+        onDecisionChange={vi.fn()}
+        proposal={proposal}
+      />,
+    )
+  }
+
+  it('提示不再渲染成「现在拿「」当中心」，而是说清本体是空的', async () => {
+    // 修复前这条分支跟"根是猜的但还有中心"共用一句文案，渲染出
+    // 「现在拿「」当中心，其余实体都挂在它下面」——中心名是空的、没有
+    // 其余实体、"改成做成属性"正是用户刚做完的事，三处都不成立。
+    renderEmptyOntology()
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).not.toMatch(/现在拿「」/)
+    expect(alert.textContent).toMatch(/一个实体都没有|没有实体/)
+    expect(alert.textContent).toMatch(/建成实体/)
+  })
+})
+
 describe('一条关系都没有时', () => {
   // buildProposal 现在产不出这个组合（每个非中心实体都会拿到一条边），
   // 所以直接构造 Proposal 喂给渲染边界——它是 prop，这条守的是"未来任何
@@ -381,5 +455,72 @@ describe('一条关系都没有时', () => {
     renderReview()
     await screen.findByTestId('dimension-customer_state')
     expect(screen.queryByTestId('no-relations-warning')).toBeNull()
+  })
+})
+
+describe('没有用到的列，各自的原因要能看见', () => {
+  it('整数列因行数不够落进 freetext 时，界面显示的是这一列专属的真实原因', async () => {
+    // 3 行整数、互不相同（ratio 1.0）：INTEGER_IDENTIFIER_MIN_ROWS(=20)
+    // 不够，落进 freetext。通用那句"重复度既不足以当分类，也没高到每行
+    // 一个"对这一列是假话——它恰恰高到每行一个，只是行数不够。
+    const unitPriceStat: ColumnStats = {
+      name: 'unit_price',
+      nonEmptyCount: 3,
+      distinctCount: 3,
+      distinctCapped: false,
+      samples: ['10', '20', '30'],
+      inferredType: 'integer',
+    }
+    const roledWithUnitPrice = assignRoles([stat('订单号', 9998, 'string'), unitPriceStat])
+    const decision = initialDecision(roledWithUnitPrice)
+    const proposal = buildProposal(roledWithUnitPrice, decision)
+    // 前提：这一列确实落进了未使用列表——不然下面断言测不出问题。
+    expect(proposal.unusedColumns).toContain('unit_price')
+    render(
+      <ProposalReview
+        roled={roledWithUnitPrice}
+        decision={decision}
+        onDecisionChange={vi.fn()}
+        proposal={proposal}
+      />,
+    )
+    const unused = await screen.findByTestId('unused-columns')
+    expect(unused.textContent).toMatch(/unit_price/)
+    // 专属原因（来自 columnRoles.ts 的整数文案）要出现在界面上。
+    expect(unused.textContent).toMatch(/本体结构/)
+    // 通用那句对这一列不成立的半句话不能再出现。
+    expect(unused.textContent).not.toMatch(/也没高到每行一个/)
+  })
+})
+
+describe('挂在下拉框没有对应 constraint 时', () => {
+  // buildProposal 的不变量保证每个非中心实体都恰好有一条入边，正常路径
+  // 走不到这里——这条测的是渲染边界本身：Proposal 是外部传入的 prop，
+  // 任何打破那条不变量的未来改动，都不该让界面悄悄画出一条不会被提交
+  // 的「X 挂在中心」的边（这轮 Critical 的形态）。
+  const proposalMissingConstraint: Proposal = {
+    termTypes: [
+      { value: '品牌', extra_fields: [], standard_name_value_type: 'string' },
+      { value: '颜色', extra_fields: [], standard_name_value_type: 'string' },
+      { value: '尺寸', extra_fields: [], standard_name_value_type: 'string' },
+    ],
+    relationTypes: [],
+    // 只有"颜色"有 constraint，"尺寸"没有——模拟它在 constraints 里缺席。
+    constraints: [
+      { subject_term_type: '品牌', relation_type: 'HAS_颜色', object_term_type: '颜色' },
+    ],
+    unusedColumns: [],
+    renamedFields: {},
+    rootIsGuessed: false,
+    rootName: '品牌',
+    reparentedTo: { root: '品牌', names: [] },
+  }
+
+  it('不悄悄兜底成中心，显式渲染成「未连接」', async () => {
+    renderReview({ proposal: proposalMissingConstraint })
+    const select = (await screen.findByLabelText(/尺寸 挂在/)) as HTMLSelectElement
+    expect(select.value).not.toBe('品牌')
+    const optionLabels = [...select.options].map((o) => o.textContent)
+    expect(optionLabels).toContain('未连接')
   })
 })

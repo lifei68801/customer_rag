@@ -95,7 +95,28 @@ function classify(column: ColumnStats): { role: ColumnRole; reason: string } {
     // 很弱，对一列整元单价更是指错了方向——那一列的问题不是"不够格当
     // 分类"，是系统没认出它是金额，于是整列没进本体。给一个真能做到的
     // 动作：建完之后去「本体结构」页手工加成属性（GuidedOntologyPage 完成
-    // 页就有那个入口）。
+    // 页就有那个入口）。这段文案现在会渲染进审阅视图的「没有用到的列」
+    // 小节（ProposalReview.tsx 按列显示 reason），所以这里的因果必须
+    // 站得住——不能只对模型层的单测成立。
+    //
+    // 两个不同的落空理由，措辞不能共用：
+    // - 行数不够（ratio 已经 >= IDENTIFIER_MIN_RATIO，只是 nonEmptyCount
+    //   不到 INTEGER_IDENTIFIER_MIN_ROWS）：这一列其实"几乎每行一个"，
+    //   说它"没高到每行一个"是假的——真实原因是样本太小。
+    // - 比例本身就不上不下（介于 DIMENSION_MAX_RATIO 和
+    //   IDENTIFIER_MIN_RATIO 之间）：这才是"重复度不够当分类，也没高到
+    //   每行一个"这句话本来描述的情况。
+    const looksLikeIdentifierButTooFewRows = !enoughRowsForIdentifier && ratio >= IDENTIFIER_MIN_RATIO
+    if (looksLikeIdentifierButTooFewRows) {
+      return {
+        role: 'freetext',
+        reason:
+          `${column.nonEmptyCount} 个非空值里有 ${column.distinctCount} 个不同值，几乎每行一个，` +
+          `但只有 ${column.nonEmptyCount} 行——样本太小，不能当标识（整数列至少要 ` +
+          `${INTEGER_IDENTIFIER_MIN_ROWS} 行）。整数列不会被自动当成度量（只有带小数的` +
+          '数值列才会）——如果它是金额或计数，建完草稿后去「本体结构」页把它手工加成属性。',
+      }
+    }
     return {
       role: 'freetext',
       reason:
