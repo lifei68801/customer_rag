@@ -854,3 +854,49 @@ def test_replace_draft_rejects_duplicate_term_type_in_same_submission(client):
         "/api/admin/ontology/t1/term-types?status=draft", headers={"Authorization": "Bearer x"}
     ).json()
     assert {t["value"] for t in listed["term_types"]} == {"订单号"}, "失败的提交不该改动既有草稿"
+
+
+def test_replace_draft_stores_etl_mapping(client):
+    """引导一次提交同时写本体草稿和映射。
+
+    分两次请求写不行：中途失败会留下一份没有映射的草稿，而用户不知道
+    映射没写进去——他在表格导入页会看到"从头配置"的界面。
+    """
+    response = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [{"value": "客户", "extra_fields": []}],
+            "relation_types": [],
+            "constraints": [],
+            "etl_mapping": {
+                "config_yaml": "entities: []",
+                "source_file_name": "orders.csv",
+            },
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert response.status_code == 200
+
+    got = client.get(
+        "/api/admin/ontology/t1/etl-mapping?status=draft", headers={"Authorization": "Bearer x"}
+    )
+    assert got.status_code == 200
+    assert got.json()["mapping"]["source_file_name"] == "orders.csv"
+
+
+def test_replace_draft_without_mapping_leaves_it_absent(client):
+    """etl_mapping 是可选的。
+
+    本体结构页那三个 tab 也会改草稿，它们不带映射；不能因为没带就把引导
+    写的映射抹掉，也不能凭空造一份。
+    """
+    response = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={"term_types": [], "relation_types": [], "constraints": []},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert response.status_code == 200
+    got = client.get(
+        "/api/admin/ontology/t1/etl-mapping?status=draft", headers={"Authorization": "Bearer x"}
+    )
+    assert got.json()["mapping"] is None

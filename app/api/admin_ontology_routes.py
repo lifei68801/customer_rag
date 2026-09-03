@@ -27,6 +27,7 @@ from app.graphrag.ontology_constraints import (
     list_allowed_combinations,
     remove_allowed_combination,
 )
+from app.graphrag.ontology_etl_mapping import get_etl_mapping
 from app.graphrag.ontology_lifecycle import (
     checkout_draft,
     confirm_ontology,
@@ -468,10 +469,16 @@ class DraftConstraintPayload(BaseModel):
     object_term_type: str
 
 
+class DraftEtlMappingPayload(BaseModel):
+    config_yaml: str
+    source_file_name: str
+
+
 class ReplaceDraftRequest(BaseModel):
     term_types: list[DraftTermTypePayload]
     relation_types: list[DraftRelationTypePayload]
     constraints: list[DraftConstraintPayload]
+    etl_mapping: DraftEtlMappingPayload | None = None
 
 
 @router.post("/{tenant_id}/draft/replace")
@@ -493,6 +500,7 @@ async def replace_ontology_draft(
             term_types=[t.model_dump() for t in payload.term_types],
             relation_types=[r.model_dump() for r in payload.relation_types],
             constraints=[c.model_dump() for c in payload.constraints],
+            etl_mapping=payload.etl_mapping.model_dump() if payload.etl_mapping else None,
         )
     # replace_draft 内部除了引用未声明类型的 ConstraintUnknownCategoryError，
     # 还会对 extra_fields / standard_name_value_type / relation_type 做跟单条
@@ -510,3 +518,25 @@ async def replace_ontology_draft(
     ) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"replaced": True}
+
+
+@router.get("/{tenant_id}/etl-mapping")
+async def get_ontology_etl_mapping(
+    tenant_id: str,
+    status: str = "draft",
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict:
+    """读该租户挂在本体上的 ETL 映射。表格导入页用它决定首屏形态。"""
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    if status not in ("draft", "confirmed"):
+        raise HTTPException(status_code=400, detail="status 只能是 draft 或 confirmed")
+    mapping = await get_etl_mapping(review_conn, tenant_id, status=status)
+    if mapping is None:
+        return {"mapping": None}
+    return {
+        "mapping": {
+            "config_yaml": mapping.config_yaml,
+            "source_file_name": mapping.source_file_name,
+            "created_at": mapping.created_at,
+        }
+    }

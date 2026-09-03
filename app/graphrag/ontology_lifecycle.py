@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 
 import aiosqlite
 
 from app.graphrag.ontology_categories import InvalidExtraFieldTypeError, ensure_categories_schema
 from app.graphrag.ontology_constraints import UnknownCategoryError, ensure_constraints_schema
-from app.graphrag.ontology_etl_mapping import ensure_etl_mapping_schema
+from app.graphrag.ontology_etl_mapping import ensure_etl_mapping_schema, set_draft_etl_mapping
 from app.graphrag.ontology_relations import (
     InvalidRelationTypeNameError,
     ensure_relations_schema,
@@ -271,6 +272,7 @@ async def replace_draft(
     term_types: list[dict],
     relation_types: list[dict],
     constraints: list[dict],
+    etl_mapping: dict | None = None,
 ) -> None:
     """把该租户的三张草稿表整份替换成提交的内容。先把所有会失败的校验做完，
     再动手写；写入阶段不会再失败，因此不需要（也不应该）用显式事务包裹。
@@ -428,6 +430,17 @@ async def replace_draft(
 
     # 写过草稿就意味着已检出。不标记的话，下一次 checkout_draft 会以为
     # "还没检出过"，把已确认版本复制回来盖在引导刚写的草稿上。
+    # 映射跟本体草稿同一次提交落库。为 None 时**不动**已有映射——本体结构页
+    # 那三个 tab 改草稿时不带映射，不能因此把引导写的映射抹掉。
+    if etl_mapping is not None:
+        await set_draft_etl_mapping(
+            conn,
+            tenant_id,
+            config_yaml=etl_mapping["config_yaml"],
+            source_file_name=etl_mapping["source_file_name"],
+            created_at=datetime.now().isoformat(),
+        )
+
     await conn.execute(
         "INSERT OR IGNORE INTO ontology_draft_checkout_state (tenant_id) VALUES (?)",
         (tenant_id,),

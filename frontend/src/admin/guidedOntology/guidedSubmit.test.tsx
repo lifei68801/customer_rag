@@ -25,6 +25,10 @@ let replaceCalls: Array<{
   relation_types: unknown[]
   constraints: unknown[]
 }> = []
+// 跟 replaceCalls 分开存：replaceCalls 已经 JSON.parse 过，只保留断言用得上
+// 的几个字段；submitGuidedFlow() 要把原始请求（含未解析的 body 字符串）
+// 交回给调用方，让它自己按需 JSON.parse。
+let rawReplaceRequests: RequestInit[] = []
 let confirmCalls: string[] = []
 let replaceStatus = 200
 let replaceBody: unknown = { replaced: true }
@@ -46,6 +50,7 @@ function stubApi() {
       }
       if (url.includes('/draft/replace')) {
         replaceCalls.push(JSON.parse(String(init?.body ?? '{}')))
+        rawReplaceRequests.push(init ?? {})
         return json(replaceBody, replaceStatus)
       }
       if (url.includes('/confirm')) {
@@ -68,6 +73,7 @@ beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
   replaceCalls = []
+  rawReplaceRequests = []
   confirmCalls = []
   replaceStatus = 200
   replaceBody = { replaced: true }
@@ -127,6 +133,19 @@ async function renderAtReviewStep() {
   const user = userEvent.setup()
   renderAt(ADMIN_ROUTES.guidedOntology)
   await user.upload(await screen.findByLabelText(/选择一张表/), csvFile())
+}
+
+/**
+ * 走完整条提交路径：登录、传表、点「写入草稿」，等 /draft/replace 落地，
+ * 返回那次请求的原始 RequestInit（body 还是未解析的字符串，调用方自己
+ * JSON.parse 取需要的字段）。
+ */
+async function submitGuidedFlow(): Promise<RequestInit> {
+  const user = userEvent.setup()
+  await renderAtReviewStep()
+  await user.click(await screen.findByRole('button', { name: /写入草稿/ }))
+  await waitFor(() => expect(rawReplaceRequests.length).toBe(1))
+  return rawReplaceRequests[0]
 }
 
 describe('提交草稿', () => {
@@ -204,5 +223,14 @@ describe('提交草稿', () => {
     const pageError = await screen.findByTestId('page-error')
     expect(pageError.textContent).toMatch(/一个实体都没有/)
     expect(replaceCalls.length).toBe(0)
+  })
+
+  it('写入草稿时把 ETL 映射一并提交，不让用户自己保管文件', async () => {
+    // 映射是系统自己算出来的。让用户下载成文件再传回来，中途会关标签页、
+    // 会在下载目录里找不着、过两天会分不清哪个 YAML 对应哪个租户。
+    const posted = await submitGuidedFlow()
+    const body = JSON.parse(posted.body as string)
+    expect(body.etl_mapping.source_file_name).toBe('orders.csv')
+    expect(body.etl_mapping.config_yaml).toMatch(/entities:/)
   })
 })

@@ -112,9 +112,33 @@ export function GuidedOntologyPage() {
   }
 
   /**
-   * 一次请求写入整套本体。逐个 term/relation 分别发请求的话，中途失败会
-   * 留下半份草稿，而 checkout_draft **不会**清空它（只在"还没检出过"时
-   * 才从已确认版复制）——用户没有干净的重来方式。
+   * 引导收集的信息已经够生成映射了。抽出来给提交和下载共用——两处各算一次
+   * 的话，两份结果可能不一致，那时以哪个为准没有答案。
+   */
+  const buildMappingYaml = (): { yaml: string; fileName: string } | null => {
+    if (!roled || !decision || !uploadedFile) return null
+    const { entities, relations } = toEtlBuilder(roled, decision, GUIDED_FILE_ID)
+    return {
+      yaml: buildConfigYaml({
+        tenantId,
+        entities,
+        relations,
+        files: [
+          { id: GUIDED_FILE_ID, file: uploadedFile, columns: roled.map((c) => c.stats.name) },
+        ],
+      }),
+      fileName: uploadedFile.name,
+    }
+  }
+
+  /**
+   * 一次请求写入整套本体，顺带把 ETL 映射一并提交。逐个 term/relation 分别
+   * 发请求的话，中途失败会留下半份草稿，而 checkout_draft **不会**清空它
+   * （只在"还没检出过"时才从已确认版复制）——用户没有干净的重来方式。
+   *
+   * 映射不再只靠下载交接：分两次写（先写草稿、再让用户下载 YAML 手工传回
+   * 表格导入页）中途失败会留下一份没有映射的草稿，而用户不知道——他在
+   * 表格导入页会看到"从头配置"的界面。
    */
   const handleSubmit = async () => {
     if (!sessionToken || !roled || !decision || step === 'submitting') return
@@ -139,6 +163,10 @@ export function GuidedOntologyPage() {
             term_types: proposal.termTypes,
             relation_types: proposal.relationTypes,
             constraints: proposal.constraints,
+            etl_mapping: (() => {
+              const built = buildMappingYaml()
+              return built ? { config_yaml: built.yaml, source_file_name: built.fileName } : null
+            })(),
           }),
         },
       )
@@ -157,26 +185,13 @@ export function GuidedOntologyPage() {
   }
 
   /**
-   * 顺带产出 ETL 映射下载。引导收集的信息已经够生成映射了——让用户在
-   * ETL 页把同样的判断（哪列是标识、哪列是属性）再做一遍是重复劳动，
-   * 而且两次结果可能不一致，那时以哪个为准？
+   * 下载映射备份。映射现在跟草稿一起提交，这个按钮不再是交接的唯一
+   * 通道——它的作用是让用户手上留一份，可以带走或存档。
    */
   const handleDownloadMapping = () => {
-    if (!roled || !decision || !uploadedFile) return
-    const { entities, relations } = toEtlBuilder(roled, decision, GUIDED_FILE_ID)
-    const yaml = buildConfigYaml({
-      tenantId,
-      entities,
-      relations,
-      files: [
-        {
-          id: GUIDED_FILE_ID,
-          file: uploadedFile,
-          columns: roled.map((c) => c.stats.name),
-        },
-      ],
-    })
-    const blob = new Blob([yaml], { type: 'text/yaml;charset=utf-8' })
+    const built = buildMappingYaml()
+    if (!built) return
+    const blob = new Blob([built.yaml], { type: 'text/yaml;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
