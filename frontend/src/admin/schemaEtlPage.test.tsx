@@ -97,6 +97,10 @@ describe('表格导入页首屏', () => {
     expect(screen.getByText('orders.csv')).toBeTruthy()
     // 构建器降级成折叠的次级入口，不是主角。
     expect(screen.getByRole('button', { name: /改这份映射／再接一张表/ })).toBeTruthy()
+    // 光断言按钮存在区分不了折叠和展开——两种状态下按钮都在。真正能区分
+    // 开的是面板内容："1. 添加数据文件" 是 SchemaEtlConfigBuilder 展开后
+    // 才会渲染的第一行，折叠时整个组件都不挂载，这行文本不存在。
+    expect(screen.queryByText('1. 添加数据文件')).toBeNull()
   })
 
   it('没有映射时维持原样，构建器是主角', async () => {
@@ -105,6 +109,8 @@ describe('表格导入页首屏', () => {
     renderAt(ADMIN_ROUTES.etl)
     expect(await screen.findByRole('button', { name: /把这张表映射到已有本体/ })).toBeTruthy()
     expect(screen.queryByText(/引导流程已为这个本体配好映射/)).toBeNull()
+    // 无映射时构建器默认展开，不需要用户先点开折叠按钮才看到内容。
+    expect(await screen.findByText('1. 添加数据文件')).toBeTruthy()
   })
 
   it('映射状态未知时，不抢先渲染任何一种形态', async () => {
