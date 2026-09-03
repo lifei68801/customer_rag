@@ -900,3 +900,44 @@ def test_replace_draft_without_mapping_leaves_it_absent(client):
         "/api/admin/ontology/t1/etl-mapping?status=draft", headers={"Authorization": "Bearer x"}
     )
     assert got.json()["mapping"] is None
+
+
+def test_replace_draft_without_mapping_does_not_erase_existing_mapping(client):
+    """不带映射的提交不能把已有映射抹掉。
+
+    本体结构页那三个 tab 改草稿时不带 etl_mapping，这是它们的常规路径——
+    不是"从没写过映射"的场景，而是"引导写过一次映射之后，用户又去那三个
+    tab 里改了点别的"。这条覆盖的正是这个真实场景：先带映射提交一次，
+    再不带映射提交一次，映射必须原样还在。
+    """
+    with_mapping = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [{"value": "客户", "extra_fields": []}],
+            "relation_types": [],
+            "constraints": [],
+            "etl_mapping": {
+                "config_yaml": "entities: []",
+                "source_file_name": "orders.csv",
+            },
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert with_mapping.status_code == 200
+
+    without_mapping = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [{"value": "客户", "extra_fields": []}],
+            "relation_types": [],
+            "constraints": [],
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert without_mapping.status_code == 200
+
+    got = client.get(
+        "/api/admin/ontology/t1/etl-mapping?status=draft", headers={"Authorization": "Bearer x"}
+    )
+    assert got.json()["mapping"]["source_file_name"] == "orders.csv"
+    assert got.json()["mapping"]["config_yaml"] == "entities: []"
