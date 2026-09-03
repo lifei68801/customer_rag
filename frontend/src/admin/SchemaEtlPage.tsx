@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { EmptyState } from './EmptyState'
 import { PlayCircle } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { SchemaEtlConfigBuilder } from './schemaEtlConfigBuilder/SchemaEtlConfigBuilder'
 import { useAdminAuth } from './useAdminAuth'
@@ -8,7 +9,7 @@ import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 import { CopyButton } from './CopyButton'
 import { TaskStatusBadge } from './TaskStatusBadge'
-import { PAGE_TITLES } from '../adminRoutes'
+import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
 import { fetchEtlMapping, type EtlMapping } from './etlMappingApi'
 
 // etl_runs 表的 status 只有这三种取值（app/graphrag/etl_runs_store.py），
@@ -584,7 +585,7 @@ export function SchemaEtlPage() {
       </div>
 
       {selectedRun && (
-        <div className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4">
+        <div data-testid="etl-run-detail" className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4">
           <h2 className="font-mono font-semibold text-ink">跑批详情：{selectedRun.run_id}</h2>
           {selectedRun.status === 'failed' && (
             <p role="alert" className="whitespace-pre-wrap rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
@@ -593,6 +594,19 @@ export function SchemaEtlPage() {
           )}
           {selectedRun.report && (
             <>
+              {selectedRun.status === 'completed' && selectedRun.report.dry_run !== true && (
+                <p className="text-sm text-ink">
+                  数据已写入。去
+                  <Link to={ADMIN_ROUTES.terms} className={`mx-1 font-bold underline ${focusRing}`}>
+                    实体列表
+                  </Link>
+                  看结果；有待人工确认的关系时去
+                  <Link to={ADMIN_ROUTES.reviewRelations} className={`mx-1 font-bold underline ${focusRing}`}>
+                    待审关系
+                  </Link>
+                  。
+                </p>
+              )}
               {selectedRun.report.dry_run && (
                 <p className="rounded-card border border-subtle bg-card px-3 py-2 text-sm text-ink">
                   <strong className="font-bold">这是一次预演</strong>

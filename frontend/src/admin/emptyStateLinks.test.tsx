@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { NAV_GROUPS } from '../adminRoutes'
+import { NAV_GROUPS, NAV_STANDALONE } from '../adminRoutes'
 
 /**
  * 空状态里的引导链接，文字得跟它去的地方对得上。
@@ -15,7 +15,15 @@ import { NAV_GROUPS } from '../adminRoutes'
  */
 
 const ROOT = join(__dirname, '..')
-const KNOWN_LABELS = new Set(NAV_GROUPS.flatMap((g) => g.items.map((i) => i.label)))
+// NAV_STANDALONE（「实体列表」「问答诊断」）也是合法的导航目的地——分组
+// 之外不代表不是目的地，只是不属于任何流程阶段（见 adminRoutes.ts 里
+// NAV_STANDALONE 上方的注释）。此前这里只取了 NAV_GROUPS，是因为在这条
+// 规则写下的时候，还没有任何单行纯文本 <Link> 指向这两个目的地——第一次
+// 出现（forwardLinks 的「实体列表」出口）就会被误判成文案对不上。
+const KNOWN_LABELS = new Set([
+  ...NAV_GROUPS.flatMap((g) => g.items.map((i) => i.label)),
+  ...NAV_STANDALONE.map((i) => i.label),
+])
 // 侧边栏之外的合法去处：登录页和前台不在那七个目的地里。
 const ALSO_FINE = new Set(['返回前台', '登出', '管理后台'])
 // 「返回X」是导航方向，不是目的地名——它天然跟着来路走，不会因为页面

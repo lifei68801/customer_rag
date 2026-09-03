@@ -111,6 +111,9 @@ export function OntologySchemaPage() {
   // 外层，两个 tab 共用同一份状态。
   const [view] = useOntologyVersion()
   const [confirming, setConfirming] = useState(false)
+  // 确认成功后的常驻出口：toast 几秒后自己消失，用户抬头看页面时已经找
+  // 不到刚才那句话了——常驻提示才是"接下来去哪"真正能被看到的地方。
+  const [justConfirmed, setJustConfirmed] = useState(false)
   // 确认成功后用来"踢"一下当前挂载的 tab 重新拉取数据——两个 tab 互斥挂载
   // （tab === 'relation-types' 时约束 tab 是卸载状态，反之亦然），只需要让
   // 当前挂载的那个重新 refresh；另一个 tab 下次挂载时自己的 useEffect 会
@@ -266,6 +269,7 @@ export function OntologySchemaPage() {
       showToast('已确认')
       await refreshStatus()
       setConfirmVersion((v) => v + 1)
+      setJustConfirmed(true)
       // 确认会把草稿行的 status 原地改成 confirmed（不再是 draft），
       // checkout_draft 下次调用时才会把已确认版本重新复制回草稿——这里
       // 主动"踢"一次前置条件检查，让它带着新的 checkout 重新算一遍，不然
@@ -310,6 +314,16 @@ export function OntologySchemaPage() {
       {pageError && (
         <p role="alert" className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
           {pageError}
+        </p>
+      )}
+
+      {justConfirmed && (
+        <p data-testid="just-confirmed-notice" className="rounded-card border border-subtle bg-card px-3 py-2 text-sm text-ink">
+          本体已确认。接下来把业务表的数据装进来——去
+          <Link to={ADMIN_ROUTES.etl} className={`ml-1 font-bold underline ${focusRing}`}>
+            表格导入
+          </Link>
+          。
         </p>
       )}
 
