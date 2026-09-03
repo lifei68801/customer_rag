@@ -52,6 +52,13 @@ function stubApi() {
       if (url.includes('/ontology/') && url.includes('/confirm') && method === 'POST') {
         return json({})
       }
+      // handleConfirm 在打开确认框之前会拉一次 /terms/summary（Task 6：确认
+      // 框里附带数据影响），跟另外两路 snapshot 请求一起在同一个 Promise.all
+      // 里——不 stub 它，未匹配分支的 new Promise(() => {}) 永不 resolve，
+      // Promise.all 卡死，confirm() 从没被调用，alertdialog 永远不出现。
+      if (url.includes('/terms/summary')) {
+        return json({ groups: [] })
+      }
       if (url.includes('/term-types')) {
         return json({
           term_types: [{ value: 'Product', extra_fields: [], standard_name_value_type: 'string' }],
