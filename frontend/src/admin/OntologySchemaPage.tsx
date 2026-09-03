@@ -301,7 +301,7 @@ export function OntologySchemaPage() {
               ? '从一张业务表开始重新推导本体——当前草稿会被整份覆盖'
               : '从一张业务表开始，平台会推荐一套本体草案'
         }
-        className="flex items-center gap-1.5 self-start rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition hover:bg-interactive-hover"
+        className={`flex items-center gap-1.5 self-start rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
       >
         <Wand2 aria-hidden="true" className="h-4 w-4" />
         从表格开始引导建模
