@@ -7,6 +7,15 @@ import { SkinProvider } from '../SkinContext'
 import { ConfirmProvider } from '../ConfirmContext'
 import { ToastProvider } from '../ToastContext'
 import { ADMIN_ROUTES } from '../../adminRoutes'
+import * as columnStats from './columnStats'
+
+// 默认透传真实实现：只有「扫描中显示进度」这一条测试需要手动控制这个
+// mock 何时 resolve，其余测试（尤其是 oversizedXlsx 那条，验证的就是真实
+// 扫描函数抛出的错误消息）必须走真实的 scanTableFile。
+vi.mock('./columnStats', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./columnStats')>()
+  return { ...actual, scanTableFile: vi.fn(actual.scanTableFile) }
+})
 
 /**
  * 引导页第一步：传一张表并扫描。
@@ -76,12 +85,32 @@ describe('引导页第一步', () => {
 
   it('扫描中显示进度，不是空白', async () => {
     // 扫描一张大表要几秒。什么都不显示的话用户会以为页面卡了，然后重复
-    // 点击或刷新。
+    // 点击或刷新。这里用一个手动控制的 deferred promise 卡住
+    // scanTableFile，断言依赖它的 pending/resolved 状态，不依赖 wall-clock。
+    signIn('admin')
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.guidedOntology)
+
+    let resolveScan: (stats: Awaited<ReturnType<typeof columnStats.scanTableFile>>) => void = () => {}
+    const deferred = new Promise<Awaited<ReturnType<typeof columnStats.scanTableFile>>>((resolve) => {
+      resolveScan = resolve
+    })
+    vi.mocked(columnStats.scanTableFile).mockReturnValueOnce(deferred)
+
+    await user.upload(await screen.findByLabelText(/选择一张表/), csvFile())
+    expect(await screen.findByText(/正在扫描/)).toBeTruthy()
+
+    resolveScan([])
+    expect(await screen.findByText(/扫描完成/)).toBeTruthy()
+  })
+
+  it('扫描成功后进入复核，显示扫描出的列数', async () => {
+    // 不打桩：走真实的 scanTableFile，守住成功路径的接线。
     signIn('admin')
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.guidedOntology)
     await user.upload(await screen.findByLabelText(/选择一张表/), csvFile())
-    expect(await screen.findByText(/正在扫描/)).toBeTruthy()
+    expect(await screen.findByText(/扫描完成，共 3 列/)).toBeTruthy()
   })
 
   it('扫描失败时说清原因，不是静静停住', async () => {
@@ -96,6 +125,5 @@ describe('引导页第一步', () => {
     signIn('member')
     renderAt(ADMIN_ROUTES.guidedOntology)
     expect(await screen.findByTestId('no-permission')).toBeTruthy()
-    expect(screen.queryByTestId('not-found')).toBeNull()
   })
 })

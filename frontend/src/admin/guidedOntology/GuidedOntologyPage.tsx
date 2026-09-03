@@ -42,15 +42,7 @@ export function GuidedOntologyPage() {
     if (!file) return
     setError(null)
     setStep('scanning')
-    // 让"正在扫描"先画出来，再开始真正解析——扫描本身对小表几乎是瞬时
-    // 的（尤其是内存里的 File/Blob，没有真实磁盘 IO 的延迟），不让出一
-    // 个事件循环节拍的话，进度提示根本没机会画出来，用户看到的还是从
-    // 点击到结果之间的一段空白，跟没提示没区别。50ms 留足余量：
-    // @testing-library/user-event 的 upload() 自己在事件派发之后也会
-    // 等一个 0ms 的 setTimeout 才 resolve，这里必须晚于它，不然两个
-    // 定时器会挤在同一个事件循环节拍里触发，扫描早就跑完了，测试才拿到
-    // 控制权——单测能过、全量并发跑时被系统抖动放大就会偶发失败。
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    // 不人为延迟：scanTableFile 内部按 1MB 分块 await，大表天然会让出主线程画出进度。
     try {
       const stats = await scanTableFile(file)
       const roledColumns = assignRoles(stats)
