@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 
 import aiosqlite
 import pytest
@@ -503,6 +504,35 @@ def test_promote_rejects_a_real_run(client, review_conn):
 
     assert response.status_code == 400
     assert "预演" in response.json()["detail"]
+
+
+def test_promote_returns_404_when_run_dir_was_manually_cleaned_up(client, review_conn, tmp_path):
+    """运行记录还在、磁盘上的输入目录没了，这两种失败要能区分开。
+
+    这条路径专门从"找不到运行记录"里拆出来：用户在历史列表上看得见这条
+    预演（数据库记录还在），但磁盘上的 run_dir 被人工清理过了。合并成一条
+    "找不到这次运行"会让用户误以为记录本身也丢了，对着一条实际存在、只是
+    输入没了的历史记录摸不着头脑。
+    """
+    asyncio.run(_confirm_muji_schema(review_conn))
+    files = {"config": ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")}
+    dry_response = client.post(
+        "/api/admin/muji/schema-etl/runs", files=files, data={"dry_run": "true"}
+    )
+    dry_run_id = dry_response.json()["run_id"]
+    run_dir = tmp_path / "uploads" / "schema-etl" / "muji" / dry_run_id
+    assert run_dir.is_dir()
+    shutil.rmtree(run_dir)
+
+    response = client.post(f"/api/admin/muji/schema-etl/runs/{dry_run_id}/promote")
+
+    assert response.status_code == 404
+    detail = response.json()["detail"]
+    # 关键区分：说的是磁盘上的输入不见了，不是"找不到这次运行"——两者共用
+    # 同一句话就等于把这两种失败合并回一条，用户没法分辨该找回记录还是
+    # 该重新上传。
+    assert "磁盘" in detail
+    assert "找不到这次运行" not in detail
 
 
 def test_start_run_defaults_both_switches_to_false(client, review_conn, monkeypatch):
