@@ -7,6 +7,7 @@ import aiosqlite
 
 from app.graphrag.ontology_categories import InvalidExtraFieldTypeError, ensure_categories_schema
 from app.graphrag.ontology_constraints import UnknownCategoryError, ensure_constraints_schema
+from app.graphrag.ontology_etl_mapping import ensure_etl_mapping_schema
 from app.graphrag.ontology_relations import (
     InvalidRelationTypeNameError,
     ensure_relations_schema,
@@ -73,6 +74,9 @@ def _validate_draft_relation_type(relation_type: str, example_phrase: str) -> No
 
 _TABLES_WITH_TENANT_LIFECYCLE = (
     "tenant_relation_types", "term_type_relation_allowlist", "ontology_term_types",
+    # 引导产出的 ETL 映射与本体同生命周期，见 ontology_etl_mapping.py。
+    # 注意它**不**参与 confirm_ontology 的 has_draft_in_any_table 早退判据。
+    "ontology_etl_mapping",
 )
 
 _CHECKOUT_STATE_SCHEMA_SQL = """
@@ -97,6 +101,7 @@ async def ensure_ontology_schema(conn: aiosqlite.Connection) -> None:
     await ensure_relations_schema(conn)
     await ensure_constraints_schema(conn)
     await ensure_ingestion_config_schema(conn)
+    await ensure_etl_mapping_schema(conn)
     await _ensure_checkout_state_schema(conn)
 
 
@@ -157,6 +162,11 @@ async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
     不需要互斥。
     """
     await _ensure_checkout_state_schema(conn)
+    # 防御性建表，不能假设调用方一定跑过 ensure_ontology_schema——下面会对
+    # ontology_etl_mapping 表做 INSERT OR IGNORE，缺表会炸
+    # sqlite3.OperationalError: no such table（confirm_ontology 那边的同款
+    # 调用能踩到这一坑，见那里的注释；这里做同样的防御是同一个理由）。
+    await ensure_etl_mapping_schema(conn)
     if await _has_checked_out_since_last_confirm(conn, tenant_id):
         return
     if not await _has_any_row(conn, "tenant_relation_types", tenant_id, "draft"):
@@ -194,6 +204,13 @@ async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
         # 关系兜底，实体类型完全依赖业务定义，没有"合理默认值"这回事，
         # 两种接入模式（extraction/etl）在这一点上没有区别。
     await conn.execute(
+        "INSERT OR IGNORE INTO ontology_etl_mapping "
+        "(tenant_id, status, config_yaml, source_file_name, created_at) "
+        "SELECT tenant_id, 'draft', config_yaml, source_file_name, created_at "
+        "FROM ontology_etl_mapping WHERE tenant_id = ? AND status = 'confirmed'",
+        (tenant_id,),
+    )
+    await conn.execute(
         "INSERT OR IGNORE INTO ontology_draft_checkout_state (tenant_id) VALUES (?)", (tenant_id,)
     )
     await conn.commit()
@@ -215,6 +232,11 @@ async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
     checkout_draft 却因为标记还在而不去重新播种）。
     """
     await _ensure_checkout_state_schema(conn)
+    # 防御性建表，不能假设调用方一定跑过 ensure_ontology_schema：
+    # tests/graphrag/test_ontology_constraints.py 就只建了分类/关系/约束
+    # 三张表的连接，直接调本函数，没有 ontology_etl_mapping 表会在下面的
+    # DELETE/INSERT 上炸 sqlite3.OperationalError: no such table。
+    await ensure_etl_mapping_schema(conn)
     # 如果两个表都没有草稿，说明没有新的内容要提升，直接返回以避免删除已确认数据
     has_draft_in_any_table = (
         await _has_any_row(conn, "tenant_relation_types", tenant_id, "draft")
