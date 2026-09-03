@@ -9,6 +9,7 @@ import { useToast } from './ToastContext'
 import { CopyButton } from './CopyButton'
 import { TaskStatusBadge } from './TaskStatusBadge'
 import { PAGE_TITLES } from '../adminRoutes'
+import { fetchEtlMapping, type EtlMapping } from './etlMappingApi'
 
 // etl_runs 表的 status 只有这三种取值（app/graphrag/etl_runs_store.py），
 // 映射成统一的徽章语气 + 中文文案。
@@ -74,6 +75,9 @@ export function SchemaEtlPage() {
   const { tenantId } = useAdminTenant()
   const showToast = useToast()
   const [confirmed, setConfirmed] = useState<boolean | null>(null)
+  // undefined = 还没读到（未知态，不许折叠进「有」或「没有」）；
+  // null = 读到了、确实没有；EtlMapping = 引导流程已经配好了一份。
+  const [mapping, setMapping] = useState<EtlMapping | null | undefined>(undefined)
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [selectedRun, setSelectedRun] = useState<RunDetail | null>(null)
@@ -97,6 +101,10 @@ export function SchemaEtlPage() {
   // 让 handleUpload 能在提交完成后立即"踢"一次轮询循环，不用等已经排好
   // 队的 setTimeout 走完最坏 15 秒才发现新记录出现了。
   const pollNowRef = useRef<() => Promise<void>>(async () => {})
+  // builderExpanded 的默认值要跟着 mapping 走一次：有映射时默认折叠（构建器
+  // 降级成次级入口），没有时默认展开。只在 mapping 第一次从 undefined 变成
+  // 已知值时同步，之后用户手动展开/折叠不会被这份效果覆盖回去。
+  const builderSyncedRef = useRef(false)
 
   useEffect(() => {
     document.title = '表格导入 · 管理后台'
@@ -126,6 +134,36 @@ export function SchemaEtlPage() {
   useEffect(() => {
     refreshStatus().catch((err) => console.error('查询 schema 确认状态失败', err))
   }, [refreshStatus])
+
+  // 切换租户/重新登录时，之前拿到的映射属于旧租户，先回到「未知」，
+  // 不能让旧数据在新请求打完之前继续显示——那会短暂地把新租户的状态
+  // 说错。读取失败时按「没有映射」处理：那条路径不对用户断言任何假话，
+  // 只是少了「不用重配」这份便利。
+  useEffect(() => {
+    if (!sessionToken) return
+    let cancelled = false
+    builderSyncedRef.current = false
+    setMapping(undefined)
+    fetchEtlMapping(sessionToken, tenantId, 'confirmed')
+      .then((result) => {
+        if (!cancelled) setMapping(result)
+      })
+      .catch((err) => {
+        console.error('查询 ETL 映射失败', err)
+        if (!cancelled) setMapping(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sessionToken, tenantId])
+
+  // mapping 第一次从 undefined 变成已知值时，把 builderExpanded 的默认值
+  // 同步过去；只做这一次，不然用户手动展开/折叠会被这份效果覆盖回去。
+  useEffect(() => {
+    if (mapping === undefined || builderSyncedRef.current) return
+    builderSyncedRef.current = true
+    setBuilderExpanded(mapping === null)
+  }, [mapping])
 
   // 切换租户时，之前缓存的示例文件属于旧租户，必须清空，否则下次展开会
   // 直接复用过期数据（sampleFiles !== null 会跳过重新请求）。
@@ -330,36 +368,49 @@ export function SchemaEtlPage() {
         </div>
       )}
 
-      <div className="flex flex-col gap-2 rounded-panel border border-subtle bg-card">
-        <button
-          type="button"
-          onClick={() => setBuilderExpanded((prev) => !prev)}
-          className={`flex items-center justify-between px-4 py-3 text-left font-bold text-ink ${focusRing}`}
-        >
-          <span>
-            配置构建向导
-            <span className="ml-2 font-normal text-ink-soft">
-              对着自己的数据列一步步配出 config.yaml，不用手写 YAML
-            </span>
-          </span>
-          <span
-            aria-hidden="true"
-            className={`inline-block transition-transform duration-200 ${builderExpanded ? 'rotate-0' : '-rotate-90'}`}
+      {mapping === undefined ? (
+        <div data-testid="etl-mapping-loading" className="text-sm text-ink-soft">
+          正在读取这个本体的映射…
+        </div>
+      ) : mapping ? (
+        <p className="rounded-panel border border-subtle bg-card px-4 py-3 text-sm text-ink">
+          引导流程已为这个本体配好映射（来自 <code className="font-mono">{mapping.source_file_name}</code>）。
+          传入数据文件即可运行，不用再配一遍。
+        </p>
+      ) : null}
+
+      {mapping !== undefined && (
+        <div className="flex flex-col gap-2 rounded-panel border border-subtle bg-card">
+          <button
+            type="button"
+            onClick={() => setBuilderExpanded((prev) => !prev)}
+            className={`flex items-center justify-between px-4 py-3 text-left font-bold text-ink ${focusRing}`}
           >
-            ▾
-          </span>
-        </button>
-        {builderExpanded && sessionToken && (
-          <SchemaEtlConfigBuilder
-            tenantId={tenantId}
-            sessionToken={sessionToken}
-            disabled={confirmed !== true}
-            onSubmitted={() => {
-              pollNowRef.current()
-            }}
-          />
-        )}
-      </div>
+            <span>
+              {mapping ? '改这份映射／再接一张表' : '把这张表映射到已有本体'}
+              <span className="ml-2 font-normal text-ink-soft">
+                对着自己的数据列一步步配出 config.yaml，不用手写 YAML
+              </span>
+            </span>
+            <span
+              aria-hidden="true"
+              className={`inline-block transition-transform duration-200 ${builderExpanded ? 'rotate-0' : '-rotate-90'}`}
+            >
+              ▾
+            </span>
+          </button>
+          {builderExpanded && sessionToken && (
+            <SchemaEtlConfigBuilder
+              tenantId={tenantId}
+              sessionToken={sessionToken}
+              disabled={confirmed !== true}
+              onSubmitted={() => {
+                pollNowRef.current()
+              }}
+            />
+          )}
+        </div>
+      )}
 
       <div className="flex flex-col gap-2 rounded-panel border border-subtle bg-card">
         <button
