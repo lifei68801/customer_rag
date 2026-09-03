@@ -206,6 +206,46 @@ describe('生成草案', () => {
   })
 })
 
+describe('表头重名', () => {
+  // 「任何一列最终只能是『进了某个实体的 extra_fields』或『进了
+  // unusedColumns』」——buildProposal 里明写着不允许第三种下场。按名字判断
+  // 「这一列是不是已经成了实体」时这条不变量在重名路径上不成立：第二个
+  // 「备注」既不进 extra_fields 也不进 unusedColumns，界面上没有任何异常，
+  // 那一列凭空消失。
+  function duplicateHeaderColumns(): RoledColumn[] {
+    return [
+      makeColumn('订单号', 'identifier', 9998),
+      makeColumn('备注', 'dimension', 4),
+      makeColumn('备注', 'measure', 500),
+    ]
+  }
+
+  it('第二个同名列成为属性，不会凭空消失', () => {
+    const roled = duplicateHeaderColumns()
+    const proposal = buildProposal(roled, initialDecision(roled))
+    const host = proposal.termTypes.find((t) => t.value === '订单号')
+    // 中心（订单号）身上要有那一列的属性。按名字判断的实现这里是 0 个。
+    expect(host?.extra_fields).toHaveLength(1)
+  })
+
+  it('重名的第一列照常成为实体，且只成为一个实体', () => {
+    // 实体类型名必须唯一，重名不能变出两个同名实体。
+    const roled = duplicateHeaderColumns()
+    const proposal = buildProposal(roled, initialDecision(roled))
+    expect(proposal.termTypes.map((t) => t.value)).toEqual(['订单号', '备注'])
+  })
+
+  it('每一列都有下场：要么是实体，要么进 extra_fields，要么进 unusedColumns', () => {
+    // 直接把不变量写成断言：三列，三个下场，一个都不许少。
+    const roled = duplicateHeaderColumns()
+    const proposal = buildProposal(roled, initialDecision(roled))
+    const attributeCount = proposal.termTypes.reduce((sum, t) => sum + t.extra_fields.length, 0)
+    expect(proposal.termTypes.length + attributeCount + proposal.unusedColumns.length).toBe(
+      roled.length,
+    )
+  })
+})
+
 describe('关系命名建议', () => {
   it('全大写、下划线，符合后端的校验', () => {
     // ^[A-Z][A-Z0-9_]{0,63}$ —— 不合规的名字后端会 400，而用户看不出

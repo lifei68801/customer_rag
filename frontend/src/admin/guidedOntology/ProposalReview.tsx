@@ -44,11 +44,17 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
     <div className="flex flex-col gap-6">
       <section className="flex flex-col gap-3">
         <h2 className={sectionTitle}>这几列，你想怎么用</h2>
-        {dimensions.map((column) => {
+        {dimensions.map((column, index) => {
           const name = column.stats.name
           const asEntity = decision.dimensionsAsEntity[name]
           return (
-            <div key={name} data-testid={`dimension-${name}`} className={`${card} flex flex-col gap-2`}>
+            // key 带上位置：表头重名时（导出的宽表里不罕见）两个同名维度列
+            // 会拿到同一个 key，React 只当成一个块渲染。
+            <div
+              key={`${name}-${index}`}
+              data-testid={`dimension-${name}`}
+              className={`${card} flex flex-col gap-2`}
+            >
               <div className="flex flex-wrap items-baseline gap-2">
                 <code className="font-mono font-bold text-ink">{name}</code>
                 {/* 依据必须带具体数字——"这是维度"用户没法推翻，

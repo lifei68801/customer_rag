@@ -93,13 +93,25 @@ function measureValueType(column: RoledColumn): DraftExtraField['value_type'] {
 export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): Proposal {
   const { name: root, guessed: rootIsGuessed } = rootOf(roled)
 
+  // 记的是**位置**，不只是名字：一张表里出现两列同名（从电子表格导出的
+  // 宽表里不罕见）时，只按名字判断"这一列是不是已经成了实体"会让第二个
+  // 同名列在下面的循环里被 return 掉——既不进任何实体的 extra_fields，也
+  // 不进 unusedColumns，凭空消失。那正是下面注释里明说不允许的第三种下场。
+  //
+  // 重名时只有第一列能成为实体（实体类型名必须唯一），其余同名列照常走
+  // 属性 / 未使用这两条出口，用户在界面上能看见它们的去向。
   const entityNames = new Set<string>()
-  for (const column of roled) {
-    if (column.role === 'identifier') entityNames.add(column.stats.name)
-    if (column.role === 'dimension' && decision.dimensionsAsEntity[column.stats.name]) {
-      entityNames.add(column.stats.name)
-    }
-  }
+  const entityColumnIndexes = new Set<number>()
+  roled.forEach((column, index) => {
+    const name = column.stats.name
+    if (entityNames.has(name)) return
+    const isEntity =
+      column.role === 'identifier' ||
+      (column.role === 'dimension' && decision.dimensionsAsEntity[name])
+    if (!isEntity) return
+    entityNames.add(name)
+    entityColumnIndexes.add(index)
+  })
 
   // 中心实体：优先用 rootOf 的结果。但根可能是猜的（没有标识列时拿第一个
   // 维度列顶替），用户完全可以把这个猜测根重新判成属性——这时 root 自己
@@ -124,7 +136,7 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
 
   roled.forEach((column, index) => {
     const name = column.stats.name
-    if (entityNames.has(name)) return
+    if (entityColumnIndexes.has(index)) return
     const isAttribute =
       column.role === 'measure' ||
       column.role === 'date' ||
