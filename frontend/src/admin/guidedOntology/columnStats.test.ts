@@ -72,6 +72,31 @@ describe('类型推断', () => {
   })
 })
 
+describe('isWholeNumber：这一列原本是不是无小数的数值', () => {
+  it('高基数整数列被改判成 string 之后，这一位仍然是 true', () => {
+    // inferredType 已经答不出这个问题了（高基数无小数数值列一律改判成
+    // 'string'），而 columnRoles 的整数专属判定和文案要靠这一位——现实里的
+    // 数量/单价/以分为单位的金额几乎都在 50 个不同值以上。
+    const rows = Array.from({ length: 200 }, (_, i) => [`${100000 + i}`])
+    const column = byName(['order_id'], rows).order_id
+    expect(column.inferredType).toBe('string')
+    expect(column.isWholeNumber).toBe(true)
+  })
+
+  it('带小数的数值列不是整数列', () => {
+    expect(byName(['n'], [['1.5'], ['2']]).n.isWholeNumber).toBe(false)
+  })
+
+  it('混进一个非数字就不是整数列', () => {
+    expect(byName(['n'], [['1'], ['2'], ['N/A']]).n.isWholeNumber).toBe(false)
+  })
+
+  it('全空的列不是整数列', () => {
+    // 一个值都没见过时说"它全是整数"是空口断言，下游会据此走整数分支。
+    expect(byName(['n'], [[''], ['']]).n.isWholeNumber).toBe(false)
+  })
+})
+
 describe('样例值', () => {
   it('保留前几个不同值给用户看', () => {
     // 判断"这列该不该是实体"时，用户要看到真实的值。只给一个数字

@@ -37,6 +37,7 @@ function stat(
   distinctCount: number,
   inferredType: ColumnStats['inferredType'] = 'string',
   samples: string[] = [],
+  isWholeNumber = false,
 ): ColumnStats {
   return {
     name,
@@ -45,6 +46,7 @@ function stat(
     distinctCapped: false,
     samples,
     inferredType,
+    isWholeNumber,
   }
 }
 
@@ -470,6 +472,7 @@ describe('没有用到的列，各自的原因要能看见', () => {
       distinctCapped: false,
       samples: ['10', '20', '30'],
       inferredType: 'integer',
+      isWholeNumber: true,
     }
     const roledWithUnitPrice = assignRoles([stat('订单号', 9998, 'string'), unitPriceStat])
     const decision = initialDecision(roledWithUnitPrice)

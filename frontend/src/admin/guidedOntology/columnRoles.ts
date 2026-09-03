@@ -56,16 +56,21 @@ function classify(column: ColumnStats): { role: ColumnRole; reason: string } {
   // 会出现在审阅视图里，让用户在「建成实体 / 做成属性」之间二选一。宁可
   // 判错成用户能看见并推翻的东西，也不要判错成他永远看不见的。
   //
-  // 与 columnStats.ts 的 NUMERIC_IDENTIFIER_THRESHOLD(=50) 协同而不重复：
-  // 那道门在扫描阶段就把 distinct > 50 的整数列重分类成 'string'，所以能
-  // 走到这里的 integer 列 distinct 一定 ≤ 50。
+  // 与 columnStats.ts 的 NUMERIC_IDENTIFIER_THRESHOLD(=50) 的关系：那道门在
+  // 扫描阶段把 distinct > 50 的无小数数值列的 inferredType 改判成 'string'。
+  // 它**不**收窄下面这条整数判定——所以这里判"是不是整数列"一律用
+  // stats.isWholeNumber（扫描期的原始观察），不用 inferredType。
   //
-  // 残余风险（如实记下，不是已解决的问题）：高基数整数度量仍可能因
-  // ratio >= 0.9 被判成 identifier 而静默成为根。窗口被两头夹住——上面那道
-  // 门要求 distinct ≤ 50（于是 ratio >= 0.9 意味着 nonEmptyCount 大约 ≤ 55），
-  // 下面的 INTEGER_IDENTIFIER_MIN_ROWS 要求 nonEmptyCount >= 20——所以只在
-  // 20 到 55 行之间、且整数列几乎全不重复时才可能发生。低基数的整数度量
-  // （units_sold 取值 1..20）会被判成 dimension——那是可见可纠正的。
+  // 曾经写在这里的一条因果是错的，如实记下以免再犯：旧注释声称"上面那道门
+  // 要求 distinct ≤ 50，所以整数被误判成标识的窗口只在 20 到 55 行之间"。
+  // 实测推翻——被改判成 'string' 的列此前根本不受 INTEGER_IDENTIFIER_MIN_ROWS
+  // 约束（isInteger 当时只看 inferredType），于是 10000 行 / 9800 个不同值的
+  // "金额分"一样会被判成 identifier，窗口在 50 个不同值以上是无上界的。
+  // 现在 isWholeNumber 让行数下限对这些列也生效，但那只挡住了行数太少的
+  // 一半：一列高基数整数度量在分布上和一列真订单号无法区分，任何阈值都只是
+  // 在两种猜法之间选一种。真正的兜底不在这里，而在审阅视图——标识列现在会
+  // 连同 reason 一起展示，并且能被改判成属性（ProposalReview 的「被当成标识
+  // 的列」一节）。判错时用户看得见、推得翻。
   if (column.inferredType === 'number') {
     return {
       role: 'measure',
@@ -73,7 +78,11 @@ function classify(column: ColumnStats): { role: ColumnRole; reason: string } {
     }
   }
 
-  const isInteger = column.inferredType === 'integer'
+  // 用扫描期的原始观察，不用 inferredType：inferType 已经把 distinct > 50 的
+  // 无小数数值列改判成 'string' 了，只看 inferredType 会让下面这两条（行数
+  // 下限、整数专属文案）对数量/单价/以分为单位的金额这些真正需要它们的列
+  // 一律不生效。
+  const isInteger = column.isWholeNumber
   const ratio = column.distinctCount / column.nonEmptyCount
   const enoughRowsForIdentifier =
     !isInteger || column.nonEmptyCount >= INTEGER_IDENTIFIER_MIN_ROWS

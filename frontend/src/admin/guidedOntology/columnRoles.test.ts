@@ -11,6 +11,9 @@ function stats(over: Partial<ColumnStats>): ColumnStats {
     distinctCapped: false,
     samples: [],
     inferredType: 'string',
+    // 手写的统计量默认"不是整数列"。整数相关的用例一律走下面的 realStats，
+    // 用真实扫描函数产出这一位，免得手写值和 inferType 的结论互相矛盾。
+    isWholeNumber: false,
     ...over,
   }
 }
@@ -220,6 +223,24 @@ describe('整数列落进自由文本时的说明', () => {
     // 通用那句「重复度不足以当分类」对一列整元单价是指错方向：那一列的
     // 问题不是"不够格当分类"，是系统没认出它是金额。
     const reason = assignRoles([realStats('unit_price', ['10', '20', '30'])])[0].reason
+    expect(reason).toMatch(/只有带小数的数值列才会/)
+    expect(reason).toMatch(/「本体结构」页/)
+  })
+
+  it('不同值超过 50 的整数列（数量、单价、以分为单位的金额）也拿得到这段说明', () => {
+    // 500 行、120 个不同值：扫描阶段 NUMERIC_IDENTIFIER_THRESHOLD 已经把
+    // inferredType 改判成 'string'。判"是不是整数列"只看 inferredType 的
+    // 实现会给它字符串列的通用文案——而现实里的数量/单价/以分为单位的金额
+    // 几乎都在 50 个不同值以上，整数专属文案对真正需要它的列一句都不出现。
+    const column = realStats(
+      'units_sold',
+      Array.from({ length: 500 }, (_, i) => String(1 + (i % 120))),
+    )
+    // 前提：确实落在被改判的那一半里，而且比例既够不上标识也够不上维度。
+    expect(column.inferredType).toBe('string')
+    expect(column.isWholeNumber).toBe(true)
+    expect(roleOf(column)).toBe('freetext')
+    const reason = assignRoles([column])[0].reason
     expect(reason).toMatch(/只有带小数的数值列才会/)
     expect(reason).toMatch(/「本体结构」页/)
   })

@@ -88,6 +88,8 @@ export function finalizeStats(acc: StatsAccumulator): ColumnStats[] {
     distinctCapped: column.capped,
     samples: [...column.distinct].slice(0, SAMPLE_LIMIT),
     inferredType: inferType(column),
+    // 原始观察，不受 inferType 的改判影响：见 types.ts 里 isWholeNumber 的说明。
+    isWholeNumber: column.sawAnyValue && !column.sawNonNumeric && !column.sawFraction,
   }))
 }
 

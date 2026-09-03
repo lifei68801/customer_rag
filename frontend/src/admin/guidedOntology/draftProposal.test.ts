@@ -17,6 +17,7 @@ function makeColumn(name: string, role: RoledColumn['role'], distinctCount: numb
       distinctCapped: false,
       samples: [],
       inferredType: role === 'measure' ? 'number' : role === 'date' ? 'date' : 'string',
+      isWholeNumber: false,
     },
     role,
     reason: '',

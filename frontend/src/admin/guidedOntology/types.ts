@@ -11,6 +11,18 @@ export interface ColumnStats {
   /** 前几个不同值，给用户看。只给数字他判断不了。 */
   samples: string[]
   inferredType: InferredType
+  /**
+   * 扫描时观察到的事实：这一列的非空值是不是**全部**都是不带小数的数值。
+   *
+   * 和 `inferredType === 'integer'` 不是一回事，两者必须分开存：inferType
+   * 会把 distinct 超过 NUMERIC_IDENTIFIER_THRESHOLD 的无小数数值列改判成
+   * `'string'`（那是一个关于"它更可能是标识"的判断），改判之后
+   * `inferredType` 就答不出"它原本是不是整数"这个问题了。而现实里的整数
+   * 度量（数量、单价、以分为单位的金额）几乎都在 50 个不同值以上，全都
+   * 落在被改判的那一半里——只看 inferredType 的话，整数专属的解释文案对
+   * 真正需要它的列一句都不会出现。
+   */
+  isWholeNumber: boolean
 }
 
 export type ColumnRole = 'identifier' | 'measure' | 'freetext' | 'date' | 'dimension'
