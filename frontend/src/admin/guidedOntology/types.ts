@@ -65,4 +65,24 @@ export interface Proposal {
   renamedFields: Record<string, string>
   /** 没有标识列，根是猜的。UI 要提示用户确认。 */
   rootIsGuessed: boolean
+  /**
+   * 中心实体名（所有属性挂在它上面，其余实体默认挂在它下面）。
+   *
+   * 由 buildProposal 显式产出，**不允许 UI 用「不在 parentOf 里的实体」
+   * 反推**：用户把猜测根改判成属性后，那个反推会得到 undefined，于是
+   * 每个实体都长出一行「挂在」下拉框、下拉框的值又落回第一个选项，界面
+   * 显示出一个根本不存在的环，而提交出去的是零条关系。
+   *
+   * 一个实体都不剩时是空串——那时本体里没有中心可言。
+   */
+  rootName: string
+  /**
+   * 上级无效、被自动改挂到中心下面的实体。
+   *
+   * 两种来源：原来的上级已经不在实体列表里（用户把它改判成属性了），
+   * 或者这个实体从来就没有上级条目（initialDecision 只给维度列写
+   * parentOf，第二个标识列不在其中）。两种情况下界面都会照常画出一行
+   * 「X 挂在 Y」，而不改挂的话那条边根本不会被提交——界面在说谎。
+   */
+  reparentedTo: { root: string; names: string[] }
 }

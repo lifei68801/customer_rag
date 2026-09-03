@@ -295,3 +295,133 @@ describe('顺带产出 ETL 映射', () => {
     expect(orderEntity.fieldMappings[fieldName!]).toBe('类目')
   })
 })
+
+/**
+ * 中心（root）与无效上级。
+ *
+ * 这一组守的是同一类失败：**界面画出一条边，提交出去却没有**。
+ * buildProposal 从前遇到「上级缺失或指向一个已经不在实体列表里的名字」
+ * 就 `continue`，那个实体一条边都不会被提交；而 ProposalReview 照样为它
+ * 画一行「X 挂在 Y」，用户不点开那个下拉框就永远发现不了。
+ */
+function threeDimensionColumns(): RoledColumn[] {
+  return [
+    makeColumn('产品类目', 'dimension', 10), // 猜测根
+    makeColumn('品牌', 'dimension', 8),
+    makeColumn('颜色', 'dimension', 5),
+    makeColumn('revenue', 'measure', 500),
+  ]
+}
+
+describe('中心实体', () => {
+  it('有标识列时，中心就是标识列', () => {
+    const roled = demoColumns()
+    expect(buildProposal(roled, initialDecision(roled)).rootName).toBe('订单号')
+  })
+
+  it('猜测根被改判成属性后，中心顺延给下一个实体——不是变成空的', () => {
+    // rootName 为空/undefined 是整类界面故障的源头：审阅视图里实体名渲染
+    // 成「」，每个实体都长出「挂在」下拉框，下拉框的值落回第一个选项，
+    // 界面于是显示出一个根本不存在的环。
+    const roled = threeDimensionColumns()
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['产品类目'] = false
+
+    const proposal = buildProposal(roled, decision)
+
+    expect(proposal.rootName).toBe('品牌')
+    expect(proposal.termTypes.map((t) => t.value)).toEqual(['品牌', '颜色'])
+  })
+
+  it('猜测根被改判成属性后，关系不会全部静默消失', () => {
+    // 修复前实测：constraints = []、relationTypes = []，而 decision.parentOf
+    // 里三个孩子还全都指向那个已经不在实体列表里的旧根。前端没有空关系
+    // 校验，这份"零条关系"会被直接 POST 出去，然后显示成功。
+    const roled = threeDimensionColumns()
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['产品类目'] = false
+
+    const proposal = buildProposal(roled, decision)
+
+    expect(proposal.constraints).toEqual([
+      { subject_term_type: '品牌', relation_type: 'RELATES_TO', object_term_type: '颜色' },
+    ])
+    expect(proposal.relationTypes.map((r) => r.relation_type)).toEqual(['RELATES_TO'])
+  })
+
+  it('被改挂的实体会被列出来，不是悄悄改的', () => {
+    const roled = threeDimensionColumns()
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['产品类目'] = false
+
+    const proposal = buildProposal(roled, decision)
+
+    expect(proposal.reparentedTo).toEqual({ root: '品牌', names: ['颜色'] })
+  })
+
+  it('上级有效时不会被改挂——改挂只针对无效的上级', () => {
+    // 少了这条，一个"所有实体一律改挂到中心"的实现也能让上面几条通过，
+    // 而那会把用户在界面上改过的层级悄悄抹平。
+    const roled = demoColumns()
+    const decision = initialDecision(roled)
+    decision.parentOf['类目'] = '产品' // 用户手动改成两层
+
+    const proposal = buildProposal(roled, decision)
+
+    expect(proposal.reparentedTo.names).toEqual([])
+    expect(
+      proposal.constraints.find((c) => c.object_term_type === '类目')?.subject_term_type,
+    ).toBe('产品')
+  })
+
+  it('第二个标识列也会拿到一条边，不是静默孤儿', () => {
+    // initialDecision 只给维度列写 parentOf，第二个标识列从来就没有条目。
+    // 修复前它一条边都拿不到，而审阅视图里那一行的下拉框因为 `?? rootName`
+    // 兜底，显示的是「金额 挂在 订单号 下面」——界面显示连好了，提交出去
+    // 是孤儿。
+    const roled = [
+      makeColumn('订单号', 'identifier', 40),
+      makeColumn('金额', 'identifier', 40),
+      makeColumn('产品', 'dimension', 3),
+    ]
+    const decision = initialDecision(roled)
+    expect(decision.parentOf['金额']).toBeUndefined() // 触发前提
+
+    const proposal = buildProposal(roled, decision)
+
+    expect(
+      proposal.constraints.find((c) => c.object_term_type === '金额')?.subject_term_type,
+    ).toBe('订单号')
+    expect(proposal.reparentedTo.names).toContain('金额')
+  })
+
+  it('每个非中心实体恰好一条入边——不多不少', () => {
+    // 这条是不变量，UI 依赖它：审阅视图为每个非中心实体画一行「挂在」，
+    // 并从 constraints 反查该显示谁。少一条就是界面在说谎，多一条就是同一
+    // 个实体挂在两处。
+    const roled = [
+      makeColumn('订单号', 'identifier', 40),
+      makeColumn('金额', 'identifier', 40),
+      makeColumn('产品', 'dimension', 3),
+      makeColumn('公司', 'dimension', 2),
+    ]
+    const proposal = buildProposal(roled, initialDecision(roled))
+    const nonRoot = proposal.termTypes.map((t) => t.value).filter((v) => v !== proposal.rootName)
+
+    expect(proposal.constraints.map((c) => c.object_term_type).sort()).toEqual(nonRoot.sort())
+  })
+
+  it('一个实体都不剩时，中心是空串而不是 undefined', () => {
+    const roled: RoledColumn[] = [
+      makeColumn('产品', 'dimension', 10),
+      makeColumn('revenue', 'measure', 500),
+    ]
+    const decision = initialDecision(roled)
+    decision.dimensionsAsEntity['产品'] = false
+
+    const proposal = buildProposal(roled, decision)
+
+    expect(proposal.rootName).toBe('')
+    expect(proposal.constraints).toEqual([])
+  })
+})

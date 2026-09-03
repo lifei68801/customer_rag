@@ -256,3 +256,130 @@ describe('根节点是猜测的', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 })
+
+/**
+ * 中心实体消失后的界面。
+ *
+ * 修复前 ProposalReview 用「不在 decision.parentOf 里的实体」反推中心。
+ * 用户把猜测根改判成属性后那个反推得到 undefined，于是
+ * `entityNames.filter(name => name !== rootName)` 不再排除任何人：每个实体
+ * 都长出一行「挂在」，下拉框的值（那个已消失的旧根）不在 options 里，DOM
+ * 静默回落到第一个选项——界面显示「品牌 挂在 颜色」「颜色 挂在 品牌」，
+ * 一个不存在的环，而提交出去是零条关系。
+ */
+function threeDimensionStats(): ColumnStats[] {
+  return [
+    stat('产品类目', 10, 'string', ['饮料', '零食']), // 猜测根
+    stat('品牌', 8, 'string', ['甲', '乙']),
+    stat('颜色', 5, 'string', ['红', '蓝']),
+    stat('revenue', 500, 'number'),
+  ]
+}
+
+function renderWithRootDropped() {
+  const dropped = assignRoles(threeDimensionStats())
+  const decision = initialDecision(dropped)
+  decision.dimensionsAsEntity['产品类目'] = false
+  const proposal = buildProposal(dropped, decision)
+  render(
+    <ProposalReview
+      roled={dropped}
+      decision={decision}
+      onDecisionChange={vi.fn()}
+      proposal={proposal}
+    />,
+  )
+}
+
+describe('猜测根被改判成属性之后', () => {
+  it('只有非中心实体有「挂在」那一行，中心自己没有', async () => {
+    renderWithRootDropped()
+    // 品牌是顺延出来的新中心，它不该再出现一行「挂在」——出现了就意味着
+    // 中心反推又回到了 undefined。
+    expect(await screen.findByLabelText(/颜色 挂在/)).toBeTruthy()
+    expect(screen.queryByLabelText(/品牌 挂在/)).toBeNull()
+  })
+
+  it('「挂在」显示的上级就是会被提交的那个，不是 DOM 回落出来的第一个选项', async () => {
+    renderWithRootDropped()
+    const select = (await screen.findByLabelText(/颜色 挂在/)) as HTMLSelectElement
+    expect(select.value).toBe('品牌')
+  })
+
+  it('明说哪些实体被改挂了，不是悄悄改的', async () => {
+    renderWithRootDropped()
+    const notice = await screen.findByTestId('reparented-notice')
+    expect(notice.textContent).toMatch(/颜色/)
+    expect(notice.textContent).toMatch(/品牌/)
+  })
+
+  it('提示里的中心名不是空的', async () => {
+    // 修复前这里渲染成「」——一句读不通的话。
+    renderWithRootDropped()
+    // 精确挑出「根是猜的」那条提示（不是改挂提示——后者也含「品牌」，
+    // 拿它兜底的话中心名渲染成空也测不出来）。
+    const alerts = await screen.findAllByRole('alert')
+    const guessedAlert = alerts.find((el) => el.textContent?.includes('这里换不了中心'))
+    expect(guessedAlert?.textContent).toMatch(/现在拿「品牌」当中心/)
+  })
+})
+
+describe('猜测根提示的文案只承诺界面做得到的事', () => {
+  function guessedAlertText() {
+    const guessedRoled = assignRoles(noIdentifierStats())
+    const guessedDecision = initialDecision(guessedRoled)
+    render(
+      <ProposalReview
+        roled={guessedRoled}
+        decision={guessedDecision}
+        onDecisionChange={vi.fn()}
+        proposal={buildProposal(guessedRoled, guessedDecision)}
+      />,
+    )
+    return screen.getByRole('alert').textContent ?? ''
+  }
+
+  it('不建议「回上一步换一张表」', () => {
+    // 纯维度表本来就没有标识列，换任何一张同类的表结果都一样。
+    expect(guessedAlertText()).not.toMatch(/换一张表/)
+  })
+
+  it('不声称下面的下拉框能换掉中心', () => {
+    // 下拉框重挂的是**非中心**实体；中心自己没有那一行，用它换不了中心。
+    // 文案必须明说这里换不了，并指向真做得到的动作（把中心那列改成属性）。
+    const text = guessedAlertText()
+    expect(text).toMatch(/这里换不了中心/)
+    expect(text).toMatch(/做成属性/)
+  })
+})
+
+describe('一条关系都没有时', () => {
+  // buildProposal 现在产不出这个组合（每个非中心实体都会拿到一条边），
+  // 所以直接构造 Proposal 喂给渲染边界——它是 prop，这条守的是"未来任何
+  // 让关系归零的改动，用户能看见"。
+  const orphanProposal: Proposal = {
+    termTypes: [
+      { value: '品牌', extra_fields: [], standard_name_value_type: 'string' },
+      { value: '颜色', extra_fields: [], standard_name_value_type: 'string' },
+    ],
+    relationTypes: [],
+    constraints: [],
+    unusedColumns: [],
+    renamedFields: {},
+    rootIsGuessed: false,
+    rootName: '品牌',
+    reparentedTo: { root: '品牌', names: [] },
+  }
+
+  it('显式警告，而不是显示成一切正常', async () => {
+    renderReview({ proposal: orphanProposal })
+    const warning = await screen.findByTestId('no-relations-warning')
+    expect(warning.textContent).toMatch(/一条关系都没有/)
+  })
+
+  it('有关系时不出现这条警告', async () => {
+    renderReview()
+    await screen.findByTestId('dimension-customer_state')
+    expect(screen.queryByTestId('no-relations-warning')).toBeNull()
+  })
+})

@@ -66,12 +66,26 @@ function renderAt(path: string) {
   )
 }
 
-const csvFile = () =>
-  new File(
-    ['订单号,产品,revenue\n1001,咖啡,10.5\n1002,茶,20\n1003,咖啡,30\n'],
-    'orders.csv',
-    { type: 'text/csv' },
-  )
+const PRODUCTS = ['咖啡', '茶', '可乐']
+
+/**
+ * 纯数字订单号的样表。列数固定 3 列（下面有用例断言"共 3 列"）。
+ *
+ * 25 行不是随便取的：columnStats 的 NUMERIC_IDENTIFIER_THRESHOLD(=50) 之下
+ * 的纯整数列会保持 inferredType 'integer'，而 columnRoles 的
+ * INTEGER_IDENTIFIER_MIN_ROWS(=20) 要求至少 20 个非空值才肯把整数列判成
+ * 标识。25 行正好落在这两道门中间——它是"数字订单号能被认出来"这条链路
+ * 唯一会走到的区间，也是这份 fixture 存在的理由。
+ * 产品只有 3 个取值（比例 0.12 ≤ DIMENSION_MAX_RATIO），才会被判成维度；
+ * revenue 带小数，保持 'number' 走度量。
+ */
+const csvFile = () => {
+  const rows = Array.from(
+    { length: 25 },
+    (_, i) => `${1001 + i},${PRODUCTS[i % 3]},${10.5 + i}\n`,
+  ).join('')
+  return new File([`订单号,产品,revenue\n${rows}`], 'orders.csv', { type: 'text/csv' })
+}
 
 const oversizedXlsx = () =>
   new File([new Uint8Array(21 * 1024 * 1024)], 'big.xlsx')
@@ -111,6 +125,24 @@ describe('引导页第一步', () => {
     renderAt(ADMIN_ROUTES.guidedOntology)
     await user.upload(await screen.findByLabelText(/选择一张表/), csvFile())
     expect(await screen.findByText(/扫描完成，共 3 列/)).toBeTruthy()
+  })
+
+  it('纯数字的订单号走完真实扫描后，是本体的中心实体', async () => {
+    // 唯一一条从 File 到 UI 的真实链路。缺了它，columnStats 的
+    // NUMERIC_IDENTIFIER_THRESHOLD 与 columnRoles 的 classify 之间的接缝
+    // 在集成层没有守卫：两边各自的单测都绿，而整数订单号在真实页面上被
+    // 判成度量、连带整个实体消失——这个 Critical 缺陷正是这么漏出去的。
+    signIn('admin')
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.guidedOntology)
+    await user.upload(await screen.findByLabelText(/选择一张表/), csvFile())
+
+    // 产品（维度）挂在订单号下面：这同时证明订单号进了实体，而且是中心。
+    const select = (await screen.findByLabelText(/产品 挂在/)) as HTMLSelectElement
+    expect(select.value).toBe('订单号')
+    // 判成度量的话它会静静变成一个属性；判成自由文本的话会落进未使用清单。
+    const unused = await screen.findByTestId('unused-columns')
+    expect(unused.textContent).not.toMatch(/订单号/)
   })
 
   it('扫描失败时说清原因，不是静静停住', async () => {

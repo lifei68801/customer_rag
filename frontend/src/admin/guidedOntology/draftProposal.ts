@@ -101,16 +101,22 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     }
   }
 
-  // 属性挂在哪个实体上：优先挂根。但根可能是猜的（没有标识列时拿第一个
+  // 中心实体：优先用 rootOf 的结果。但根可能是猜的（没有标识列时拿第一个
   // 维度列顶替），用户完全可以把这个猜测根重新判成属性——这时 root 自己
-  // 就不在 entityNames 里了，属性没处挂。顺延给列顺序里第一个还留在
-  // entityNames 里的实体；一个实体都不剩时（entityNames 空），属性列
-  // 干脆没有本体可进，那就必须落进 unusedColumns。任何一列最终只能是
-  // 「进了某个实体的 extra_fields」或「进了 unusedColumns」这两种下场之
-  // 一，不允许第三种——第三种就是静默丢列。
-  const attributeHost = entityNames.has(root)
+  // 就不在 entityNames 里了。顺延给列顺序里第一个还留在 entityNames 里的
+  // 实体；一个实体都不剩时是空串。
+  //
+  // 这个值同时是属性的挂载点和关系的中心，而且要显式给到 UI（Proposal
+  // .rootName）：UI 若自己用「不在 parentOf 里的实体」反推，在顺延发生
+  // 后会反推出 undefined，画出一个不存在的环，而提交出去是零条关系。
+  //
+  // 属性没处挂（entityNames 空）时，属性列必须落进 unusedColumns。任何
+  // 一列最终只能是「进了某个实体的 extra_fields」或「进了 unusedColumns」
+  // 这两种下场之一，不允许第三种——第三种就是静默丢列。
+  const rootName = entityNames.has(root)
     ? root
-    : roled.find((c) => entityNames.has(c.stats.name))?.stats.name
+    : (roled.find((c) => entityNames.has(c.stats.name))?.stats.name ?? '')
+  const attributeHost = rootName === '' ? undefined : rootName
 
   const renamedFields: Record<string, string> = {}
   const hostFields: DraftExtraField[] = []
@@ -145,10 +151,18 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
   const constraints: DraftConstraint[] = []
   const relationTypeByName = new Map<string, DraftRelationType>()
 
+  const reparentedNames: string[] = []
+
   for (const child of entityNames) {
-    const parent = decision.parentOf[child]
-    // parent === child 会造出自环 A-[R]->A，图谱查询会陷进去。
-    if (!parent || parent === child || !entityNames.has(parent)) continue
+    if (child === rootName) continue
+    const declared = decision.parentOf[child]
+    // 上级缺失、指向自己（自环 A-[R]->A 会让图谱查询陷进去）、或者指向一个
+    // 已经不在实体列表里的名字：都不能照单全收，但也**不能跳过**。跳过的
+    // 后果是这个实体一条边都没有，而 UI 照样画出「X 挂在 Y」——界面显示
+    // 连好了，提交出去是孤儿。改挂到中心下面，并把名字收集起来让 UI 明说。
+    const valid = declared && declared !== child && entityNames.has(declared)
+    const parent = valid ? declared : rootName
+    if (!valid) reparentedNames.push(child)
     const relationType = decision.relationNameOf[child] ?? suggestRelationName(parent, child)
     constraints.push({
       subject_term_type: parent,
@@ -175,6 +189,8 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     unusedColumns,
     renamedFields,
     rootIsGuessed,
+    rootName,
+    reparentedTo: { root: rootName, names: reparentedNames },
   }
 }
 

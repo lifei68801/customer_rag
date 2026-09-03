@@ -176,3 +176,58 @@ describe('数值列按分布判定，不是一律当度量', () => {
     expect(assignRoles([column])[0].reason).toMatch(/200 个非空值里只有 20 个不同值/)
   })
 })
+
+describe('整数列判成标识需要够多的行', () => {
+  it('3 行整数全不重复，不足以当标识', () => {
+    // ratio 1.0 但只有 3 行——那不是"每行一个值"的证据，只是样本太小。
+    // 判成 identifier 的后果最重：这一列会直接成为本体的中心，而审阅视图
+    // 里根本不展示标识列，用户看不见也推不翻。
+    const column = realStats('revenue', ['10', '20', '30'])
+    expect(column.inferredType).toBe('integer')
+    expect(roleOf(column)).not.toBe('identifier')
+  })
+
+  it('3 行整数落进自由文本，会出现在「没有用到的列」里', () => {
+    // 只断言 not identifier 不够：判成 measure 同样能通过，而 measure 在
+    // 审阅视图里不展示——那正是这一轮要消灭的静默形态。必须钉住它落到
+    // 可见的那条出口。
+    expect(roleOf(realStats('revenue', ['10', '20', '30']))).toBe('freetext')
+  })
+
+  it('20 行整数全不重复就是标识', () => {
+    // 钉住门槛的位置。少了这条，一个"整数永远不能当标识"的实现也能让
+    // 上面两条通过，而那会让小表里真正的数值主键彻底消失。
+    const column = realStats('订单号', range(1, 20))
+    expect(column.inferredType).toBe('integer')
+    expect(roleOf(column)).toBe('identifier')
+  })
+
+  it('19 行整数全不重复还不算标识——门槛就在 20', () => {
+    expect(roleOf(realStats('订单号', range(1, 19)))).not.toBe('identifier')
+  })
+
+  it('字符串标识不受行数下限影响', () => {
+    // 下限只卡整数。字符串标识（ORD1001 这种）没有"其实是度量"的另一种
+    // 可能，卡它只会误伤小表——10 行的样例表也该认出它的主键。
+    const column = realStats('订单号', ['ORD1', 'ORD2', 'ORD3'])
+    expect(column.inferredType).toBe('string')
+    expect(roleOf(column)).toBe('identifier')
+  })
+})
+
+describe('整数列落进自由文本时的说明', () => {
+  it('说清整数为什么没被当成度量，并给一个真做得到的动作', () => {
+    // 通用那句「重复度不足以当分类」对一列整元单价是指错方向：那一列的
+    // 问题不是"不够格当分类"，是系统没认出它是金额。
+    const reason = assignRoles([realStats('unit_price', ['10', '20', '30'])])[0].reason
+    expect(reason).toMatch(/只有带小数的数值列才会/)
+    expect(reason).toMatch(/「本体结构」页/)
+  })
+
+  it('字符串列仍用原来的说明，没有被整数文案顶掉', () => {
+    const reason = assignRoles([stats({ name: 'note', distinctCount: 600, nonEmptyCount: 1000 })])[0]
+      .reason
+    expect(reason).toMatch(/重复度不足以当分类/)
+    expect(reason).not.toMatch(/「本体结构」页/)
+  })
+})

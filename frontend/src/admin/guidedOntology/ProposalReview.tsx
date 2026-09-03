@@ -14,8 +14,21 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
   const dimensions = roled.filter((c) => c.role === 'dimension')
   const dateColumns = roled.filter((c) => c.role === 'date')
   const entityNames = proposal.termTypes.map((t) => t.value)
-  const rootName = entityNames.find(
-    (name) => !Object.prototype.hasOwnProperty.call(decision.parentOf, name),
+  // 中心实体读 proposal.rootName，**不再**用「不在 decision.parentOf 里的
+  // 实体」反推。反推在用户把猜测根改判成属性后会得到 undefined：那时
+  // 下面的 filter 不再排除任何人，每个实体都长出一行「挂在」下拉框，而
+  // 下拉框的值（旧根）不在 options 里，DOM 静默回落到第一个选项——界面
+  // 显示「品牌挂在颜色下」「颜色挂在品牌下」这样一个环，提交出去却是零条
+  // 关系。
+  const rootName = proposal.rootName
+  // 每行「挂在」显示什么，一律从 proposal.constraints 反查，不从 decision
+  // 猜：constraints 就是要提交的东西，从它取值，界面显示的和提交的必然
+  // 一致。decision.parentOf 里可能留着指向已消失实体的陈旧条目。
+  const parentOfEntity = new Map(
+    proposal.constraints.map((c) => [c.object_term_type, c.subject_term_type]),
+  )
+  const relationOfEntity = new Map(
+    proposal.constraints.map((c) => [c.object_term_type, c.relation_type]),
   )
 
   const setDecision = (patch: Partial<GuidedDecision>) =>
@@ -82,14 +95,42 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
 
       <section className="flex flex-col gap-3">
         <h2 className={sectionTitle}>它们怎么连起来</h2>
-        {/* 不要建议「换一张表」：纯维度表（产品主数据这类）本来就没有
-            标识列，换任何一张同类的表结果都一样，那是把用户支使去做一件
-            注定无效的事。给他此处就能做的动作——把实体重新挂到他想要的那
-            一列下面。 */}
+        {/* 文案只许承诺这个界面真做得到的动作。
+            「回上一步换一张表」做不到：纯维度表本来就没有标识列，换任何
+            一张同类的表结果都一样。
+            「在下面把实体重新挂到你想要的那一列下面」也换不掉中心：中心
+            自己没有「挂在」那一行（下面的 filter 把它排除了），下拉框能做
+            的是重挂**非中心**实体。
+            真做得到的只有一件事：把中心那一列在上面改判成「做成属性」，
+            中心会顺延给列顺序里下一个还是实体的列（buildProposal 的
+            rootName 就是这么算的），原来挂在它下面的实体会自动改挂过去。 */}
         {proposal.rootIsGuessed && (
           <p role="alert" className={`${card} text-sm text-ink`}>
-            这张表里没有一列是「每行一个值」的标识，所以「{rootName}」是猜的。
-            如果它不该是中心，在下面把各实体重新挂到你想要的那一列下面就行。
+            这张表里没有一列是「每行一个值」的标识，所以中心是猜的：现在拿「
+            {rootName}」当中心，其余实体都挂在它下面。这里换不了中心——如果它
+            不该当中心，把它在上面改成「做成属性」，中心会顺延给下一列。
+          </p>
+        )}
+        {proposal.reparentedTo.names.length > 0 && (
+          // 不说的话就是界面在说谎：这些实体的上级要么已经不在了（被改判成
+          // 属性），要么从来就没指定过（第二个标识列不在 initialDecision 的
+          // parentOf 里），而下面照样画出一行「X 挂在 Y」。现在边真的会按这
+          // 里说的提交，但改挂这件事必须让用户看见并能推翻。
+          <p role="alert" data-testid="reparented-notice" className={`${card} text-sm text-ink`}>
+            {proposal.reparentedTo.names.join('、')} 没有指定有效的上级，已经挂到中心「
+            {proposal.reparentedTo.root}」下面。不对的话在下面改。
+          </p>
+        )}
+        {proposal.constraints.length === 0 && proposal.termTypes.length > 1 && (
+          // 兜底：多个实体、零条关系意味着提交出去是一堆互不相连的孤岛，
+          // 图谱里问不出任何跨实体的问题。仍然允许提交（用户可能就是想先
+          // 建出实体），但不能让他以为一切正常。
+          // 现在的 buildProposal 产不出这个组合（每个非中心实体都会被改挂
+          // 到中心下面，拿到一条边），这里守的是渲染边界——Proposal 是外部
+          // 传进来的 prop，未来任何让关系归零的改动都会先在这里被看见。
+          <p role="alert" data-testid="no-relations-warning" className={`${card} text-sm text-ink`}>
+            这份草案里有 {proposal.termTypes.length} 个实体，但它们之间一条关系都没有。
+            写进草稿后，跨实体的问题（「某某下面有哪些」）答不出来。
           </p>
         )}
         {entityNames
@@ -101,7 +142,7 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
               </label>
               <select
                 id={`parent-${name}`}
-                value={decision.parentOf[name] ?? rootName ?? ''}
+                value={parentOfEntity.get(name) ?? rootName}
                 onChange={(event) =>
                   setDecision({ parentOf: { ...decision.parentOf, [name]: event.target.value } })
                 }
@@ -125,7 +166,7 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
               <input
                 aria-label={`${name} 的关系名`}
                 list="guided-relation-names"
-                value={decision.relationNameOf[name] ?? ''}
+                value={relationOfEntity.get(name) ?? ''}
                 onChange={(event) =>
                   setDecision({
                     relationNameOf: {
