@@ -17,12 +17,19 @@ import type { ColumnStats, GuidedDecision, Proposal, RoledColumn } from './types
  * 复审那一轮发现：5 个 dimension 列意味着默认渲染有 5 组"建成实体/做成
  * 属性"单选，每组的可访问名都以"建成实体"开头。裸的
  * `screen.findByRole('radio', { name: /建成实体/ })` 会因为 5 个都匹配
- * 而报 "Found multiple elements"——这是真实场景（一张表同时有多个低基数
- * 维度列很常见），不该靠"让 fixture 只留一个 dimension 列"来绕开，那样
- * 会让"多列单选互不干扰"这个不变式在测试里失去意义（复审实测：把
- * `name={\`dim-${name}\`}` 改成常量 `"dim"`，10/10 依旧全绿）。所以这里
+ * 而报 "Found multiple elements"。保留多维度是为了让审阅视图在测试里
+ * 维持真实产品的形态——真实的表经常同时有好几个低基数维度列——所以这里
  * 用 `within(screen.getByTestId('dimension-customer_state'))` 把查询限定
- * 在一个 dimension 块内部消歧义，而不是缩小数据。
+ * 在一个 dimension 块内部消歧义，而不是把 fixture 缩成只剩一列。
+ *
+ * 但要如实记一句：这份多维度 fixture 本身**不会**捕获 radio 的 `name`
+ * 分组写错这类 bug（比如把 `name={\`dim-${name}\`}` 改成常量
+ * `"dim"`，让 5 组单选被浏览器当成同一组）。实测过：这么改之后全部测试
+ * 依旧全绿，因为测试里 `onDecisionChange` 是 `vi.fn()`，组件是不受控
+ * 的——`decision` prop 不会因为点击而更新，点击不触发第二次渲染，
+ * 分组串扰也就不会以 DOM `checked` 状态的形式暴露出来。这个缺口目前没
+ * 有任何测试覆盖，见下面"点一列的 radio 不会带翻另一列的决定"那条测试
+ * 旁边的说明。
  */
 
 function stat(
@@ -131,9 +138,15 @@ describe('低基数列的选择', () => {
   })
 
   it('点一列的 radio 不会带翻另一列的决定', async () => {
-    // 5 个 dimension 列共存时，如果 radio 的 name 分组写错（比如都用同一
-    // 个常量而不是按列名区分），点一列会连带影响别的列——jsdom 原生的
-    // 单选分组会把它们当成同一组。这条断言就是守住"互不干扰"这个不变式。
+    // 这条实际守住的是 setDecision 的 spread 完整性：改一列的决定时，
+    // 传给 onDecisionChange 的新对象不会把别的列的决定弄丢。
+    //
+    // 它守不住的是 radio 的 name 分组——name 必须按列拼
+    // （name={`dim-${name}`}），写成常量会让 5 组单选被浏览器当成同一
+    // 组，选中一列会连带取消另一列。这个缺口目前没有任何测试覆盖：
+    // 组件在这里是不受控的（onDecisionChange 是 mock，decision prop 不
+    // 会因为点击回流），点击不会触发第二次渲染，分组串扰也就不会以 DOM
+    // checked 状态的形式暴露出来。
     const user = userEvent.setup()
     const onChange = vi.fn()
     renderReview({ onDecisionChange: onChange })
