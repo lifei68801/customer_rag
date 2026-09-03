@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import App from '../App'
 import { SkinProvider } from './SkinContext'
@@ -125,5 +126,62 @@ describe('切到已确认但从没确认过时，说明它为什么是空的', (
     renderAt(ADMIN_ROUTES.ontology)
     await waitFor(() => expect(screen.getByTestId('ontology-tabs')).toBeTruthy())
     expect(screen.queryByTestId('never-confirmed-notice')).toBeNull()
+  })
+})
+
+describe('terms/summary 失败不阻断差异预览', () => {
+  it('summary 请求失败时，确认框仍然弹出，差异预览没有退化成"无法预览"', async () => {
+    const user = userEvent.setup()
+    // 独立于 stubOntology：草稿和已确认版本的实体类型故意不同（产品 vs
+    // 客户），这样差异预览里才有真实内容可断言，而不是空 diff 凑巧看起来
+    // 也不含"无法预览"这几个字。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        const json = (body: unknown, status = 200) =>
+          Promise.resolve(new Response(JSON.stringify(body), { status }))
+        if (url.includes('/ontology/') && url.includes('/status')) return json({ confirmed: false })
+        if (url.includes('/checkout')) return json({})
+        if (url.includes('/term-types')) {
+          return json({
+            term_types: url.includes('status=confirmed')
+              ? [{ value: '客户', extra_fields: [], standard_name_value_type: 'string' }]
+              : [{ value: '产品', extra_fields: [], standard_name_value_type: 'string' }],
+          })
+        }
+        if (url.includes('/relation-types')) {
+          return json({
+            relation_types: [
+              { relation_type: 'HAS', example_phrase: 'x has y', description: '', allow_chain_query: false },
+            ],
+          })
+        }
+        if (url.includes('/constraints')) {
+          return json({
+            constraints: [{ subject_term_type: '产品', relation_type: 'HAS', object_term_type: '产品' }],
+          })
+        }
+        if (url.includes('/terms/summary')) {
+          // 非 2xx：fetchTermsSummary 里 `if (!response.ok) throw new
+          // Error(extractErrorDetail(...))` 命中，返回的 promise 会
+          // reject——这条走的是 handleConfirm 里 `.then(success, failure)`
+          // 的 failure 分支，不是随便哪种"失败"都巧合地得到同样结果。
+          return json({ detail: '统计服务暂不可用' }, 500)
+        }
+        if (url.includes('/api/admin/tenants')) {
+          return json({ tenants: [{ tenant_id: 'demo', name: '演示租户', status: 'active' }] })
+        }
+        return new Promise(() => {})
+      }),
+    )
+    renderAt(ADMIN_ROUTES.ontology)
+    const button = await screen.findByRole('button', { name: /确认 schema/ })
+    await waitFor(() => expect(button).not.toBeDisabled())
+    await user.click(button)
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog.textContent).not.toMatch(/无法预览本次变更/)
+    expect(dialog.textContent).toMatch(/产品/)
+    expect(dialog.textContent).toMatch(/客户/)
   })
 })
