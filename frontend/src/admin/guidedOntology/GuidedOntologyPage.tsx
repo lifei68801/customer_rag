@@ -1,15 +1,30 @@
 import { useState, type ChangeEvent } from 'react'
-import { PAGE_TITLES } from '../../adminRoutes'
+import { Link } from 'react-router-dom'
+import { ADMIN_ROUTES, PAGE_TITLES } from '../../adminRoutes'
+import { adminFetch, extractErrorDetail } from '../adminApi'
 import { useAdminAuth } from '../useAdminAuth'
+import { useAdminTenant } from '../TenantContext'
+import { buildConfigYaml } from '../schemaEtlConfigBuilder/buildConfigYaml'
 import { scanTableFile } from './columnStats'
 import { assignRoles } from './columnRoles'
-import { initialDecision } from './draftProposal'
+import { buildProposal, initialDecision, toEtlBuilder } from './draftProposal'
+import { ProposalReview } from './ProposalReview'
 import type { GuidedDecision, RoledColumn } from './types'
 
-type Step = 'upload' | 'scanning' | 'review' | 'submitting'
+type Step = 'upload' | 'scanning' | 'review' | 'submitting' | 'done'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
+
+const primaryButtonClass = `min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-primary px-4 py-2 text-sm font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`
+
+const secondaryButtonClass = `inline-flex min-h-[44px] cursor-pointer items-center rounded-control border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink transition hover:bg-interactive-hover active:scale-95 active:opacity-90 ${focusRing}`
+
+/**
+ * 引导流程只处理单表——所以一个固定的 fileId 就够了，不需要按上传次数
+ * 生成新 id。ETL 映射下载时用它把实体/关系映射回同一个文件名。
+ */
+const GUIDED_FILE_ID = 'guided-upload'
 
 /**
  * 引导式本体建模的入口页。
@@ -20,11 +35,13 @@ const focusRing =
  * 扫描失败（比如 xlsx 超过体积上限）也必须说清原因，不能静静停住。
  */
 export function GuidedOntologyPage() {
-  const { role } = useAdminAuth()
+  const { role, sessionToken } = useAdminAuth()
+  const { tenantId } = useAdminTenant()
   const [step, setStep] = useState<Step>('upload')
   const [error, setError] = useState<string | null>(null)
   const [roled, setRoled] = useState<RoledColumn[] | null>(null)
   const [decision, setDecision] = useState<GuidedDecision | null>(null)
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null)
 
   if (role !== 'admin') {
     return (
@@ -42,6 +59,7 @@ export function GuidedOntologyPage() {
     if (!file) return
     setError(null)
     setStep('scanning')
+    setUploadedFile(file)
     // 不人为延迟：scanTableFile 内部按 1MB 分块 await，大表天然会让出主线程画出进度。
     try {
       const stats = await scanTableFile(file)
@@ -55,6 +73,75 @@ export function GuidedOntologyPage() {
       setError(err instanceof Error ? err.message : '扫描失败，原因未知')
       setStep('upload')
     }
+  }
+
+  /**
+   * 一次请求写入整套本体。逐个 term/relation 分别发请求的话，中途失败会
+   * 留下半份草稿，而 checkout_draft **不会**清空它（只在"还没检出过"时
+   * 才从已确认版复制）——用户没有干净的重来方式。
+   */
+  const handleSubmit = async () => {
+    if (!sessionToken || !roled || !decision || step === 'submitting') return
+    setStep('submitting')
+    setError(null)
+    try {
+      const proposal = buildProposal(roled, decision)
+      const response = await adminFetch(
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/draft/replace`,
+        sessionToken,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            term_types: proposal.termTypes,
+            relation_types: proposal.relationTypes,
+            constraints: proposal.constraints,
+          }),
+        },
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '写入草稿失败'))
+      }
+      // 刻意**不**调 /confirm：确认是不可逆的（旧的已确认版本会被换掉），
+      // 引导不该替用户做这个决定。
+      setStep('done')
+    } catch (err) {
+      // 失败时留在原地：跳走的话用户以为成功了，回头发现草稿是空的。
+      setError(err instanceof Error ? err.message : '写入草稿失败')
+      setStep('review')
+    }
+  }
+
+  /**
+   * 顺带产出 ETL 映射下载。引导收集的信息已经够生成映射了——让用户在
+   * ETL 页把同样的判断（哪列是标识、哪列是属性）再做一遍是重复劳动，
+   * 而且两次结果可能不一致，那时以哪个为准？
+   */
+  const handleDownloadMapping = () => {
+    if (!roled || !decision || !uploadedFile) return
+    const { entities, relations } = toEtlBuilder(roled, decision, GUIDED_FILE_ID)
+    const yaml = buildConfigYaml({
+      tenantId,
+      entities,
+      relations,
+      files: [
+        {
+          id: GUIDED_FILE_ID,
+          file: uploadedFile,
+          columns: roled.map((c) => c.stats.name),
+        },
+      ],
+    })
+    const blob = new Blob([yaml], { type: 'text/yaml;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${tenantId}-etl-config.yaml`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -93,10 +180,42 @@ export function GuidedOntologyPage() {
         </p>
       )}
 
-      {step === 'review' && roled && decision && (
-        <p className="text-sm text-ink-soft">
-          扫描完成，共 {roled.length} 列。下一步的复核界面还在建。
-        </p>
+      {(step === 'review' || step === 'submitting') && roled && decision && (
+        <div className="flex flex-col gap-6">
+          <p className="text-sm text-ink-soft">扫描完成，共 {roled.length} 列。</p>
+          <ProposalReview
+            roled={roled}
+            decision={decision}
+            onDecisionChange={setDecision}
+            proposal={buildProposal(roled, decision)}
+          />
+          <button
+            type="button"
+            onClick={() => void handleSubmit()}
+            disabled={step === 'submitting'}
+            className={primaryButtonClass}
+          >
+            {step === 'submitting' ? '写入中…' : '写入草稿'}
+          </button>
+        </div>
+      )}
+
+      {step === 'done' && (
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-ink">
+            本体草稿已写入。它还没有生效——去「本体结构」页核对一遍再确认。
+            确认是不可逆的：旧的已确认版本会被换掉。
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Link to={ADMIN_ROUTES.ontology} className={secondaryButtonClass}>
+              本体结构
+            </Link>
+            {/* 引导收集的信息已经够生成映射了，不用在 ETL 页重配一遍。 */}
+            <button type="button" onClick={handleDownloadMapping} className={secondaryButtonClass}>
+              下载 ETL 映射配置
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
