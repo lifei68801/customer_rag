@@ -82,10 +82,14 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
 
       <section className="flex flex-col gap-3">
         <h2 className={sectionTitle}>它们怎么连起来</h2>
+        {/* 不要建议「换一张表」：纯维度表（产品主数据这类）本来就没有
+            标识列，换任何一张同类的表结果都一样，那是把用户支使去做一件
+            注定无效的事。给他此处就能做的动作——把实体重新挂到他想要的那
+            一列下面。 */}
         {proposal.rootIsGuessed && (
           <p role="alert" className={`${card} text-sm text-ink`}>
             这张表里没有一列是「每行一个值」的标识，所以「{rootName}」是猜的。
-            如果它不该是中心，请回上一步换一张表。
+            如果它不该是中心，在下面把各实体重新挂到你想要的那一列下面就行。
           </p>
         )}
         {entityNames
@@ -186,7 +190,7 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
         ) : (
           <>
             <p className="text-sm text-ink-soft">
-              这些列没有进入本体——它们的重复度不足以当分类，也不是数值。
+              这些列没有进入本体——它们的重复度既不足以当分类，也没高到每行一个。
               如果其中有你需要的，回上一步换一张更聚焦的表，或者建完之后去
               「本体结构」页手工加。
             </p>
