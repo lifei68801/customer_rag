@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ProposalReview } from './ProposalReview'
 import { buildProposal, initialDecision } from './draftProposal'
@@ -9,24 +9,20 @@ import type { ColumnStats, GuidedDecision, Proposal, RoledColumn } from './types
 /**
  * 审阅视图：把生成的本体草案摆给用户看，让他逐项确认或改。
  *
- * demo 数据沿用 Task 4（draftProposal.test.ts）那份电商订单宽表的形状：
- * 订单号是标识列、产品/公司/类目/用户名/customer_state 是低基数候选、
- * revenue/units_sold 是度量、purchase_date 是日期、internal_note 是自由
- * 文本。
+ * demo 数据是 Task 4（draftProposal.test.ts）那份电商订单宽表的完整形状：
+ * 订单号是标识列，产品/公司/类目/用户名/customer_state 五列全部走真实
+ * assignRoles 判成 dimension，revenue/units_sold 是度量，purchase_date
+ * 是日期，internal_note 是自由文本。
  *
- * 但这里没有像 Task 4 那样把 产品/公司/类目/用户名 也判成 dimension——
- * 那样的话默认渲染就有 5 组"建成实体/做成属性"单选，每组的可访问名都
- * 以"建成实体"开头，`findByRole('radio', { name: /建成实体/ })`
- * （brief 给的断言，逐字照抄）会因为找到 5 个匹配而报
- * "Found multiple elements"——这在真实跑过一遍之后确认过，不是猜测。
- * 所以这份 fixture 把它们标成 identifier：在这一步的语境里，它们代表
- * "已经确定要建成实体、不需要用户再审"的列（用于覆盖"层级"里"挂在
- * 谁下面"这组测试），真正把"建成实体还是做成属性"这个选择题留给唯一
- * 的 dimension 列 customer_state——这也是"低基数列的选择"三条测试
- * 唯一关心的列。customer_state 的 role/reason 用真实的 assignRoles 产
- * 出，不手写——判定依据里的"50"必须来自 classify() 的真实输出，手写
- * 空字符串会让"显示判定依据里的具体数字"这条测试测不出组件到底有没有
- * 把 reason 渲染出来。
+ * 复审那一轮发现：5 个 dimension 列意味着默认渲染有 5 组"建成实体/做成
+ * 属性"单选，每组的可访问名都以"建成实体"开头。裸的
+ * `screen.findByRole('radio', { name: /建成实体/ })` 会因为 5 个都匹配
+ * 而报 "Found multiple elements"——这是真实场景（一张表同时有多个低基数
+ * 维度列很常见），不该靠"让 fixture 只留一个 dimension 列"来绕开，那样
+ * 会让"多列单选互不干扰"这个不变式在测试里失去意义（复审实测：把
+ * `name={\`dim-${name}\`}` 改成常量 `"dim"`，10/10 依旧全绿）。所以这里
+ * 用 `within(screen.getByTestId('dimension-customer_state'))` 把查询限定
+ * 在一个 dimension 块内部消歧义，而不是缩小数据。
  */
 
 function stat(
@@ -45,37 +41,37 @@ function stat(
   }
 }
 
-function makeColumn(
-  name: string,
-  role: RoledColumn['role'],
-  distinctCount: number,
-  samples: string[] = [],
-): RoledColumn {
-  return {
-    stats: stat(name, distinctCount, role === 'measure' ? 'number' : role === 'date' ? 'date' : 'string', samples),
-    role,
-    reason: '',
-  }
-}
-
 /** demo 租户那张电商订单宽表，跟 draftProposal.test.ts 里的 demoColumns 同形状。 */
-function demoRoled(): RoledColumn[] {
-  const [customerState] = assignRoles([stat('customer_state', 50, 'string', ['加州', '德州', '纽约州'])])
+function demoStats(): ColumnStats[] {
   return [
-    makeColumn('订单号', 'identifier', 9998),
-    makeColumn('产品', 'identifier', 10, ['咖啡', '茶', '可乐']),
-    makeColumn('公司', 'identifier', 3, ['甲公司', '乙公司']),
-    makeColumn('类目', 'identifier', 4, ['饮料', '零食']),
-    makeColumn('用户名', 'identifier', 800),
-    makeColumn('revenue', 'measure', 500),
-    makeColumn('units_sold', 'measure', 20),
-    makeColumn('purchase_date', 'date', 300, ['2026-01-15']),
-    customerState,
-    makeColumn('internal_note', 'freetext', 6000),
+    stat('订单号', 9998),
+    stat('产品', 10, 'string', ['咖啡', '茶', '可乐']),
+    stat('公司', 3, 'string', ['甲公司', '乙公司']),
+    stat('类目', 4, 'string', ['饮料', '零食']),
+    stat('用户名', 800),
+    stat('revenue', 500, 'number'),
+    stat('units_sold', 20, 'number'),
+    stat('purchase_date', 300, 'date', ['2026-01-15']),
+    stat('customer_state', 50, 'string', ['加州', '德州', '纽约州']),
+    stat('internal_note', 6000),
   ]
 }
 
-const roled: RoledColumn[] = demoRoled()
+/**
+ * 纯维度表（产品主数据这类），没有标识列——root 是猜的。跟
+ * draftProposal.test.ts 里的 noIdentifierColumns 同形状，专门用来触发
+ * `proposal.rootIsGuessed`。
+ */
+function noIdentifierStats(): ColumnStats[] {
+  return [
+    stat('产品', 10, 'string', ['咖啡', '茶', '可乐']), // 猜测根
+    stat('类目', 4, 'string', ['饮料', '零食']),
+    stat('revenue', 500, 'number'),
+    stat('purchase_date', 300, 'date', ['2026-01-15']),
+  ]
+}
+
+const roled: RoledColumn[] = assignRoles(demoStats())
 const baseDecision: GuidedDecision = initialDecision(roled)
 const baseProposal: Proposal = buildProposal(roled, baseDecision)
 
@@ -108,13 +104,45 @@ describe('低基数列的选择', () => {
 
   it('默认选中「建成实体」', async () => {
     renderReview()
-    const radio = await screen.findByRole('radio', { name: /建成实体/ })
+    // demo 里有 5 个 dimension 列，5 组单选都叫"建成实体"——查询必须限定
+    // 在 customer_state 这一块内部，裸的 screen.findByRole 会因为多个
+    // 匹配而报 "Found multiple elements"。
+    const block = await screen.findByTestId('dimension-customer_state')
+    const radio = within(block).getByRole('radio', { name: /建成实体/ })
     expect((radio as HTMLInputElement).checked).toBe(true)
   })
 
   it('显示判定依据里的具体数字', async () => {
     renderReview()
     expect((await screen.findByTestId('dimension-customer_state')).textContent).toMatch(/50/)
+  })
+
+  it('点「做成属性」会把该列标成非实体', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    renderReview({ onDecisionChange: onChange })
+    const block = await screen.findByTestId('dimension-customer_state')
+    await user.click(within(block).getByRole('radio', { name: /做成属性/ }))
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dimensionsAsEntity: expect.objectContaining({ customer_state: false }),
+      }),
+    )
+  })
+
+  it('点一列的 radio 不会带翻另一列的决定', async () => {
+    // 5 个 dimension 列共存时，如果 radio 的 name 分组写错（比如都用同一
+    // 个常量而不是按列名区分），点一列会连带影响别的列——jsdom 原生的
+    // 单选分组会把它们当成同一组。这条断言就是守住"互不干扰"这个不变式。
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    renderReview({ onDecisionChange: onChange })
+    const block = await screen.findByTestId('dimension-customer_state')
+    await user.click(within(block).getByRole('radio', { name: /做成属性/ }))
+    expect(onChange).toHaveBeenCalled()
+    const next = onChange.mock.calls[onChange.mock.calls.length - 1][0] as GuidedDecision
+    expect(next.dimensionsAsEntity['产品']).toBe(true)
+    expect(next.dimensionsAsEntity['类目']).toBe(true)
   })
 })
 
@@ -178,5 +206,40 @@ describe('日期列的限制', () => {
     // 能答，直到真去问才发现不行。
     renderReview()
     expect((await screen.findByTestId('date-warning')).textContent).toMatch(/范围|区间|过滤/)
+  })
+})
+
+describe('字段名被清洗过的列', () => {
+  it('renamedFields 非空时，原列名到清洗后字段名的对应关系要显示出来', async () => {
+    // sanitizeFieldName 对纯中文列名会兜底成 field_1 这种占位名。用户
+    // 下载 ETL 配置后会在 YAML 里看到自己从没在界面上见过的字段名——
+    // 数据没丢，但改动对用户不可见，是"静默失败"的典型形态。
+    renderReview({ proposal: { ...baseProposal, renamedFields: { 类目: 'field_1' } } })
+    const block = await screen.findByTestId('renamed-fields')
+    expect(block.textContent).toMatch(/类目/)
+    expect(block.textContent).toMatch(/field_1/)
+  })
+
+  it('renamedFields 为空时不显示这个小节', async () => {
+    renderReview({ proposal: { ...baseProposal, renamedFields: {} } })
+    expect(screen.queryByTestId('renamed-fields')).toBeNull()
+  })
+})
+
+describe('根节点是猜测的', () => {
+  it('没有标识列时提示根是猜的', async () => {
+    const guessedRoled = assignRoles(noIdentifierStats())
+    const guessedDecision = initialDecision(guessedRoled)
+    const guessedProposal = buildProposal(guessedRoled, guessedDecision)
+    renderReview({ roled: guessedRoled, decision: guessedDecision, proposal: guessedProposal })
+    expect(await screen.findByRole('alert')).toBeTruthy()
+  })
+
+  it('有标识列时不提示根是猜的', async () => {
+    renderReview()
+    // 先等页面渲染完成，再断言 alert 不存在——不然"还没渲染出来"和
+    // "渲染了但没有 alert"这两种情况会被误判成同一个结果。
+    await screen.findByTestId('dimension-customer_state')
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 })

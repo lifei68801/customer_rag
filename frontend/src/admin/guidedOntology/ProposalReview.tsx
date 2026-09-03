@@ -156,6 +156,27 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
         </section>
       )}
 
+      {Object.keys(proposal.renamedFields).length > 0 && (
+        <section data-testid="renamed-fields" className={`${card} flex flex-col gap-1`}>
+          <h2 className={sectionTitle}>字段名被清洗过的列</h2>
+          {/* 属性名被清洗改过的列必须显示：sanitizeFieldName 对纯中文
+              列名会兜底成 field_1 这种占位名，不说的话用户下载 ETL 配置
+              后会在 YAML 里看到自己从没在界面上见过的字段名——数据没
+              丢，但改动对用户不可见，是"静默失败"的典型形态。 */}
+          <p className="text-sm text-ink-soft">
+            这些列名不是合法的属性字段名，已经清洗成新的名字——ETL 配置
+            里用的是清洗后的名字，不是原始列名。
+          </p>
+          <ul className="flex flex-col gap-1">
+            {Object.entries(proposal.renamedFields).map(([original, cleaned]) => (
+              <li key={original} className="font-mono text-xs text-ink-soft">
+                {original} → {cleaned}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section data-testid="unused-columns" className={`${card} flex flex-col gap-1`}>
         <h2 className={sectionTitle}>没有用到的列</h2>
         {/* 不显示等于静默丢弃：用户会在三个月后问"为什么查不到内部备注"，
