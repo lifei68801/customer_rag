@@ -9,6 +9,7 @@ import { Skeleton } from './Skeleton'
 import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 import { buildOntologyDiff, type OntologyDiff } from './ontologyDiff'
+import { fetchTermsSummary } from './termsApi'
 import { useOntologyData } from './useOntologyData'
 import { useOntologyVersion } from './useOntologyVersion'
 import { Link } from 'react-router-dom'
@@ -51,7 +52,9 @@ function describeConfirmDiff(tenantId: string, diff: OntologyDiff | null): strin
     if (rows.length === 0) return
     lines.push(`${title}（${rows.length}）`)
     for (const row of rows) {
-      lines.push(`  ${sign(row.kind)} ${row.label}${row.detail ? `：${row.detail}` : ''}`)
+      lines.push(
+        `  ${sign(row.kind)} ${row.label}${row.impact ? `（${row.impact}）` : ''}${row.detail ? `：${row.detail}` : ''}`,
+      )
     }
   }
   push('实体类型', diff.termTypes)
@@ -240,11 +243,17 @@ export function OntologySchemaPage() {
     // 到底要改什么，摆在确认框里。只在点确认时拉已确认版，不拖慢页面首屏。
     let diff: OntologyDiff | null = null
     try {
-      const [draftSnapshot, confirmedSnapshot] = await Promise.all([
+      const [draftSnapshot, confirmedSnapshot, termCounts] = await Promise.all([
         loadSnapshot('draft'),
         loadSnapshot('confirmed'),
+        // 拉不到实体分组统计不该挡住确认预览——按空对象处理，少一条数据
+        // 影响提示，好过让下面两份快照的差异预览也一起废掉。
+        fetchTermsSummary(sessionToken, tenantId).then(
+          (groups) => Object.fromEntries(groups.map((g) => [g.term_type, g.total])),
+          () => ({}) as Record<string, number>,
+        ),
       ])
-      diff = buildOntologyDiff(draftSnapshot, confirmedSnapshot)
+      diff = buildOntologyDiff(draftSnapshot, confirmedSnapshot, termCounts)
     } catch {
       // 算不出差异不该挡住确认——退回原来那句笼统的警告，但要让用户知道
       // 这次没能预览，而不是让他以为"没有变更"。

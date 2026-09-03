@@ -16,6 +16,13 @@ export interface DiffRow {
   label: string
   /** changed 时说明改了什么；added/removed 时为空。 */
   detail?: string
+  /**
+   * 这一条变更会波及多少已有数据。只有被删除的实体类型才有。
+   *
+   * confirm_ontology 不碰 terms 表：删掉类型不会删实体，实体会原地留在表
+   * 里但不再属于任何已确认类型，对下游查询不可见。
+   */
+  impact?: string
 }
 
 export interface OntologyDiff {
@@ -110,11 +117,17 @@ export function buildOntologyDiff(
     relationTypes: RelationTypeLike[]
     constraints: ConstraintLike[]
   },
+  termCounts: Record<string, number> = {},
 ): OntologyDiff {
   const termTypes = diffByKey(
     draft.termTypes, confirmed.termTypes,
     (t) => t.value, (t) => t.value, describeFieldChange,
-  )
+  ).map((row) => {
+    if (row.kind !== 'removed') return row
+    const count = termCounts[row.label]
+    if (!count) return row
+    return { ...row, impact: `当前有 ${count} 条实体，确认后将不再属于任何已确认类型` }
+  })
   const relationTypes = diffByKey(
     draft.relationTypes, confirmed.relationTypes,
     (r) => r.relation_type, (r) => r.relation_type, describeRelationChange,
