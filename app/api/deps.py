@@ -76,6 +76,7 @@ __all__ = [
     "AdminSession",
     "require_admin_role",
     "require_admin_session",
+    "require_chat_session",
     "require_csrf",
     "require_tenant_access",
     "resolve_tenant_id",
@@ -394,6 +395,23 @@ async def require_csrf(request: Request) -> None:
     cookie_value = request.cookies.get(CSRF_COOKIE_NAME)
     if not header_value or not cookie_value or header_value != cookie_value:
         raise HTTPException(status_code=403, detail="CSRF 校验失败")
+
+
+async def require_chat_session(
+    session: AdminSession = Depends(require_admin_session),
+) -> tuple[str, str]:
+    """前台问答的身份：返回 (tenant_id, user_id)。
+
+    租户取 current_tenant_id 而不是 tenant_id——admin 的 tenant_id 恒为
+    None，用它的话 admin 在前台根本问不了任何问题。member 两者恒等。
+
+    user_id 取 username：会话历史此后按账号归属，不再是客户端自报的
+    随机 UUID。既有的匿名会话因此变成孤儿，这是设计里明确接受的代价
+    （见 spec 决定 2）。
+    """
+    if session.current_tenant_id is None:
+        raise HTTPException(status_code=400, detail="请先选择一个租户")
+    return session.current_tenant_id, session.username
 
 
 async def require_tenant_access(

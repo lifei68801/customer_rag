@@ -27,15 +27,23 @@ from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import VectorStore
 from app.voice.voice_output import synthesize_voice_response
 
-router = APIRouter()
+# require_csrf 挂在 router 上而不是逐个路由：漏挂一个写接口不会有任何测试
+# 变红，而漏掉的那一个就是活的 CSRF 通道。
+#
+# get_gateway_tenant_id 留在这里只当"网关凭证校验"用，不再参与租户解析：
+# 身份改从会话取之后，配置了 gateway_shared_secret 的部署仍然必须带上有效的
+# X-Gateway-Secret 才进得来（test_qa_routes.py 与 test_agent_chat_routes.py 里
+# 的 rejects_wrong_gateway_secret 用例钉的就是这条路径还活着）。
+router = APIRouter(
+    dependencies=[Depends(deps.require_csrf), Depends(deps.get_gateway_tenant_id)]
+)
 
 
 class AgentChatRequest(BaseModel):
     question: str
-    # tenant_id 优先从网关注入的 X-Tenant-Id 头读取（见
-    # deps.get_gateway_tenant_id），这里保留为可选字段仅作为网关未配置
-    # 时的本地开发兜底，见
-    # docs/superpowers/specs/2026-08-06-gateway-tenant-auth-design.md。
+    # tenant_id / user_id 保留但不再使用：租户与用户一律取自会话
+    # （deps.require_chat_session）。删掉这两个字段会让还在发它们的既有
+    # 客户端直接 422，而忽略它们是无声的兼容。
     tenant_id: str | None = None
     session_id: str = "default"
     user_id: str = "anonymous"
@@ -47,7 +55,7 @@ class AgentChatRequest(BaseModel):
 @router.post("/agent/chat")
 async def agent_chat_endpoint(
     payload: AgentChatRequest,
-    gateway_tenant_id: str | None = Depends(deps.get_gateway_tenant_id),
+    identity: tuple[str, str] = Depends(deps.require_chat_session),
     embedding_registry: EmbeddingRegistry = Depends(deps.get_embedding_registry),
     vector_store: VectorStore = Depends(deps.get_vector_store),
     bm25_index: BM25Index = Depends(deps.get_bm25_index),
@@ -99,10 +107,8 @@ async def agent_chat_endpoint(
     给前端一个"正在查询"的状态反馈，不是最终答案的一部分。见
     docs/superpowers/specs/2026-08-23-planner-streaming-typewriter-design.md。
     """
-    tenant_id = deps.resolve_tenant_id(
-        gateway_tenant_id, payload.tenant_id, source="agent_chat"
-    )
-    # 直接用上面刚解析出的权威 tenant_id 查术语表/已确认 schema，不经过
+    tenant_id, user_id = identity
+    # 直接用会话里的权威 tenant_id 查术语表/已确认 schema，不经过
     # deps.get_terms 等独立解析 tenant_id 的 Depends——网关未配置时后者会
     # 悄悄回退到硬编码的 "default" 租户，跟这里的 tenant_id 不是同一个值，
     # 见 app/api/deps.py 顶部关于这几个函数已删除的说明。
@@ -182,7 +188,7 @@ async def agent_chat_endpoint(
                         "question": payload.question,
                         "tenant_id": tenant_id,
                         "session_id": payload.session_id,
-                        "user_id": payload.user_id,
+                        "user_id": user_id,
                     },
                     # LangGraph 默认 recursion_limit=25；Planner<->ToolCall 循环每轮
                     # 占 2 个节点步骤，留足余量防止状态内轮次计数器万一有 bug 时

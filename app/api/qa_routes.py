@@ -15,15 +15,22 @@ from app.qa.answer import answer_question
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import VectorStore
 
-router = APIRouter()
+# require_csrf 挂在 router 上而不是逐个路由：漏挂一个写接口不会有任何测试
+# 变红，而漏掉的那一个就是活的 CSRF 通道。
+#
+# get_gateway_tenant_id 留在这里只当"网关凭证校验"用，不再参与租户解析：
+# 身份改从会话取之后，配置了 gateway_shared_secret 的部署仍然必须带上有效的
+# X-Gateway-Secret 才进得来（test_qa_routes.py 与 test_agent_chat_routes.py 里
+# 的 rejects_wrong_gateway_secret 用例钉的就是这条路径还活着）。
+router = APIRouter(
+    dependencies=[Depends(deps.require_csrf), Depends(deps.get_gateway_tenant_id)]
+)
 
 
 class QARequest(BaseModel):
     question: str
-    # tenant_id 优先从网关注入的 X-Tenant-Id 头读取（见
-    # deps.get_gateway_tenant_id），这里保留为可选字段仅作为网关未配置
-    # 时的本地开发兜底，见
-    # docs/superpowers/specs/2026-08-06-gateway-tenant-auth-design.md。
+    # 保留但不再使用：租户一律取自会话（deps.require_chat_session）。删掉
+    # 这个字段会让还在发它的既有客户端直接 422，而忽略它是无声的兼容。
     tenant_id: str | None = None
 
 
@@ -35,7 +42,7 @@ class QAResponse(BaseModel):
 @router.post("/qa", response_model=QAResponse)
 async def qa_endpoint(
     payload: QARequest,
-    gateway_tenant_id: str | None = Depends(deps.get_gateway_tenant_id),
+    identity: tuple[str, str] = Depends(deps.require_chat_session),
     embedding_registry: EmbeddingRegistry = Depends(deps.get_embedding_registry),
     vector_store: VectorStore = Depends(deps.get_vector_store),
     bm25_index: BM25Index = Depends(deps.get_bm25_index),
@@ -45,10 +52,8 @@ async def qa_endpoint(
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     settings: Settings = Depends(deps.get_settings),
 ) -> QAResponse:
-    tenant_id = deps.resolve_tenant_id(
-        gateway_tenant_id, payload.tenant_id, source="qa"
-    )
-    # 直接用上面刚解析出的权威 tenant_id 查术语表，不经过 deps.get_terms
+    tenant_id, _user_id = identity
+    # 直接用会话里的权威 tenant_id 查术语表，不经过 deps.get_terms
     # 那套独立解析 tenant_id 的 Depends，见 app/api/deps.py 顶部说明。
     terms = await list_terms_merged(review_conn, tenant_id)
     result = await answer_question(
