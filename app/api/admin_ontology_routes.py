@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import aiosqlite
@@ -165,13 +166,28 @@ async def update_term_type_category(
 @router.delete("/{tenant_id}/term-types/{value}")
 async def delete_term_type_category(
     tenant_id: str, value: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn)
-) -> dict:
+) -> Response:
     await require_active_tenant_or_404(review_conn, tenant_id)
     try:
         await delete_term_type(review_conn, tenant_id, value)
     except CategoryInUseError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    return {"deleted": True}
+        # 不用 HTTPException：它只能放一个 detail。detail 保持是一句人话
+        # （既有前端和测试直接展示它），旁边再挂一份结构化的挡路术语，前端
+        # 据此生成"去实体列表按这个类型筛出来"的链接——光有一句"仍被 1 条
+        # 术语引用"，用户看得见却纠正不了，只能自己去列表里翻。
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(exc),
+                "blocking_terms": {
+                    "term_type": exc.term_type,
+                    "total": exc.terms_count,
+                    "node_keys": exc.blocking_term_node_keys,
+                },
+                "blocking_constraints_total": exc.allowlist_count,
+            },
+        )
+    return JSONResponse(status_code=200, content={"deleted": True})
 
 
 class MigrateTermTypeRequest(BaseModel):

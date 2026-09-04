@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Boxes, SearchX } from 'lucide-react'
 import { EmptyState } from './EmptyState'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useAdminAuth } from './useAdminAuth'
 import { useConfirm } from './ConfirmContext'
 import { useAdminDensity } from './DensityContext'
@@ -134,6 +134,12 @@ export function TermsPage() {
   const [extraFieldsByType, setExtraFieldsByType] = useState<Record<string, ExtraFieldSpec[]>>({})
   const [optionsLoaded, setOptionsLoaded] = useState(false)
 
+  // 类型过滤走 URL 而不是组件内部状态：本体页删分类被"还有实体在用"挡住
+  // 时，要能给出一条直接筛出这些实体的链接（deleteBlockedTermType.test.tsx）。
+  // 状态藏在组件里的话那条链接只能指向不带过滤的全量列表，用户还是得自己翻。
+  const [searchParams, setSearchParams] = useSearchParams()
+  const typeFilter = searchParams.get('term_type')
+
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
   // 输入框的即时值与真正拿去请求的值分开：每敲一个字就发一次请求，既浪费
   // 也会让结果乱序返回（后发的先到）。300ms 防抖后再请求。
@@ -174,10 +180,14 @@ export function TermsPage() {
         sessionToken, tenantId, page, PAGE_SIZE,
         sourceFilter === 'all' ? undefined : sourceFilter,
         search,
+        // 平铺视图（搜索/按来源筛时）也要吃这个过滤，否则从本体页点进来再
+        // 搜一个词，结果里会混进别的类型——链接说的是"这个类型"，就得一直
+        // 是这个类型。
+        typeFilter ?? undefined,
       )
       return { items: data.terms, total: data.total }
     },
-    [sessionToken, tenantId, sourceFilter, search],
+    [sessionToken, tenantId, sourceFilter, search, typeFilter],
   )
   const {
     items: terms, total, loaded, error, setError, page, setPage, refresh,
@@ -217,12 +227,21 @@ export function TermsPage() {
 
   // 小基数类型自动展开：3 条公司不该还要点一下才看得到。大基数点开才拉——
   // 10000 条订单号，拉回来也看不完。
+  // URL 上带了 term_type 时只留那一组——链接的意思是"看这些"，把另外
+  // 19999 条一起列出来等于没过滤。
+  const visibleGroups = useMemo(
+    () => (typeFilter ? summary.filter((g) => g.term_type === typeFilter) : summary),
+    [summary, typeFilter],
+  )
   const visibleTypes = useMemo(
     () =>
-      summary
-        .filter((g) => g.total <= SMALL_TYPE_LIMIT || expanded.has(g.term_type))
+      visibleGroups
+        .filter(
+          (g) =>
+            g.total <= SMALL_TYPE_LIMIT || expanded.has(g.term_type) || g.term_type === typeFilter,
+        )
         .map((g) => g.term_type),
-    [summary, expanded],
+    [visibleGroups, expanded, typeFilter],
   )
 
   useEffect(() => {
@@ -551,12 +570,37 @@ export function TermsPage() {
         </p>
       )}
 
+      {typeFilter && (
+        // 只列出一个类型却不说为什么，用户会以为别的实体没了。说清楚 + 给
+        // 一个退出口，猜错的时候他自己能纠正。
+        <p
+          data-testid="term-type-filter-notice"
+          className="flex flex-wrap items-center gap-2 rounded-card border border-subtle bg-card px-3 py-2 text-sm text-ink"
+        >
+          <span>
+            只列出实体类型「<span className="font-mono font-bold">{typeFilter}</span>」的实体，
+            其它类型没有消失。
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams)
+              next.delete('term_type')
+              setSearchParams(next, { replace: true })
+            }}
+            className={`min-h-[36px] cursor-pointer rounded-control border border-subtle bg-paper px-3 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
+          >
+            清除过滤，看全部
+          </button>
+        </p>
+      )}
+
       {grouping && !summaryLoaded && <Skeleton variant="table-rows" count={5} />}
       {grouping &&
         summaryLoaded &&
-        summary.map((group) => {
+        visibleGroups.map((group) => {
           const isSmall = group.total <= SMALL_TYPE_LIMIT
-          const isOpen = isSmall || expanded.has(group.term_type)
+          const isOpen = isSmall || expanded.has(group.term_type) || group.term_type === typeFilter
           const rows = byType[group.term_type] ?? []
           return (
             <section
@@ -612,6 +656,14 @@ export function TermsPage() {
             icon={SearchX}
             title={`没有匹配「${search}」的实体`}
             action="搜索会同时匹配标准名和别名。换个关键词，或清除搜索看全部。"
+          />
+        ) : typeFilter ? (
+          // 按类型筛过之后为空，跟"这个租户一条实体都没有"是两回事——照搬
+          // 后者的文案会让人以为数据没了，也看不出"现在可以回去删那个分类了"。
+          <EmptyState
+            icon={SearchX}
+            title={`实体类型「${typeFilter}」下已经没有实体了`}
+            action="别的类型不受影响——清除上面的过滤就能看到。"
           />
         ) : (
           <EmptyState

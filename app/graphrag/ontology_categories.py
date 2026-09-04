@@ -33,7 +33,27 @@ class CategoryNotFoundError(Exception):
 class CategoryInUseError(Exception):
     """删除的分类枚举值仍被 terms 表引用，terms.term_type 是硬约束外键，
     删除在用的值会让已有术语行结构失效，必须阻止（不同于关系类型删除——那只是写入
-    白名单，不是任何表的外键约束对象，见 ontology_relations.py）。"""
+    白名单，不是任何表的外键约束对象，见 ontology_relations.py）。
+
+    除了人话消息，还带一份结构化的"挡路的是谁"：terms_count/allowlist_count
+    是总数，blocking_term_node_keys 是前几条挡路术语的 node_key（消息里点名
+    的那几条，供调用方生成"去实体列表里筛出它们"的链接）。只报数字的提示
+    用户看得见却纠正不了——服务端查引用计数时那几条就在手里。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        term_type: str = "",
+        terms_count: int = 0,
+        allowlist_count: int = 0,
+        blocking_term_node_keys: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.term_type = term_type
+        self.terms_count = terms_count
+        self.allowlist_count = allowlist_count
+        self.blocking_term_node_keys = blocking_term_node_keys or []
 
 
 class CategoryNameConflictError(Exception):
@@ -323,6 +343,20 @@ async def update_term_type(
     await conn.commit()
 
 
+#: CategoryInUseError 消息里每类引用最多点名几条。3 条够用户认出"哦是那批
+#: 测试数据"，再多消息就长得没人读了；剩下的用总数兜底。
+_IN_USE_SAMPLE_SIZE = 3
+
+
+def _format_samples(samples: list[str], total: int) -> str:
+    """把样本拼成"a、b、c 等共 12 条"。样本已经是全部时不加尾巴——
+    "1 条：示例登录模块 等共 1 条"读起来像还有别的没列出来。"""
+    listed = "、".join(samples)
+    if total > len(samples):
+        return f"{listed} 等共 {total} 条"
+    return listed
+
+
 async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: str) -> None:
     """terms 表引用检查范围不变（真实术语只引用已确认类型，这个检查天然
     对应"已确认版本是否在用"）；term_type_relation_allowlist 引用检查加
@@ -339,8 +373,40 @@ async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: st
     )
     allowlist_count = (await cursor.fetchone())[0]
     if terms_count > 0 or allowlist_count > 0:
+        # 计数查完还要再查一次样本：只报"1 条术语"，用户得自己去实体列表里
+        # 翻找挡路的是哪条。ORDER BY standard_name 是为了同一份数据每次点名
+        # 同样那几条——顺序随机时用户处理掉一条再删，消息里换一批名字，看
+        # 起来像"越删越多"。
+        cursor = await conn.execute(
+            "SELECT node_key, standard_name FROM terms "
+            "WHERE tenant_id = ? AND term_type = ? ORDER BY standard_name LIMIT ?",
+            (tenant_id, value, _IN_USE_SAMPLE_SIZE),
+        )
+        term_rows = await cursor.fetchall()
+        cursor = await conn.execute(
+            "SELECT subject_term_type, relation_type, object_term_type "
+            "FROM term_type_relation_allowlist "
+            "WHERE tenant_id = ? AND status = 'draft' AND (subject_term_type = ? OR object_term_type = ?) "
+            "ORDER BY subject_term_type, relation_type, object_term_type LIMIT ?",
+            (tenant_id, value, value, _IN_USE_SAMPLE_SIZE),
+        )
+        allowlist_rows = await cursor.fetchall()
+        parts = []
+        if terms_count > 0:
+            parts.append(
+                f"{terms_count} 条术语（{_format_samples([row[1] for row in term_rows], terms_count)}）"
+            )
+        if allowlist_count > 0:
+            parts.append(
+                f"{allowlist_count} 条关系约束（"
+                f"{_format_samples([f'{r[0]} -{r[1]}-> {r[2]}' for r in allowlist_rows], allowlist_count)}）"
+            )
         raise CategoryInUseError(
-            f"分类 {value!r} 仍被 {terms_count} 条术语、{allowlist_count} 条关系约束引用，无法删除"
+            f"分类 {value!r} 仍被 {'、'.join(parts)}引用，无法删除",
+            term_type=value,
+            terms_count=terms_count,
+            allowlist_count=allowlist_count,
+            blocking_term_node_keys=[row[0] for row in term_rows],
         )
     await conn.execute(
         "DELETE FROM ontology_term_types WHERE tenant_id = ? AND value = ? AND status = 'draft'",

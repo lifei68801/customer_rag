@@ -679,3 +679,100 @@ async def test_ensure_categories_schema_add_standard_name_value_type_column_is_i
     conn = await _conn()
     await ensure_categories_schema(conn)
     await ensure_categories_schema(conn)  # 跑两次不报错
+
+
+async def test_delete_term_type_in_use_message_names_blocking_terms():
+    """只报"1 条术语"用户还得自己去实体列表里翻找挡路的是哪条——消息里必须
+    直接点名，否则这条提示看得见却纠正不了。"""
+    conn = await _conn()
+    await create_term_type(conn, tenant_id="default", value="module")
+    await conn.execute(_TERMS_TABLE_SQL)
+    await conn.execute(
+        "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
+        ("default", "示例登录模块", "module", "示例登录模块"),
+    )
+    await conn.commit()
+
+    with pytest.raises(CategoryInUseError) as excinfo:
+        await delete_term_type(conn, tenant_id="default", value="module")
+
+    assert "示例登录模块" in str(excinfo.value)
+    assert excinfo.value.blocking_term_node_keys == ["示例登录模块"]
+    assert excinfo.value.terms_count == 1
+
+
+async def test_delete_term_type_in_use_message_lists_at_most_three_names_but_reports_total():
+    """挡路的术语多到列不完时，名字截断，但总数必须原样报出来——"3 条名字"
+    和"共 12 条"是两个不同的信息量，丢掉后者用户会低估工作量。"""
+    conn = await _conn()
+    await create_term_type(conn, tenant_id="default", value="module")
+    await conn.execute(_TERMS_TABLE_SQL)
+    for index in range(5):
+        await conn.execute(
+            "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
+            ("default", f"模块{index}", "module", f"模块{index}"),
+        )
+    await conn.commit()
+
+    with pytest.raises(CategoryInUseError) as excinfo:
+        await delete_term_type(conn, tenant_id="default", value="module")
+
+    message = str(excinfo.value)
+    assert "模块0" in message and "模块1" in message and "模块2" in message
+    # 第 4、5 条不点名，但总数要报。断言"模块3 不出现"是真能区分的：实现如果
+    # 不截断，这个名字就会在消息里。
+    assert "模块3" not in message
+    assert "5" in message
+    assert excinfo.value.terms_count == 5
+    assert excinfo.value.blocking_term_node_keys == ["模块0", "模块1", "模块2"]
+
+
+async def test_delete_term_type_in_use_message_names_blocking_constraint():
+    """草稿约束挡路时同样要点名到具体三元组，而不只是"1 条关系约束"。"""
+    conn = await _conn()
+    await create_term_type(conn, tenant_id="t1", value="客房")
+    await create_term_type(conn, tenant_id="t1", value="酒店")
+    await conn.executescript(_TERMS_TABLE_SQL + ";")
+    await conn.execute(
+        "INSERT INTO term_type_relation_allowlist "
+        "(tenant_id, subject_term_type, relation_type, object_term_type, status) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("t1", "客房", "PART_OF", "酒店", "draft"),
+    )
+    await conn.commit()
+
+    with pytest.raises(CategoryInUseError) as excinfo:
+        await delete_term_type(conn, tenant_id="t1", value="客房")
+
+    message = str(excinfo.value)
+    assert "客房" in message and "PART_OF" in message and "酒店" in message
+    assert excinfo.value.allowlist_count == 1
+
+
+async def test_delete_term_type_in_use_message_still_reports_both_counts():
+    """两类引用同时存在时，两个总数都要报——只报其中一类会让用户清掉一类
+    之后再撞一次墙。"""
+    conn = await _conn()
+    await create_term_type(conn, tenant_id="t1", value="客房")
+    await create_term_type(conn, tenant_id="t1", value="酒店")
+    await conn.executescript(_TERMS_TABLE_SQL + ";")
+    await conn.execute(
+        "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
+        ("t1", "豪华大床房", "客房", "豪华大床房"),
+    )
+    await conn.execute(
+        "INSERT INTO term_type_relation_allowlist "
+        "(tenant_id, subject_term_type, relation_type, object_term_type, status) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("t1", "客房", "PART_OF", "酒店", "draft"),
+    )
+    await conn.commit()
+
+    with pytest.raises(CategoryInUseError) as excinfo:
+        await delete_term_type(conn, tenant_id="t1", value="客房")
+
+    message = str(excinfo.value)
+    assert "豪华大床房" in message
+    assert "PART_OF" in message
+    assert excinfo.value.terms_count == 1
+    assert excinfo.value.allowlist_count == 1

@@ -297,6 +297,37 @@ async def test_delete_term_type_in_use_returns_409(client, conn_for_testing):
     assert resp.status_code == 409
 
 
+async def test_delete_term_type_in_use_409_body_carries_blocking_terms(client, conn_for_testing):
+    """409 的响应体除了人话，还要带结构化的挡路术语——前端要据此生成"去
+    实体列表里筛出它们"的链接。只给一句话，用户看得见却纠正不了。"""
+    client.post(
+        "/api/admin/ontology/default/term-types", json={"value": "module", "extra_fields": []},
+        headers={"Authorization": "Bearer x"},
+    )
+    await conn_for_testing["conn"].execute(
+        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, extra_properties) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("default", "示例登录模块", "示例登录模块", "[]", "module", "{}"),
+    )
+    await conn_for_testing["conn"].commit()
+
+    resp = client.delete(
+        "/api/admin/ontology/default/term-types/module", headers={"Authorization": "Bearer x"}
+    )
+
+    assert resp.status_code == 409
+    body = resp.json()
+    # detail 仍是一句可读的人话（既有前端直接展示它），并且点名到具体是谁。
+    assert isinstance(body["detail"], str)
+    assert "示例登录模块" in body["detail"]
+    assert body["blocking_terms"] == {
+        "term_type": "module",
+        "total": 1,
+        "node_keys": ["示例登录模块"],
+    }
+    assert body["blocking_constraints_total"] == 0
+
+
 def test_checkout_confirm_and_list_relation_types(client):
     resp = client.post("/api/admin/ontology/t1/checkout", headers={"Authorization": "Bearer x"})
     assert resp.status_code == 200
