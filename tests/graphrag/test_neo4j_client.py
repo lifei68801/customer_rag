@@ -1102,3 +1102,32 @@ async def test_probe_relation_fanout_returns_zero_when_no_edges_match():
         tenant_id="demo", relation_type="BELONG_TO",
         from_term_type="产品", to_term_type="公司", direction="outgoing",
     ) == 0
+
+
+async def test_count_relation_edges_for_term_ignores_other_tenant_edges():
+    """守卫查询必须同时按边的 tenant_id 过滤——只按两端节点的 tenant_id
+    匹配的话，别的租户写的边会挡住本租户的术语删除（真实数据里就有一条
+    两端节点 tenant_id=default、边自己 tenant_id=demo 的历史脏边）。
+
+    merge_relation 写边时两端节点和边用的是同一个 $tenant_id
+    （neo4j_client.py::merge_relation 的 MERGE 语句），所以「边的租户」按
+    设计恒等于两端节点的租户，用 r.tenant_id 过滤不会误伤合法数据。
+    """
+    session = FakeSession(rows=[{"edge_count": 0}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.count_relation_edges_for_term(tenant_id="t1", node_key="k1")
+
+    assert "r.tenant_id = $tenant_id" in session.last_query
+
+
+async def test_count_relation_edges_for_term_counts_each_edge_once():
+    """同一条边不能被数两次。无向模式 (t)-[r]-() 在自环上会产出两行、
+    绑定的却是同一条边，count(r) 会把 1 条边报成 2 条；count(DISTINCT r)
+    按边去重。"""
+    session = FakeSession(rows=[{"edge_count": 1}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.count_relation_edges_for_term(tenant_id="t1", node_key="k1")
+
+    assert "count(DISTINCT r) AS edge_count" in session.last_query

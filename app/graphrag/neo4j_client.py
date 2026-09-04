@@ -237,9 +237,24 @@ MERGE (a)-[:ALIAS_OF]->(t)
 
 _COUNT_TERM_RELATION_EDGES_QUERY = """
 MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-()
-WHERE type(r) <> 'ALIAS_OF'
-RETURN count(r) AS edge_count
+WHERE r.tenant_id = $tenant_id AND type(r) <> 'ALIAS_OF'
+RETURN count(DISTINCT r) AS edge_count
 """
+# WHERE r.tenant_id = $tenant_id 是租户隔离的一部分，不只是性能过滤：只按
+# 两端节点的 tenant_id 匹配的话，别的租户写的边会挡住本租户的术语删除
+# （真实库里就有一条两端节点 tenant_id=default、边自己 tenant_id=demo 的
+# 历史脏边）。拿 r.tenant_id 做判据是有依据的：merge_relation 写边时两端节点
+# 的 MERGE 匹配属性和边上的 tenant_id 用的是同一个 $tenant_id 参数，“边的
+# 租户”按设计恒等于“两端节点的租户”；这条过滤只会排掉违反这个不变式
+# 的脏数据，不会误伤合法的边。跟 _TERM_RELATIONS_QUERY / _SUBGRAPH_QUERY 已经在
+# 用的过滤口径一致，守卫看到的边和详情页列出的边因此是同一批。
+#
+# count(DISTINCT r) 而不是 count(r)：无向模式 (t)-[r]-() 在自环（一个节点
+# 指向自己）上会从两个方向各匹配一次、产出两行，但绑定的是同一条边，
+# count(r) 会把 1 条边报成 2 条。去重按边身份而不是按行，无论从哪个方向
+# 匹配到都只算一次；保留无向模式是必要的——守卫关心的是“这个术语参与了
+# 任何关系边”，入边和出边都算。
+#
 # ALIAS_OF 是术语表→图谱的结构性同步边（sync_term 写入，见上面
 # _SYNC_TERM_QUERY），不代表"这个术语已经出现在真实知识图谱数据里"；
 # 删除前的守卫检查只关心 LLM 抽取/人工审核产出的关系边（merge_relation
