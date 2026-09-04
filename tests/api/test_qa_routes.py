@@ -129,6 +129,17 @@ def test_qa_endpoint_returns_answer_and_used_sources():
     assert body["used_sources"] == ["faq/network.md"]
 
 
+def test_qa_requires_login(client):
+    """spec 要求五个接口逐个都有这条，/qa 此前没有。
+
+    client 这个夹具把 get_settings 钉成测试构造的那份，所以这里的 401 只
+    可能来自会话校验，不会是"本机 .env 配了网关密钥"造成的假绿。
+    """
+    response = client.post("/qa", json={"question": "网络连不上怎么办？"})
+
+    assert response.status_code == 401
+
+
 def test_qa_endpoint_does_not_leak_another_tenants_sources():
     embedding_registry = EmbeddingRegistry()
     embedding_registry.register(

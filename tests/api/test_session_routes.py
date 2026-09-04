@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import deps
+from app.api.session_cookie import CSRF_HEADER_NAME
 from app.main import app
 from app.memory.chat_sessions import touch_session
 from app.memory.schema import ensure_schema
@@ -103,11 +104,36 @@ def test_get_session_messages_returns_full_turn_history(client_user1):
     assert messages[1]["content"] == "请先重启路由器。"
 
 
-def test_get_session_messages_returns_empty_for_unknown_session(client_user1):
+def test_get_session_messages_is_404_for_unknown_session(client_user1):
+    """不存在的会话按 404 处理，跟 delete 一致——两边同一个说法，"不是你的"
+    才没法从状态码上跟"不存在"区分开。"""
     response = client_user1.get("/agent/sessions/no-such-session/messages")
 
+    assert response.status_code == 404
+
+
+def test_get_session_messages_does_not_leak_another_users_history(client_someone_else):
+    """同租户的另一个坐席拿着别人的 session_id 读不到内容。
+
+    这是 spec 点名必测的两条越权之一。此前这个端点只按 tenant_id+session_id
+    查，登录门装上之后攻击面从"任何互联网访客"缩到了"同租户的已登录坐席"，
+    但洞本身还在——实证过 200 返回别人的完整对话。
+
+    断言不能只看状态码：正文里绝不能出现那句私密内容，否则一个"404 但把
+    body 也带上"的实现同样绿。
+    """
+    response = client_someone_else.get("/agent/sessions/s1/messages")
+
+    assert response.status_code == 404
+    assert "网络连不上怎么办？" not in response.text
+
+
+def test_get_session_messages_still_serves_the_owner(client_user1):
+    """上一条只钉"别人读不到"，一个对谁都 404 的实现同样能让它变绿。"""
+    response = client_user1.get("/agent/sessions/s1/messages")
+
     assert response.status_code == 200
-    assert response.json()["messages"] == []
+    assert response.json()["messages"] != []
 
 
 def test_delete_session_removes_it_from_the_list(client_user1):
@@ -130,6 +156,34 @@ def test_sessions_require_login(client):
     「任何调用方都可以伪造租户身份绕过多租户隔离」的警告说的就是它们。"""
     response = client.get("/agent/sessions")
     assert response.status_code == 401
+
+
+def test_get_session_messages_requires_login(client):
+    """spec 要求五个接口逐个都有这条。少一个就是一条完全敞开的读路径，
+    而它读的是别人的对话原文。"""
+    response = client.get("/agent/sessions/s1/messages")
+    assert response.status_code == 401
+
+
+def test_delete_session_requires_login(client):
+    response = client.delete("/agent/sessions/s1")
+    assert response.status_code == 401
+
+
+def test_delete_session_without_csrf_header_is_rejected(client_user1):
+    """DELETE 是写方法，Cookie 会话下必须带 X-CSRF-Token。
+
+    这条钉的是 router 上那个 require_csrf 依赖本身——把它从 session_routes
+    的 router 上摘掉时，整个文件此前一条都不会红（实测过）。
+
+    第二段断言不可省：只看 403 的话，一个"先删了再报 403"的实现同样绿。
+    """
+    client_user1.headers.pop(CSRF_HEADER_NAME)
+
+    response = client_user1.delete("/agent/sessions/s1")
+
+    assert response.status_code == 403
+    assert client_user1.get("/agent/sessions").json()["sessions"] != []
 
 
 def test_sessions_are_scoped_to_the_logged_in_user(client_alice, client_bob):

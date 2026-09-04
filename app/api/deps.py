@@ -378,6 +378,20 @@ async def require_admin_session(
     return session
 
 
+#: 登录接口豁免 CSRF 校验。
+#:
+#: 会话是进程内的，后端一重启浏览器里的会话 Cookie 就成了废值，而它是
+#: HttpOnly 的、前端删不掉；登录请求本身也不带 X-CSRF-Token。所以把校验
+#: 无差别压到登录接口上时，这个人会一直 403、直到 Cookie 自己过期。实测
+#: 确认过（tests/api/test_admin_auth_routes.py::
+#: test_login_is_not_blocked_by_a_stale_session_cookie_without_csrf_header
+#: 在没有这份豁免时返回 403）。
+#:
+#: 豁免它也不放松什么：登录不使用请求里已有的那个会话，跨站伪造一次登录
+#: 换不到攻击者想要的任何东西。
+_CSRF_EXEMPT_PATHS = frozenset({"/api/admin/auth/login"})
+
+
 async def require_csrf(request: Request) -> None:
     """双提交令牌校验，只作用于写方法。
 
@@ -388,6 +402,8 @@ async def require_csrf(request: Request) -> None:
     浏览器，不存在 CSRF 场景，要求它们带这个头只会平白打断。
     """
     if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+    if request.url.path in _CSRF_EXEMPT_PATHS:
         return
     if SESSION_COOKIE_NAME not in request.cookies:
         return

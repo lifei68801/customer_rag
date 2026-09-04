@@ -410,7 +410,12 @@ def test_logout_revokes_the_token_server_side_not_only_the_cookie():
     client, login_response = _login_with_client()
     try:
         token = login_response.json()["session_token"]
-        client.post("/api/admin/auth/logout")
+        # 登出也是写方法，Cookie 会话下同样要过 CSRF 校验——前端的
+        # revokeSession() 正是这么带头的。
+        client.post(
+            "/api/admin/auth/logout",
+            headers={CSRF_HEADER_NAME: client.cookies.get(CSRF_COOKIE_NAME)},
+        )
 
         # 用原来那个 token 直接敲（绕开 Cookie），服务端应当已经不认了
         response = client.get(
@@ -430,6 +435,52 @@ def test_write_request_without_csrf_header_is_rejected():
         assert response.status_code == 403
     finally:
         _clear_overrides()
+
+
+def test_password_change_over_a_cookie_session_requires_the_csrf_header():
+    """改密码是 /api/admin/* 里最值钱的那个写接口，它必须也在 CSRF 射程内。
+
+    上一条只钉了 /session/tenant 这一条路由——CSRF 依赖只挂在那一条上时它
+    照样绿，而改密码、建号、停租户、传文档全都裸着。这条从另一个 router
+    上取样，钉的是"整个 /api/admin/* 都挂上了"。
+
+    第二段断言不可省：只看 403 的话，一个"先改了密码再报 403"的实现同样
+    绿；旧密码仍然登得进来才证明这次写真的没有发生。
+    """
+    client, _ = _login_with_client()
+    try:
+        response = client.put(
+            "/api/admin/auth/password",
+            json={"old_password": "password1", "new_password": "password2"},
+        )
+        assert response.status_code == 403
+    finally:
+        _clear_overrides()
+
+    assert _login(username="admin", password="password1").status_code == 200
+
+
+def test_login_is_not_blocked_by_a_stale_session_cookie_without_csrf_header():
+    """带着一个服务端已经不认的会话 Cookie，仍然必须登得进来。
+
+    会话是进程内的，后端一重启浏览器里的 customer_rag_session 就成了废值，
+    而它是 HttpOnly 的、前端删不掉。登录请求不带 X-CSRF-Token（前端的登录
+    调用确实不带，见 useAdminAuth.ts 的 signIn），所以一旦把 CSRF 校验
+    无差别地压到登录接口上，这个人会一直 403、直到 Cookie 自己过期——
+    实测确认过：给 require_csrf 去掉登录豁免后本条立刻变红（403）。
+    """
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: AdminSessionStore()
+    try:
+        client = TestClient(app)
+        client.cookies.set(SESSION_COOKIE_NAME, "a-token-the-server-no-longer-knows")
+        response = client.post(
+            "/api/admin/auth/login", json={"username": "admin", "password": "password1"}
+        )
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 200, response.text
 
 
 def test_valid_cookie_wins_over_invalid_bearer_header():

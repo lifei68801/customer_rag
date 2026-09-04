@@ -27,7 +27,13 @@ def _walk_routes(
     静静地通过。那是这类结构测试最典型的死法：它测的东西一个都不存在，
     而它是绿的。
 
-    第三项是沿途每一层 include_context 上 `dependencies=[...]` 的累积。
+    第三项是沿途每一层的 `dependencies=[...]` 累积，两个来源都要取：
+    `include_context.dependencies` 装的是**上一层** router 自己的依赖（实测
+    如此），而这一层 router 自己在 `APIRouter(dependencies=[...])` 里声明的
+    依赖只出现在 `original_router.dependencies` 上。只取前者的话，直接挂在
+    app 上的 router（qa/agent/session 三个）的 router 级依赖一条都查不到——
+    实测确认：只取 include_context 时 "/qa 是写接口却没有挂 CSRF 校验" 会
+    误报，而那个依赖明明挂着。
     同一个版本变更还带来第二个坑：挂在父 router 上的依赖**不会**合并进
     各条 `APIRoute.dependant`（已实测确认恒为 False），但运行时照常执行
     （也已实测：父 router 依赖抛 403 时请求真的返回 403）。按 dependant
@@ -42,6 +48,7 @@ def _walk_routes(
             ctx = route.include_context
             sub_prefix = getattr(ctx, "prefix", "") or ""
             deps = {d.dependency for d in (getattr(ctx, "dependencies", None) or [])}
+            deps |= {d.dependency for d in (route.original_router.dependencies or [])}
             found.extend(
                 _walk_routes(route.original_router.routes, prefix + sub_prefix, inherited | deps)
             )
@@ -163,6 +170,33 @@ def test_every_tenant_scoped_route_checks_tenant_access():
         checked += 1
     # 一条都没查到的话，上面的循环体从没执行过，这个断言就是空的。
     assert checked > 20, f"只检查了 {checked} 条租户路由，遍历器多半失效了"
+
+
+#: 必须挂 CSRF 校验的路由前缀：整个管理后台，加上前台那五个走会话认证的
+#: 接口。/voice/* 不在其中——它今天仍然是匿名入口，没有会话 Cookie 可言，
+#: 归属另一件事（见最终评审 finding 5）。
+_CSRF_REQUIRED_PREFIXES = ("/api/admin", "/agent", "/qa")
+
+
+def test_every_write_route_behind_a_session_checks_csrf():
+    """挂载层强制的兜底，跟上面那条租户校验同一个理由。
+
+    会话改用 Cookie 之后，浏览器会自动给同源请求附带凭证，于是每一个写
+    接口都进入了 CSRF 的射程。漏挂一条不会有任何运行时报错，它只是一条
+    活着的 CSRF 通道——改密码、建号、停租户、传文档都在这一类里。
+    """
+    from app.api.deps import require_csrf
+
+    checked = 0
+    for path, route, inherited in _walk_routes(app.routes):
+        if not path.startswith(_CSRF_REQUIRED_PREFIXES):
+            continue
+        if not (route.methods & {"POST", "PUT", "PATCH", "DELETE"}):
+            continue
+        assert require_csrf in inherited, f"{path} 是写接口却没有挂 CSRF 校验"
+        checked += 1
+    # 一条都没查到的话，上面的循环体从没执行过，这个断言就是空的。
+    assert checked > 20, f"只检查了 {checked} 条写路由，遍历器多半失效了"
 
 
 def test_non_tenant_routes_do_not_check_tenant_access():

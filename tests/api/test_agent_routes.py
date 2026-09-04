@@ -192,6 +192,21 @@ def test_chat_requires_login(client):
     assert response.status_code == 401
 
 
+def test_chat_without_csrf_header_is_rejected(client_member_demo):
+    """POST 是写方法，Cookie 会话下必须带 X-CSRF-Token。
+
+    这条钉的是 agent router 上那个 require_csrf 依赖本身——把它摘掉时整个
+    文件此前一条都不会红（评审实测过）。断言正文里没有回答，是为了区分
+    "拒了" 和 "照常答完再返回 403"。
+    """
+    client_member_demo.headers.pop(CSRF_HEADER_NAME)
+
+    response = client_member_demo.post("/agent/chat", json={"question": "网络连不上怎么办？"})
+
+    assert response.status_code == 403
+    assert "faq/network.md" not in response.text
+
+
 def test_chat_ignores_tenant_id_in_body(client_member_demo):
     """租户从会话取，body 里的 tenant_id 被忽略。
 

@@ -115,9 +115,18 @@ app.include_router(voice_router)
 # tenant_id：那是**被操作的对象**（停用哪个租户），不是**操作发生的作用
 # 域**。按租户作用域校验的话，member 对自己所属的租户会顺利通过，于是就
 # 能把自己所在的租户停掉。它靠 require_admin_role 保护。
-app.include_router(admin_auth_router)
-app.include_router(admin_account_router)
-app.include_router(admin_tenant_router)
+#
+# 这三个连同下面的 tenant_scoped 一起收在 admin_scoped 下，为的是让 CSRF
+# 校验有且只有一个挂载点：会话改用 Cookie 之后，浏览器会给每个同源请求
+# 自动附带凭证，于是每一个 /api/admin/* 的写接口都进入了 CSRF 的射程。
+# 各挂各的一定会漏，而漏掉的那条不会有任何报错——它只是一条活着的 CSRF
+# 通道。tests/api/test_admin_route_shapes.py::
+# test_every_admin_write_route_checks_csrf 从路由表这一侧兜住新增 router
+# 忘记挂进来的情况。
+admin_scoped = APIRouter(dependencies=[Depends(deps.require_csrf)])
+admin_scoped.include_router(admin_auth_router)
+admin_scoped.include_router(admin_account_router)
+admin_scoped.include_router(admin_tenant_router)
 
 # 租户作用域的路由统一收在这个父 router 下，而不是各挂各的依赖。各挂各的
 # 一定会漏，而漏掉的那条是越权读写，且不会有任何报错——请求照常 200，只是
@@ -132,7 +141,9 @@ tenant_scoped.include_router(admin_diagnostics_router)
 tenant_scoped.include_router(admin_ontology_router)
 tenant_scoped.include_router(admin_terms_router)
 tenant_scoped.include_router(admin_schema_etl_router)
-app.include_router(tenant_scoped)
+admin_scoped.include_router(tenant_scoped)
+
+app.include_router(admin_scoped)
 
 
 @app.get("/health")

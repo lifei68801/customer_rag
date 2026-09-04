@@ -57,6 +57,23 @@ async def list_sessions(
     return [dict(row) for row in rows]
 
 
+async def session_belongs_to_user(
+    conn: aiosqlite.Connection, *, tenant_id: str, user_id: str, session_id: str
+) -> bool:
+    """这个会话是不是这个租户下这个用户的。
+
+    归属信息本来就在 chat_sessions 里（touch_session 每轮都写），
+    delete_session 早就把 user_id 当成删除条件了；读消息那一侧原先只按
+    tenant_id+session_id 查，于是同租户的另一个坐席猜中/拿到 session_id
+    就能读到整段对话。这个函数是那条读路径缺的归属判据。
+    """
+    cursor = await conn.execute(
+        "SELECT 1 FROM chat_sessions WHERE tenant_id = ? AND user_id = ? AND session_id = ?",
+        (tenant_id, user_id, session_id),
+    )
+    return await cursor.fetchone() is not None
+
+
 async def delete_session(
     conn: aiosqlite.Connection, *, tenant_id: str, user_id: str, session_id: str
 ) -> bool:

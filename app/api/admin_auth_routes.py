@@ -169,10 +169,9 @@ async def logout(
     return {"logged_out": True}
 
 
-@router.put(
-    "/session/tenant",
-    dependencies=[Depends(deps.require_csrf)],
-)
+# CSRF 校验不在这里挂：整个 /api/admin/* 在 main.py 的 admin_scoped 上统一
+# 挂了一次，两处都写的话，哪天挂载层那份被摘掉，钉这条路由的用例照样绿。
+@router.put("/session/tenant")
 async def switch_current_tenant(
     request: Request,
     payload: SwitchTenantRequest,

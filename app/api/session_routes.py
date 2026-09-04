@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.api import deps
-from app.memory.chat_sessions import delete_session, list_sessions
+from app.memory.chat_sessions import delete_session, list_sessions, session_belongs_to_user
 from app.memory.session_window import get_recent_turns
 
 # require_csrf 挂在 router 上而不是逐个路由：漏挂一个写接口不会有任何测试
@@ -61,11 +61,19 @@ async def get_session_messages_endpoint(
     identity: tuple[str, str] = Depends(deps.require_chat_session),
     memory_conn: aiosqlite.Connection = Depends(deps.get_memory_conn),
 ) -> SessionMessagesResponse:
-    tenant_id, _user_id = identity
-    # 不额外校验 session_id 是否真的属于这个 user_id——get_recent_turns 本身
-    # 按 tenant_id+session_id 查询，猜中别人的 session_id 就能读到内容的
-    # 权限模型和 /agent/chat 现有的完全一致（session_id 本身即凭证，见
-    # 会话侧边栏设计讨论），这里不引入新的更严格校验。
+    tenant_id, user_id = identity
+    # 先校验归属再读内容："session_id 本身即凭证"那套在前台还是匿名的时候
+    # 尚且说得过去，装上登录门之后就不成立了：同租户的另一个坐席登录后拿到
+    # 一个 session_id 就能读到别人的整段对话。归属信息在 chat_sessions 里
+    # 现成，同文件的 list/delete 都用了它。
+    #
+    # 不属于自己一律 404、和 delete_session_endpoint 用同一个说法："不存在"
+    # 和"不是你的"因此对调用方不可区分，403 那种写法反而额外告诉对方"这个
+    # id 确实存在"。
+    if not await session_belongs_to_user(
+        memory_conn, tenant_id=tenant_id, user_id=user_id, session_id=session_id
+    ):
+        raise HTTPException(status_code=404, detail="会话不存在")
     turns = await get_recent_turns(
         memory_conn,
         tenant_id=tenant_id,
