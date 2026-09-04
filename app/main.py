@@ -32,23 +32,35 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """启动时检查 gateway_shared_secret 是否配置，未配置只告警不阻止启动。
 
-    未配置时 get_gateway_tenant_id 会静默放行、resolve_tenant_id 降级信任
-    客户端自报的 tenant_id（这是本计划刻意设计的本地开发兜底路径，见
-    docs/superpowers/specs/2026-08-06-gateway-tenant-auth-design.md）。问题
-    在于这个降级路径本身几乎没有存在感：唯一的信号是请求级别的
-    logger.warning，很容易淹没在日常日志噪音里，运营者上线网关时如果忘了
-    在应用侧同步配置这个密钥，多租户隔离会在没有任何明显报错的情况下形同
-    虚设。这里在启动时只打印一次醒目的警告，不阻断启动——阻断会破坏本计划
-    自己设计的“未配置=本地开发兜底”这条路径，不能因为加了这个检查就让不
-    配网关的本地开发环境无法启动。
+    这条警告的适用范围在“前台与管理后台共用一套会话”那次改造之后缩小了，
+    警告文案也随之改窄，这里记下现在的实际情况（已逐行核实）：
+
+    - `/qa`、`/agent/chat` 与三个 `/agent/sessions` 的租户**一律取自会话**
+      （`deps.require_chat_session`），请求体和 `X-Tenant-Id` 里的租户都被
+      忽略。这三个 router 上仍挂着 `get_gateway_tenant_id`，但它的返回值不
+      再有人接，`resolve_tenant_id` 在这条路径上已无调用方——网关头只携带
+      租户、不携带用户身份，而这五个接口都需要 user_id，回落时无处可取。
+      失效方向是 fail-closed：没有会话就是 401，不存在“只带 X-Tenant-Id
+      就进得去”这种绕过。
+    - `/api/admin/*` 从来就按会话取租户。
+    - 真正还在信任客户端自报 tenant_id 的只剩 `/voice/*`（见
+      app/api/voice_routes.py，它今天仍是匿名入口）。
+
+    **配置了这个密钥之后有一个很难排查的故障形态**：`get_gateway_tenant_id`
+    会要求上面那三个前台 router 的**每一个请求**都带对 `X-Gateway-Secret`，
+    而浏览器自己发不出这个头；`/api/admin/*` 没有这个依赖。于是流量若没有
+    真的经过那台会注入该头的网关，表现就是“后台一切正常、前台五个接口全线
+    401”——这个形态几乎不会让人想到网关密钥配置。
+
+    启动时只打印一次醒目的警告、不阻断启动：阻断会破坏“未配置=本地开发
+    兜底”这条路径，不能因为加了这个检查就让不配网关的本地开发环境起不来。
     """
     settings = Settings()
     if not settings.gateway.shared_secret:
         logger.warning(
-            "gateway_shared_secret 未配置：当前应用信任客户端自报的 "
-            "tenant_id，任何调用方都可以伪造租户身份绕过多租户隔离。"
-            "生产环境多租户部署必须配置 CUSTOMER_RAG_GATEWAY_SHARED_SECRET，"
-            "否则这条安全修复不会实际生效。"
+            "gateway_shared_secret 未配置：/voice/* 仍然信任客户端自报的 "
+            "tenant_id，任何调用方都可以伪造租户身份读取该租户的数据。"
+            "（问答与管理后台的租户已改为一律取自登录会话，不受此项影响。）"
         )
 
     # 预热向量库连接 + BM25 索引：get_bm25_index（app/api/deps.py）是进程内
