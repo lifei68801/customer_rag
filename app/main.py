@@ -62,6 +62,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "tenant_id，任何调用方都可以伪造租户身份读取该租户的数据。"
             "（问答与管理后台的租户已改为一律取自登录会话，不受此项影响。）"
         )
+    else:
+        # 配置了密钥同样要说话。这个故障只会在请求时以 401 出现，而 401 指向
+        # 不了网关配置——留在文档里没用，得让它在启动日志里自己现身。
+        logger.warning(
+            "gateway_shared_secret 已配置：/qa、/agent/chat 与 /agent/sessions "
+            "的每个请求都必须带上正确的 X-Gateway-Secret 头，而浏览器自己发不"
+            "出这个头。若前台流量没有全部经过会注入该头的网关，表现是"
+            "『管理后台一切正常、前台问答接口全线 401』。"
+        )
 
     # 预热向量库连接 + BM25 索引：get_bm25_index（app/api/deps.py）是进程内
     # 单例，首次调用时才会同步全量扫描向量库重建索引——不预热的话这笔耗时

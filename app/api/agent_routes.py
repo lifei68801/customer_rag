@@ -6,7 +6,7 @@ import json
 from typing import Any, AsyncIterator
 
 import aiosqlite
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
@@ -19,6 +19,7 @@ from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.ontology_constraints import list_allowed_combinations
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.terms_store import list_terms_merged
+from app.memory.chat_sessions import get_session_owner
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
@@ -108,6 +109,25 @@ async def agent_chat_endpoint(
     docs/superpowers/specs/2026-08-23-planner-streaming-typewriter-design.md。
     """
     tenant_id, user_id = identity
+    # 会话归属校验。这是 GET /agent/sessions/{id}/messages 那个洞的第二个
+    # 出口，而且更隐蔽：历史不是被"读"出来的，是被 inject_memory_context
+    # 塞进模型上下文、再从回答里渗出来的，受害者和管理员都看不到一次
+    # "读历史"的请求。
+    #
+    # 只在会话已经属于别人时拒绝：没人用过的 session_id 要照常放行，新会话
+    # 就是这么开始的。拒绝用 404 + "会话不存在"，跟 session_routes 那两个
+    # 端点同一个说法；不静默换成空上下文继续作答——那样发起者以为在续聊、
+    # 实际什么也没续上，而且没有任何人会知道。
+    #
+    # memory_conn 为 None 时跳过：那表示整个记忆功能关着（几个测试用
+    # dependency_overrides 这么配），graph 的 memory_recall_node 会直接返回
+    # 空上下文、memory_save_node 什么也不写，没有历史可漏。
+    if memory_conn is not None:
+        session_owner = await get_session_owner(
+            memory_conn, tenant_id=tenant_id, session_id=payload.session_id
+        )
+        if session_owner is not None and session_owner != user_id:
+            raise HTTPException(status_code=404, detail="会话不存在")
     # 直接用会话里的权威 tenant_id 查术语表/已确认 schema，不经过
     # deps.get_terms 等独立解析 tenant_id 的 Depends——网关未配置时后者会
     # 悄悄回退到硬编码的 "default" 租户，跟这里的 tenant_id 不是同一个值，

@@ -57,6 +57,24 @@ async def list_sessions(
     return [dict(row) for row in rows]
 
 
+async def get_session_owner(
+    conn: aiosqlite.Connection, *, tenant_id: str, session_id: str
+) -> str | None:
+    """这个会话归谁；没有这个会话时返回 None。
+
+    "没人用过"和"是别人的"必须分得开：/agent/chat 对前者要照常放行（新会话
+    就是这么开始的），对后者要拒绝。只回答"是不是我的"的话，每个人的第一句
+    话都会被自己的门挡掉。
+    """
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute(
+        "SELECT user_id FROM chat_sessions WHERE tenant_id = ? AND session_id = ?",
+        (tenant_id, session_id),
+    )
+    row = await cursor.fetchone()
+    return None if row is None else row["user_id"]
+
+
 async def session_belongs_to_user(
     conn: aiosqlite.Connection, *, tenant_id: str, user_id: str, session_id: str
 ) -> bool:
@@ -67,11 +85,9 @@ async def session_belongs_to_user(
     tenant_id+session_id 查，于是同租户的另一个坐席猜中/拿到 session_id
     就能读到整段对话。这个函数是那条读路径缺的归属判据。
     """
-    cursor = await conn.execute(
-        "SELECT 1 FROM chat_sessions WHERE tenant_id = ? AND user_id = ? AND session_id = ?",
-        (tenant_id, user_id, session_id),
-    )
-    return await cursor.fetchone() is not None
+    return await get_session_owner(
+        conn, tenant_id=tenant_id, session_id=session_id
+    ) == user_id
 
 
 async def delete_session(

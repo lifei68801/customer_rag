@@ -49,12 +49,26 @@ def test_startup_warns_when_gateway_shared_secret_unset(monkeypatch, caplog):
     )
 
 
-def test_startup_does_not_warn_when_gateway_shared_secret_set(monkeypatch, caplog):
+def test_startup_warns_that_a_configured_gateway_secret_shuts_the_browser_out(
+    monkeypatch, caplog
+):
+    """配置了密钥也要告警，内容换成另一件事。
+
+    这三个前台 router 上的 get_gateway_tenant_id 会要求每个请求都带对
+    X-Gateway-Secret，而浏览器发不出这个头；/api/admin/* 没有这个依赖。流量
+    没真的经过网关时，故障形态是"后台正常、前台全线 401"——401 本身指向不了
+    网关配置，所以这条得在启动日志里就说出来。
+
+    断言看的是那个头的名字和 401，不是"有没有告警"：只判断有告警的话，把
+    未配置那条告警的条件写反同样能让它变绿。
+    """
     monkeypatch.setenv("CUSTOMER_RAG_GATEWAY_SHARED_SECRET", "sekret")
     with caplog.at_level(logging.WARNING):
         with TestClient(app):
             pass
 
-    assert not any(
-        "gateway_shared_secret" in record.message for record in caplog.records
-    )
+    messages = [record.message for record in caplog.records]
+    assert any("X-Gateway-Secret" in m and "401" in m for m in messages), messages
+    # 反向：未配置那条不该在这里出现，否则两条告警内容一混，这个用例就分不出
+    # 走的是哪个分支。
+    assert not any("未配置" in m for m in messages), messages

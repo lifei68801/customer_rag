@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Iterator
 
 import aiosqlite
@@ -20,7 +21,9 @@ from app.graphrag.tenants_store import create_tenants_table
 from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
+from app.memory.chat_sessions import touch_session
 from app.memory.schema import ensure_schema
+from app.memory.session_window import append_turn
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.embedding import EmbeddingRegistry, EmbeddingRequest, EmbeddingResult
 from app.providers.registry import ProviderRegistry
@@ -36,9 +39,27 @@ class FakeEmbeddingProvider:
 
 
 class FakeLLMProvider:
+    """记下每次收到的完整消息列表。
+
+    "别人的会话历史有没有漏进上下文"这件事，从响应体上是看不出来的——历史是
+    被塞进模型输入、再从回答里渗出来的。要断言它没进来，只能看真正发给 LLM
+    的那份 prompt。
+    """
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
     async def complete(self, request: ProviderRequest) -> ProviderResult:
+        self.prompts.append(json.dumps(request.messages, ensure_ascii=False, default=str))
         return ProviderResult(text="按资料所述，重启路由器即可解决。")
 
+    def seen(self) -> str:
+        return "\n".join(self.prompts)
+
+
+#: 只出现在 demo_member 那段历史里的一句话。检索语料里没有它，所以它出现在
+#: 模型输入里就只有一个来源：会话历史被读进了上下文。
+_PRIVATE_LINE = "我的工牌号是 A-7788"
 
 _FAKE_RECORDS = [
     VectorRecord(
@@ -52,9 +73,12 @@ _FAKE_RECORDS = [
 
 
 @pytest.fixture
-def agent_chat_env(default_admin_users_conn) -> Iterator[None]:
+def agent_chat_env(default_admin_users_conn) -> Iterator[FakeLLMProvider]:
     """一个登录成 demo 租户 member 的客户端，且 /agent/chat 需要的 provider
     都换成了假实现。
+
+    yield 出去的是那个假 LLM——要断言"某段历史有没有进上下文"，只能看真正
+    发给它的 prompt。
 
     review_conn 要同时装得下 admin_users（登录与会话校验查它）和术语/本体
     那几张表（agent_chat_endpoint 直接用 review_conn 查它们），所以这里整个
@@ -86,6 +110,14 @@ def agent_chat_env(default_admin_users_conn) -> Iterator[None]:
                 role="admin",
                 tenant_id=None,
             )
+            # 同一个租户里的第二个坐席，用来问"拿着别人的 session_id 会怎样"。
+            await create_admin_user(
+                conn,
+                username="nosy_member",
+                password="password1",
+                role="member",
+                tenant_id="demo",
+            )
             # 切租户走 require_active_tenant_or_404，要有 tenants 表和这一行；
             # 照 test_admin_auth_routes.py 里 _seed_tenant_row 的做法。
             await create_tenants_table(conn)
@@ -103,6 +135,20 @@ def agent_chat_env(default_admin_users_conn) -> Iterator[None]:
         if "conn" not in memory_state:
             conn = await aiosqlite.connect(":memory:")
             await ensure_schema(conn)
+            # demo_member 名下的一段已有对话，带一句只可能来自这段历史的
+            # 内容——检索语料里没有它，模型输入里出现它就只能是历史进来了。
+            await touch_session(
+                conn, tenant_id="demo", session_id="s-private", user_id="demo_member",
+                first_message=_PRIVATE_LINE, now=datetime(2026, 9, 4, 10, 0, 0),
+            )
+            await append_turn(
+                conn, tenant_id="demo", session_id="s-private", user_id="demo_member",
+                role="user", content=_PRIVATE_LINE,
+            )
+            await append_turn(
+                conn, tenant_id="demo", session_id="s-private", user_id="demo_member",
+                role="assistant", content="好的，已记下。",
+            )
             memory_state["conn"] = conn
         return memory_state["conn"]
 
@@ -111,8 +157,9 @@ def agent_chat_env(default_admin_users_conn) -> Iterator[None]:
         deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
     )
     llm_registry = ProviderRegistry()
+    llm_provider = FakeLLMProvider()
     llm_registry.register(
-        ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, FakeLLMProvider()
+        ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, llm_provider
     )
 
     async def _vector_store() -> InMemoryVectorStore:
@@ -136,7 +183,7 @@ def agent_chat_env(default_admin_users_conn) -> Iterator[None]:
     app.dependency_overrides[deps.get_tts_provider] = lambda: None
     app.dependency_overrides[deps.get_settings] = lambda: build_settings()
     try:
-        yield
+        yield llm_provider
     finally:
         for dep in (
             deps.get_review_conn,
@@ -156,6 +203,12 @@ def agent_chat_env(default_admin_users_conn) -> Iterator[None]:
 @pytest.fixture
 def client_member_demo(agent_chat_env) -> TestClient:
     return login_client("demo_member")
+
+
+@pytest.fixture
+def client_nosy(agent_chat_env) -> TestClient:
+    """同租户的另一个坐席。"""
+    return login_client("nosy_member")
 
 
 @pytest.fixture
@@ -225,6 +278,54 @@ def test_chat_ignores_tenant_id_in_body(client_member_demo):
 
     assert response.status_code == 200
     assert _final_event(response.text)["used_sources"] == ["faq/network.md"]
+
+
+def test_chat_loads_the_owners_own_history_into_the_context(agent_chat_env, client_member_demo):
+    """正向锚点：自己续聊自己的会话时，那段历史确实进了模型输入。
+
+    没有这一条，下面那条"别人读不到"就可能是假绿——一个压根不注入任何历史
+    的实现同样能让它变绿。
+    """
+    response = client_member_demo.post(
+        "/agent/chat", json={"question": "刚才说到哪了？", "session_id": "s-private"}
+    )
+
+    assert response.status_code == 200
+    assert _PRIVATE_LINE in agent_chat_env.seen()
+
+
+def test_chat_with_another_users_session_id_is_rejected_and_leaks_nothing(
+    agent_chat_env, client_nosy
+):
+    """拿着别人的 session_id 发起对话，既拿不到对方历史，也不会被静默放过。
+
+    这是 finding 2 那个洞的另一个出口，而且更隐蔽：历史不是被"读"出来的，
+    是被塞进模型上下文、再从回答里渗出来的，受害者和管理员都看不到一次
+    读历史的请求。
+
+    两段断言缺一不可：404 钉住"这件事是可见的"（静默换成空上下文继续作答
+    的话，发起者以为在续聊，实际什么也没续上，也没人告诉他）；prompt 里
+    没有那句私密内容钉住"确实没读到"——只看状态码的话，一个"先把历史注入
+    模型、答完再返回 404"的实现同样能过。
+    """
+    response = client_nosy.post(
+        "/agent/chat", json={"question": "刚才说到哪了？", "session_id": "s-private"}
+    )
+
+    assert _PRIVATE_LINE not in agent_chat_env.seen()
+    assert response.status_code == 404
+
+
+def test_chat_on_a_brand_new_session_id_is_allowed(client_nosy):
+    """没人用过的 session_id 必须照常放行——新会话就是这么开始的。
+
+    归属校验写成"不属于我就拒"的话，每个人的第一句话都会被自己的门挡掉。
+    """
+    response = client_nosy.post(
+        "/agent/chat", json={"question": "网络连不上怎么办？", "session_id": "s-brand-new"}
+    )
+
+    assert response.status_code == 200
 
 
 def test_chat_uses_the_tenant_the_admin_switched_to(client_admin):
