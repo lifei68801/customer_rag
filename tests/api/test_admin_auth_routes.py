@@ -13,13 +13,14 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
-from app.api.session_cookie import CSRF_COOKIE_NAME, SESSION_COOKIE_NAME
+from app.api.session_cookie import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME
 from app.auth.admin_users_store import (
     create_admin_user,
     get_admin_user,
     set_admin_user_status,
 )
 from app.auth.login_throttle import MAX_FAILURES, LoginThrottle
+from app.graphrag.tenants_store import create_tenants_table
 from app.main import app
 from tests.settings_factory import build_settings
 
@@ -39,6 +40,26 @@ def _seed_member(conn: aiosqlite.Connection, *, username="alice", password="pass
             conn, username=username, password=password, role="member", tenant_id="demo"
         )
     )
+
+
+def _seed_tenant_row(conn: aiosqlite.Connection, tenant_id: str, *, status: str = "active") -> None:
+    """往 review_conn 里补一张 tenants 表并插一行。
+
+    这张表默认不存在——default_admin_users_conn 那个 autouse fixture 只建了
+    admin_users，只有真正要碰 switch_current_tenant（走 require_active_tenant_or_404）
+    的测试才需要它，照 test_admin_tenant_routes.py 的 create_tenants_table() 用法来，
+    不是自己发明一套 schema。
+    """
+
+    async def _do() -> None:
+        await create_tenants_table(conn)
+        await conn.execute(
+            "INSERT OR REPLACE INTO tenants (tenant_id, name, status) VALUES (?, ?, ?)",
+            (tenant_id, tenant_id, status),
+        )
+        await conn.commit()
+
+    asyncio.run(_do())
 
 
 def _clear_overrides() -> None:
@@ -407,5 +428,84 @@ def test_write_request_without_csrf_header_is_rejected():
             "/api/admin/auth/session/tenant", json={"tenant_id": "demo"}
         )
         assert response.status_code == 403
+    finally:
+        _clear_overrides()
+
+
+def test_valid_cookie_wins_over_invalid_bearer_header():
+    """取 token 顺序必须是先 Cookie 后 Bearer：浏览器场景下 Cookie 才是真正
+    在用的凭证，一个过期/伪造的 Bearer 头（比如浏览器缓存里剩下的旧值）
+    不该把它顶掉。这条防的是"以后有人顺手把顺序调过来"——调过来之后，
+    单独测 Cookie 或单独测 Bearer 的用例都还是绿的，只有两者同时出现、
+    Bearer 是假的这种组合才会露馅。"""
+    client, _ = _login_with_client()
+    try:
+        response = client.get(
+            "/api/admin/auth/whoami",
+            headers={"Authorization": "Bearer not-a-real-token"},
+        )
+        assert response.status_code == 200
+        assert response.json()["username"] == "admin"
+    finally:
+        _clear_overrides()
+
+
+# ---------------------------------------------------------------------------
+# 切换当前租户
+# ---------------------------------------------------------------------------
+
+
+def test_switch_tenant_success_updates_current_tenant_id():
+    """成功路径要连带验证 whoami 里真的变了——只看 200 会漏掉"返回了
+    正确响应但压根没写进会话"这种半成品实现。"""
+    conn = _conn()
+    _seed_tenant_row(conn, "demo")
+    client, _ = _login_with_client()
+    try:
+        csrf_token = client.cookies.get(CSRF_COOKIE_NAME)
+        response = client.put(
+            "/api/admin/auth/session/tenant",
+            json={"tenant_id": "demo"},
+            headers={CSRF_HEADER_NAME: csrf_token},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"tenant_id": "demo"}
+
+        whoami = client.get("/api/admin/auth/whoami").json()
+        assert whoami["current_tenant_id"] == "demo"
+    finally:
+        _clear_overrides()
+
+
+def test_switch_tenant_member_cannot_switch_to_another_tenant():
+    conn = _conn()
+    _seed_member(conn)
+    _seed_tenant_row(conn, "demo")
+    _seed_tenant_row(conn, "other")
+    client, _ = _login_with_client(username="alice", password="password1")
+    try:
+        csrf_token = client.cookies.get(CSRF_COOKIE_NAME)
+        response = client.put(
+            "/api/admin/auth/session/tenant",
+            json={"tenant_id": "other"},
+            headers={CSRF_HEADER_NAME: csrf_token},
+        )
+        assert response.status_code == 403
+    finally:
+        _clear_overrides()
+
+
+def test_switch_tenant_to_unregistered_tenant_is_404():
+    conn = _conn()
+    _seed_tenant_row(conn, "demo")
+    client, _ = _login_with_client()
+    try:
+        csrf_token = client.cookies.get(CSRF_COOKIE_NAME)
+        response = client.put(
+            "/api/admin/auth/session/tenant",
+            json={"tenant_id": "does-not-exist"},
+            headers={CSRF_HEADER_NAME: csrf_token},
+        )
+        assert response.status_code == 404
     finally:
         _clear_overrides()
