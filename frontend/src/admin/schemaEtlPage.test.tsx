@@ -198,7 +198,17 @@ describe('预演转正式执行', () => {
     const user = userEvent.setup()
     await user.click(await screen.findByText('run-1'))
     await screen.findByRole('button', { name: '按这次预演正式执行' })
-    expect(screen.getByText(/正式执行会重新受大规模清理安全阀限制/)).toBeTruthy()
+    const notice = screen.getByText(/正式执行会重新受大规模清理安全阀限制/)
+
+    // 撞阀时到底发生了什么，两道阀的答案不一样：实体侧那道在任何写入之前
+    // 触发（schema_etl.py:436），整轮零改动；关系侧那道弱一档
+    // （schema_etl.py:536），触发时新边已写、陈旧边未删。文案曾经写成
+    // 「什么都不改地失败」，对关系侧是假的——一句用户可见的、关于数据
+    // 安全的假话。下面两条断言钉的就是这个区分：删除没发生（真），但
+    // 「什么都没改」不许再出现。
+    expect(notice.textContent).toMatch(/不会删除任何东西/)
+    expect(notice.textContent).toMatch(/关系侧/)
+    expect(notice.textContent).not.toMatch(/什么都不改/)
   })
 
   it('正式运行的报告页没有这个按钮', async () => {
