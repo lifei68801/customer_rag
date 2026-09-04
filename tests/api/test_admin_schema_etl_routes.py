@@ -489,6 +489,44 @@ def test_promote_dry_run_reuses_stored_inputs(client, review_conn, tmp_path):
     assert (tmp_path / "uploads" / "schema-etl" / "muji" / new_run_id / "config.yaml").exists()
 
 
+def test_promote_triggers_a_real_run_not_another_dry_run(client, review_conn, monkeypatch):
+    """转正触发的那次跑批必须是 dry_run=False——这就是"正式执行"这四个字本身。
+
+    没有这条断言的话，把 promote 的 dry_run 写成 True 全套测试照样绿（复审
+    实测过）：用户看到"已按这次预演提交正式执行"、历史里多一条记录、报告
+    显示"已完成"和一堆非零的"将写入"数字，数据却一条没进去。他要读完报告
+    里那句"这是一次预演"才会发现，而那句话正是他刚点按钮想摆脱的。
+
+    写法与 test_start_run_defaults_both_switches_to_false 同款：monkeypatch
+    掉 run_schema_etl 捕获参数。fake 必须把 dry_run 回填进报告，否则第一次
+    预演落库的报告 dry_run=False，promote 会先被"只有预演可以转成正式执行"
+    那道检查挡掉，测试就测不到后台任务了。
+    """
+    asyncio.run(_confirm_muji_schema(review_conn))
+    calls: list[dict[str, object]] = []
+
+    async def fake_run_schema_etl(
+        *, conn, graph_client, config, data_dir, dry_run=False, allow_large_sweep=False
+    ):
+        calls.append({"dry_run": dry_run, "allow_large_sweep": allow_large_sweep})
+        return ETLRunReport(dry_run=dry_run)
+
+    monkeypatch.setattr("app.api.admin_schema_etl_routes.run_schema_etl", fake_run_schema_etl)
+
+    files = {"config": ("config.yaml", b"tenant_id: muji\nentities: []\nrelations: []\n")}
+    dry_response = client.post(
+        "/api/admin/muji/schema-etl/runs", files=files, data={"dry_run": "true"}
+    )
+    dry_run_id = dry_response.json()["run_id"]
+    assert calls == [{"dry_run": True, "allow_large_sweep": False}]
+
+    response = client.post(f"/api/admin/muji/schema-etl/runs/{dry_run_id}/promote")
+
+    assert response.status_code == 200
+    assert len(calls) == 2
+    assert calls[1]["dry_run"] is False
+
+
 def test_promote_rejects_a_real_run(client, review_conn):
     """只有预演能被转正。
 
