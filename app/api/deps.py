@@ -5,10 +5,15 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 
 from app.agent.tool_registry import ToolRegistry, discover_tools
 from app.api.admin_session import AdminSession, AdminSessionStore
+from app.api.session_cookie import (
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME,
+    SESSION_COOKIE_NAME,
+)
 from app.auth.admin_users_store import get_admin_user
 from app.auth.login_throttle import LoginThrottle
 from app.config.settings import Settings
@@ -71,6 +76,7 @@ __all__ = [
     "AdminSession",
     "require_admin_role",
     "require_admin_session",
+    "require_csrf",
     "require_tenant_access",
     "resolve_tenant_id",
 ]
@@ -336,11 +342,12 @@ async def get_review_conn(
 
 
 async def require_admin_session(
+    request: Request,
     authorization: str | None = Header(default=None),
     session_store: AdminSessionStore = Depends(get_admin_session_store),
     review_conn: aiosqlite.Connection = Depends(get_review_conn),
 ) -> AdminSession:
-    """校验 Authorization: Bearer <token>，返回这个 session 的身份。
+    """校验会话凭证（Cookie 优先，Bearer 兜底），返回这个 session 的身份。
 
     所有 /api/admin/* 路由（登录接口本身除外）都应该依赖这个函数。
 
@@ -353,9 +360,13 @@ async def require_admin_session(
     session 撤销不掉，会退化成静默失效。查库是唯一在各种部署形态下都成立
     的做法。
     """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="缺少管理员登录凭证")
-    token = authorization.removeprefix("Bearer ")
+    # 先 Cookie 后 Bearer：浏览器走 Cookie（前台与后台同源共享，这正是
+    # 不用二次登录的机制）；Bearer 留给脚本与既有测试，两者并存。
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="缺少管理员登录凭证")
+        token = authorization.removeprefix("Bearer ")
     session = session_store.get_session(token)
     if session is None:
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
@@ -364,6 +375,25 @@ async def require_admin_session(
         session_store.revoke_session(token)
         raise HTTPException(status_code=401, detail="账号已停用")
     return session
+
+
+async def require_csrf(request: Request) -> None:
+    """双提交令牌校验，只作用于写方法。
+
+    SameSite=Lax 已经挡掉绝大部分跨站写请求，这是第二道：Lax 对老浏览器
+    不完全可靠。成本只有前端一个请求头加这里一次比对。
+
+    只在有会话 Cookie 时校验——纯 Bearer 调用方（脚本、既有测试）不经过
+    浏览器，不存在 CSRF 场景，要求它们带这个头只会平白打断。
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+    if SESSION_COOKIE_NAME not in request.cookies:
+        return
+    header_value = request.headers.get(CSRF_HEADER_NAME)
+    cookie_value = request.cookies.get(CSRF_COOKIE_NAME)
+    if not header_value or not cookie_value or header_value != cookie_value:
+        raise HTTPException(status_code=403, detail="CSRF 校验失败")
 
 
 async def require_tenant_access(

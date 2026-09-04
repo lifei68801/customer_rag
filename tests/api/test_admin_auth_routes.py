@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
+from app.api.session_cookie import CSRF_COOKIE_NAME, SESSION_COOKIE_NAME
 from app.auth.admin_users_store import (
     create_admin_user,
     get_admin_user,
@@ -56,6 +57,21 @@ def _login(*, username: str, password: str, throttle: LoginThrottle | None = Non
         )
     finally:
         _clear_overrides()
+
+
+def _login_with_client(*, username: str = "admin", password: str = "password1"):
+    """跟 _login 一样 override 依赖，但把 TestClient 也一并返回、不立即清
+    override——Cookie 会话要靠同一个 TestClient 的 cookie jar 才能跨请求
+    带上，_login() 每次都新建一个 TestClient 是故意的（互不干扰），但这里
+    恰恰需要反过来。调用方要在自己的 finally 里调 _clear_overrides()。"""
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    client = TestClient(app)
+    response = client.post(
+        "/api/admin/auth/login", json={"username": username, "password": password}
+    )
+    return client, response
 
 
 def _authed(username: str, role: str, tenant_id: str | None):
@@ -205,7 +221,12 @@ def test_whoami_returns_identity():
     finally:
         _clear_overrides()
 
-    assert body == {"username": "alice", "role": "member", "tenant_id": "demo"}
+    assert body == {
+        "username": "alice",
+        "role": "member",
+        "tenant_id": "demo",
+        "current_tenant_id": "demo",
+    }
 
 
 def test_whoami_requires_a_session():
@@ -320,5 +341,71 @@ def test_session_of_a_deleted_account_stops_working():
     client, headers = _authed("ghost", "admin", None)
     try:
         assert client.get("/api/admin/auth/whoami", headers=headers).status_code == 401
+    finally:
+        _clear_overrides()
+
+
+# ---------------------------------------------------------------------------
+# 会话 Cookie / CSRF
+# ---------------------------------------------------------------------------
+
+
+def test_login_sets_session_and_csrf_cookies():
+    client, response = _login_with_client()
+    try:
+        assert response.status_code == 200
+        assert SESSION_COOKIE_NAME in response.cookies
+        assert CSRF_COOKIE_NAME in response.cookies
+    finally:
+        _clear_overrides()
+
+
+def test_cookie_session_is_accepted_without_authorization_header():
+    """装上 Cookie 之后，同源请求不再需要手工带 Bearer 头——这正是
+    前台走到后台不用二次登录的机制。"""
+    client, _ = _login_with_client()
+    try:
+        response = client.get("/api/admin/auth/whoami")
+        assert response.status_code == 200
+        assert response.json()["username"] == "admin"
+    finally:
+        _clear_overrides()
+
+
+def test_whoami_returns_current_tenant_id():
+    _seed_member(_conn())
+    client, _ = _login_with_client(username="alice", password="password1")
+    try:
+        body = client.get("/api/admin/auth/whoami").json()
+    finally:
+        _clear_overrides()
+
+    assert body["current_tenant_id"] == "demo"
+
+
+def test_logout_revokes_the_token_server_side_not_only_the_cookie():
+    """只清 Cookie 不够：token 还活在服务端字典里，8 小时内谁拿到它仍然
+    有效。登出必须两件事都做。"""
+    client, login_response = _login_with_client()
+    try:
+        token = login_response.json()["session_token"]
+        client.post("/api/admin/auth/logout")
+
+        # 用原来那个 token 直接敲（绕开 Cookie），服务端应当已经不认了
+        response = client.get(
+            "/api/admin/auth/whoami", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 401
+    finally:
+        _clear_overrides()
+
+
+def test_write_request_without_csrf_header_is_rejected():
+    client, _ = _login_with_client()
+    try:
+        response = client.put(
+            "/api/admin/auth/session/tenant", json={"tenant_id": "demo"}
+        )
+        assert response.status_code == 403
     finally:
         _clear_overrides()

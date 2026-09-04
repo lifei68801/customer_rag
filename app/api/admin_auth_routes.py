@@ -3,11 +3,19 @@ from __future__ import annotations
 import logging
 
 import aiosqlite
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from app.api import deps
 from app.api.admin_session import AdminSession, AdminSessionStore
+from app.api.session_cookie import (
+    SESSION_COOKIE_NAME,
+    clear_session_cookies,
+    is_secure_request,
+    new_csrf_token,
+    set_session_cookies,
+)
+from app.api.tenant_guard import require_active_tenant_or_404
 from app.auth.admin_users_store import (
     get_admin_user,
     set_admin_user_password,
@@ -42,6 +50,7 @@ class WhoAmIResponse(BaseModel):
     username: str
     role: str
     tenant_id: str | None
+    current_tenant_id: str | None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -49,9 +58,15 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class SwitchTenantRequest(BaseModel):
+    tenant_id: str
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(
     payload: LoginRequest,
+    request: Request,
+    response: Response,
     session_store: AdminSessionStore = Depends(deps.get_admin_session_store),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     throttle: LoginThrottle = Depends(deps.get_login_throttle),
@@ -82,6 +97,14 @@ async def login(
     session_token = session_store.create_session(
         username=user["username"], role=user["role"], tenant_id=user["tenant_id"]
     )
+    csrf_token = new_csrf_token()
+    set_session_cookies(
+        response,
+        session_token=session_token,
+        csrf_token=csrf_token,
+        secure=is_secure_request(request),
+        max_age=28800,
+    )
     return LoginResponse(
         session_token=session_token,
         username=user["username"],
@@ -95,7 +118,10 @@ async def whoami(
     session: AdminSession = Depends(deps.require_admin_session),
 ) -> WhoAmIResponse:
     return WhoAmIResponse(
-        username=session.username, role=session.role, tenant_id=session.tenant_id
+        username=session.username,
+        role=session.role,
+        tenant_id=session.tenant_id,
+        current_tenant_id=session.current_tenant_id,
     )
 
 
@@ -122,15 +148,47 @@ async def change_own_password(
 
 @router.post("/logout", dependencies=[Depends(deps.require_admin_session)])
 async def logout(
+    request: Request,
+    response: Response,
     authorization: str | None = Header(default=None),
     session_store: AdminSessionStore = Depends(deps.get_admin_session_store),
 ) -> dict[str, bool]:
-    """让服务端立即失效这个 session token，而不是只靠客户端清 sessionStorage。
+    """让服务端立即失效这个 session token，而不是只靠客户端清 sessionStorage
+    /Cookie。
 
-    依赖 require_admin_session 保证走到这里时 authorization 一定是
-    "Bearer <合法未过期 token>" 格式（否则前面已经 401 了），所以这里可以
-    放心地直接 removeprefix 取 token，不用重复判空/判前缀。
+    依赖 require_admin_session 保证走到这里时一定带着合法未过期的凭证
+    （Cookie 或 "Bearer <token>"，否则前面已经 401 了）。Cookie 优先于
+    Bearer——跟 require_admin_session 取 token 的顺序保持一致，否则浏览器
+    端登出时可能撤销错 token（比如同时带着一个过期的 Bearer 头）。
     """
-    token = (authorization or "").removeprefix("Bearer ")
+    token = request.cookies.get(SESSION_COOKIE_NAME) or (authorization or "").removeprefix(
+        "Bearer "
+    )
     session_store.revoke_session(token)
+    clear_session_cookies(response)
     return {"logged_out": True}
+
+
+@router.put(
+    "/session/tenant",
+    dependencies=[Depends(deps.require_csrf)],
+)
+async def switch_current_tenant(
+    request: Request,
+    payload: SwitchTenantRequest,
+    session: AdminSession = Depends(deps.require_admin_session),
+    session_store: AdminSessionStore = Depends(deps.get_admin_session_store),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict[str, str]:
+    """切换当前租户。
+
+    权限判据复用 require_tenant_access 那一套：admin 可切任意（但仍要确认
+    租户启用着），member 只能切回自己那个。
+    """
+    await require_active_tenant_or_404(review_conn, payload.tenant_id)
+    if session.role != "admin" and session.tenant_id != payload.tenant_id:
+        raise HTTPException(status_code=403, detail="无权访问该租户")
+    token = request.cookies.get(SESSION_COOKIE_NAME) or ""
+    if not session_store.set_current_tenant(token, payload.tenant_id):
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+    return {"tenant_id": payload.tenant_id}
