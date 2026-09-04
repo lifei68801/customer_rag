@@ -18,6 +18,25 @@ import { NotFoundPage } from './admin/NotFoundPage'
 import { GuidedOntologyPage } from './admin/guidedOntology/GuidedOntologyPage'
 import { AdminLanding } from './admin/AdminLanding'
 import { LEGACY_REDIRECTS } from './adminRoutes'
+import { useAdminAuth } from './admin/useAdminAuth'
+
+/**
+ * 前台的登录门。
+ *
+ * 前台面向内部坐席，本来就该登录：租户和用户身份现在都从服务端会话取，
+ * 没有会话就一个请求也发不出去（后端会 401）。未登录直接渲染登录表单，
+ * 而不是 <Navigate to="/admin/login">——那会把人从 `/` 弹到后台的地址上，
+ * 登录完还得自己走回来。用的是同一个 LoginPage 组件，不另写一套。
+ *
+ * 'loading' 不能当成未登录：whoami 还没回来时把登录表单闪给一个其实还
+ * 登录着的人，他会以为自己被登出了。
+ */
+function ChatRoute() {
+  const { status } = useAdminAuth()
+  if (status === 'loading') return null
+  if (status === 'anonymous') return <LoginPage />
+  return <ChatPage />
+}
 
 /**
  * 路径直接取自 adminRoutes.ts，不在这里另写一份字面量——侧边栏、⌘K、
@@ -26,7 +45,7 @@ import { LEGACY_REDIRECTS } from './adminRoutes'
 function App() {
   return (
     <Routes>
-      <Route path="/" element={<ChatPage />} />
+      <Route path="/" element={<ChatRoute />} />
       <Route path="/admin/login" element={<LoginPage />} />
       <Route path="/admin" element={<AdminLayout />}>
         <Route index element={<AdminLanding />} />

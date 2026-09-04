@@ -100,9 +100,12 @@ describe('返回前台常驻在后台右上角', () => {
     })
   }
 
-  it('和前台的「管理后台」落在同一个位置——都是各自顶栏的右端', () => {
+  it('和前台的「管理后台」落在同一个位置——都是各自顶栏的右端', async () => {
     renderAt('/')
-    const entry = within(screen.getByTestId('site-topbar')).getByRole('link', {
+    // 前台现在也有登录门：whoami 回来之前 `/` 什么都不画（把登录表单闪给
+    // 一个其实还登录着的人，他会以为自己被登出了），所以这里要等。
+    const topbar = await screen.findByTestId('site-topbar')
+    const entry = within(topbar).getByRole('link', {
       name: '管理后台',
     })
     expect(entry.getAttribute('href')).toBe('/admin')

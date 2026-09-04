@@ -32,7 +32,21 @@ const itemClass = `flex min-h-[40px] w-full cursor-pointer items-center gap-2 ro
  * 的管理动作，归「租户管理」页；同一个动作留两个入口，改起来就得记得改
  * 两处。
  */
-export function AccountMenu({ onLogout }: { onLogout: () => void }) {
+export function AccountMenu({
+  onLogout,
+  showManagementLinks = true,
+}: {
+  onLogout: () => void
+  /**
+   * 账号管理 / 租户管理这两项要不要渲染。
+   *
+   * 后台默认要（那是管知识库的地方）；前台传 false——把管理入口塞进问答
+   * 界面，等于把建模→接入→审核这条流程的入口散回一个不属于它的页面。
+   * 组件只有一份、两处渲染，内容按场景裁剪；照抄一份到前台的话两份会
+   * 各自漂移。
+   */
+  showManagementLinks?: boolean
+}) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const { options, current, tenantId, setTenantId } = useTenants()
@@ -101,7 +115,7 @@ export function AccountMenu({ onLogout }: { onLogout: () => void }) {
           )}
 
           <div role="separator" className="my-0.5 border-t border-subtle" />
-          {isAdmin && (
+          {isAdmin && showManagementLinks && (
             <Link
               to={ADMIN_ROUTES.accounts}
               role="menuitem"
@@ -112,7 +126,7 @@ export function AccountMenu({ onLogout }: { onLogout: () => void }) {
               账号管理
             </Link>
           )}
-          {isAdmin && (
+          {isAdmin && showManagementLinks && (
             <Link
               to={ADMIN_ROUTES.tenants}
               role="menuitem"
@@ -147,8 +161,10 @@ export function AccountMenu({ onLogout }: { onLogout: () => void }) {
 
       <button
         type="button"
-        // 可访问名带上当前租户：屏幕阅读器用户不看颜色也知道自己在哪。
-        aria-label={`账号与租户，当前 ${current?.name ?? tenantId}`}
+        // 可访问名带上当前租户和账号：aria-label 会盖掉按钮里的可见文字，
+        // 只写租户的话屏幕阅读器用户听不到自己是谁——而下面那两行正是为了
+        // 让人看得出「我是谁、我在哪个租户」。
+        aria-label={`账号与租户，当前 ${current?.name ?? tenantId}，登录为 ${username}`}
         aria-expanded={open}
         aria-haspopup="menu"
         onClick={() => (open ? close() : setOpen(true))}

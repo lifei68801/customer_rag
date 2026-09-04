@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useConfirm } from '../admin/ConfirmContext'
 import { Tooltip } from '../admin/Tooltip'
 import { useToast } from '../admin/ToastContext'
@@ -14,6 +14,8 @@ interface ChatSidebarProps {
   onSelectSession: (sessionId: string) => void
   onNewSession: () => void
   onDeleteSession: (sessionId: string) => Promise<void>
+  /** 钉在侧边栏底部的东西（前台放账号块）。侧边栏自己不关心它是什么。 */
+  footer?: ReactNode
 }
 
 function TrashIcon() {
@@ -42,6 +44,7 @@ export function ChatSidebar({
   onSelectSession,
   onNewSession,
   onDeleteSession,
+  footer,
 }: ChatSidebarProps) {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -114,6 +117,7 @@ export function ChatSidebar({
           })}
         </ul>
       </div>
+      {footer && <div className="border-t border-subtle p-3">{footer}</div>}
     </aside>
   )
 }

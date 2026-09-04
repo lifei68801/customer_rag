@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { adminFetch } from '../admin/adminApi'
 import { parseSSEStream } from '../lib/sse'
-import { getAnonymousUserId } from '../lib/identity'
 import {
   deleteSessionRequest,
   fetchSessionMessages,
@@ -9,7 +9,6 @@ import {
   type SessionSummary,
 } from '../lib/sessionsApi'
 
-const TENANT_ID = 'demo'
 const SESSION_QUERY_KEY = 'session'
 
 export interface ChatMessage {
@@ -64,9 +63,6 @@ export function useAgentChat() {
   const [searchParams, setSearchParams] = useSearchParams()
   const activeSessionId = searchParams.get(SESSION_QUERY_KEY)
 
-  const userIdRef = useRef<string>(getAnonymousUserId())
-  const userId = userIdRef.current
-
   const [sessionsData, setSessionsData] = useState<Record<string, SessionChatState>>({})
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [sessionsError, setSessionsError] = useState<string | null>(null)
@@ -81,13 +77,13 @@ export function useAgentChat() {
 
   const refreshSessions = useCallback(async () => {
     try {
-      const list = await fetchSessions(TENANT_ID, userId)
+      const list = await fetchSessions()
       setSessions(list)
       setSessionsError(null)
     } catch (error) {
       setSessionsError(error instanceof Error ? error.message : '获取会话列表失败')
     }
-  }, [userId])
+  }, [])
 
   useEffect(() => {
     refreshSessions()
@@ -97,7 +93,7 @@ export function useAgentChat() {
     if (!activeSessionId || loadedSessionIdsRef.current.has(activeSessionId)) return
     loadedSessionIdsRef.current.add(activeSessionId)
     let cancelled = false
-    fetchSessionMessages(TENANT_ID, userId, activeSessionId)
+    fetchSessionMessages(activeSessionId)
       .then((turns) => {
         if (cancelled) return
         setSessionsData((prev) => ({
@@ -123,7 +119,7 @@ export function useAgentChat() {
     return () => {
       cancelled = true
     }
-  }, [activeSessionId, userId])
+  }, [activeSessionId])
 
   useEffect(() => {
     return () => {
@@ -196,14 +192,15 @@ export function useAgentChat() {
       }
 
       try {
-        const response = await fetch('/agent/chat', {
+        // 走 adminFetch：POST 要带 X-CSRF-Token（缺了后端 403），401 时它
+        // 会清掉本地会话状态，前台的登录门随即把人送回登录页。返回的仍是
+        // 原始 Response，SSE 流照常读。
+        const response = await adminFetch('/agent/chat', '', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             question,
-            tenant_id: TENANT_ID,
             session_id: sessionId,
-            user_id: userId,
             voice_response: false,
           }),
           signal: controller.signal,
@@ -269,7 +266,7 @@ export function useAgentChat() {
         refreshSessions()
       }
     },
-    [activeSessionId, userId, setSearchParams, refreshSessions],
+    [activeSessionId, setSearchParams, refreshSessions],
   )
 
   const selectSession = useCallback(
@@ -285,7 +282,7 @@ export function useAgentChat() {
 
   const deleteSession = useCallback(
     async (sessionId: string) => {
-      await deleteSessionRequest(TENANT_ID, userId, sessionId)
+      await deleteSessionRequest(sessionId)
       setSessions((prev) => prev.filter((session) => session.session_id !== sessionId))
       setSessionsData((prev) => {
         const next = { ...prev }
@@ -297,7 +294,7 @@ export function useAgentChat() {
         setSearchParams({})
       }
     },
-    [userId, activeSessionId, setSearchParams],
+    [activeSessionId, setSearchParams],
   )
 
   const activeState = activeSessionId ? sessionsData[activeSessionId] ?? EMPTY_SESSION_STATE : EMPTY_SESSION_STATE
