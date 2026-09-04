@@ -7,6 +7,25 @@ import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { ADMIN_ROUTES } from '../adminRoutes'
+import { resetAdminSession } from './useAdminAuth'
+
+/**
+ * 身份不再存 sessionStorage（token 在 HttpOnly Cookie 里，JS 读不到，也
+ * 塞不进去）：界面从 whoami 拿身份，所以这里要打桩的是 whoami。
+ */
+function whoamiResponse() {
+  return Promise.resolve(
+    new Response(
+      JSON.stringify({
+        username: 'alice',
+        role: 'member',
+        tenant_id: 'demo',
+        current_tenant_id: 'demo',
+      }),
+      { status: 200 },
+    ),
+  )
+}
 
 /**
  * 问答诊断页。
@@ -51,6 +70,7 @@ function stubApi(detail: unknown = DETAIL) {
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
+      if (url.includes('/auth/whoami')) return whoamiResponse()
       if (/\/diagnostics\/\d+/.test(url)) {
         return Promise.resolve(new Response(JSON.stringify(detail), { status: 200 }))
       }
@@ -63,14 +83,15 @@ function stubApi(detail: unknown = DETAIL) {
 }
 
 beforeEach(() => {
-  sessionStorage.setItem('admin_session_token', 'test-token')
-  sessionStorage.setItem('admin_current_tenant', 'demo')
+  resetAdminSession()
   localStorage.clear()
   stubApi()
 })
 
-function renderAt(path = ADMIN_ROUTES.diagnostics) {
-  return render(
+// 会话状态是异步的（身份从 whoami 读，token 在 HttpOnly Cookie 里 JS 读不
+// 到），后台外壳要等 whoami 回来才画得出来。不等的话断言会对着一棵空树跑。
+async function renderAt(path = ADMIN_ROUTES.diagnostics) {
+  const result = render(
     <SkinProvider>
       <ConfirmProvider>
         <ToastProvider>
@@ -81,13 +102,15 @@ function renderAt(path = ADMIN_ROUTES.diagnostics) {
       </ConfirmProvider>
     </SkinProvider>,
   )
+  await screen.findByTestId('admin-topbar')
+  return result
 }
 
 const page = () => within(screen.getByTestId('diagnostics'))
 
 describe('历史列表', () => {
   it('最近的问答排在最前面', async () => {
-    renderAt()
+    await renderAt()
     await waitFor(() => expect(page().getByText('可口可乐有哪些产品')).toBeTruthy())
     const questions = page()
       .getAllByRole('button', { name: /可口可乐|订单 123/ })
@@ -96,7 +119,7 @@ describe('历史列表', () => {
   })
 
   it('列表上就能看到答案——不点开也能认出是哪一次答错的', async () => {
-    renderAt()
+    await renderAt()
     await waitFor(() => expect(page().getByText(/找不到/)).toBeTruthy())
   })
 })
@@ -104,7 +127,7 @@ describe('历史列表', () => {
 describe('诊断详情', () => {
   it('点一次问答，列出它碰到的实体，每个链到详情页', async () => {
     const user = userEvent.setup()
-    renderAt()
+    await renderAt()
     await waitFor(() => expect(page().getByText('可口可乐有哪些产品')).toBeTruthy())
     await user.click(page().getByRole('button', { name: /可口可乐有哪些产品/ }))
 
@@ -117,7 +140,7 @@ describe('诊断详情', () => {
 
   it('显示用了哪些工具', async () => {
     const user = userEvent.setup()
-    renderAt()
+    await renderAt()
     await waitFor(() => expect(page().getByText('可口可乐有哪些产品')).toBeTruthy())
     await user.click(page().getByRole('button', { name: /可口可乐有哪些产品/ }))
 
@@ -129,7 +152,7 @@ describe('诊断详情', () => {
     // 出在图谱上，这一句就是答案。
     stubApi({ ...DETAIL, mentioned_terms: [] })
     const user = userEvent.setup()
-    renderAt()
+    await renderAt()
     await waitFor(() => expect(page().getByText('可口可乐有哪些产品')).toBeTruthy())
     await user.click(page().getByRole('button', { name: /可口可乐有哪些产品/ }))
 
@@ -144,7 +167,7 @@ describe('诊断详情', () => {
       tool_results: [{ ...DETAIL.tool_results[0], content_truncated: true }],
     })
     const user = userEvent.setup()
-    renderAt()
+    await renderAt()
     await waitFor(() => expect(page().getByText('可口可乐有哪些产品')).toBeTruthy())
     await user.click(page().getByRole('button', { name: /可口可乐有哪些产品/ }))
 
@@ -159,13 +182,14 @@ describe('还没有记录', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
+        if (String(input).includes('/auth/whoami')) return whoamiResponse()
         if (String(input).includes('/diagnostics')) {
           return Promise.resolve(new Response(JSON.stringify({ diagnostics: [] }), { status: 200 }))
         }
         return new Promise(() => {})
       }),
     )
-    renderAt()
+    await renderAt()
     await waitFor(() => expect(page().getByText(/还没有/)).toBeTruthy())
   })
 })

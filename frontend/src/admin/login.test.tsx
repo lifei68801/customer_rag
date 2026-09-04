@@ -6,6 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
+import { resetAdminSession } from './useAdminAuth'
 
 /**
  * 登录从"一个共享 token"换成用户名 + 密码。
@@ -15,13 +16,32 @@ import { ToastProvider } from './ToastContext'
  */
 
 let lastBody: unknown = null
+let loggedIn = false
 
 function stubLogin(status = 200) {
   lastBody = null
+  loggedIn = false
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      // 登录成功之后身份从 whoami 读——响应体里那份 session_token 前端不再
+      // 存任何地方，Cookie 由服务端下发。
+      if (url.includes('/auth/whoami')) {
+        return Promise.resolve(
+          loggedIn
+            ? new Response(
+                JSON.stringify({
+                  username: 'alice',
+                  role: 'member',
+                  tenant_id: 'demo',
+                  current_tenant_id: 'demo',
+                }),
+                { status: 200 },
+              )
+            : new Response(JSON.stringify({ detail: '未登录' }), { status: 401 }),
+        )
+      }
       if (url.includes('/auth/login')) {
         lastBody = JSON.parse(String(init?.body))
         if (status !== 200) {
@@ -29,6 +49,7 @@ function stubLogin(status = 200) {
             new Response(JSON.stringify({ detail: '用户名或密码不正确' }), { status }),
           )
         }
+        loggedIn = true
         return Promise.resolve(
           new Response(
             JSON.stringify({
@@ -47,13 +68,14 @@ function stubLogin(status = 200) {
 }
 
 beforeEach(() => {
+  resetAdminSession()
   sessionStorage.clear()
   localStorage.clear()
   stubLogin()
 })
 
-function renderLogin() {
-  return render(
+async function renderLogin() {
+  const result = render(
     <SkinProvider>
       <ConfirmProvider>
         <ToastProvider>
@@ -64,6 +86,10 @@ function renderLogin() {
       </ConfirmProvider>
     </SkinProvider>,
   )
+  // 会话状态未知时登录页先不画（把表单闪给一个其实还登录着的人，他会以为
+  // 自己被登出了），等 whoami 回来。
+  await screen.findByLabelText('用户名')
+  return result
 }
 
 async function submit(user: ReturnType<typeof userEvent.setup>, name: string, password: string) {
@@ -73,8 +99,8 @@ async function submit(user: ReturnType<typeof userEvent.setup>, name: string, pa
 }
 
 describe('登录页', () => {
-  it('有用户名和密码两个输入框', () => {
-    renderLogin()
+  it('有用户名和密码两个输入框', async () => {
+    await renderLogin()
     expect(screen.getByLabelText('用户名')).toBeTruthy()
     expect(screen.getByLabelText('密码')).toBeTruthy()
     // 旧的单字段登录必须绝迹——留着它会让人以为还能用 token 登录。
@@ -83,37 +109,39 @@ describe('登录页', () => {
 
   it('提交用户名和密码，不是 admin_token', async () => {
     const user = userEvent.setup()
-    renderLogin()
+    await renderLogin()
     await submit(user, 'alice', 'password1')
     await waitFor(() => expect(lastBody).not.toBeNull())
     expect(lastBody).toEqual({ username: 'alice', password: 'password1' })
   })
 
-  it('登录成功后身份存进 sessionStorage', async () => {
+  it('登录成功后身份从 whoami 取，不落 sessionStorage', async () => {
+    // sessionStorage 按标签页隔离，而会话 Cookie 是整个浏览器共享的——把
+    // 身份存在那里，同一个人开两个标签页就会看到两份不一样的身份。
     const user = userEvent.setup()
-    renderLogin()
+    await renderLogin()
     await submit(user, 'alice', 'password1')
-    await waitFor(() => expect(sessionStorage.getItem('admin_session_token')).toBe('tok'))
-    expect(sessionStorage.getItem('admin_username')).toBe('alice')
-    expect(sessionStorage.getItem('admin_role')).toBe('member')
-    // member 的租户由登录响应决定，不是上次留下的那个。
-    expect(sessionStorage.getItem('admin_current_tenant')).toBe('demo')
+    // 登录页在已登录时会跳走，用它确认身份真的读到了。
+    expect(await screen.findByTestId('admin-topbar')).toBeTruthy()
+    expect(sessionStorage.getItem('admin_session_token')).toBeNull()
+    expect(sessionStorage.getItem('admin_username')).toBeNull()
+    expect(sessionStorage.getItem('admin_role')).toBeNull()
+    expect(sessionStorage.getItem('admin_current_tenant')).toBeNull()
   })
 
   it('失败时显示错误，且不写入任何身份', async () => {
     stubLogin(401)
     const user = userEvent.setup()
-    renderLogin()
+    await renderLogin()
     await submit(user, 'alice', 'wrongpassword')
     await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
     // 半写入的身份比完全没有更糟：页面会以为已登录，然后每个请求都 401。
-    expect(sessionStorage.getItem('admin_session_token')).toBeNull()
-    expect(sessionStorage.getItem('admin_role')).toBeNull()
-    expect(sessionStorage.getItem('admin_username')).toBeNull()
+    // 登录失败后还留在登录页，说明没有任何一半的身份被认下来。
+    expect(screen.getByLabelText('用户名')).toBeTruthy()
   })
 
   it('密码框是 password 类型', async () => {
-    renderLogin()
+    await renderLogin()
     expect(screen.getByLabelText('密码').getAttribute('type')).toBe('password')
   })
 })

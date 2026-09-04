@@ -7,6 +7,25 @@ import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { ADMIN_ROUTES } from '../adminRoutes'
+import { resetAdminSession } from './useAdminAuth'
+
+/**
+ * 身份不再存 sessionStorage（token 在 HttpOnly Cookie 里，JS 读不到，也
+ * 塞不进去）：界面从 whoami 拿身份，所以这里要打桩的是 whoami。
+ */
+function whoamiResponse() {
+  return Promise.resolve(
+    new Response(
+      JSON.stringify({
+        username: 'admin',
+        role: 'admin',
+        tenant_id: null,
+        current_tenant_id: 'demo',
+      }),
+      { status: 200 },
+    ),
+  )
+}
 
 /**
  * 租户收进左下角的账号菜单。
@@ -33,6 +52,11 @@ function stubApi(
     'fetch',
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      if (url.includes('/auth/whoami')) return whoamiResponse()
+      // 切租户走服务端：成功了界面才跟着变。
+      if (url.includes('/auth/session/tenant')) {
+        return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }))
+      }
       if (url.includes('/api/admin/tenants')) {
         if (init?.method === 'POST') {
           const body = JSON.parse(String(init.body)) as { tenant_id: string; name: string }
@@ -48,13 +72,9 @@ function stubApi(
 }
 
 beforeEach(() => {
-  sessionStorage.setItem('admin_session_token', 'test-token')
+  resetAdminSession()
   // 这些用例要测的是切租户/导航的行为，需要管理员身份——member 的租户
   // 是登录时绑定的，切换这个能力对它不存在。
-  sessionStorage.setItem('admin_role', 'admin')
-  sessionStorage.setItem('admin_username', 'admin')
-  // 切换租户会写进 sessionStorage，不清掉的话测试之间会串。
-  sessionStorage.setItem('admin_current_tenant', 'demo')
   localStorage.clear()
   stubApi()
 })

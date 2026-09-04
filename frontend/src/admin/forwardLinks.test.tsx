@@ -7,6 +7,34 @@ import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { ADMIN_ROUTES } from '../adminRoutes'
+import { resetAdminSession } from './useAdminAuth'
+
+/**
+ * 身份不再存 sessionStorage（token 在 HttpOnly Cookie 里，JS 读不到，也
+ * 塞不进去）：界面从 whoami 拿身份，所以这里要打桩的是 whoami。
+ */
+let signedInRole: 'admin' | 'member' | null = null
+
+function whoamiResponse() {
+  if (signedInRole === null) {
+    return Promise.resolve(new Response(JSON.stringify({ detail: '未登录' }), { status: 401 }))
+  }
+  return Promise.resolve(
+    new Response(
+      JSON.stringify({
+        username: signedInRole === 'admin' ? 'admin' : 'alice',
+        role: signedInRole,
+        tenant_id: signedInRole === 'admin' ? null : 'demo',
+        current_tenant_id: 'demo',
+      }),
+      { status: 200 },
+    ),
+  )
+}
+
+function signIn(role: 'admin' | 'member') {
+  signedInRole = role
+}
 
 /**
  * 前向出口：第三条「这一步做完了，接下来去哪」。
@@ -34,6 +62,7 @@ function stubApi() {
     'fetch',
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      if (url.includes('/auth/whoami')) return whoamiResponse()
       const method = init?.method ?? 'GET'
       const json = (body: unknown, status = 200) =>
         Promise.resolve(new Response(JSON.stringify(body), { status }))
@@ -129,14 +158,9 @@ function stubCompletedRun(report: { dry_run: boolean }) {
   }
 }
 
-function signIn(role: 'admin' | 'member') {
-  sessionStorage.setItem('admin_session_token', 'tok')
-  sessionStorage.setItem('admin_username', role === 'admin' ? 'admin' : 'alice')
-  sessionStorage.setItem('admin_role', role)
-  sessionStorage.setItem('admin_current_tenant', 'demo')
-}
-
 beforeEach(() => {
+  signedInRole = null
+  resetAdminSession()
   sessionStorage.clear()
   localStorage.clear()
   runsListResponse = []

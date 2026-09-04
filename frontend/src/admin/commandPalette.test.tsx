@@ -8,6 +8,25 @@ import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { ADMIN_ROUTES, NAV_GROUPS } from '../adminRoutes'
 import { commandPaletteHint } from './shortcutHint'
+import { resetAdminSession } from './useAdminAuth'
+
+/**
+ * 身份不再存 sessionStorage（token 在 HttpOnly Cookie 里，JS 读不到，也
+ * 塞不进去）：界面从 whoami 拿身份，所以这里要打桩的是 whoami。
+ */
+function whoamiResponse() {
+  return Promise.resolve(
+    new Response(
+      JSON.stringify({
+        username: 'alice',
+        role: 'member',
+        tenant_id: 'demo',
+        current_tenant_id: 'demo',
+      }),
+      { status: 200 },
+    ),
+  )
+}
 
 /**
  * ⌘K 里的导航条目。
@@ -18,9 +37,14 @@ import { commandPaletteHint } from './shortcutHint'
  */
 
 beforeEach(() => {
-  sessionStorage.setItem('admin_session_token', 'test-token')
+  resetAdminSession()
   localStorage.clear()
-  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) =>
+      String(input).includes('/auth/whoami') ? whoamiResponse() : new Promise(() => {}),
+    ),
+  )
 })
 
 function Probe() {

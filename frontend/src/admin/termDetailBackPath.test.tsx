@@ -7,6 +7,25 @@ import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { ADMIN_ROUTES } from '../adminRoutes'
+import { resetAdminSession } from './useAdminAuth'
+
+/**
+ * 身份不再存 sessionStorage（token 在 HttpOnly Cookie 里，JS 读不到，也
+ * 塞不进去）：界面从 whoami 拿身份，所以这里要打桩的是 whoami。
+ */
+function whoamiResponse() {
+  return Promise.resolve(
+    new Response(
+      JSON.stringify({
+        username: 'alice',
+        role: 'member',
+        tenant_id: 'demo',
+        current_tenant_id: 'demo',
+      }),
+      { status: 200 },
+    ),
+  )
+}
 
 /**
  * 「答错了 → 哪个实体不对」这条路上的返回键。
@@ -57,6 +76,7 @@ function stubApi() {
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
+      if (url.includes('/auth/whoami')) return whoamiResponse()
       const json = (body: unknown) =>
         Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
       if (/\/diagnostics\/\d+/.test(url)) return json(DETAIL)
@@ -70,8 +90,7 @@ function stubApi() {
 }
 
 beforeEach(() => {
-  sessionStorage.setItem('admin_session_token', 'test-token')
-  sessionStorage.setItem('admin_current_tenant', 'demo')
+  resetAdminSession()
   localStorage.clear()
   stubApi()
 })

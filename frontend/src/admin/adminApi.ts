@@ -1,8 +1,10 @@
 import { readCsrfToken } from '../lib/csrf'
+import { markSessionExpired } from './useAdminAuth'
 
 /**
  * `_sessionToken` 保留只是因为 21 个调用方还在传它：会话已经改成 HttpOnly
- * Cookie，JS 读不到、也不需要再手工塞 Authorization 头。Task 6 一并清理。
+ * Cookie，JS 读不到、也不需要再手工塞 Authorization 头。调用方现在传的是
+ * useAdminAuth 给的哨兵值（"会话已就绪"），不是任何真实令牌。
  */
 export async function adminFetch(
   path: string,
@@ -25,8 +27,10 @@ export async function adminFetch(
     headers,
   })
   if (response.status === 401) {
-    sessionStorage.removeItem('admin_session_token')
-    window.location.href = '/admin/login'
+    // 服务端已经不认这个会话了（会话是进程内的，后端一重启就全员失效）。
+    // 清掉本地状态，AdminLayout 看到 anonymous 会把人送回登录页——不清的
+    // 话界面会一直显示已登录，而每个请求都 401。
+    markSessionExpired()
     throw new Error('登录已过期')
   }
   return response
@@ -57,20 +61,4 @@ export function extractErrorDetail(body: unknown, fallback: string): string {
     }
   }
   return fallback
-}
-
-/**
- * 让服务端立即失效这个 session（而不是只清本地 sessionStorage）。网络失败
- * 时静默忽略——登出流程无论如何都要走完，服务端 session 反正也会在 8h
- * TTL 后自然过期，不值得为此打断用户登出、也不需要额外的 UI 报错。
- */
-export async function logoutSession(sessionToken: string): Promise<void> {
-  try {
-    await fetch('/api/admin/auth/logout', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${sessionToken}` },
-    })
-  } catch {
-    // 见上方注释：忽略网络错误
-  }
 }

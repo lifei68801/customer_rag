@@ -6,7 +6,7 @@ const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
 export function LoginPage() {
-  const { sessionToken, login } = useAdminAuth()
+  const { status, login } = useAdminAuth()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -16,7 +16,12 @@ export function LoginPage() {
     document.title = '管理后台登录 · 客服问答 Demo'
   }, [])
 
-  if (sessionToken) {
+  // 会话状态未知时先不画：把登录表单闪给一个其实还登录着的人，他会以为
+  // 自己被登出了。
+  if (status === 'loading') {
+    return null
+  }
+  if (status === 'authenticated') {
     return <Navigate to="/admin" replace />
   }
 

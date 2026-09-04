@@ -7,6 +7,25 @@ import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { ADMIN_ROUTES } from '../adminRoutes'
+import { resetAdminSession } from './useAdminAuth'
+
+/**
+ * 身份不再存 sessionStorage（token 在 HttpOnly Cookie 里，JS 读不到，也
+ * 塞不进去）：界面从 whoami 拿身份，所以这里要打桩的是 whoami。
+ */
+function whoamiResponse() {
+  return Promise.resolve(
+    new Response(
+      JSON.stringify({
+        username: 'alice',
+        role: 'member',
+        tenant_id: 'demo',
+        current_tenant_id: 'demo',
+      }),
+      { status: 200 },
+    ),
+  )
+}
 
 /**
  * 「确认 schema」这个动作在页面上的位置和出现时机。
@@ -26,6 +45,7 @@ function stubOntology({ confirmed }: { confirmed: boolean }) {
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
+      if (url.includes('/auth/whoami')) return whoamiResponse()
       const json = (body: unknown) =>
         Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
       if (url.includes('/ontology/') && url.includes('/status')) return json({ confirmed })
@@ -46,8 +66,7 @@ function stubOntology({ confirmed }: { confirmed: boolean }) {
 }
 
 beforeEach(() => {
-  sessionStorage.setItem('admin_session_token', 'test-token')
-  sessionStorage.setItem('admin_current_tenant', 'demo')
+  resetAdminSession()
   localStorage.clear()
 })
 
@@ -139,6 +158,7 @@ describe('terms/summary 失败不阻断差异预览', () => {
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input)
+        if (url.includes('/auth/whoami')) return whoamiResponse()
         const json = (body: unknown, status = 200) =>
           Promise.resolve(new Response(JSON.stringify(body), { status }))
         if (url.includes('/ontology/') && url.includes('/status')) return json({ confirmed: false })
@@ -197,6 +217,7 @@ describe('terms/summary 挂起时按钮要有反应', () => {
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input)
+        if (url.includes('/auth/whoami')) return whoamiResponse()
         const json = (body: unknown) =>
           Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
         if (url.includes('/ontology/') && url.includes('/status')) return json({ confirmed: false })

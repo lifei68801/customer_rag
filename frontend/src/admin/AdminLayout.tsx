@@ -90,7 +90,7 @@ function AdminNav() {
 }
 
 export function AdminLayout() {
-  const { sessionToken, logout } = useAdminAuth()
+  const { status, logout } = useAdminAuth()
   const { pathname } = useLocation()
   const [drawerOpen, setDrawerOpen] = useState(false)
 
@@ -109,7 +109,13 @@ export function AdminLayout() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [drawerOpen])
 
-  if (!sessionToken) {
+  // 会话状态未知时（whoami 还没回来）两个方向都不能走：渲染后台会让
+  // Cookie 已失效的人看到一屏取不到数的界面，跳登录页则会把还登录着的人
+  // 一脚踢出去。
+  if (status === 'loading') {
+    return null
+  }
+  if (status === 'anonymous') {
     return <Navigate to="/admin/login" replace />
   }
 

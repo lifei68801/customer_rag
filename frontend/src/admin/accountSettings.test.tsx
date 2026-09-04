@@ -7,6 +7,25 @@ import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { ADMIN_ROUTES, NAV_GROUPS, NAV_STANDALONE } from '../adminRoutes'
+import { resetAdminSession } from './useAdminAuth'
+
+/**
+ * 身份不再存 sessionStorage（token 在 HttpOnly Cookie 里，JS 读不到，也
+ * 塞不进去）：界面从 whoami 拿身份，所以这里要打桩的是 whoami。
+ */
+function whoamiResponse() {
+  return Promise.resolve(
+    new Response(
+      JSON.stringify({
+        username: 'alice',
+        role: 'member',
+        tenant_id: 'demo',
+        current_tenant_id: 'demo',
+      }),
+      { status: 200 },
+    ),
+  )
+}
 
 /**
  * 账号相关的东西从侧边栏收走，只留工作流程。
@@ -20,13 +39,20 @@ import { ADMIN_ROUTES, NAV_GROUPS, NAV_STANDALONE } from '../adminRoutes'
  */
 
 beforeEach(() => {
-  sessionStorage.setItem('admin_session_token', 'test-token')
+  resetAdminSession()
   localStorage.clear()
-  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) =>
+      String(input).includes('/auth/whoami') ? whoamiResponse() : new Promise(() => {}),
+    ),
+  )
 })
 
-function renderAt(path: string) {
-  return render(
+// 会话状态是异步的（身份从 whoami 读，token 在 HttpOnly Cookie 里 JS 读不
+// 到），后台外壳要等 whoami 回来才画得出来。不等的话断言会对着一棵空树跑。
+async function renderAt(path: string) {
+  const result = render(
     <SkinProvider>
       <ConfirmProvider>
         <ToastProvider>
@@ -37,18 +63,20 @@ function renderAt(path: string) {
       </ConfirmProvider>
     </SkinProvider>,
   )
+  await screen.findByTestId('admin-topbar')
+  return result
 }
 
 const aside = () => within(screen.getByRole('complementary'))
 
 describe('设置页', () => {
-  it('皮肤和密度都在这里', () => {
-    renderAt(ADMIN_ROUTES.settings)
+  it('皮肤和密度都在这里', async () => {
+    await renderAt(ADMIN_ROUTES.settings)
     expect(screen.getByLabelText('切换配色皮肤')).toBeTruthy()
     expect(screen.getByLabelText('切换列表密度')).toBeTruthy()
   })
 
-  it('不出现在工作流导航里——它不是流程的一站', () => {
+  it('不出现在工作流导航里——它不是流程的一站', async () => {
     const inNav = [
       ...NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path)),
       ...NAV_STANDALONE.map((i) => i.path),
@@ -58,23 +86,23 @@ describe('设置页', () => {
 })
 
 describe('侧边栏', () => {
-  it('不再直接摆着皮肤和密度', () => {
-    renderAt(ADMIN_ROUTES.documents)
+  it('不再直接摆着皮肤和密度', async () => {
+    await renderAt(ADMIN_ROUTES.documents)
     expect(aside().queryByLabelText('切换配色皮肤')).toBeNull()
     expect(aside().queryByLabelText('切换列表密度')).toBeNull()
   })
 
-  it('当前租户名仍然常驻——它是数据作用域，不是偏好', () => {
+  it('当前租户名仍然常驻——它是数据作用域，不是偏好', async () => {
     // 切换动作收进了菜单，名字没有。看不到当前租户的代价是往错的租户里
     // 导数据，不可撤销；看不到皮肤设置的代价是多点一下。
-    renderAt(ADMIN_ROUTES.documents)
+    await renderAt(ADMIN_ROUTES.documents)
     expect(aside().getByRole('button', { name: /账号与租户/ })).toBeTruthy()
   })
 })
 
 describe('账号菜单', () => {
-  it('默认收着', () => {
-    renderAt(ADMIN_ROUTES.documents)
+  it('默认收着', async () => {
+    await renderAt(ADMIN_ROUTES.documents)
     expect(aside().getByRole('button', { name: /账号与租户/ }).getAttribute('aria-expanded')).toBe(
       'false',
     )
@@ -83,7 +111,7 @@ describe('账号菜单', () => {
 
   it('点开有设置和登出', async () => {
     const user = userEvent.setup()
-    renderAt(ADMIN_ROUTES.documents)
+    await renderAt(ADMIN_ROUTES.documents)
     await user.click(aside().getByRole('button', { name: /账号与租户/ }))
     // 菜单里它们的角色是 menuitem，不是 link/button——role 属性覆盖了
     // 元素的隐含角色，这正是屏幕阅读器听到的。
@@ -99,7 +127,7 @@ describe('账号菜单', () => {
 
   it('Escape 关上', async () => {
     const user = userEvent.setup()
-    renderAt(ADMIN_ROUTES.documents)
+    await renderAt(ADMIN_ROUTES.documents)
     await user.click(aside().getByRole('button', { name: /账号与租户/ }))
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('menu', { name: '账号与租户' })).toBeNull()
@@ -107,7 +135,7 @@ describe('账号菜单', () => {
 
   it('选完就关——菜单的用途是选一项', async () => {
     const user = userEvent.setup()
-    renderAt(ADMIN_ROUTES.documents)
+    await renderAt(ADMIN_ROUTES.documents)
     await user.click(aside().getByRole('button', { name: /账号与租户/ }))
     await user.click(
       within(screen.getByRole('menu', { name: '账号与租户' })).getByRole('menuitem', { name: '设置' }),
