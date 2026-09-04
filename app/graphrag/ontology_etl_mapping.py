@@ -46,15 +46,24 @@ async def set_draft_etl_mapping(
     config_yaml: str,
     source_file_name: str,
     created_at: str,
+    commit: bool = True,
 ) -> None:
-    """整份替换草稿映射。一个租户的草稿只有一份，没有增量语义。"""
+    """整份替换草稿映射。一个租户的草稿只有一份，没有增量语义。
+
+    commit=False 给的是"这次写入只是某个更大的写入阶段里的一步"的调用方：
+    replace_draft 的 docstring 论证过它为什么只在末尾提交一次（先做完全部
+    校验、写入阶段不会再失败），本函数在它中间自带一次 commit 会把那个论证
+    作废——三张草稿表已经写完、checkout 标记还没写，崩在这个窗口里下一次
+    checkout_draft 会把 confirmed 行复制回来盖在引导刚写的草稿上。
+    """
     await conn.execute(
         "INSERT OR REPLACE INTO ontology_etl_mapping "
         "(tenant_id, status, config_yaml, source_file_name, created_at) "
         "VALUES (?, 'draft', ?, ?, ?)",
         (tenant_id, config_yaml, source_file_name, created_at),
     )
-    await conn.commit()
+    if commit:
+        await conn.commit()
 
 
 async def get_etl_mapping(

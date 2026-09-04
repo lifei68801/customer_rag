@@ -439,6 +439,9 @@ async def replace_draft(
             config_yaml=etl_mapping["config_yaml"],
             source_file_name=etl_mapping["source_file_name"],
             created_at=datetime.now().isoformat(),
+            # 不在这里提交：本函数只在末尾提交一次（见上面 docstring 里
+            # 关于单例连接的那段论证）。
+            commit=False,
         )
 
     await conn.execute(
