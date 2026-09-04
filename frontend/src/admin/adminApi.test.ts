@@ -1,9 +1,18 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { adminFetch } from './adminApi'
 
+const CSRF_COOKIE = 'customer_rag_csrf'
+
+function setCsrfCookie(value: string): void {
+  document.cookie = `${CSRF_COOKIE}=${value}; path=/`
+}
+
 describe('adminFetch', () => {
   beforeEach(() => {
-    document.cookie = 'customer_rag_csrf=tok123; path=/'
+    // jsdom 的 cookie 在同一个测试文件里是共享的，所以每条用例先清干净、
+    // 再由需要令牌的那几条自己设——否则「没有 CSRF Cookie」那条会被上一条
+    // 用例留下的值污染，测不到它想测的分支。
+    document.cookie = `${CSRF_COOKIE}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`
   })
 
   it('带上 Cookie，不再手工塞 Authorization 头', async () => {
@@ -16,6 +25,7 @@ describe('adminFetch', () => {
       Promise.resolve(new Response('{}')),
     )
     vi.stubGlobal('fetch', fetchMock)
+    setCsrfCookie('tok123')
     await adminFetch('/api/admin/whoami', '')
     const init = fetchMock.mock.calls[0][1] as RequestInit
     expect(init.credentials).toBe('include')
@@ -29,6 +39,7 @@ describe('adminFetch', () => {
       Promise.resolve(new Response('{}')),
     )
     vi.stubGlobal('fetch', fetchMock)
+    setCsrfCookie('tok123')
 
     await adminFetch('/api/admin/x', '', { method: 'POST' })
     expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get('X-CSRF-Token')).toBe('tok123')
@@ -36,5 +47,19 @@ describe('adminFetch', () => {
     fetchMock.mockClear()
     await adminFetch('/api/admin/x', '')
     expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get('X-CSRF-Token')).toBeNull()
+  })
+
+  it('没有 CSRF Cookie 时写请求根本不带这个头', async () => {
+    // 未登录本来就没有令牌，硬塞一个空值只会把服务端的 401 变成更难懂的
+    // 403。断言的是这个头「不存在」而不是「不等于 tok123」——空字符串既不
+    // 等于 tok123 也不等于 null，用错断言的话塞空值的实现照样能溜过去。
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response('{}')),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await adminFetch('/api/admin/x', '', { method: 'POST' })
+    const headers = new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers)
+    expect(headers.has('X-CSRF-Token')).toBe(false)
   })
 })
