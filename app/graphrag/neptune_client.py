@@ -365,6 +365,15 @@ class NeptuneGraphClient:
             "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
         )
 
+    async def delete_relation_edge(
+        self, *, tenant_id: str, subject_node_key: str, relation_type: str,
+        object_node_key: str,
+    ) -> int:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 delete_relation_edge——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
     async def probe_relation_fanout(
         self,
         *,

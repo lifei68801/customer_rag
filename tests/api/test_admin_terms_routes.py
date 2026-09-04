@@ -95,7 +95,11 @@ class SpyGraphClient:
         edge_count: int = 0,
         relations: list[dict] | None = None,
         relations_error: Exception | None = None,
+        removed_edges: int = 1,
     ) -> None:
+        # 删边接口：记录收到的定位参数，并模拟"实际删掉几条"。
+        self.deleted_edges: list[dict] = []
+        self._removed_edges = removed_edges
         # 删除被挡住时，409 里要点名挡路的是哪几条边——路由拿这两个字段
         # 模拟图客户端返回的关系明细/读取失败。
         self._relations = relations or []
@@ -128,6 +132,20 @@ class SpyGraphClient:
 
     async def count_relation_edges_for_term(self, *, tenant_id: str, node_key: str) -> int:
         return self._edge_count
+
+    async def delete_relation_edge(
+        self, *, tenant_id: str, subject_node_key: str, relation_type: str,
+        object_node_key: str,
+    ) -> int:
+        self.deleted_edges.append(
+            {
+                "tenant_id": tenant_id,
+                "subject_node_key": subject_node_key,
+                "relation_type": relation_type,
+                "object_node_key": object_node_key,
+            }
+        )
+        return self._removed_edges
 
     async def list_term_relations(self, *, tenant_id: str, node_key: str) -> list[dict]:
         if self._relations_error is not None:
@@ -1746,3 +1764,87 @@ def test_delete_blocked_term_still_reports_the_count_when_edge_lookup_fails(term
     body = response.json()
     assert "2 条" in body["detail"]
     assert body["blocking_relations"]["edges"] == []
+
+
+def _delete_relation(terms_conn, graph_client, query: str):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        return client.delete(
+            f"/api/admin/t1/terms/t:使用中/relations?{query}",
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_delete_outgoing_relation_edge_keeps_the_term_as_the_subject(terms_conn):
+    """direction=out 表示"这个术语指向对端"，主语是它自己。方向映射反了
+    会删掉另一条边——对同一对术语之间的双向关系来说，那正是用户没点的
+    那一条。"""
+    graph_client = SpyGraphClient(removed_edges=1)
+
+    response = _delete_relation(
+        terms_conn, graph_client,
+        "direction=out&relation_type=PART_OF&other_node_key=t:登录域",
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 1}
+    assert graph_client.deleted_edges == [
+        {
+            "tenant_id": "t1",
+            "subject_node_key": "t:使用中",
+            "relation_type": "PART_OF",
+            "object_node_key": "t:登录域",
+        }
+    ]
+
+
+def test_delete_incoming_relation_edge_makes_the_other_term_the_subject(terms_conn):
+    graph_client = SpyGraphClient(removed_edges=1)
+
+    response = _delete_relation(
+        terms_conn, graph_client,
+        "direction=in&relation_type=RELATED_TO&other_node_key=t:错误码E502",
+    )
+
+    assert response.status_code == 200
+    assert graph_client.deleted_edges == [
+        {
+            "tenant_id": "t1",
+            "subject_node_key": "t:错误码E502",
+            "relation_type": "RELATED_TO",
+            "object_node_key": "t:使用中",
+        }
+    ]
+
+
+def test_delete_relation_edge_that_matched_nothing_returns_404(terms_conn):
+    """一条都没删掉却回 200，用户刷新后那条边还在——静默失败。图客户端
+    如实返回 0，接口就必须把它翻译成一个用户看得见的错误。"""
+    graph_client = SpyGraphClient(removed_edges=0)
+
+    response = _delete_relation(
+        terms_conn, graph_client,
+        "direction=out&relation_type=RELATED_TO&other_node_key=t:不存在",
+    )
+
+    assert response.status_code == 404
+    assert "RELATED_TO" in response.json()["detail"]
+
+
+def test_delete_relation_edge_rejects_unknown_direction(terms_conn):
+    graph_client = SpyGraphClient(removed_edges=1)
+
+    response = _delete_relation(
+        terms_conn, graph_client,
+        "direction=sideways&relation_type=RELATED_TO&other_node_key=t:x",
+    )
+
+    assert response.status_code == 422
+    assert graph_client.deleted_edges == []

@@ -324,3 +324,13 @@ async def test_probe_relation_fanout_returns_zero_when_no_edges_match():
         tenant_id="demo", relation_type="BELONG_TO",
         from_term_type="产品", to_term_type="公司", direction="outgoing",
     ) == 0
+
+
+async def test_delete_relation_edge_raises_not_implemented():
+    client = NeptuneGraphClient(client=FakeNeptuneClient())
+
+    with pytest.raises(NotImplementedError, match="delete_relation_edge"):
+        await client.delete_relation_edge(
+            tenant_id="t1", subject_node_key="a", relation_type="RELATED_TO",
+            object_node_key="b",
+        )

@@ -138,3 +138,32 @@ export async function deleteTerm(
     throw new Error(extractErrorDetail(body, '删除术语失败'))
   }
 }
+
+/**
+ * 删掉这个实体参与的一条关系边。
+ *
+ * 边按业务键定位（这个实体 + 方向 + 关系类型 + 对端 node_key），不是按
+ * Neo4j 内部 id——那个 id 重建库之后就变了。direction 跟详情页展示这条边
+ * 时用的是同一个字段，界面上看到的方向就是发出去的方向。
+ */
+export async function deleteTermRelation(
+  sessionToken: string,
+  tenantId: string,
+  nodeKey: string,
+  relation: { direction: 'in' | 'out'; relationType: string; otherNodeKey: string },
+): Promise<void> {
+  const query = new URLSearchParams({
+    direction: relation.direction,
+    relation_type: relation.relationType,
+    other_node_key: relation.otherNodeKey,
+  })
+  const response = await adminFetch(
+    `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(nodeKey)}/relations?${query}`,
+    sessionToken,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(extractErrorDetail(body, '删除关系失败'))
+  }
+}

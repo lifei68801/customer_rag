@@ -1131,3 +1131,77 @@ async def test_count_relation_edges_for_term_counts_each_edge_once():
     await client.count_relation_edges_for_term(tenant_id="t1", node_key="k1")
 
     assert "count(DISTINCT r) AS edge_count" in session.last_query
+
+
+async def test_delete_relation_edge_matches_one_direction_and_returns_removed_count():
+    """按业务键定位一条边：起点 node_key + 关系类型 + 终点 node_key + 租户。
+    Neo4j 内部 id 不稳定（重启/重建后会变），不能拿来当句柄。
+
+    模式必须是有向的——(a)-[r]->(b) 和 (b)-[r]->(a) 是两条不同的边，无向
+    匹配会让"删掉 A 指向 B 的那条"顺手把 B 指向 A 的那条也删了。"""
+    session = FakeSession(rows=[{"removed": 2}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    removed = await client.delete_relation_edge(
+        tenant_id="t1",
+        subject_node_key="错误码E502",
+        relation_type="RELATED_TO",
+        object_node_key="示例登录模块",
+    )
+
+    assert removed == 2
+    assert session.last_parameters == {
+        "tenant_id": "t1",
+        "subject_node_key": "错误码E502",
+        "relation_type": "RELATED_TO",
+        "object_node_key": "示例登录模块",
+    }
+    assert (
+        "MATCH (a:Term {tenant_id: $tenant_id, node_key: $subject_node_key})"
+        "-[r]->(b:Term {tenant_id: $tenant_id, node_key: $object_node_key})"
+    ) in session.last_query
+    assert "DELETE r" in session.last_query
+
+
+async def test_delete_relation_edge_only_deletes_edges_of_this_tenant():
+    """边自己的 tenant_id 也要进过滤条件——两端节点属于本租户、边却标着
+    别的租户的历史脏数据是真实存在的（见 count_relation_edges_for_term 的
+    同款说明），删除路径不能顺手动别的租户的边。"""
+    session = FakeSession(rows=[{"removed": 0}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.delete_relation_edge(
+        tenant_id="t1", subject_node_key="a", relation_type="RELATED_TO", object_node_key="b",
+    )
+
+    assert "r.tenant_id = $tenant_id" in session.last_query
+
+
+async def test_delete_relation_edge_passes_relation_type_as_a_parameter():
+    """关系类型走参数（WHERE type(r) = $relation_type），不拼进查询文本。
+    这个值来自 HTTP 请求，插值就等于把外部输入拼进 Cypher；本文件里其它
+    做插值的地方（execute_structured_filter_query/probe_relation_fanout）都
+    依赖调用方先跑过白名单校验，删边这条路径没有那样一份白名单。"""
+    session = FakeSession(rows=[{"removed": 0}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.delete_relation_edge(
+        tenant_id="t1",
+        subject_node_key="a",
+        relation_type="EVIL_TYPE",
+        object_node_key="b",
+    )
+
+    assert "EVIL_TYPE" not in session.last_query
+    assert "type(r) = $relation_type" in session.last_query
+
+
+async def test_delete_relation_edge_returns_zero_when_no_rows():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    removed = await client.delete_relation_edge(
+        tenant_id="t1", subject_node_key="a", relation_type="RELATED_TO", object_node_key="b",
+    )
+
+    assert removed == 0

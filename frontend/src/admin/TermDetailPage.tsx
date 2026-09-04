@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, Unlink } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Trash2, Unlink } from 'lucide-react'
 import { ADMIN_ROUTES } from '../adminRoutes'
 import { adminFetch, extractErrorDetail } from './adminApi'
+import { useConfirm } from './ConfirmContext'
+import { useToast } from './ToastContext'
+import { deleteTermRelation } from './termsApi'
 import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
 import { useAdminAuth } from './useAdminAuth'
@@ -55,6 +58,25 @@ export function termDetailLink(nodeKey: string, origin?: TermOrigin) {
   return { to: termDetailPath(nodeKey), state: origin ? { origin } : undefined }
 }
 
+/**
+ * 一条关系边的人话写法：「主语 -类型-> 宾语」。
+ *
+ * 删边不可逆，按钮和确认框都得用它——一排只写「删除」的按钮，用户（和
+ * 读屏软件）分不出按下去掉的是哪条。direction 是相对当前实体说的，
+ * 'in' 表示对端才是主语，写反了指的就是另一条边。
+ */
+export function relationLabel(relation: TermRelation, termStandardName: string): string {
+  const other = relation.standard_name || relation.node_key
+  return relation.direction === 'out'
+    ? `${termStandardName} -${relation.relation_type}-> ${other}`
+    : `${other} -${relation.relation_type}-> ${termStandardName}`
+}
+
+/** 同一对实体之间可能有多种关系类型，key 得把类型和方向都算进去。 */
+function relationKey(relation: TermRelation): string {
+  return `${relation.direction}:${relation.relation_type}:${relation.node_key}`
+}
+
 const card = 'rounded-card border border-subtle bg-card p-4'
 const sectionTitle = 'font-mono text-sm font-bold uppercase tracking-wide text-ink-soft'
 
@@ -72,9 +94,15 @@ export function TermDetailPage() {
   const origin = (state as { origin?: TermOrigin } | null)?.origin ?? DEFAULT_ORIGIN
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
+  const confirm = useConfirm()
+  const showToast = useToast()
   const [term, setTerm] = useState<TermDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
+  // 删边失败要单独说，不能复用 error——那个一亮整页就只剩一条报错，
+  // 属性和别名都看不见了，而它们其实还好好的。
+  const [relationError, setRelationError] = useState<string | null>(null)
+  const [deletingRelation, setDeletingRelation] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!sessionToken || !nodeKey) return
@@ -97,6 +125,27 @@ export function TermDetailPage() {
       setLoaded(true)
     }
   }, [sessionToken, tenantId, nodeKey])
+
+  const handleDeleteRelation = async (relation: TermRelation) => {
+    if (!sessionToken || !term || deletingRelation !== null) return
+    const label = relationLabel(relation, term.standard_name)
+    if (!(await confirm(`确定要删除关系「${label}」吗？此操作不可撤销。`))) return
+    setRelationError(null)
+    setDeletingRelation(relationKey(relation))
+    try {
+      await deleteTermRelation(sessionToken, tenantId, term.node_key, {
+        direction: relation.direction,
+        relationType: relation.relation_type,
+        otherNodeKey: relation.node_key,
+      })
+      showToast('已删除关系')
+      await refresh()
+    } catch (err) {
+      setRelationError(err instanceof Error ? err.message : '删除关系失败')
+    } finally {
+      setDeletingRelation(null)
+    }
+  }
 
   useEffect(() => {
     refresh().catch((err) => console.error('加载实体失败', err))
@@ -210,12 +259,23 @@ export function TermDetailPage() {
           />
         ) : (
           <div className="flex flex-col gap-4">
+            {relationError && (
+              <p
+                role="alert"
+                className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink"
+              >
+                {relationError}
+              </p>
+            )}
             <RelationGroup
               title="它指向"
               icon={ArrowRight}
               relations={outgoing}
               emptyHint="没有从这个实体出发的关系。"
               origin={origin}
+              termStandardName={term.standard_name}
+              onDelete={handleDeleteRelation}
+              deletingRelation={deletingRelation}
             />
             <RelationGroup
               title="指向它"
@@ -223,6 +283,9 @@ export function TermDetailPage() {
               relations={incoming}
               emptyHint="没有指向这个实体的关系。"
               origin={origin}
+              termStandardName={term.standard_name}
+              onDelete={handleDeleteRelation}
+              deletingRelation={deletingRelation}
             />
           </div>
         )}
@@ -237,6 +300,9 @@ function RelationGroup({
   relations,
   emptyHint,
   origin,
+  termStandardName,
+  onDelete,
+  deletingRelation,
 }: {
   title: string
   icon: typeof ArrowRight
@@ -245,6 +311,9 @@ function RelationGroup({
   // 沿着关系一路点下去，返回键还得指回最初的起点——每跳一次就把来路
   // 换成上一个实体的话，回去要点的次数和跳的次数一样多。
   origin: TermOrigin
+  termStandardName: string
+  onDelete: (relation: TermRelation) => void
+  deletingRelation: string | null
 }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -258,7 +327,7 @@ function RelationGroup({
         <ul className="flex flex-col gap-1">
           {relations.map((relation) => (
             <li
-              key={`${relation.relation_type}:${relation.node_key}`}
+              key={relationKey(relation)}
               className="flex flex-wrap items-center gap-2 rounded-card border border-subtle bg-card px-3 py-2 text-sm"
             >
               <span className="rounded-chip bg-accent-secondary px-2 py-0.5 text-xs font-bold text-on-accent">
@@ -273,6 +342,18 @@ function RelationGroup({
               {relation.term_type && (
                 <span className="text-xs text-ink-soft">{relation.term_type}</span>
               )}
+              <button
+                type="button"
+                // 无障碍名字里带上整条边——一排都叫"删除"的按钮，读屏软件
+                // 念出来完全一样，而这个操作删错了收不回来。
+                aria-label={`删除关系 ${relationLabel(relation, termStandardName)}`}
+                title="删除这条关系"
+                disabled={deletingRelation !== null}
+                onClick={() => onDelete(relation)}
+                className="ml-auto cursor-pointer rounded-control border border-subtle bg-card p-1.5 text-ink-soft transition hover:text-status-error-strong disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Trash2 aria-hidden="true" className="h-4 w-4" />
+              </button>
             </li>
           ))}
         </ul>

@@ -261,6 +261,34 @@ RETURN count(DISTINCT r) AS edge_count
 # 写入的 RELATED_TO/PART_OF/... 这些），排除 ALIAS_OF 避免每个术语只要
 # 有别名就永远无法删除。
 
+_DELETE_RELATION_EDGE_QUERY = """
+MATCH (a:Term {tenant_id: $tenant_id, node_key: $subject_node_key})-[r]->(b:Term {tenant_id: $tenant_id, node_key: $object_node_key})
+WHERE type(r) = $relation_type AND r.tenant_id = $tenant_id
+DELETE r
+RETURN count(r) AS removed
+"""
+# 按业务键定位一条边：起点 node_key + 关系类型 + 终点 node_key + 租户。
+# Neo4j 的内部关系 id 不稳定（重建/恢复后会变），不能拿来当外部句柄。
+#
+# 有向模式：(a)-[r]->(b) 和 (b)-[r]->(a) 是两条不同的边，无向匹配会让
+# “删掉 A 指向 B 的那条”顺手把 B 指向 A 的那条也删了。同一对节点、同一
+# 类型、同一租户下如果存在多条平行边（merge_relation 的 MERGE 语义不会
+# 产生，但历史数据里可能有），这条语句会把它们一起删掉并如实返回条数——
+# 业务键在这个粒度上不区分它们，删一半留一半反而是更差的结果。
+#
+# 关系类型走 $relation_type 参数（WHERE type(r) = ...）而不是插值进模式：
+# 这个值来自 HTTP 请求，本文件里其它做插值的地方（execute_structured_filter_
+# query / probe_relation_fanout）都以“调用方已跑过白名单校验”为前提，删边
+# 这条路径没有那样一份白名单。
+#
+# r.tenant_id = $tenant_id 同 _COUNT_TERM_RELATION_EDGES_QUERY：两端节点属于
+# 本租户、边却标着别的租户的历史脏数据是真实存在的，删除路径不能顺手动
+# 别的租户的边。
+#
+# DELETE 之后 RETURN count(r) 统计的是本次匹配+删除的行数，不是删除后剩余
+# 的边数——这个语义已经在 _DELETE_STALE_RELATIONS_QUERY 上用真实 Neo4j
+# 5.22 验证过（见该查询的说明）。
+
 _RENAME_TERM_NODE_QUERY = """
 MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})
 SET t.standard_name = $new_standard_name
@@ -367,6 +395,11 @@ class GraphWriteProtocol(Protocol):
     async def list_term_relations(
         self, *, tenant_id: str, node_key: str
     ) -> list[dict[str, Any]]: ...
+
+    async def delete_relation_edge(
+        self, *, tenant_id: str, subject_node_key: str, relation_type: str,
+        object_node_key: str,
+    ) -> int: ...
 
     async def ensure_extra_field_indexes(
         self, *, tenant_id: str, term_type: str, extra_fields: list["ExtraFieldSpec"]
@@ -803,6 +836,33 @@ class Neo4jGraphClient:
             await session.run(
                 _DELETE_TERM_NODE_QUERY, {"tenant_id": tenant_id, "node_key": node_key}
             )
+
+    async def delete_relation_edge(
+        self,
+        *,
+        tenant_id: str,
+        subject_node_key: str,
+        relation_type: str,
+        object_node_key: str,
+    ) -> int:
+        """删掉一条关系边，返回实际删掉的条数（0 表示没有匹配到）。
+
+        调用方必须把 0 当成“这条边不在了”如实报出去，不能静默当成成功——
+        用户点了删除、界面上那条却还在，比报错更难排查。定位方式和有向/
+        租户过滤的理由见 _DELETE_RELATION_EDGE_QUERY 的说明。
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                _DELETE_RELATION_EDGE_QUERY,
+                {
+                    "tenant_id": tenant_id,
+                    "subject_node_key": subject_node_key,
+                    "relation_type": relation_type,
+                    "object_node_key": object_node_key,
+                },
+            )
+            rows = await result.data()
+            return rows[0]["removed"] if rows else 0
 
     async def ensure_tenant_scoped_schema(self) -> None:
         """建按租户/节点键、按租户/分类的属性索引，并把存量（本次改造前

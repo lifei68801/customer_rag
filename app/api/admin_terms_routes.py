@@ -516,6 +516,47 @@ async def update_existing_term(
     return _to_response(term)
 
 
+# 必须排在 DELETE /{node_key} 前面：FastAPI 按定义顺序匹配，反过来的话
+# node_key 里带斜杠的实体（ETL 的 node_key 模板允许）会先命中那条。
+@router.delete("/{node_key}/relations")
+async def delete_term_relation_edge(
+    tenant_id: str,
+    node_key: str,
+    relation_type: str,
+    other_node_key: str,
+    direction: Literal["out", "in"],
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+) -> dict[str, int]:
+    """删掉这个术语参与的一条关系边，返回实际删掉的条数。
+
+    边按业务键定位：起点 node_key + 关系类型 + 终点 node_key + 租户
+    （Neo4j 内部 id 不稳定，不能当外部句柄，见 _DELETE_RELATION_EDGE_QUERY）。
+    direction 是相对路径里这个术语说的，跟详情页 GET 返回的关系明细同一套
+    口径："out" 表示它是主语，"in" 表示对端是主语——前端照它展示什么就传
+    什么，不用自己推断谁是主语。
+
+    删除是不可逆的：一条都没匹配上时报 404 而不是回 200。回 200 的话用户
+    刷新后那条边还在，却没有任何地方提示他删的不是它。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    subject, obj = (
+        (node_key, other_node_key) if direction == "out" else (other_node_key, node_key)
+    )
+    removed = await graph_client.delete_relation_edge(
+        tenant_id=tenant_id,
+        subject_node_key=subject,
+        relation_type=relation_type,
+        object_node_key=obj,
+    )
+    if removed == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"没有找到这条关系（{subject} -{relation_type}-> {obj}），它可能已经被删掉了",
+        )
+    return {"deleted": removed}
+
+
 @router.delete("/{node_key}")
 async def delete_existing_term(
     tenant_id: str,
