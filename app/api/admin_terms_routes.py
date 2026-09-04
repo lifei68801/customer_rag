@@ -10,6 +10,7 @@ from pydantic import BaseModel, field_validator
 import aiosqlite
 
 from app.api import deps
+from app.api.admin_session import AdminSession
 from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.duplicate_detection import find_similar_terms
 from app.graphrag.neo4j_client import GraphWriteProtocol
@@ -146,6 +147,33 @@ class TermRelation(BaseModel):
     term_type: str | None = None
 
 
+class InconsistentTermRelation(BaseModel):
+    """一条租户标记异常的关系边。
+
+    node_key/standard_name/term_type/other_tenant_id 可空：跨租户的边上，
+    对端节点是另一个租户的数据，只有平台管理员看得到它的身份（见
+    list_inconsistent_term_relations）。
+    """
+
+    direction: Literal["in", "out"]
+    relation_type: str
+    node_key: str | None
+    standard_name: str | None
+    term_type: str | None
+    other_tenant_id: str | None
+    edge_tenant_id: str | None
+    #: edge_tenant_mismatch = 两端节点都在本租户，边自己标着别的租户；
+    #: cross_tenant = 两端节点分属不同租户，隔离本身已经破了。
+    category: Literal["edge_tenant_mismatch", "cross_tenant"]
+    #: 当前登录者能不能删这一条。前端据此决定是否给删除按钮——不给出这个
+    #: 字段的话，member 只能靠点一下撞 403 才知道自己删不了。
+    deletable: bool
+
+
+class InconsistentTermRelationListResponse(BaseModel):
+    relations: list[InconsistentTermRelation]
+
+
 class TermDetailResponse(TermResponse):
     #: None 表示关系拉取失败，[] 表示确实没有关系。两者必须分开：孤立实体
     #: 对检索基本无用，是个真实且重要的状态，不能跟「Neo4j 挂了」混为一谈。
@@ -184,6 +212,143 @@ async def get_terms_summary(
     return TermSummaryResponse(
         groups=[TermTypeGroup(term_type=t, total=n) for t, n in groups]
     )
+
+
+def _to_inconsistent_relation(
+    row: dict[str, Any], *, tenant_id: str, is_platform_admin: bool
+) -> InconsistentTermRelation:
+    """一行脏边转成响应对象，并决定当前登录者能看到多少、能不能删。
+
+    对端租户为空（历史上没回填过 tenant_id 的节点）也按跨租户处理：那种
+    节点的归属无从判断，按更严的那一档处理不会造成越权。启动时的节点回填
+    跑过之后不该再出现这种行。
+    """
+    other_tenant_id = row.get("other_tenant_id")
+    is_cross_tenant = other_tenant_id != tenant_id
+    masked = is_cross_tenant and not is_platform_admin
+    return InconsistentTermRelation(
+        # 方向和关系类型说的是"本租户这个节点身上挂着什么"，不是对端的
+        # 信息，遮蔽时也保留——否则那一行什么都没说，用户看了也不知道
+        # 该找谁。
+        direction=row.get("direction", "out"),
+        relation_type=row.get("relation_type", "?"),
+        node_key=None if masked else row.get("node_key"),
+        standard_name=None if masked else row.get("standard_name"),
+        term_type=None if masked else row.get("term_type"),
+        other_tenant_id=None if masked else other_tenant_id,
+        edge_tenant_id=None if masked else row.get("edge_tenant_id"),
+        category="cross_tenant" if is_cross_tenant else "edge_tenant_mismatch",
+        deletable=is_platform_admin or not is_cross_tenant,
+    )
+
+
+# 必须排在 GET /{node_key:path} 前面：那条的 path 参数会把
+# "xxx/relations/inconsistent" 整个吞掉，反过来这条永远走不到。
+@router.get(
+    "/{node_key}/relations/inconsistent",
+    response_model=InconsistentTermRelationListResponse,
+)
+async def list_inconsistent_term_relations(
+    tenant_id: str,
+    node_key: str,
+    session: AdminSession = Depends(deps.require_admin_session),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+) -> InconsistentTermRelationListResponse:
+    """这个实体身上租户标记异常的关系边——详情页那份关系清单看不到的那些。
+
+    它们的处境是本项目最反对的那种：既不参与检索、也不参与实体删除守卫，
+    却仍然挂在节点上挡着删除，而界面上一条都看不见。这个接口是它们唯一的
+    出口。
+
+    跨租户的那一类上，对端节点属于另一个租户：只有平台管理员能看到它的
+    身份（node_key/标准名/租户），member 只被告知"这里挂着一条跨租户的
+    边、需要平台管理员处理"。两端都在本租户、只是边标错了租户的那一类
+    不遮蔽——那本来就是自己的数据。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    rows = await graph_client.list_inconsistent_relation_edges(
+        tenant_id=tenant_id, node_key=node_key
+    )
+    is_platform_admin = session.role == "admin"
+    return InconsistentTermRelationListResponse(
+        relations=[
+            _to_inconsistent_relation(
+                row, tenant_id=tenant_id, is_platform_admin=is_platform_admin
+            )
+            for row in rows
+        ]
+    )
+
+
+@router.delete("/{node_key}/relations/inconsistent")
+async def delete_inconsistent_term_relation_edge(
+    tenant_id: str,
+    node_key: str,
+    relation_type: str,
+    other_node_key: str,
+    other_tenant_id: str,
+    direction: Literal["out", "in"],
+    session: AdminSession = Depends(deps.require_admin_session),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+) -> dict[str, int]:
+    """删掉一条租户标记异常的边，返回实际删掉的条数。
+
+    授权判据是**两端节点各自的租户**，不是边自己标的那个——这条路径存在的
+    理由正是边上那个值不可信。具体地：
+
+    * 起点侧固定取 URL 里的 tenant_id，它已经过 require_tenant_access 校验，
+      所以谁也不能借这条路径碰到自己无权的租户的节点；
+    * 两端节点都在这个租户里（边只是标错了租户）时，member 就能删——判据
+      完全落在他有权的范围内，而这条边正挡着他自己的实体删除；
+    * 两端节点分属不同租户时只有平台管理员能删：删掉它同时改变了另一个
+      租户的图谱，member 只对自己那一个租户有权，不能单方面替对面做这个
+      决定。平台管理员对两个租户都有权，由他来判断。
+
+    请求里自报的 other_tenant_id 不构成授权（它只是用来定位对端节点）：
+    填错了只会一条都匹配不上、返回 404，Cypher 那侧仍然按两端节点各自的
+    tenant_id 精确匹配。
+
+    删不掉正常的边：底层语句只匹配违反租户不变式的边（见
+    _DELETE_INCONSISTENT_RELATION_EDGE_QUERY）。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    if other_tenant_id != tenant_id and session.role != "admin":
+        logger.warning(
+            "拒绝跨租户删边：username=%s（租户 %s）想删 %s/%s 与 %s/%s 之间的 %s 边",
+            session.username, session.tenant_id, tenant_id, node_key,
+            other_tenant_id, other_node_key, relation_type,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "这条关系边的另一端属于其他租户，删掉它会同时改变那个租户的图谱——"
+                "只有平台管理员能处理这一类边"
+            ),
+        )
+    subject, obj = (
+        ((tenant_id, node_key), (other_tenant_id, other_node_key))
+        if direction == "out"
+        else ((other_tenant_id, other_node_key), (tenant_id, node_key))
+    )
+    removed = await graph_client.delete_inconsistent_relation_edge(
+        subject_tenant_id=subject[0],
+        subject_node_key=subject[1],
+        relation_type=relation_type,
+        object_tenant_id=obj[0],
+        object_node_key=obj[1],
+    )
+    if removed == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"没有找到这条租户标记异常的关系（{subject[1]} -{relation_type}-> {obj[1]}），"
+                "它可能已经被删掉了，或者它其实是一条正常的边（正常的边请在上面的"
+                "关系列表里删）"
+            ),
+        )
+    return {"deleted": removed}
 
 
 # 注意：这条必须排在 /summary 后面。FastAPI 按定义顺序匹配，反过来的话

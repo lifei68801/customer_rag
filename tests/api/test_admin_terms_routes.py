@@ -63,6 +63,11 @@ async def _open_terms_conn() -> aiosqlite.Connection:
     await create_admin_user(
         conn, username="admin", password="password1", role="admin", tenant_id=None
     )
+    # 租户标记异常的边那条路径要区分 admin 和 member 的权限，两个身份都得
+    # 有一个真实存在且 active 的账号——require_admin_session 每个请求都查库。
+    await create_admin_user(
+        conn, username="member1", password="password1", role="member", tenant_id="t1"
+    )
     for tenant_id in ("t1", "tenant_a", "tenant_b"):
         await create_tenant(conn, tenant_id=tenant_id, name=tenant_id)
     return conn
@@ -88,6 +93,13 @@ def _authed_headers(session_store: AdminSessionStore) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _member_headers(session_store: AdminSessionStore) -> dict[str, str]:
+    """t1 租户的普通成员。跨租户的脏边只有平台管理员能删，这个身份用来钉住
+    "member 借这条路径删不到无权的边"。"""
+    token = session_store.create_session(username="member1", role="member", tenant_id="t1")
+    return {"Authorization": f"Bearer {token}"}
+
+
 class SpyGraphClient:
     def __init__(
         self,
@@ -96,7 +108,12 @@ class SpyGraphClient:
         relations: list[dict] | None = None,
         relations_error: Exception | None = None,
         removed_edges: int = 1,
+        inconsistent: list[dict] | None = None,
     ) -> None:
+        # 租户标记异常的边：列出来的内容，以及收到的删除定位参数。
+        self._inconsistent = inconsistent or []
+        self.listed_inconsistent: list[dict] = []
+        self.deleted_inconsistent_edges: list[dict] = []
         # 删边接口：记录收到的定位参数，并模拟"实际删掉几条"。
         self.deleted_edges: list[dict] = []
         self._removed_edges = removed_edges
@@ -142,6 +159,27 @@ class SpyGraphClient:
                 "tenant_id": tenant_id,
                 "subject_node_key": subject_node_key,
                 "relation_type": relation_type,
+                "object_node_key": object_node_key,
+            }
+        )
+        return self._removed_edges
+
+    async def list_inconsistent_relation_edges(
+        self, *, tenant_id: str, node_key: str
+    ) -> list[dict]:
+        self.listed_inconsistent.append({"tenant_id": tenant_id, "node_key": node_key})
+        return self._inconsistent
+
+    async def delete_inconsistent_relation_edge(
+        self, *, subject_tenant_id: str, subject_node_key: str, relation_type: str,
+        object_tenant_id: str, object_node_key: str,
+    ) -> int:
+        self.deleted_inconsistent_edges.append(
+            {
+                "subject_tenant_id": subject_tenant_id,
+                "subject_node_key": subject_node_key,
+                "relation_type": relation_type,
+                "object_tenant_id": object_tenant_id,
                 "object_node_key": object_node_key,
             }
         )
@@ -1848,3 +1886,180 @@ def test_delete_relation_edge_rejects_unknown_direction(terms_conn):
 
     assert response.status_code == 422
     assert graph_client.deleted_edges == []
+
+
+_MISMATCHED_EDGE = {
+    "direction": "out", "relation_type": "RELATED_TO", "node_key": "t:登录模块",
+    "standard_name": "登录模块", "term_type": "t",
+    "other_tenant_id": "t1", "edge_tenant_id": "demo",
+}
+_CROSS_TENANT_EDGE = {
+    "direction": "in", "relation_type": "PART_OF", "node_key": "t:别家的实体",
+    "standard_name": "别家的实体", "term_type": "t",
+    "other_tenant_id": "tenant_b", "edge_tenant_id": "tenant_b",
+}
+
+
+def _call_inconsistent(terms_conn, graph_client, *, method: str, query: str = "", headers=None):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        url = "/api/admin/t1/terms/t:使用中/relations/inconsistent"
+        if query:
+            url = f"{url}?{query}"
+        auth = (headers or _authed_headers)(session_store)
+        if method == "GET":
+            return client.get(url, headers=auth)
+        return client.delete(url, headers=auth)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_list_inconsistent_relations_separates_the_two_dirty_classes(terms_conn):
+    """两类脏边要分开说：边的 tenant_id 标错了（本租户内部的历史遗留），
+    和两端节点分属不同租户（隔离本身已经破了）。处理方式不同，界面上
+    也得让用户看出区别。"""
+    graph_client = SpyGraphClient(inconsistent=[_MISMATCHED_EDGE, _CROSS_TENANT_EDGE])
+
+    response = _call_inconsistent(terms_conn, graph_client, method="GET")
+
+    assert response.status_code == 200
+    rows = response.json()["relations"]
+    assert [r["category"] for r in rows] == ["edge_tenant_mismatch", "cross_tenant"]
+    assert rows[0]["node_key"] == "t:登录模块"
+    assert rows[0]["edge_tenant_id"] == "demo"
+    assert graph_client.listed_inconsistent == [{"tenant_id": "t1", "node_key": "t:使用中"}]
+
+
+def test_member_is_not_shown_the_other_tenants_identity_on_a_cross_tenant_edge(terms_conn):
+    """跨租户的边上，对端节点是另一个租户的数据。member 需要知道"这里挂着
+    一条跨租户的边、得找平台管理员"，但不需要、也不该知道对面那个实体叫
+    什么、属于哪个租户。"""
+    graph_client = SpyGraphClient(inconsistent=[_CROSS_TENANT_EDGE])
+
+    response = _call_inconsistent(
+        terms_conn, graph_client, method="GET", headers=_member_headers
+    )
+
+    assert response.status_code == 200
+    assert "别家的实体" not in response.text
+    assert "tenant_b" not in response.text
+    row = response.json()["relations"][0]
+    assert row["category"] == "cross_tenant"
+    assert row["node_key"] is None
+    assert row["standard_name"] is None
+    assert row["other_tenant_id"] is None
+    assert row["deletable"] is False
+    # 关系类型和方向保留：那说的是本租户自己节点身上挂着什么，不是对面的信息
+    assert row["relation_type"] == "PART_OF"
+
+
+def test_admin_sees_the_whole_cross_tenant_edge(terms_conn):
+    """平台管理员是唯一有权处理这类边的人，看不到两端是谁就无从判断。"""
+    graph_client = SpyGraphClient(inconsistent=[_CROSS_TENANT_EDGE])
+
+    response = _call_inconsistent(terms_conn, graph_client, method="GET")
+
+    row = response.json()["relations"][0]
+    assert row["node_key"] == "t:别家的实体"
+    assert row["other_tenant_id"] == "tenant_b"
+    assert row["deletable"] is True
+
+
+def test_member_can_delete_an_edge_whose_tenant_mark_is_wrong(terms_conn):
+    """两端节点都在自己租户里、只有边标错了租户——这条边挡着 member 自己
+    的实体删除，判据（两端节点的租户）也完全落在他有权的范围内，他就该
+    能删掉它。起点租户一律取 URL 里那个已经过 require_tenant_access 校验的
+    租户，不是请求里自报的值。"""
+    graph_client = SpyGraphClient(removed_edges=1)
+
+    response = _call_inconsistent(
+        terms_conn, graph_client, method="DELETE", headers=_member_headers,
+        query="direction=out&relation_type=RELATED_TO&other_node_key=t:登录模块&other_tenant_id=t1",
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 1}
+    assert graph_client.deleted_inconsistent_edges == [
+        {
+            "subject_tenant_id": "t1", "subject_node_key": "t:使用中",
+            "relation_type": "RELATED_TO",
+            "object_tenant_id": "t1", "object_node_key": "t:登录模块",
+        }
+    ]
+
+
+def test_member_cannot_delete_a_cross_tenant_edge(terms_conn):
+    """两端节点分属不同租户时，删掉这条边同时改变了另一个租户的图谱。
+    member 只对自己那一个租户有权，不能单方面替对面做这个决定——这里
+    必须挡住，而且一条都不能落到图客户端上。"""
+    graph_client = SpyGraphClient(removed_edges=1)
+
+    response = _call_inconsistent(
+        terms_conn, graph_client, method="DELETE", headers=_member_headers,
+        query="direction=in&relation_type=PART_OF&other_node_key=t:别家的实体&other_tenant_id=tenant_b",
+    )
+
+    assert response.status_code == 403
+    assert graph_client.deleted_inconsistent_edges == []
+    assert "管理员" in response.json()["detail"]
+
+
+def test_admin_can_delete_a_cross_tenant_edge(terms_conn):
+    """平台管理员对两个租户都有权，由他来做这个决定。direction=in 表示
+    对端才是主语，两端的租户必须跟着方向一起翻。"""
+    graph_client = SpyGraphClient(removed_edges=1)
+
+    response = _call_inconsistent(
+        terms_conn, graph_client, method="DELETE",
+        query="direction=in&relation_type=PART_OF&other_node_key=t:别家的实体&other_tenant_id=tenant_b",
+    )
+
+    assert response.status_code == 200
+    assert graph_client.deleted_inconsistent_edges == [
+        {
+            "subject_tenant_id": "tenant_b", "subject_node_key": "t:别家的实体",
+            "relation_type": "PART_OF",
+            "object_tenant_id": "t1", "object_node_key": "t:使用中",
+        }
+    ]
+
+
+def test_delete_inconsistent_relation_that_matched_nothing_returns_404(terms_conn):
+    """一条都没删掉却回 200 就是静默失败：用户刷新后那条边还在，没有任何
+    地方告诉他删的不是它。"""
+    graph_client = SpyGraphClient(removed_edges=0)
+
+    response = _call_inconsistent(
+        terms_conn, graph_client, method="DELETE",
+        query="direction=out&relation_type=RELATED_TO&other_node_key=t:不存在&other_tenant_id=t1",
+    )
+
+    assert response.status_code == 404
+    assert "RELATED_TO" in response.json()["detail"]
+
+
+def test_the_subject_side_tenant_always_comes_from_the_url_not_from_the_request(terms_conn):
+    """起点侧的租户固定取 URL 里那个（已经过 require_tenant_access 校验），
+    绝不能取请求里自报的 other_tenant_id——否则谁都能把两端都指向别人的
+    租户，这条路径就成了越权删边的入口。direction=out 时这两个值不同，
+    正好能把它们区分开。"""
+    graph_client = SpyGraphClient(removed_edges=1)
+
+    response = _call_inconsistent(
+        terms_conn, graph_client, method="DELETE",
+        query="direction=out&relation_type=RELATED_TO&other_node_key=t:别家的实体&other_tenant_id=tenant_b",
+    )
+
+    assert response.status_code == 200
+    assert graph_client.deleted_inconsistent_edges == [
+        {
+            "subject_tenant_id": "t1", "subject_node_key": "t:使用中",
+            "relation_type": "RELATED_TO",
+            "object_tenant_id": "tenant_b", "object_node_key": "t:别家的实体",
+        }
+    ]
