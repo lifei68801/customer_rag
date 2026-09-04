@@ -197,6 +197,58 @@ async def test_min_relevance_score_triggers_fallback_when_all_matches_are_weak()
     assert result["fallback_triggered"] is True
     assert result["ticket_id"]
     assert llm_provider.last_request is None
+    # 走兜底意味着这些分片相关度不达标、答案没有用它们——正因为不达标才
+    # 触发的兜底。字段名叫 used_sources，值却是"检索到的"，前端会把它们
+    # 当引用挂在"没找到确切答案"下面，等于向用户声称答案参考了这些资料。
+    assert result["used_sources"] == []
+
+
+async def test_used_sources_excludes_records_below_relevance_threshold():
+    """答出来了，但引用里不许混进达不到相关度门槛的分片。
+
+    真实案例：问"Pepsi 公司卖什么产品"，向量库返回的最近邻是华夏银行的
+    PDF 分片（语料里根本没有 Pepsi 的文档）。只要还有一条分片过了门槛，
+    整轮就走 responder 出答案——而 used_sources 把全部检索结果都报了出去，
+    前端把那几条银行分片当成这个答案的引用展示。判定"不足以据此回答"和
+    判定"不足以当引用"用的应该是同一把尺子。
+    """
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register("fake-embedding", FakeEmbeddingProvider())
+
+    vector_store = InMemoryVectorStore()
+    bm25_index = BM25Index()
+    records = [
+        VectorRecord(
+            id="faq/network.md", vector=[1.0, 0.0], text="网络断开时请先重启路由器。",
+            tenant_id="t1", metadata={},
+        ),
+        VectorRecord(
+            id="faq/unrelated.md", vector=[0.0, 1.0], text="完全不相关的资料",
+            tenant_id="t1", metadata={},
+        ),
+    ]
+    await vector_store.upsert(records)
+    bm25_index.index(records)
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", FakeLLMProvider("答案"))
+
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
+        query_rewrite_enabled=False,
+        min_relevance_score=0.5,
+    )
+
+    result = await graph.ainvoke({"question": "网络断开怎么办", "tenant_id": "t1"})
+
+    assert result["fallback_triggered"] is not True
+    assert "faq/unrelated.md" not in result["used_sources"]
 
 
 async def test_min_relevance_score_does_not_affect_default_behavior_when_unset():

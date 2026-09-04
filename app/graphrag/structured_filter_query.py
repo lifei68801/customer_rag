@@ -412,13 +412,25 @@ def _resolve_or_raise(value: object, *, term_type: str, terms: list[Term]) -> st
     进 target_value（实测 "coke-cola" 而不是 "Coca-Cola"），整条查询就以
     "约束值无法解析" 失败了。
     """
+    actual_term_type: str | None = None
     if isinstance(value, str):
         term = resolve_term(value, terms, term_type_hint=term_type)
         if term is not None and term.term_type == term_type:
             return term.standard_name
+        if term is not None:
+            actual_term_type = term.term_type
         fuzzy_name = _best_fuzzy_term_name(value, term_type=term_type, terms=terms)
         if fuzzy_name is not None:
             return fuzzy_name
+    if actual_term_type is not None:
+        # 解析到了，只是类型不对。这时"请检查拼写"是把调用方往错误方向推——
+        # 拼写没错。不说出真实类型，LLM 只能反复改拼写重试，把工具调用轮次
+        # 烧光；说出来它一轮就能改成按正确类型锚定。
+        raise StructuredFilterQueryError(
+            f"约束值 {value!r} 是 {actual_term_type!r} 类型，不是 {term_type!r} 类型。"
+            f"请改用 {actual_term_type!r} 作为锚点类型，再沿本体里已确认的关系"
+            f"展开到 {term_type!r}"
+        )
     raise StructuredFilterQueryError(
         f"约束值 {value!r} 无法在术语表里解析成已确认的 {term_type!r} 类型实体，"
         f"请检查拼写，或先用 anchor.name 消歧确认准确的标准名称"

@@ -1680,3 +1680,22 @@ async def test_group_by_result_also_carries_the_fanout_warning():
         {"tenant_id": "demo", "relation_type": "BELONG_TO",
          "from_term_type": "订单号", "to_term_type": "产品", "direction": "outgoing"},
     ]
+
+
+def test_resolve_or_raise_names_the_actual_term_type_on_type_mismatch():
+    """约束值解析失败时，如果它其实是别的类型，报错要说出那个类型。
+
+    planner 拿 'Pepsi' 当 '产品' 查（它其实是 '公司'），只被告知"无法解析成
+    已确认的 '产品' 类型实体，请检查拼写"——拼写没错，错的是类型。planner
+    照着提示反复改拼写、烧掉工具调用轮次，等它终于换对类型时预算已经用完。
+    报错里带上真实类型，它一轮就能自我纠正。
+    """
+    terms = [_COKE_TERM, Term(
+        tenant_id="demo", node_key="公司:Pepsi", standard_name="Pepsi",
+        aliases=[], term_type="公司",
+    )]
+    with pytest.raises(StructuredFilterQueryError) as excinfo:
+        _resolve_or_raise("Pepsi", term_type="产品", terms=terms)
+    message = str(excinfo.value)
+    assert "公司" in message
+    assert "Pepsi" in message

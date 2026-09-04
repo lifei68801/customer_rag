@@ -825,12 +825,23 @@ class ScriptedStreamingLLMProvider:
     个"按调用顺序消费预先编排好的脚本"思路，只是这里每轮是一组 chunk
     而不是一个完整结果。"""
 
-    def __init__(self, rounds: list[list[ProviderStreamChunk]]) -> None:
+    def __init__(
+        self,
+        rounds: list[list[ProviderStreamChunk]],
+        plain_responses: list[ProviderResult] | None = None,
+    ) -> None:
         self._rounds = list(rounds)
+        # 非流式脚本单独一条队列：抢救重试走 run()（非流式），跟主循环的
+        # 流式通道不是同一条路。不给就保持原来"只支持流式"的行为，既有
+        # 用例不受影响。
+        self._plain_responses = list(plain_responses or [])
         self.requests: list[ProviderRequest] = []
 
     async def complete(self, request: ProviderRequest) -> ProviderResult:
-        raise NotImplementedError("此 Fake 只用于测试流式路径")
+        if not self._plain_responses:
+            raise NotImplementedError("此 Fake 只用于测试流式路径")
+        self.requests.append(request)
+        return self._plain_responses.pop(0)
 
     async def stream_complete_with_tools(self, request: ProviderRequest):
         self.requests.append(request)
@@ -1156,6 +1167,61 @@ async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_lea
     assert "answer_text" not in update
     assert all("DSML" not in chunk for chunk in sent_chunks)
     assert LITE_SAFETY_FALLBACK_SENTENCE in sent_chunks
+
+
+async def test_streaming_salvages_a_plain_retry_when_final_answer_leaks_tool_call_tokens():
+    # 真实案例（qa_diagnostics #7）：图谱工具已经成功返回了 10 条产品，轮次
+    # 耗尽后的总结却吐出工具调用协议 token 被判失败，整轮放弃——那 10 条数据
+    # 一个字都没进最终答案，用户只看到"没找到确切答案"。失败的是这次表述，
+    # 不是手上的资料；资料还在 planner_messages 里，应该再要一次纯文本总结，
+    # 而不是把已经查到的东西丢掉。
+    malformed = (
+        "让我尝试直接查询。"
+        + chr(10)
+        + "<｜｜DSML｜｜tool_calls>"
+        + '<｜｜DSML｜｜invoke name="structured_filter_query_tool">'
+        + "</｜｜DSML｜｜tool_calls>"
+    )
+    llm_registry = ProviderRegistry()
+    provider = ScriptedStreamingLLMProvider(
+        [
+            [
+                ProviderStreamChunk(
+                    tool_calls=[ToolCall(id="call_1", name="vector_search_tool", arguments="{}")]
+                )
+            ],
+            [ProviderStreamChunk(text=malformed)],
+        ],
+        plain_responses=[ProviderResult(text="Pepsi 旗下有 Cola、Lemonade 两款产品。")],
+    )
+    llm_registry.register(ProviderCapability.LLM, "fake-llm", provider)
+    state = {
+        "planner_messages": [{"role": "user", "content": "问题"}],
+        "tool_call_round": 3,
+    }
+    sent_chunks: list[str] = []
+
+    async def on_answer_chunk(text: str) -> None:
+        sent_chunks.append(text)
+
+    async def on_tool_status() -> None:
+        pass
+
+    update = await run_planner_turn_streaming(
+        state,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        max_tool_call_rounds=3,
+        banned_terms=None,
+        on_answer_chunk=on_answer_chunk,
+        on_tool_status=on_tool_status,
+        tool_registry=_full_tool_registry(),
+    )
+
+    assert update["planner_gave_up"] is False
+    assert update["answer_text"] == "Pepsi 旗下有 Cola、Lemonade 两款产品。"
+    # 协议 token 一个字都不许流给用户，重试成功也不例外。
+    assert all("DSML" not in chunk for chunk in sent_chunks)
 
 
 async def test_run_planner_turn_streaming_gives_up_when_final_answer_attempt_raises():

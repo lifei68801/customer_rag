@@ -185,6 +185,55 @@ async def _split_stream_text_and_tool_calls(
             tool_calls_box[0] = chunk.tool_calls
 
 
+async def _retry_final_answer_plain(
+    final_messages: list[dict[str, Any]],
+    *,
+    llm_registry: ProviderRegistry,
+    llm_provider_name: str,
+    banned_terms: list[str] | None,
+    on_answer_chunk: Callable[[str], Awaitable[None]],
+) -> tuple[str, list[str]] | None:
+    """总结吐出协议 token 之后的抢救重试：改用非流式 run() 再要一次纯文本。
+
+    为什么值得再要一次：这一步失败的是"把已有资料表述出来"，不是"查不到
+    资料"。工具结果全都还在 final_messages 里，整轮放弃等于把已经查到的
+    东西连同用户等待的时间一起扔掉（实测：structured_filter_query 已经返回
+    10 条产品，用户看到的却是"没找到确切答案"）。
+
+    为什么改用 run() 而不是再流一次：流式那条路刚刚就是在这个模型上吐出了
+    协议 token；同样的调用形状重来一次没有理由得到不同结果。run() 走的是
+    非流式补全，且这里同样不传 tools。
+
+    返回 None 表示抢救也失败（异常、空文本、或又一次吐出协议 token），
+    调用方按原来的放弃路径处理。返回 (文本, 已推送的句子) 表示成功。
+    """
+    try:
+        result = await llm_registry.run(
+            ProviderCapability.LLM,
+            ProviderRequest(messages=final_messages),
+            provider_name=llm_provider_name,
+        )
+    except Exception:
+        logger.warning("_retry_final_answer_plain: 抢救重试调用失败", exc_info=True)
+        return None
+    text = (result.text or "").strip()
+    if not text or _MALFORMED_TOOL_CALL_MARKER in text:
+        logger.warning(
+            "_retry_final_answer_plain: 抢救重试仍未拿到可用的纯文本总结"
+        )
+        return None
+    async def _one_shot() -> AsyncIterator[str]:
+        yield text
+
+    sent: list[str] = []
+    async for sentence in stream_sentences(_one_shot()):
+        safety_result = check_text(sentence, banned_terms=banned_terms, include_email=False)
+        safe_sentence = sentence if safety_result.is_safe else LITE_SAFETY_FALLBACK_SENTENCE
+        await on_answer_chunk(safe_sentence)
+        sent.append(safe_sentence)
+    return text, sent
+
+
 async def _run_final_answer_attempt_streaming(
     messages: list[dict[str, Any]],
     *,
@@ -244,6 +293,32 @@ async def _run_final_answer_attempt_streaming(
             await on_answer_chunk(safe_sentence)
             sent_sentences.append(safe_sentence)
         if malformed_tool_call_detected:
+            # 失败的是这次表述，不是手上的资料——工具结果都还在
+            # final_messages 里。整轮放弃会把已经查到的东西一起丢掉
+            # （实测：图谱已返回 10 条产品，用户却只看到"没找到确切
+            # 答案"）。再要一次纯文本总结；这一次仍然失败才放弃。
+            salvaged = await _retry_final_answer_plain(
+                final_messages,
+                llm_registry=llm_registry,
+                llm_provider_name=llm_provider_name,
+                banned_terms=banned_terms,
+                on_answer_chunk=on_answer_chunk,
+            )
+            if salvaged is not None:
+                text, salvage_sentences = salvaged
+                return {
+                    "planner_messages": [
+                        *messages,
+                        {"role": "assistant", "content": text},
+                    ],
+                    "answer_text": text,
+                    "planner_gave_up": False,
+                    "streamed_round_texts": [
+                        *streamed_round_texts,
+                        *sent_sentences,
+                        *salvage_sentences,
+                    ],
+                }
             return {
                 "planner_gave_up": True,
                 "streamed_round_texts": [*streamed_round_texts, *sent_sentences],

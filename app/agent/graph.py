@@ -462,9 +462,23 @@ def build_agent_graph(
             final_top_k=top_k,
             tenant_id=state["tenant_id"],
         )
+        # 引用只报达到相关度门槛的那些。records 会整体进 responder 的
+        # 上下文（低分片也可能提供边角信息），但把它们当"这个答案的
+        # 出处"展示给用户是另一回事——真实案例：问 Pepsi 卖什么产品，
+        # 语料里没有 Pepsi 文档，向量库返回最近邻是华夏银行的 PDF，
+        # 前端把它们当引用挂在答案下面。判定"不足以据此回答"和判定
+        # "不足以当引用"用同一把尺子（min_relevance_score）。
+        # 未配置阈值时行为不变，全部上报。
+        if min_relevance_score is None:
+            cited = records
+        else:
+            cited = [
+                r for r in records
+                if r.score is None or r.score >= min_relevance_score
+            ]
         return {
             "retrieved_records": records,
-            "used_sources": [record.id for record in records],
+            "used_sources": [record.id for record in cited],
         }
 
     async def responder_node(state: AgentState) -> dict[str, Any]:
@@ -537,6 +551,12 @@ def build_agent_graph(
             "answer_text": _FALLBACK_MESSAGE,
             "fallback_triggered": True,
             "needs_clarification": False,
+            # 检索节点把 used_sources 无条件赋成"检索到的全部记录"，而走到
+            # 这里恰恰意味着这些记录要么为空、要么最高分低于
+            # min_relevance_score——答案一个字都没用它们。不清空的话，前端
+            # 会把它们当引用挂在"没找到确切答案"下面，向用户声称答案参考
+            # 了这些资料。
+            "used_sources": [],
         }
 
     async def create_ticket_node(state: AgentState) -> dict[str, Any]:
