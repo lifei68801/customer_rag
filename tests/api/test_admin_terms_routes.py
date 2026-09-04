@@ -89,7 +89,17 @@ def _authed_headers(session_store: AdminSessionStore) -> dict[str, str]:
 
 
 class SpyGraphClient:
-    def __init__(self, *, edge_count: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        edge_count: int = 0,
+        relations: list[dict] | None = None,
+        relations_error: Exception | None = None,
+    ) -> None:
+        # 删除被挡住时，409 里要点名挡路的是哪几条边——路由拿这两个字段
+        # 模拟图客户端返回的关系明细/读取失败。
+        self._relations = relations or []
+        self._relations_error = relations_error
         self.synced: list[dict] = []
         self.renamed: list[tuple[str, str]] = []
         self.deleted: list[str] = []
@@ -118,6 +128,11 @@ class SpyGraphClient:
 
     async def count_relation_edges_for_term(self, *, tenant_id: str, node_key: str) -> int:
         return self._edge_count
+
+    async def list_term_relations(self, *, tenant_id: str, node_key: str) -> list[dict]:
+        if self._relations_error is not None:
+            raise self._relations_error
+        return self._relations
 
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
         self.deleted.append(node_key)
@@ -1641,3 +1656,93 @@ def test_pager_total_matches_the_merged_list_not_the_raw_table(terms_conn):
     assert len(body["terms"]) == 4
     # total 必须等于实际列出的条数，而不是原始表的 5。
     assert body["total"] == 4
+
+
+def _relation(direction: str, relation_type: str, standard_name: str) -> dict:
+    return {
+        "direction": direction,
+        "relation_type": relation_type,
+        "node_key": f"t:{standard_name}",
+        "standard_name": standard_name,
+        "term_type": "t",
+    }
+
+
+def _delete_blocked_term(terms_conn, graph_client) -> "object":
+    asyncio.run(
+        create_term(terms_conn, tenant_id="t1", standard_name="使用中", aliases=[], term_type="t")
+    )
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        return client.delete(
+            "/api/admin/t1/terms/t:使用中", headers=_authed_headers(session_store)
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_delete_blocked_term_names_the_edges_in_the_way(terms_conn):
+    """"该术语已在图谱中使用"不告诉用户是哪条边挡路，而后台又没有别的地方
+    能查出来——服务端此刻手里就有这份明细。方向要照实渲染：入边写成
+    「对端 -类型-> 本术语」，反过来写会把关系的角色说反。"""
+    graph_client = SpyGraphClient(
+        edge_count=2,
+        relations=[
+            _relation("in", "RELATED_TO", "错误码E502"),
+            _relation("out", "PART_OF", "登录域"),
+        ],
+    )
+
+    response = _delete_blocked_term(terms_conn, graph_client)
+
+    assert response.status_code == 409
+    body = response.json()
+    assert "错误码E502 -RELATED_TO-> 使用中" in body["detail"]
+    assert "使用中 -PART_OF-> 登录域" in body["detail"]
+    assert "2 条" in body["detail"]
+    assert body["blocking_relations"]["total"] == 2
+    assert [
+        (edge["direction"], edge["relation_type"], edge["node_key"])
+        for edge in body["blocking_relations"]["edges"]
+    ] == [("in", "RELATED_TO", "t:错误码E502"), ("out", "PART_OF", "t:登录域")]
+
+
+def test_delete_blocked_term_lists_a_few_edges_and_still_reports_the_total(terms_conn):
+    """点名前几条 + 总数兜底，跟删分类那条（d2f1197）同构。第 4 条之后的
+    对端名字不该出现在消息里，否则消息长到没人读。"""
+    graph_client = SpyGraphClient(
+        edge_count=5,
+        relations=[_relation("out", "RELATED_TO", f"邻居{i}") for i in range(5)],
+    )
+
+    response = _delete_blocked_term(terms_conn, graph_client)
+
+    body = response.json()
+    assert response.status_code == 409
+    assert "等共 5 条" in body["detail"]
+    assert "邻居3" not in body["detail"]
+    assert "邻居4" not in body["detail"]
+    assert [edge["standard_name"] for edge in body["blocking_relations"]["edges"]] == [
+        "邻居0", "邻居1", "邻居2",
+    ]
+    # 结构化字段里的 total 是"总共几条"，不是"列出了几条"——前端拿它显示
+    # 还剩多少没处理，退化成样本条数就等于把总数悄悄说小了。
+    assert body["blocking_relations"]["total"] == 5
+
+
+def test_delete_blocked_term_still_reports_the_count_when_edge_lookup_fails(terms_conn):
+    """取明细失败不能把 409 变成 500：守卫的结论（有边、有几条）已经拿到了，
+    丢掉它反而让用户连"为什么删不掉"都不知道。"""
+    graph_client = SpyGraphClient(edge_count=2, relations_error=RuntimeError("Neo4j 挂了"))
+
+    response = _delete_blocked_term(terms_conn, graph_client)
+
+    assert response.status_code == 409
+    body = response.json()
+    assert "2 条" in body["detail"]
+    assert body["blocking_relations"]["edges"] == []

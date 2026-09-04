@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 import aiosqlite
@@ -44,6 +45,33 @@ router = APIRouter(prefix="/api/admin/{tenant_id}/terms", dependencies=[Depends(
 # docs/superpowers/specs/2026-08-30-manual-edits-layer-design.md 非目标），
 # edited_by 目前只是可观测性字段，固定写 "admin"。
 _EDITED_BY = "admin"
+
+#: 删除被挡住时，消息里最多点名几条关系边。跟 ontology_categories 的
+#: _IN_USE_SAMPLE_SIZE 同一个取舍：3 条够用户认出是哪批数据，再多没人读，
+#: 剩下的用总数兜底。两处故意各自定义——它们数的不是同一种东西，
+#: 将来任一边想调都不该被另一边绑住。
+_IN_USE_SAMPLE_SIZE = 3
+
+
+def _format_samples(samples: list[str], total: int) -> str:
+    """把样本拼成“a、b、c 等共 12 条”。样本已经是全部时不加尾巴——
+    “2 条（a、b 等共 2 条）”读起来像还有别的没列出来。"""
+    listed = "、".join(samples)
+    if total > len(samples):
+        return f"{listed} 等共 {total} 条"
+    return listed
+
+
+def _describe_relation(row: dict[str, Any], term_standard_name: str) -> str:
+    """一条关系边渲染成“主语 -类型-> 宾语”。方向必须照实还原：
+    list_term_relations 的 direction 是相对于当前术语说的（"out" = 这个术语
+    是主语），照抄成固定顺序会把关系的角色说反，用户按反的方向去找那条边
+    会找不到。"""
+    other = row.get("standard_name") or row.get("node_key") or "?"
+    relation_type = row.get("relation_type", "?")
+    if row.get("direction") == "out":
+        return f"{term_standard_name} -{relation_type}-> {other}"
+    return f"{other} -{relation_type}-> {term_standard_name}"
 
 
 class TermResponse(BaseModel):
@@ -494,7 +522,7 @@ async def delete_existing_term(
     node_key: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
-) -> dict[str, bool]:
+) -> Response:
     """删除术语。Task 4 起改写编辑层：不再 DELETE terms 表那一行，只写
     一条 __deleted__ 编辑——terms 表那一行（如果存在）继续留着，ETL 还在
     维护它，只是对所有读路径（含这个管理后台自己的列表接口）不可见，
@@ -519,7 +547,37 @@ async def delete_existing_term(
         tenant_id=tenant_id, node_key=term.node_key
     )
     if edge_count > 0:
-        raise HTTPException(status_code=409, detail="该术语已在图谱中使用，无法删除")
+        # 只说"已在图谱中使用"，用户得自己去猜是哪条边——而后台此刻手里
+        # 就有这份明细（跟删分类那条 d2f1197 同构）。取明细失败不能把 409
+        # 变成 500：守卫的结论已经拿到了，丢掉它反而让用户连"为什么删不掉"
+        # 都不知道。
+        try:
+            rows = await graph_client.list_term_relations(
+                tenant_id=tenant_id, node_key=term.node_key
+            )
+        except Exception:
+            logger.exception(
+                "术语 %r（租户 %r）删除被图谱边挡住，但取回挡路边的明细失败——"
+                "只能报出条数，用户无法据此定位具体是哪几条",
+                term.standard_name, tenant_id,
+            )
+            rows = []
+        samples = rows[:_IN_USE_SAMPLE_SIZE]
+        listed = _format_samples(
+            [_describe_relation(row, term.standard_name) for row in samples], edge_count
+        )
+        detail = (
+            f"该术语被 {edge_count} 条关系边使用（{listed}），无法删除"
+            if listed
+            else f"该术语被 {edge_count} 条关系边使用，无法删除"
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": f"{detail}；请先在实体详情页删掉这些关系再删术语",
+                "blocking_relations": {"total": edge_count, "edges": samples},
+            },
+        )
     await upsert_term_edit(
         review_conn, tenant_id=tenant_id, node_key=term.node_key, field=FIELD_DELETED,
         value=None, edited_by=_EDITED_BY,
@@ -533,4 +591,4 @@ async def delete_existing_term(
             term.standard_name, tenant_id,
         )
         raise
-    return {"deleted": True}
+    return JSONResponse(status_code=200, content={"deleted": True})
