@@ -171,7 +171,10 @@ class InconsistentTermRelation(BaseModel):
 
 
 class InconsistentTermRelationListResponse(BaseModel):
-    relations: list[InconsistentTermRelation]
+    #: 字段名跟详情页那份正常关系清单（relations）故意不同名：两份清单的
+    #: 元素结构不一样，同名会让前端/测试替身在拿错那一份时悄悄渲染出
+    #: 一堆本不该出现的行。
+    inconsistent_relations: list[InconsistentTermRelation]
 
 
 class TermDetailResponse(TermResponse):
@@ -258,8 +261,14 @@ async def list_inconsistent_term_relations(
     """这个实体身上租户标记异常的关系边——详情页那份关系清单看不到的那些。
 
     它们的处境是本项目最反对的那种：既不参与检索、也不参与实体删除守卫，
-    却仍然挂在节点上挡着删除，而界面上一条都看不见。这个接口是它们唯一的
-    出口。
+    却仍然挂在节点上，而界面上一条都看不见——查不到，也没法单独删掉。
+    这个接口是它们唯一的出口。
+
+    跨租户的那一类还更进一步：边自己标着本租户时，它在正常那份关系清单
+    （list_term_relations）里**会**出现，因为那条语句只过滤边的租户、不
+    过滤对端节点的租户；但在那里点删除是删不掉的（删边语句把两端都钉在
+    同一个租户上）。同一个口子在子图查询上意味着另一个租户的节点会进到
+    检索上下文里。
 
     跨租户的那一类上，对端节点属于另一个租户：只有平台管理员能看到它的
     身份（node_key/标准名/租户），member 只被告知"这里挂着一条跨租户的
@@ -272,7 +281,7 @@ async def list_inconsistent_term_relations(
     )
     is_platform_admin = session.role == "admin"
     return InconsistentTermRelationListResponse(
-        relations=[
+        inconsistent_relations=[
             _to_inconsistent_relation(
                 row, tenant_id=tenant_id, is_platform_admin=is_platform_admin
             )
@@ -301,7 +310,7 @@ async def delete_inconsistent_term_relation_edge(
     * 起点侧固定取 URL 里的 tenant_id，它已经过 require_tenant_access 校验，
       所以谁也不能借这条路径碰到自己无权的租户的节点；
     * 两端节点都在这个租户里（边只是标错了租户）时，member 就能删——判据
-      完全落在他有权的范围内，而这条边正挡着他自己的实体删除；
+      完全落在他有权的范围内，那条边本来就是他自己租户的数据；
     * 两端节点分属不同租户时只有平台管理员能删：删掉它同时改变了另一个
       租户的图谱，member 只对自己那一个租户有权，不能单方面替对面做这个
       决定。平台管理员对两个租户都有权，由他来判断。

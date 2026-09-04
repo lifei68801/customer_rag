@@ -1212,7 +1212,7 @@ async def test_ensure_tenant_scoped_schema_backfills_legacy_relation_edges():
     """节点回填只 SET 节点，边上的 tenant_id 一直没人补——旧库里可能仍有
     tenant_id 为 null 的关系边，它们被守卫（count_relation_edges_for_term）
     和详情页（_TERM_RELATIONS_QUERY）一致地忽略，同时也删不掉（删边接口
-    按边的 tenant_id 过滤），用户的实体删除会卡死在一条他看不见的边上。
+    按边的 tenant_id 过滤）——只存在于库里、界面上无从查证也无从处置。
 
     只回填"两端节点同租户、边自己没有 tenant_id"这一类（A 类）：这类边的
     归属没有歧义，补的正是 merge_relation 写入时本就该有的那个值。"""

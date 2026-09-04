@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, Trash2, Unlink } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowRight, Trash2, Unlink } from 'lucide-react'
 import { ADMIN_ROUTES } from '../adminRoutes'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useConfirm } from './ConfirmContext'
 import { useToast } from './ToastContext'
-import { deleteTermRelation } from './termsApi'
+import {
+  deleteInconsistentTermRelation,
+  deleteTermRelation,
+  fetchInconsistentTermRelations,
+  type InconsistentTermRelation,
+} from './termsApi'
 import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
 import { useAdminAuth } from './useAdminAuth'
@@ -72,6 +77,25 @@ export function relationLabel(relation: TermRelation, termStandardName: string):
     : `${other} -${relation.relation_type}-> ${termStandardName}`
 }
 
+/**
+ * 租户标记异常的边的人话写法。对端可能被后端遮蔽（跨租户时只有平台管理员
+ * 看得到对面是谁），这时也得写出一个能读的名字——否则那一行等于什么都
+ * 没说，用户既不知道挡路的是什么，也不知道该找谁。
+ */
+export function inconsistentRelationLabel(
+  relation: InconsistentTermRelation,
+  termStandardName: string,
+): string {
+  const other = relation.standard_name || relation.node_key || '其他租户的实体'
+  return relation.direction === 'out'
+    ? `${termStandardName} -${relation.relation_type}-> ${other}`
+    : `${other} -${relation.relation_type}-> ${termStandardName}`
+}
+
+function inconsistentRelationKey(relation: InconsistentTermRelation): string {
+  return `${relation.direction}:${relation.relation_type}:${relation.node_key ?? '?'}`
+}
+
 /** 同一对实体之间可能有多种关系类型，key 得把类型和方向都算进去。 */
 function relationKey(relation: TermRelation): string {
   return `${relation.direction}:${relation.relation_type}:${relation.node_key}`
@@ -103,6 +127,11 @@ export function TermDetailPage() {
   // 属性和别名都看不见了，而它们其实还好好的。
   const [relationError, setRelationError] = useState<string | null>(null)
   const [deletingRelation, setDeletingRelation] = useState<string | null>(null)
+  // 租户标记异常的边单独一份：它们不在 term.relations 里（后端那份按边的
+  // tenant_id 过滤，这些边一条都过不去），拉取也走独立的接口——那个接口
+  // 挂了不该连带把整页的关系都判成读取失败。
+  const [inconsistent, setInconsistent] = useState<InconsistentTermRelation[]>([])
+  const [inconsistentError, setInconsistentError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!sessionToken || !nodeKey) return
@@ -124,6 +153,15 @@ export function TermDetailPage() {
     } finally {
       setLoaded(true)
     }
+    // 拉不到这份清单要说出来，不能悄悄当成"没有异常边"——那正是这批边
+    // 一开始隐身的原因。
+    try {
+      setInconsistent(await fetchInconsistentTermRelations(sessionToken, tenantId, nodeKey))
+      setInconsistentError(null)
+    } catch (err) {
+      setInconsistent([])
+      setInconsistentError(err instanceof Error ? err.message : '读取异常关系边失败')
+    }
   }, [sessionToken, tenantId, nodeKey])
 
   const handleDeleteRelation = async (relation: TermRelation) => {
@@ -137,6 +175,29 @@ export function TermDetailPage() {
         direction: relation.direction,
         relationType: relation.relation_type,
         otherNodeKey: relation.node_key,
+      })
+      showToast('已删除关系')
+      await refresh()
+    } catch (err) {
+      setRelationError(err instanceof Error ? err.message : '删除关系失败')
+    } finally {
+      setDeletingRelation(null)
+    }
+  }
+
+  const handleDeleteInconsistentRelation = async (relation: InconsistentTermRelation) => {
+    if (!sessionToken || !term || deletingRelation !== null) return
+    if (!relation.deletable || !relation.node_key || !relation.other_tenant_id) return
+    const label = inconsistentRelationLabel(relation, term.standard_name)
+    if (!(await confirm(`确定要删除关系「${label}」吗？此操作不可撤销。`))) return
+    setRelationError(null)
+    setDeletingRelation(inconsistentRelationKey(relation))
+    try {
+      await deleteInconsistentTermRelation(sessionToken, tenantId, term.node_key, {
+        direction: relation.direction,
+        relationType: relation.relation_type,
+        otherNodeKey: relation.node_key,
+        otherTenantId: relation.other_tenant_id,
       })
       showToast('已删除关系')
       await refresh()
@@ -290,6 +351,69 @@ export function TermDetailPage() {
           </div>
         )}
       </section>
+
+      {(inconsistent.length > 0 || inconsistentError) && (
+        <section data-testid="inconsistent-relations" className="flex flex-col gap-2">
+          <h2 className={`${sectionTitle} flex items-center gap-1.5`}>
+            <AlertTriangle aria-hidden="true" className="h-4 w-4 text-status-error-strong" />
+            租户标记异常的关系边
+          </h2>
+          {inconsistentError ? (
+            <p role="alert" className={`${card} text-sm text-ink`}>
+              {inconsistentError}
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-ink-soft">
+                这些边的租户标记跟两端实体对不上（历史遗留数据）。它们不参与问答检索，
+                上面的关系列表里通常也看不到，但它们仍然挂在这个实体上，而且只能在这里
+                删除。系统不会自动改动它们的租户标记——那会让它们重新参与检索。确认没用
+                之后在这里删掉即可。
+              </p>
+              <ul className="flex flex-col gap-1">
+                {inconsistent.map((relation) => (
+                  <li
+                    key={inconsistentRelationKey(relation)}
+                    className="flex flex-wrap items-center gap-2 rounded-card border border-status-error bg-card px-3 py-2 text-sm"
+                  >
+                    <span className="rounded-chip bg-accent-secondary px-2 py-0.5 text-xs font-bold text-on-accent">
+                      {relation.relation_type}
+                    </span>
+                    <span className="font-bold text-ink">
+                      {inconsistentRelationLabel(relation, term.standard_name)}
+                    </span>
+                    <span className="text-xs text-ink-soft">
+                      {relation.category === 'cross_tenant'
+                        ? '两端实体分属不同租户，需要平台管理员处理'
+                        : `边上标的租户是 ${relation.edge_tenant_id ?? '（空）'}`}
+                    </span>
+                    {relation.deletable && (
+                      <button
+                        type="button"
+                        aria-label={`删除关系 ${inconsistentRelationLabel(relation, term.standard_name)}`}
+                        title="删除这条关系"
+                        disabled={deletingRelation !== null}
+                        onClick={() => handleDeleteInconsistentRelation(relation)}
+                        className="ml-auto cursor-pointer rounded-control border border-subtle bg-card p-1.5 text-ink-soft transition hover:text-status-error-strong disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Trash2 aria-hidden="true" className="h-4 w-4" />
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {relationError && (
+                <p
+                  role="alert"
+                  className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink"
+                >
+                  {relationError}
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   )
 }

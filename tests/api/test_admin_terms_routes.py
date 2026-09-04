@@ -1928,7 +1928,7 @@ def test_list_inconsistent_relations_separates_the_two_dirty_classes(terms_conn)
     response = _call_inconsistent(terms_conn, graph_client, method="GET")
 
     assert response.status_code == 200
-    rows = response.json()["relations"]
+    rows = response.json()["inconsistent_relations"]
     assert [r["category"] for r in rows] == ["edge_tenant_mismatch", "cross_tenant"]
     assert rows[0]["node_key"] == "t:登录模块"
     assert rows[0]["edge_tenant_id"] == "demo"
@@ -1948,7 +1948,7 @@ def test_member_is_not_shown_the_other_tenants_identity_on_a_cross_tenant_edge(t
     assert response.status_code == 200
     assert "别家的实体" not in response.text
     assert "tenant_b" not in response.text
-    row = response.json()["relations"][0]
+    row = response.json()["inconsistent_relations"][0]
     assert row["category"] == "cross_tenant"
     assert row["node_key"] is None
     assert row["standard_name"] is None
@@ -1964,15 +1964,15 @@ def test_admin_sees_the_whole_cross_tenant_edge(terms_conn):
 
     response = _call_inconsistent(terms_conn, graph_client, method="GET")
 
-    row = response.json()["relations"][0]
+    row = response.json()["inconsistent_relations"][0]
     assert row["node_key"] == "t:别家的实体"
     assert row["other_tenant_id"] == "tenant_b"
     assert row["deletable"] is True
 
 
 def test_member_can_delete_an_edge_whose_tenant_mark_is_wrong(terms_conn):
-    """两端节点都在自己租户里、只有边标错了租户——这条边挡着 member 自己
-    的实体删除，判据（两端节点的租户）也完全落在他有权的范围内，他就该
+    """两端节点都在自己租户里、只有边标错了租户——这条边是 member 自己
+    租户的数据，判据（两端节点的租户）完全落在他有权的范围内，他就该
     能删掉它。起点租户一律取 URL 里那个已经过 require_tenant_access 校验的
     租户，不是请求里自报的值。"""
     graph_client = SpyGraphClient(removed_edges=1)
