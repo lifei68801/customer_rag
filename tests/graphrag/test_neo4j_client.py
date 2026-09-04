@@ -1205,3 +1205,65 @@ async def test_delete_relation_edge_returns_zero_when_no_rows():
     )
 
     assert removed == 0
+
+
+async def test_ensure_tenant_scoped_schema_backfills_legacy_relation_edges():
+    """节点回填只 SET 节点，边上的 tenant_id 一直没人补——旧库里可能仍有
+    tenant_id 为 null 的关系边，它们被守卫（count_relation_edges_for_term）
+    和详情页（_TERM_RELATIONS_QUERY）一致地忽略，同时也删不掉（删边接口
+    按边的 tenant_id 过滤），用户的实体删除会卡死在一条他看不见的边上。
+
+    只回填"两端节点同租户、边自己没有 tenant_id"这一类（A 类）：这类边的
+    归属没有歧义，补的正是 merge_relation 写入时本就该有的那个值。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.ensure_tenant_scoped_schema()
+
+    backfills = [q for q, _ in session.calls if "SET r.tenant_id" in q]
+    assert len(backfills) == 1
+    query = backfills[0]
+    assert "r.tenant_id IS NULL" in query
+    assert "a.tenant_id = b.tenant_id" in query
+    assert "SET r.tenant_id = a.tenant_id" in query
+
+
+async def test_relation_edge_backfill_leaves_mismatched_and_cross_tenant_edges_alone():
+    """B 类（边的租户和两端节点对不上）和 C 类（两端节点分属不同租户）
+    绝不能被自动"修正"——那等于让一批今天被一致忽略的边突然活过来参与
+    检索和守卫，悄悄改变租户隔离边界。
+
+    这两条断言得能真的区分：去掉 IS NULL 守卫，B 类边会被覆盖成节点的
+    租户；去掉两端同租户的条件，C 类边会被随便挑一端的租户染上。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.ensure_tenant_scoped_schema()
+
+    query = next(q for q, _ in session.calls if "SET r.tenant_id" in q)
+    conditions = query.split("SET")[0]
+    assert "r.tenant_id IS NULL" in conditions
+    assert "a.tenant_id = b.tenant_id" in conditions
+    # ALIAS_OF 是术语表→图谱的结构性同步边，不参与租户语义（sync_term 写
+    # 别名边时根本不设 tenant_id），给它补一个租户属性等于凭空发明语义。
+    assert "type(r) <> 'ALIAS_OF'" in conditions
+
+
+async def test_ensure_tenant_scoped_schema_is_idempotent_across_two_runs():
+    """跑两次和跑一次发出的语句完全相同：所有语句都是幂等的
+    （CREATE INDEX IF NOT EXISTS / 带 IS NULL 守卫的两条回填），没有
+    任何一条会因为上一次跑过而变成另一个样子或多做一次写入。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.ensure_tenant_scoped_schema()
+    first_run = list(session.calls)
+    session.calls.clear()
+    await client.ensure_tenant_scoped_schema()
+
+    assert list(session.calls) == first_run
+    # 第二次跑之所以是 no-op，靠的是两条回填语句各自的 IS NULL 守卫——
+    # 第一次跑完之后就没有节点/边还满足它们的匹配条件了。
+    writes = [q for q, _ in first_run if "SET " in q]
+    assert len(writes) == 2
+    assert all("IS NULL" in q for q in writes)

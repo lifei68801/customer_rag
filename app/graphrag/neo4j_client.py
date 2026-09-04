@@ -347,6 +347,37 @@ SET t.tenant_id = 'default', t.node_key = t.standard_name
 # 的别名节点从来不设置 tenant_id/node_key/standard_name，这次改造不改变
 # 别名节点的结构。
 
+_BACKFILL_LEGACY_RELATION_EDGES_QUERY = """
+MATCH (a:Term)-[r]->(b:Term)
+WHERE r.tenant_id IS NULL
+  AND type(r) <> 'ALIAS_OF'
+  AND a.tenant_id IS NOT NULL
+  AND a.tenant_id = b.tenant_id
+SET r.tenant_id = a.tenant_id
+"""
+# 节点回填的对称补丁：上面那条只 SET 节点，边上的 tenant_id 一直没人补。
+# 旧库里因此可能仍有 tenant_id 为 null 的关系边——它们被守卫
+# （_COUNT_TERM_RELATION_EDGES_QUERY）和详情页（_TERM_RELATIONS_QUERY）
+# 一致地忽略，同时又删不掉（_DELETE_RELATION_EDGE_QUERY 也按边的
+# tenant_id 过滤），用户的实体删除会卡死在一条界面上看不见的边上。
+#
+# 只回填「两端节点同租户、边自己没有 tenant_id」这一类：这类边的归属
+# 没有歧义，补的正是 merge_relation 写入时本就该有的那个值（写边时两端
+# 节点的 MERGE 匹配属性和边上的 tenant_id 用的是同一个 $tenant_id 参数）。
+#
+# 另外两类脏边故意不动，只统计+告警（见 _SURVEY_INCONSISTENT_RELATION_
+# EDGES_QUERY）：边的 tenant_id 与两端节点对不上（B 类）、两端节点分属
+# 不同租户（C 类）。自动“修正”它们等于让一批今天被一致忽略的边突然活
+# 过来参与检索与守卫——那是在悄悄改变租户隔离边界，必须由人来决定。
+#
+# WHERE r.tenant_id IS NULL 保证幂等：跑过一次之后这些边都有 tenant_id
+# 了，再跑匹配不到任何行。
+#
+# type(r) <> 'ALIAS_OF'：别名边是术语表→图谱的结构性同步边（sync_term
+# 写入），从来不带 tenant_id，也不参与租户语义（见
+# _COUNT_TERM_RELATION_EDGES_QUERY 的同款说明）——给它补一个租户属性
+# 等于凭空发明语义。
+
 
 class Neo4jSessionProtocol(Protocol):
     async def run(
@@ -870,11 +901,18 @@ class Neo4jGraphClient:
         tenant_id='default'——与 SQLite 侧 terms 表的迁移是同一次改造的
         两半，缺一半就会出现"SQLite 里租户隔离了，Neo4j 里还是老样子"
         的不一致状态。幂等，可在每次进程启动时调用。
+
+        节点之后还回填关系边：只补"两端节点同租户、边自己没有 tenant_id"
+        这一类（见 _BACKFILL_LEGACY_RELATION_EDGES_QUERY）。边的租户和
+        节点对不上、或者两端节点分属不同租户的脏边故意不动。
         """
         async with self._driver.session() as session:
             for query in _ENSURE_INDEXES_QUERIES:
                 await session.run(query)
             await session.run(_BACKFILL_LEGACY_TERM_NODES_QUERY)
+            # 边的回填必须排在节点回填之后：它读的是两端节点的 tenant_id，
+            # 节点还没回填时那个值是 null，一条都匹配不上。
+            await session.run(_BACKFILL_LEGACY_RELATION_EDGES_QUERY)
 
     async def ensure_extra_field_indexes(
         self, *, tenant_id: str, term_type: str, extra_fields: list["ExtraFieldSpec"]
