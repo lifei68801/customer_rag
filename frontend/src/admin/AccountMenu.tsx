@@ -50,8 +50,14 @@ export function AccountMenu({
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const { options, current, tenantId, setTenantId } = useTenants()
-  const { role, username } = useAdminAuth()
+  const { role, username, currentTenantId } = useAdminAuth()
   const isAdmin = role === 'admin'
+  // 会话里到底有没有当前租户，只有 whoami 说了算。useTenants 给的 tenantId
+  // 经过 TenantContext 的兜底值（'demo'），会话是空的时候它照样是个租户名——
+  // 拿它来显示，界面就会一边说"请先选择一个租户"、一边声称"当前 demo"。
+  // 显示的和生效的一旦脱钩，用户会以为自己已经在某个租户里了。
+  const hasCurrentTenant = currentTenantId !== null
+  const currentLabel = hasCurrentTenant ? current?.name ?? tenantId : '未选择租户'
 
   const close = () => setOpen(false)
 
@@ -93,7 +99,7 @@ export function AccountMenu({
                 key={tenant.tenant_id}
                 type="button"
                 role="menuitemradio"
-                aria-checked={tenant.tenant_id === tenantId}
+                aria-checked={hasCurrentTenant && tenant.tenant_id === tenantId}
                 onClick={() => {
                   setTenantId(tenant.tenant_id)
                   close()
@@ -104,7 +110,7 @@ export function AccountMenu({
                 <Check
                   aria-hidden="true"
                   className={`h-4 w-4 flex-shrink-0 ${
-                    tenant.tenant_id === tenantId ? '' : 'invisible'
+                    hasCurrentTenant && tenant.tenant_id === tenantId ? '' : 'invisible'
                   }`}
                 />
                 {tenant.name}
@@ -164,7 +170,9 @@ export function AccountMenu({
         // 可访问名带上当前租户和账号：aria-label 会盖掉按钮里的可见文字，
         // 只写租户的话屏幕阅读器用户听不到自己是谁——而下面那两行正是为了
         // 让人看得出「我是谁、我在哪个租户」。
-        aria-label={`账号与租户，当前 ${current?.name ?? tenantId}，登录为 ${username}`}
+        aria-label={`账号与租户，${
+          hasCurrentTenant ? `当前 ${currentLabel}` : currentLabel
+        }，登录为 ${username}`}
         aria-expanded={open}
         aria-haspopup="menu"
         onClick={() => (open ? close() : setOpen(true))}
@@ -175,7 +183,9 @@ export function AccountMenu({
             写到别处。身份弄错则会立刻撞上权限错误。用户名在副行——登录系统
             做完了，界面上却看不出自己是谁，同样说不过去。 */}
         <span className="flex min-w-0 flex-1 flex-col text-left">
-          <span className="truncate font-bold">{current?.name ?? tenantId}</span>
+          <span className={`truncate font-bold ${hasCurrentTenant ? '' : 'text-ink-soft'}`}>
+            {currentLabel}
+          </span>
           <span className="truncate text-xs font-normal text-ink-soft">{username}</span>
         </span>
         <ChevronUp
