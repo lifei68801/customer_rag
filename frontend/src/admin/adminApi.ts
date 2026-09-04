@@ -1,14 +1,28 @@
+import { readCsrfToken } from '../lib/csrf'
+
+/**
+ * `_sessionToken` 保留只是因为 21 个调用方还在传它：会话已经改成 HttpOnly
+ * Cookie，JS 读不到、也不需要再手工塞 Authorization 头。Task 6 一并清理。
+ */
 export async function adminFetch(
   path: string,
-  sessionToken: string,
+  _sessionToken: string,
   options: RequestInit = {},
 ): Promise<Response> {
+  const method = (options.method ?? 'GET').toUpperCase()
+  const headers = new Headers(options.headers)
+  if (method !== 'GET' && method !== 'HEAD') {
+    const csrfToken = readCsrfToken()
+    // 拿不到令牌时不加这个头——未登录本来就没有令牌，硬塞一个空值只会把
+    // 401 变成更难懂的 403。
+    if (csrfToken) {
+      headers.set('X-CSRF-Token', csrfToken)
+    }
+  }
   const response = await fetch(path, {
     ...options,
-    headers: {
-      ...options.headers,
-      Authorization: `Bearer ${sessionToken}`,
-    },
+    credentials: 'include',
+    headers,
   })
   if (response.status === 401) {
     sessionStorage.removeItem('admin_session_token')
