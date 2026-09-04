@@ -73,3 +73,32 @@ def test_sessions_do_not_leak_between_users():
     assert store.get_session(admin_token).username == "admin"
     assert store.get_session(member_token).username == "alice"
     assert store.get_session(admin_token).role == "admin"
+
+
+def test_set_current_tenant_replaces_the_frozen_session_in_place():
+    """AdminSession 是 frozen dataclass，改不了字段——必须整条替换。
+
+    直接赋值会抛 FrozenInstanceError；而如果实现是"新建一条但没写回字典"，
+    下一次 get_session 拿到的还是旧值，界面上表现为"切了租户但没切"。
+    """
+    store = AdminSessionStore()
+    token = store.create_session(username="admin", role="admin", tenant_id=None)
+
+    updated = store.set_current_tenant(token, "acme")
+
+    assert updated is not None
+    assert updated.current_tenant_id == "acme"
+    assert store.get_session(token).current_tenant_id == "acme"
+
+
+def test_set_current_tenant_returns_none_for_unknown_token():
+    store = AdminSessionStore()
+    assert store.set_current_tenant("no-such-token", "acme") is None
+
+
+def test_new_session_starts_with_member_tenant_as_current():
+    """member 绑定一个租户，登录后当前租户就该是它，不该是 None——
+    否则前台第一次问答时没有租户可用。"""
+    store = AdminSessionStore()
+    token = store.create_session(username="alice", role="member", tenant_id="demo")
+    assert store.get_session(token).current_tenant_id == "demo"

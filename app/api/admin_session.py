@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,14 @@ class AdminSession:
     role: str  # "admin" | "member"
     tenant_id: str | None
     expires_at: float
+    # 当前正在操作的租户。前台问答与后台页面共用这一个值——前端不再自己
+    # 在 sessionStorage 里记，否则它会按标签页隔离、和 Cookie 会话不同步。
+    #
+    # 与 tenant_id 的区别：tenant_id 是"你属于哪个租户"（member 固定、
+    # admin 为 None），current_tenant_id 是"你现在在看哪个租户"。member
+    # 两者恒等；admin 的 tenant_id 永远是 None，current_tenant_id 才是
+    # 他切到的那个。
+    current_tenant_id: str | None = None
 
 
 class AdminSessionStore:
@@ -47,6 +55,7 @@ class AdminSessionStore:
             role=role,
             tenant_id=tenant_id,
             expires_at=time.time() + ttl_seconds,
+            current_tenant_id=tenant_id,
         )
         return token
 
@@ -72,3 +81,20 @@ class AdminSessionStore:
 
     def revoke_session(self, token: str) -> None:
         self._sessions.pop(token, None)
+
+    def set_current_tenant(self, token: str, tenant_id: str) -> AdminSession | None:
+        """切换这个会话的当前租户。
+
+        AdminSession 是 frozen 的，改不了字段——用 replace 生成新实例并
+        写回字典。只 replace 不写回的话，下次 get_session 拿到的还是旧值，
+        界面上表现为"切了租户但没切"。
+
+        不做权限判断：谁能切到哪个租户由路由层的 require_tenant_access
+        决定，这里只负责存。
+        """
+        session = self.get_session(token)
+        if session is None:
+            return None
+        updated = replace(session, current_tenant_id=tenant_id)
+        self._sessions[token] = updated
+        return updated
