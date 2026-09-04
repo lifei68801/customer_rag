@@ -93,10 +93,10 @@ export function SchemaEtlPage() {
   const [sampleLoading, setSampleLoading] = useState(false)
   const [sampleError, setSampleError] = useState<string | null>(null)
   const [downloadingSample, setDownloadingSample] = useState(false)
-  // 向导是面向新手的主路径，默认展开——不能让用户先自己发现"这里能点开"
-  // 才看到引导流程；裸上传表单是面向已有 config.yaml 的老手场景，默认折叠
-  // 在下面的"高级"区块里，见 uploadFormExpanded。
-  const [builderExpanded, setBuilderExpanded] = useState(true)
+  // null = 用户还没手动展开或折叠过，展开与否由 mapping 决定（见下面的
+  // builderExpanded）。裸上传表单是面向已有 config.yaml 的老手场景，与
+  // mapping 无关，所以它仍是一个普通的默认折叠状态，见 uploadFormExpanded。
+  const [builderToggled, setBuilderToggled] = useState<boolean | null>(null)
   const [uploadFormExpanded, setUploadFormExpanded] = useState(false)
   // 轮询期间才需要知道"上一次拿到的历史列表里是不是还有 running 记录"，
   // 不需要触发重渲染。
@@ -104,10 +104,13 @@ export function SchemaEtlPage() {
   // 让 handleUpload 能在提交完成后立即"踢"一次轮询循环，不用等已经排好
   // 队的 setTimeout 走完最坏 15 秒才发现新记录出现了。
   const pollNowRef = useRef<() => Promise<void>>(async () => {})
-  // builderExpanded 的默认值要跟着 mapping 走一次：有映射时默认折叠（构建器
-  // 降级成次级入口），没有时默认展开。只在 mapping 第一次从 undefined 变成
-  // 已知值时同步，之后用户手动展开/折叠不会被这份效果覆盖回去。
-  const builderSyncedRef = useRef(false)
+  // 有映射时默认折叠（构建器降级成次级入口），没有时默认展开——向导是面向
+  // 新手的主路径，不能让用户先自己发现「这里能点开」才看到它。
+  //
+  // 直接从 mapping 派生，不走 effect：effect 要等这一帧渲染完才跑，那一帧里
+  // 提示文字已经出现而构建器还展开着，用户会看见它闪一下再折叠。用户手动点
+  // 过之后（builderToggled 不再是 null）以他的选择为准。
+  const builderExpanded = builderToggled ?? mapping === null
 
   useEffect(() => {
     document.title = '表格导入 · 管理后台'
@@ -145,7 +148,9 @@ export function SchemaEtlPage() {
   useEffect(() => {
     if (!sessionToken) return
     let cancelled = false
-    builderSyncedRef.current = false
+    // 换了租户/重新登录，上一个租户下用户手动展开或折叠的选择不再适用，
+    // 交还给 mapping 决定。
+    setBuilderToggled(null)
     setMapping(undefined)
     fetchEtlMapping(sessionToken, tenantId, 'confirmed')
       .then((result) => {
@@ -159,14 +164,6 @@ export function SchemaEtlPage() {
       cancelled = true
     }
   }, [sessionToken, tenantId])
-
-  // mapping 第一次从 undefined 变成已知值时，把 builderExpanded 的默认值
-  // 同步过去；只做这一次，不然用户手动展开/折叠会被这份效果覆盖回去。
-  useEffect(() => {
-    if (mapping === undefined || builderSyncedRef.current) return
-    builderSyncedRef.current = true
-    setBuilderExpanded(mapping === null)
-  }, [mapping])
 
   // 切换租户时，之前缓存的示例文件属于旧租户，必须清空，否则下次展开会
   // 直接复用过期数据（sampleFiles !== null 会跳过重新请求）。
@@ -411,7 +408,7 @@ export function SchemaEtlPage() {
         <div className="flex flex-col gap-2 rounded-panel border border-subtle bg-card">
           <button
             type="button"
-            onClick={() => setBuilderExpanded((prev) => !prev)}
+            onClick={() => setBuilderToggled(!builderExpanded)}
             className={`flex items-center justify-between px-4 py-3 text-left font-bold text-ink ${focusRing}`}
           >
             <span>
