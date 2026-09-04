@@ -239,33 +239,38 @@ export function OntologySchemaPage() {
   const handleConfirm = async () => {
     if (!sessionToken || confirmDisabled) return
 
-    // 确认是不可逆的（旧的已确认版本会被换掉、无法恢复），所以先算出这次
-    // 到底要改什么，摆在确认框里。只在点确认时拉已确认版，不拖慢页面首屏。
-    let diff: OntologyDiff | null = null
-    try {
-      const [draftSnapshot, confirmedSnapshot, termCounts] = await Promise.all([
-        loadSnapshot('draft'),
-        loadSnapshot('confirmed'),
-        // 拉不到实体分组统计不该挡住确认预览——按空对象处理，少一条数据
-        // 影响提示，好过让下面两份快照的差异预览也一起废掉。
-        fetchTermsSummary(sessionToken, tenantId).then(
-          (groups) => Object.fromEntries(groups.map((g) => [g.term_type, g.total])),
-          () => ({}) as Record<string, number>,
-        ),
-      ])
-      diff = buildOntologyDiff(draftSnapshot, confirmedSnapshot, termCounts)
-    } catch {
-      // 算不出差异不该挡住确认——退回原来那句笼统的警告，但要让用户知道
-      // 这次没能预览，而不是让他以为"没有变更"。
-      diff = null
-    }
-
-    if (!(await confirm(describeConfirmDiff(tenantId, diff)))) {
-      return
-    }
+    // 按钮先变成"确认中…"，再去算差异。下面那三路请求里任何一路**挂住**
+    // （不是失败——挂起没有 reject，catch 兜不住），confirm() 就永远不会被
+    // 调用：按钮既不变灰也不改字，用户点了什么都没发生，只会再点一次，
+    // 每点一次多发三路请求。/terms/summary 是全表 COUNT ... GROUP BY，
+    // 是这三路里最可能慢的一路。
     setPageError(null)
     setConfirming(true)
     try {
+      // 确认是不可逆的（旧的已确认版本会被换掉、无法恢复），所以先算出这次
+      // 到底要改什么，摆在确认框里。只在点确认时拉已确认版，不拖慢页面首屏。
+      let diff: OntologyDiff | null = null
+      try {
+        const [draftSnapshot, confirmedSnapshot, termCounts] = await Promise.all([
+          loadSnapshot('draft'),
+          loadSnapshot('confirmed'),
+          // 拉不到实体分组统计不该挡住确认预览——按空对象处理，少一条数据
+          // 影响提示，好过让下面两份快照的差异预览也一起废掉。
+          fetchTermsSummary(sessionToken, tenantId).then(
+            (groups) => Object.fromEntries(groups.map((g) => [g.term_type, g.total])),
+            () => ({}) as Record<string, number>,
+          ),
+        ])
+        diff = buildOntologyDiff(draftSnapshot, confirmedSnapshot, termCounts)
+      } catch {
+        // 算不出差异不该挡住确认——退回原来那句笼统的警告，但要让用户知道
+        // 这次没能预览，而不是让他以为"没有变更"。
+        diff = null
+      }
+
+      if (!(await confirm(describeConfirmDiff(tenantId, diff)))) {
+        return
+      }
       const response = await adminFetch(
         `/api/admin/ontology/${encodeURIComponent(tenantId)}/confirm`,
         sessionToken,

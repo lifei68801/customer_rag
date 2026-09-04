@@ -185,3 +185,57 @@ describe('terms/summary 失败不阻断差异预览', () => {
     expect(dialog.textContent).toMatch(/客户/)
   })
 })
+describe('terms/summary 挂起时按钮要有反应', () => {
+  it('summary 请求一直不返回时，按钮立刻变成"确认中…"并禁用', async () => {
+    // 挂起不是失败：pending 的 promise 既不 resolve 也不 reject，
+    // fetchTermsSummary 那个 .then(ok, err) 的 err 分支和外层 catch 都
+    // 兜不住它，Promise.all 永不落地、confirm() 永不被调用。修之前的表现
+    // 是：用户点了确认，界面完全没反应（按钮不变灰、不改字、不弹框），
+    // 他会再点一次，每点一次多发三路请求。
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        const json = (body: unknown) =>
+          Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
+        if (url.includes('/ontology/') && url.includes('/status')) return json({ confirmed: false })
+        if (url.includes('/checkout')) return json({})
+        // 这一路永不落地——被测的就是它。放在 /term-types 之前匹配，
+        // 免得将来两条规则的先后顺序变了又悄悄测不到。
+        if (url.includes('/terms/summary')) return new Promise(() => {})
+        if (url.includes('/term-types')) {
+          return json({
+            term_types: [{ value: '公司', extra_fields: [], standard_name_value_type: 'string' }],
+          })
+        }
+        // 关系类型和约束都得非空，确认按钮才是可点的（缺任何一样都会被
+        // confirmDisabledReason 拦下，那样这条用例就测不到点击之后的事）。
+        if (url.includes('/relation-types')) {
+          return json({
+            relation_types: [
+              { relation_type: 'HAS', example_phrase: 'x has y', description: '', allow_chain_query: false },
+            ],
+          })
+        }
+        if (url.includes('/constraints')) {
+          return json({
+            constraints: [{ subject_term_type: '公司', relation_type: 'HAS', object_term_type: '公司' }],
+          })
+        }
+        if (url.includes('/api/admin/tenants')) {
+          return json({ tenants: [{ tenant_id: 'demo', name: '演示租户', status: 'active' }] })
+        }
+        return new Promise(() => {})
+      }),
+    )
+    renderAt(ADMIN_ROUTES.ontology)
+    const button = await screen.findByRole('button', { name: /确认 schema/ })
+    await waitFor(() => expect(button).not.toBeDisabled())
+    await user.click(button)
+    await waitFor(() => expect(button.textContent).toMatch(/确认中/))
+    expect(button).toBeDisabled()
+    // 确认框还没弹出来——按钮的这个状态说的正是"正在算差异"这个空档。
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+})
