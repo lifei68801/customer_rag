@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
+import { useToast } from './ToastContext'
 
 export interface TenantOption {
   tenant_id: string
@@ -23,6 +24,7 @@ export interface TenantOption {
 export function useTenants() {
   const { sessionToken, currentTenantId } = useAdminAuth()
   const { tenantId, setTenantId } = useAdminTenant()
+  const showToast = useToast()
   const [tenants, setTenants] = useState<TenantOption[]>([])
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -37,27 +39,33 @@ export function useTenants() {
       }
       const data = (await response.json()) as { tenants: TenantOption[] }
       setTenants(data.tenants)
-      // TenantContext 的兜底值（whoami 说当前租户是 null 时回退到 'demo'）
-      // 在真实有历史数据的库上并不可靠——ensure_tenants_schema 只在完全没有
-      // 历史租户时才会回填 'demo'，所以当前 tenantId 很可能压根不在这次拉到
-      // 的列表里，界面会显示一个不存在的租户名、而后续所有写操作都会 404。
-      // 一旦发现当前 tenantId 不在真实列表中（且列表非空），自动纠正到列表
-      // 里的第一个——同样覆盖"当前所在租户被禁用掉了"的情况。
+      // 会话里确实有一个当前租户，但它不在这次拉到的列表里——要么这个
+      // 租户压根不存在（TenantContext 的兜底值 'demo' 在有历史数据的库上
+      // 并不可靠：ensure_tenants_schema 只在完全没有历史租户时才回填它），
+      // 要么它已经被停用（这个接口只列启用中的，两种情况在这里是同一个
+      // 形状）。不纠正的话界面会显示一个不存在的租户名，而后续所有写操作
+      // 都 404。
       //
-      // current_tenant_id 是 null 时同样要纠正：那时界面上显示的是兜底值，
-      // 服务端会话里却什么都没有，两边说的不是一回事。
-      if (
-        data.tenants.length > 0 &&
-        (currentTenantId === null || !data.tenants.some((t) => t.tenant_id === tenantId))
-      ) {
-        setTenantId(data.tenants[0].tenant_id)
+      // 这一种可以自动纠正，因为系统**知道**该去哪：当前这个无效了，换个
+      // 有效的。但换完必须说出来——用户没发起任何动作，作用域却变了，
+      // 不说的话他只能从账号块按钮上的名字发现。
+      //
+      // currentTenantId === null 刻意不在这里：那时系统不知道用户想去哪，
+      // 「列表里的第一个」跟「他想用哪个」毫无关系。替他选的后果是他以为
+      // 自己在主数据租户里、实际在示例数据租户里，然后被一条从没见过的
+      // 数据挡住。那一路交给 AdminLayout 的空态，让用户自己选。
+      const missing = !data.tenants.some((t) => t.tenant_id === tenantId)
+      if (currentTenantId !== null && data.tenants.length > 0 && missing) {
+        const next = data.tenants[0]
+        setTenantId(next.tenant_id)
+        showToast(`租户 ${currentTenantId} 不可用（不存在或已停用），已切换到 ${next.name}`)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载租户列表失败')
     } finally {
       setLoaded(true)
     }
-  }, [sessionToken, tenantId, currentTenantId, setTenantId])
+  }, [sessionToken, tenantId, currentTenantId, setTenantId, showToast])
 
   useEffect(() => {
     refresh().catch((err) => console.error('租户列表刷新失败', err))

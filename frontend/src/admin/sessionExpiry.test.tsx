@@ -165,19 +165,24 @@ describe('会话与租户由服务端驱动', () => {
     expect(sessionStorage.getItem('admin_current_tenant')).toBeNull()
   })
 
-  it('admin 的当前租户还是空的时候，进后台就替它定下来', async () => {
-    // admin 的 tenant_id 恒为 null，当前租户要显式切过一次才有值。界面上
-    // 却总得显示一个租户——不把它同步给服务端的话，界面显示的和服务端
-    // 生效的就是两回事（前台那侧会直接 400「请先选择一个租户」）。
+  it('admin 的当前租户还是空的时候，不替它定下来', async () => {
+    // 曾经是反过来的：进后台就自动切到租户列表的第一个。那条逻辑挑的是
+    // 「列表里排第一的」，跟「用户想用哪个」毫无关系，而唯一的告知是账号块
+    // 按钮上的租户名变了——用户以为自己在有两万条术语的主数据租户里，实际
+    // 在只有两条示例数据的那个里。系统不知道该去哪时就不该替他决定；界面
+    // 改为把选择摆出来（AdminLayout 的「请先选择一个租户」，见
+    // tenantGate.test.tsx）。
     signInWithCookie()
     const requests = stubApi({
       whoami: { username: 'admin', role: 'admin', tenant_id: null, current_tenant_id: null },
     })
     renderAt(ADMIN_ROUTES.ontology)
-    await waitFor(() =>
-      expect(requests.some((r) => r.url.endsWith('/session/tenant') && r.method === 'PUT')).toBe(true),
-    )
-    expect(switched).toBe(JSON.stringify({ tenant_id: 'demo' }))
+    // 先等租户列表真的拉回来——不等的话下面那条会因为压根还没走到那段
+    // 逻辑而假绿。
+    await waitFor(() => expect(requests.some((r) => r.url.includes('/api/admin/tenants'))).toBe(true))
+    await screen.findByText('请先选择一个租户')
+    expect(requests.filter((r) => r.url.endsWith('/session/tenant') && r.method === 'PUT')).toEqual([])
+    expect(switched).toBeNull()
   })
 
   it('切换租户失败时界面留在原来的租户上', async () => {

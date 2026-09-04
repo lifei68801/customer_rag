@@ -5,6 +5,9 @@ import {
   NAV_GROUPS,
   NAV_STANDALONE,
   groupIdForPath,
+  routeRequiresTenant,
+  NON_TENANT_ROUTE_KEYS,
+  TENANT_SCOPED_ROUTE_KEYS,
 } from './adminRoutes'
 
 /**
@@ -192,5 +195,50 @@ describe('当前分组判定（侧边栏自动展开用）', () => {
     for (const legacy of Object.keys(LEGACY_REDIRECTS)) {
       expect(groupIdForPath(legacy), `${legacy} 不该属于任何组`).toBeNull()
     }
+  })
+})
+
+describe('租户依赖分类', () => {
+  it('每个路由都被显式归类，一个都不漏', () => {
+    // 照搬后端 tests/api/test_admin_route_shapes.py 的做法：没有"忘了归类"
+    // 这一档。漏掉的那条会走进错误的分支——要么把一个不依赖租户的页面
+    // 挡在空态后面（admin 被锁死在什么都点不动的界面里），要么让一个依赖
+    // 租户的页面在没有当前租户时拿兜底值去取数（就是这次要修的静默失败）。
+    const classified = [...TENANT_SCOPED_ROUTE_KEYS, ...NON_TENANT_ROUTE_KEYS].sort()
+    expect(classified).toEqual(Object.keys(ADMIN_ROUTES).sort())
+  })
+
+  it('没有路由两边都沾', () => {
+    const both = TENANT_SCOPED_ROUTE_KEYS.filter((k) =>
+      (NON_TENANT_ROUTE_KEYS as readonly string[]).includes(k),
+    )
+    expect(both).toEqual([])
+  })
+
+  it('三个账号级页面不依赖租户——尤其是租户管理页', () => {
+    // 把租户管理页一起挡住的话，admin 会被锁在一个什么都点不动的界面里：
+    // 空态叫他去选一个租户，而唯一能新建/启用租户的页面也被空态盖着。
+    expect([...NON_TENANT_ROUTE_KEYS].sort()).toEqual(['accounts', 'settings', 'tenants'])
+  })
+
+  it('归为不依赖租户的路径，判定为不需要租户', () => {
+    for (const key of NON_TENANT_ROUTE_KEYS) {
+      expect(routeRequiresTenant(ADMIN_ROUTES[key]), `${key} 不该需要租户`).toBe(false)
+    }
+  })
+
+  it('归为依赖租户的路径（含子路径）判定为需要租户', () => {
+    for (const key of TENANT_SCOPED_ROUTE_KEYS) {
+      expect(routeRequiresTenant(ADMIN_ROUTES[key]), `${key} 应该需要租户`).toBe(true)
+    }
+    // 实体详情页在列表下一层，它同样按租户取数。
+    expect(routeRequiresTenant(`${ADMIN_ROUTES.terms}/foo`)).toBe(true)
+  })
+
+  it('没归类过的路径默认按"需要租户"处理', () => {
+    // 默认值选的是安全的那边：新加一个页面忘了归类时，它会被空态挡住
+    // （用户看得见、能纠正），而不是拿兜底租户去读写别人的数据。
+    expect(routeRequiresTenant('/admin')).toBe(true)
+    expect(routeRequiresTenant('/admin/乱敲')).toBe(true)
   })
 })

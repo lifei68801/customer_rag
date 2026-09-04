@@ -173,3 +173,47 @@ export const PAGE_TITLES: Record<keyof typeof ADMIN_ROUTES, string> = Object.fro
       ALL_NAV_ITEMS.find((i) => i.path === path)!.label,
   ]),
 ) as Record<keyof typeof ADMIN_ROUTES, string>
+
+/**
+ * 不依赖当前租户的路由。
+ *
+ * 这三个都是账号级的：账号管理、租户管理、偏好设置。它们在「还没选定
+ * 租户」时必须照常可用——尤其是租户管理页，把它一起挡住的话 admin 会被
+ * 锁死：空态叫他去选一个租户，而唯一能新建或启用租户的页面盖着同一张
+ * 空态。
+ */
+export const NON_TENANT_ROUTE_KEYS = ['accounts', 'tenants', 'settings'] as const
+
+/**
+ * 依赖当前租户的路由：读写的都是某一个租户里的数据。
+ *
+ * 显式列出来而不是"减去上面那份"，是为了让 adminRoutes.test.ts 能断言
+ * 「每个路由都被归类了」——照搬后端 tests/api/test_admin_route_shapes.py
+ * 的做法。新加一个页面忘了归类，测试会红，而不是默默走进错误的分支。
+ */
+export const TENANT_SCOPED_ROUTE_KEYS = [
+  'ontology',
+  'ontologyGraph',
+  'guidedOntology',
+  'documents',
+  'etl',
+  'reviewRelations',
+  'reviewDuplicates',
+  'terms',
+  'diagnostics',
+] as const
+
+const NON_TENANT_PATHS: string[] = NON_TENANT_ROUTE_KEYS.map((key) => ADMIN_ROUTES[key])
+
+/**
+ * 这个后台路径需不需要一个当前租户？AdminLayout 用它决定渲染页面还是
+ * 「请先选择一个租户」的空态。
+ *
+ * 默认值是 true，选的是安全的那边：没归类过的路径（新页面、404 兜底、
+ * 旧书签垫片、/admin 落地分流）会被空态挡住——用户看得见、也够得着纠正
+ * ——而不是拿 TenantContext 的兜底租户去读写别人的数据。反过来默认放行的
+ * 话，漏归类的那一页会静默地在错误的租户里工作。
+ */
+export function routeRequiresTenant(pathname: string): boolean {
+  return !NON_TENANT_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
+}

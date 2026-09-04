@@ -1,7 +1,7 @@
-import { ChevronDown, Menu, SquareArrowOutUpRight, X } from 'lucide-react'
+import { Building2, ChevronDown, Menu, SquareArrowOutUpRight, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
-import { NAV_GROUPS, NAV_STANDALONE } from '../adminRoutes'
+import { NAV_GROUPS, NAV_STANDALONE, routeRequiresTenant } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
 import { DensityProvider } from './DensityContext'
 import { TenantProvider } from './TenantContext'
@@ -12,6 +12,7 @@ import { VersionSwitcher } from './VersionSwitcher'
 import { NavBadge } from './NavBadge'
 import { useNavBadges } from './useNavBadges'
 import { commandPaletteHint } from './shortcutHint'
+import { EmptyState } from './EmptyState'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -89,8 +90,29 @@ function AdminNav() {
   )
 }
 
+/**
+ * 还没选定租户时，依赖租户的页面落在这里。
+ *
+ * admin 的 tenant_id 恒为 null，当前租户要显式切过一次才有值。此前
+ * useTenants 会替他选一个（租户列表里的第一个），用户从没选过、也没被告知
+ * ——他以为自己在主数据租户里，实际在示例数据租户里，直到某个操作被一条
+ * 从没见过的数据挡住。选择权交回去之后，这一屏就是那个选择的落点。
+ *
+ * 拦在布局层而不是改十几个页面：每一页各写一遍空态，漏掉的那一页会拿
+ * TenantContext 的兜底租户去取数——正是要修的那个静默失败。
+ */
+function NoTenantNotice() {
+  return (
+    <EmptyState
+      icon={Building2}
+      title="请先选择一个租户"
+      action="你的账号可以访问多个租户，请先选一个再继续——切换器在左下角的账号块里。"
+    />
+  )
+}
+
 export function AdminLayout() {
-  const { status, logout } = useAdminAuth()
+  const { status, logout, currentTenantId } = useAdminAuth()
   const { pathname } = useLocation()
   const [drawerOpen, setDrawerOpen] = useState(false)
 
@@ -195,7 +217,13 @@ export function AdminLayout() {
               </div>
             </aside>
             <main className="min-w-0 flex-1 overflow-y-auto p-6">
-              <Outlet />
+              {/* 侧边栏和账号块留在原位（上面那个 aside 不受这个分支影响）
+                  ——租户切换器就在账号块里，把它一起挡住等于没有退路。 */}
+              {currentTenantId === null && routeRequiresTenant(pathname) ? (
+                <NoTenantNotice />
+              ) : (
+                <Outlet />
+              )}
             </main>
           </div>
         </div>
