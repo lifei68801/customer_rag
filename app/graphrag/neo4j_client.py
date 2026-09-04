@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
@@ -16,6 +17,8 @@ from app.graphrag.structured_filter_query import (
 )
 
 from app.graphrag.ontology_categories import TermTypeCategory
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.graphrag.ontology_categories import ExtraFieldSpec
@@ -377,6 +380,50 @@ SET r.tenant_id = a.tenant_id
 # 写入），从来不带 tenant_id，也不参与租户语义（见
 # _COUNT_TERM_RELATION_EDGES_QUERY 的同款说明）——给它补一个租户属性
 # 等于凭空发明语义。
+
+#: 告警里最多点名几条脏边。同 admin_terms_routes 的 _IN_USE_SAMPLE_SIZE：
+#: 3 条够运维认出是哪批数据，再多没人读，剩下的用总数兜底。
+_INCONSISTENT_EDGE_SAMPLE_SIZE = 3
+
+_SURVEY_INCONSISTENT_RELATION_EDGES_QUERY = f"""
+MATCH (a:Term)-[r]->(b:Term)
+WHERE type(r) <> 'ALIAS_OF'
+  AND a.tenant_id IS NOT NULL AND b.tenant_id IS NOT NULL
+  AND (a.tenant_id <> b.tenant_id
+       OR (r.tenant_id IS NOT NULL AND r.tenant_id <> a.tenant_id))
+WITH CASE WHEN a.tenant_id <> b.tenant_id
+          THEN 'cross_tenant' ELSE 'edge_tenant_mismatch' END AS category,
+     {{subject_tenant_id: a.tenant_id, subject_node_key: a.node_key,
+      relation_type: type(r),
+      object_tenant_id: b.tenant_id, object_node_key: b.node_key,
+      edge_tenant_id: r.tenant_id}} AS sample
+RETURN category, count(*) AS total,
+       collect(sample)[0..{_INCONSISTENT_EDGE_SAMPLE_SIZE}] AS samples
+"""
+# 上面那条回填故意不碰的两类脏边，在这里被数出来并告警——不改它们，但
+# 绝不能让它们停在"既不参与检索、也删不掉、还没人知道它存在"的状态里。
+#
+# 两类的判据：
+#   cross_tenant         两端节点分属不同租户，这条边本身就是跨租户的；
+#   edge_tenant_mismatch 两端节点同租户，边自己标着另一个租户（真实库里
+#                        出现过：两端 default、边 demo，早期 demo 数据的
+#                        遗留），或者边标着租户而节点没有。
+# tenant_id 为 null 的边不在这里——两端同租户的那些已经被上面那条回填补
+# 好了，剩下的只会是这两类。
+#
+# CASE 的两个分支顺序不能反：跨租户的边同时也可能满足"边的租户和某一端
+# 对不上"，先判跨租户是因为那是更严重、也更需要人工介入的那一类。
+
+
+def _describe_inconsistent_edge(sample: dict[str, Any]) -> str:
+    """一条脏边渲染成人能拿去查的样子：两端各自的租户和 node_key、关系
+    类型、以及边自己标的租户。少任何一项，运维都没法在库里把它找出来。"""
+    return (
+        f"{sample.get('subject_tenant_id')}/{sample.get('subject_node_key')}"
+        f" -{sample.get('relation_type')}-> "
+        f"{sample.get('object_tenant_id')}/{sample.get('object_node_key')}"
+        f"（边的 tenant_id={sample.get('edge_tenant_id')}）"
+    )
 
 
 class Neo4jSessionProtocol(Protocol):
@@ -913,6 +960,57 @@ class Neo4jGraphClient:
             # 边的回填必须排在节点回填之后：它读的是两端节点的 tenant_id，
             # 节点还没回填时那个值是 null，一条都匹配不上。
             await session.run(_BACKFILL_LEGACY_RELATION_EDGES_QUERY)
+            await self._warn_about_inconsistent_relation_edges(session)
+
+    async def _warn_about_inconsistent_relation_edges(
+        self, session: Neo4jSessionProtocol
+    ) -> None:
+        """把回填故意不碰的两类脏边数出来，非零就告警。
+
+        零条时一个字都不打：每次启动刷一条"一切正常"，真出问题那天这条
+        警告就淹在噪音里没人看了。
+
+        普查失败不阻断启动（它是诊断，不是请求路径的前提），但失败本身
+        也要告警——静默跳过的话，"没有告警"就同时代表"库是干净的"和
+        "普查根本没跑成"，而这两件事需要完全不同的处理。
+        """
+        try:
+            result = await session.run(_SURVEY_INCONSISTENT_RELATION_EDGES_QUERY)
+            rows = await result.data()
+        except Exception:
+            logger.warning(
+                "普查租户标记异常的关系边失败——这次启动无法判断图谱里是否存在"
+                "这类边，请手工执行 _SURVEY_INCONSISTENT_RELATION_EDGES_QUERY 确认",
+                exc_info=True,
+            )
+            return
+        for row in rows:
+            total = row.get("total") or 0
+            if not total:
+                continue
+            listed = "；".join(
+                _describe_inconsistent_edge(sample) for sample in row.get("samples") or []
+            )
+            if row.get("category") == "cross_tenant":
+                logger.warning(
+                    "图谱里有 %d 条两端节点分属不同租户的关系边（%s）。这类边本身就"
+                    "跨越了租户边界：它们既不参与任何租户的检索，也不参与实体删除"
+                    "守卫，却仍然挂在节点上。系统不会自动改动它们——把它们归到某个"
+                    "租户名下等于让它们重新参与该租户的检索，那是在悄悄挪动隔离"
+                    "边界。请人工确认后处理：在实体详情页的『租户标记异常的关系边』"
+                    "一栏可以看到并删除它们（跨租户的这一类只有平台管理员能删）。",
+                    total, listed,
+                )
+            else:
+                logger.warning(
+                    "图谱里有 %d 条 tenant_id 与两端节点对不上的关系边（%s）。这类边"
+                    "今天既不参与检索（子图查询按边的 tenant_id 过滤），也不参与实体"
+                    "删除守卫，却仍然挂在节点上。系统不会自动改正它们的 tenant_id"
+                    "——那等于让一批被忽略的边突然活过来参与检索，是在悄悄改变租户"
+                    "隔离边界。请人工确认后处理：在实体详情页的『租户标记异常的关系"
+                    "边』一栏可以看到并删除它们。",
+                    total, listed,
+                )
 
     async def ensure_extra_field_indexes(
         self, *, tenant_id: str, term_type: str, extra_fields: list["ExtraFieldSpec"]

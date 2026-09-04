@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 import pytest
@@ -1267,3 +1268,105 @@ async def test_ensure_tenant_scoped_schema_is_idempotent_across_two_runs():
     writes = [q for q, _ in first_run if "SET " in q]
     assert len(writes) == 2
     assert all("IS NULL" in q for q in writes)
+
+
+class SurveySession(FakeSession):
+    """普查那条语句返回指定的行，其余语句照 FakeSession 的老样子。
+
+    按语句内容分发而不是按调用序号：ensure_tenant_scoped_schema 里语句的
+    条数和顺序以后还会变，序号绑定的测试会在与本意无关的改动上碎掉。"""
+
+    def __init__(self, survey_rows: list[dict]) -> None:
+        super().__init__(rows=[])
+        self._survey_rows = survey_rows
+
+    async def run(self, query: str, parameters: dict | None = None) -> FakeResult:
+        result = await super().run(query, parameters)
+        if "AS samples" in query:
+            return FakeResult(self._survey_rows)
+        return result
+
+
+async def test_ensure_tenant_scoped_schema_warns_about_inconsistent_relation_edges(caplog):
+    """B 类（边的租户和两端节点对不上）和 C 类（两端节点跨租户）不自动改，
+    那就必须让人看得见——否则它们永远停在"既不参与检索、也删不掉、还没人
+    知道它存在"的状态里，正是本项目的头号反模式。
+
+    日志得说清楚：各有多少条、样本是哪几条（两端的 node_key 与租户、边自己
+    的租户）、以及它们现在的处境和该去哪儿处理。"""
+    session = SurveySession(
+        [
+            {
+                "category": "edge_tenant_mismatch",
+                "total": 5,
+                "samples": [
+                    {
+                        "subject_tenant_id": "default", "subject_node_key": "t:错误码E502",
+                        "relation_type": "RELATED_TO",
+                        "object_tenant_id": "default", "object_node_key": "t:登录模块",
+                        "edge_tenant_id": "demo",
+                    }
+                ],
+            },
+            {
+                "category": "cross_tenant",
+                "total": 2,
+                "samples": [
+                    {
+                        "subject_tenant_id": "muji", "subject_node_key": "t:A",
+                        "relation_type": "PART_OF",
+                        "object_tenant_id": "demo", "object_node_key": "t:B",
+                        "edge_tenant_id": "muji",
+                    }
+                ],
+            },
+        ]
+    )
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    with caplog.at_level(logging.WARNING, logger="app.graphrag.neo4j_client"):
+        await client.ensure_tenant_scoped_schema()
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    joined = "\n".join(warnings)
+    assert "5 条" in joined
+    assert "2 条" in joined
+    # 样本必须点名具体是哪条边，光报数字的话运维还是找不到它
+    assert "t:错误码E502" in joined and "t:登录模块" in joined
+    assert "RELATED_TO" in joined and "demo" in joined
+    assert "t:A" in joined and "t:B" in joined and "muji" in joined
+    # 处境 + 出路：它们今天既不参与检索也不参与删除守卫，得有人工处理的去处
+    assert "检索" in joined
+    assert "实体详情页" in joined
+
+
+async def test_ensure_tenant_scoped_schema_stays_quiet_when_no_inconsistent_edges(caplog):
+    """零条时不许打日志：每次启动刷一条"一切正常"，真出问题那天这条警告
+    就淹没在噪音里没人看了。"""
+    session = SurveySession([])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    with caplog.at_level(logging.WARNING, logger="app.graphrag.neo4j_client"):
+        await client.ensure_tenant_scoped_schema()
+
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+async def test_inconsistent_relation_edge_survey_query_covers_both_dirty_classes():
+    """普查语句本身：B 类（边租户 != 节点租户）和 C 类（两端节点跨租户）
+    都要被数到，且健康的边一条都不能被算进去。"""
+    session = SurveySession([])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.ensure_tenant_scoped_schema()
+
+    query = next(q for q, _ in session.calls if "AS samples" in q)
+    # 断言必须落在 WHERE 那一段上：跨租户的条件在下面的 CASE 里也出现一次，
+    # 对整条语句做 in 判断时，把 WHERE 里的它删掉测试照样是绿的。
+    where_clause = query.split("WITH CASE")[0]
+    assert "a.tenant_id <> b.tenant_id" in where_clause
+    assert "r.tenant_id <> a.tenant_id" in where_clause
+    assert "type(r) <> 'ALIAS_OF'" in where_clause
+    # 分类必须由查询本身给出，否则调用方没法分别报两类的条数
+    assert "'cross_tenant'" in query
+    assert "'edge_tenant_mismatch'" in query
