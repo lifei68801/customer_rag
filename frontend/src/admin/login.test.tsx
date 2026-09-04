@@ -115,18 +115,16 @@ describe('登录页', () => {
     expect(lastBody).toEqual({ username: 'alice', password: 'password1' })
   })
 
-  it('登录成功后身份从 whoami 取，不落 sessionStorage', async () => {
-    // sessionStorage 按标签页隔离，而会话 Cookie 是整个浏览器共享的——把
-    // 身份存在那里，同一个人开两个标签页就会看到两份不一样的身份。
+  it('登录成功后身份从 whoami 取', async () => {
+    // 登录响应里那份 session_token 前端不再存任何地方——sessionStorage 按
+    // 标签页隔离，存在那里的话同一个人开两个标签页会看到两份不一样的身份。
+    // 这里不去断言那几个键是空的：已经没有任何代码写它们了，正确实现和错误
+    // 实现都会通过。能钉住的是「身份确实从 whoami 读到了」。
     const user = userEvent.setup()
     await renderLogin()
     await submit(user, 'alice', 'password1')
     // 登录页在已登录时会跳走，用它确认身份真的读到了。
     expect(await screen.findByTestId('admin-topbar')).toBeTruthy()
-    expect(sessionStorage.getItem('admin_session_token')).toBeNull()
-    expect(sessionStorage.getItem('admin_username')).toBeNull()
-    expect(sessionStorage.getItem('admin_role')).toBeNull()
-    expect(sessionStorage.getItem('admin_current_tenant')).toBeNull()
   })
 
   it('失败时显示错误，且不写入任何身份', async () => {

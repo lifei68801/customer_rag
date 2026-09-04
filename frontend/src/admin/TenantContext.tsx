@@ -60,8 +60,9 @@ export function TenantProvider({ children }: { children: ReactNode }) {
             // 服务端那个走。
             setCurrentTenantId(next)
           } catch {
-            // 切换是从菜单里发起的，菜单点完就关了，错误没有"原地"可停——
-            // 不给反馈的话用户只会看到租户名没变，猜不到发生了什么。
+            // 请求压根没发出去（断网），或者 adminFetch 在 401 时抛了。切换是
+            // 从菜单里发起的，菜单点完就关了，错误没有"原地"可停——不给反馈
+            // 的话用户只会看到租户名没变，猜不到发生了什么。
             showToast('切换租户失败')
           }
         })()

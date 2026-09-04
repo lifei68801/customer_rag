@@ -5,11 +5,16 @@ type ToastFn = (message: string) => void
 const ToastContext = createContext<ToastFn | null>(null)
 
 /**
- * 站点级瞬时成功反馈——用于替代"插入后不会消失、还会顶开布局"的常驻
+ * 站点级瞬时反馈——用于替代"插入后不会消失、还会顶开布局"的常驻
  * 确认文字，或者原本完全没有反馈的操作（删除、上传等）。跟 ConfirmContext
  * 一样用 Context + Provider 模式，挂载在 main.tsx 的根节点（前台聊天页和
- * 后台管理共用）。只用于"操作成功"这类确认性反馈，阻断性错误仍然留在
- * 原地（role="alert"），不挪到这里；不支持多条堆叠、不支持手动关闭。
+ * 后台管理共用）。不支持多条堆叠、不支持手动关闭。
+ *
+ * 主要用于"操作成功"这类确认性反馈；阻断性错误默认留在原地
+ * （role="alert"），紧挨着那个失败的控件。唯一的例外是**发起动作的那块界面
+ * 自己就消失了**——目前只有账号菜单里的切换租户（TenantContext.tsx）：菜单
+ * 点完就关，错误没有"原地"可停，而完全没有反馈比一条会自动消失的反馈更糟
+ * （用户只会以为自己没点中）。往这里挪错误之前先确认符合这个条件。
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [message, setMessage] = useState<string | null>(null)

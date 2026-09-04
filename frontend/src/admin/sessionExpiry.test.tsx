@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import App from '../App'
@@ -35,7 +35,10 @@ interface RecordedRequest {
 
 let switched: string | null = null
 
-function stubApi(options: { whoami: WhoAmI | 401; switchTenant?: number }): RecordedRequest[] {
+function stubApi(options: {
+  whoami: WhoAmI | 401 | 'pending'
+  switchTenant?: number | 'network-error'
+}): RecordedRequest[] {
   const requests: RecordedRequest[] = []
   switched = null
   vi.stubGlobal(
@@ -46,11 +49,14 @@ function stubApi(options: { whoami: WhoAmI | 401; switchTenant?: number }): Reco
       const json = (body: unknown, status = 200) =>
         Promise.resolve(new Response(JSON.stringify(body), { status }))
       if (url.includes('/auth/whoami')) {
+        if (options.whoami === 'pending') return new Promise(() => {})
         return options.whoami === 401 ? json({ detail: '未登录' }, 401) : json(options.whoami)
       }
       if (url.includes('/auth/session/tenant')) {
-        const status = options.switchTenant ?? 200
         switched = init?.body === undefined ? switched : String(init.body)
+        if (options.switchTenant === 'network-error') return Promise.reject(new Error('断网'))
+        const status = options.switchTenant ?? 200
+        if (status === 401) return json({ detail: '登录已过期' }, 401)
         return json(status === 200 ? { ok: true } : { detail: '无权访问该租户' }, status)
       }
       if (url.includes('/api/admin/tenants')) {
@@ -98,14 +104,50 @@ function renderAt(path: string) {
 }
 
 describe('会话与租户由服务端驱动', () => {
-  it('会话在服务端已失效时，清掉本地状态跳登录页', async () => {
+  it('进后台时服务端已不认这个 Cookie，落到登录页', async () => {
     // 会话是进程内的，后端一重启所有人都要重新登录。Cookie 还在、界面看起来
     // 像登录着，服务端却已不认——不处理的话用户会卡在一个「显示已登录但什么
     // 都点不动」的界面里。
+    //
+    // 这一条走的是冷启动：进后台的第一个 whoami 就被拒。中途失效是另一条路
+    // （adminFetch 的 401），下面单测。
     signInWithCookie()
     stubApi({ whoami: 401 })
     renderAt(ADMIN_ROUTES.ontology)
     expect(await screen.findByLabelText(/用户名/)).toBeTruthy()
+  })
+
+  it('已经进了后台，中途会话失效（请求 401）时也落到登录页', async () => {
+    // 后端重启发生在用户已经在后台里操作的时候：whoami 早就成功过，状态是
+    // 「已登录」，接下来的每个请求却都 401。不把这条路接上，用户会一直看着
+    // 一个显示已登录、点什么都没反应的界面。
+    signInWithCookie()
+    stubApi({
+      whoami: { username: 'admin', role: 'admin', tenant_id: null, current_tenant_id: 'demo' },
+      switchTenant: 401,
+    })
+    renderAt(ADMIN_ROUTES.ontology)
+    // 先真的进到后台里：这条用例要覆盖的是「本来登录着」，不是冷启动。
+    expect(await screen.findByTestId('admin-topbar')).toBeTruthy()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /demo/ }))
+    await user.click(await screen.findByRole('menuitemradio', { name: /acme/ }))
+    expect(await screen.findByLabelText(/用户名/)).toBeTruthy()
+  })
+
+  it('whoami 还没回来时，既不画后台也不跳登录页', async () => {
+    // 会话状态未知时两个方向都是错的：渲染后台会让 Cookie 已失效的人先看到
+    // 一屏取不到数的界面再被踢走；跳登录页则把还登录着的人一脚踢出去。
+    signInWithCookie()
+    stubApi({ whoami: 'pending' })
+    renderAt(ADMIN_ROUTES.ontology)
+    // 让挂载后的 effect 和微任务都跑完，再断言「两样都没有」——不等的话
+    // 断言只是跑在第一帧上，什么实现都能过。
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(screen.queryByTestId('admin-topbar')).toBeNull()
+    expect(screen.queryByLabelText(/用户名/)).toBeNull()
   })
 
   it('切换租户走服务端，不写 sessionStorage', async () => {
@@ -154,7 +196,24 @@ describe('会话与租户由服务端驱动', () => {
       expect(requests.some((r) => r.url.endsWith('/session/tenant') && r.method === 'PUT')).toBe(true),
     )
     // 失败要说出来：租户名没变而没有任何提示的话，用户只会以为自己没点中。
-    expect(await screen.findByRole('status')).toBeTruthy()
+    // 断言的是服务端给的那句话，不是随便一条提示。
+    expect((await screen.findByRole('status')).textContent).toMatch(/无权访问该租户/)
+    expect(await screen.findByRole('button', { name: /当前 demo/ })).toBeTruthy()
+  })
+
+  it('切换租户请求根本没发出去（断网）时也要说出来', async () => {
+    // 这一路不经过「响应不 ok」那个分支：fetch 直接抛。吞掉异常的话租户名
+    // 没变、也没有任何提示，用户只会以为自己没点中。
+    signInWithCookie()
+    stubApi({
+      whoami: { username: 'admin', role: 'admin', tenant_id: null, current_tenant_id: 'demo' },
+      switchTenant: 'network-error',
+    })
+    renderAt(ADMIN_ROUTES.ontology)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /demo/ }))
+    await user.click(await screen.findByRole('menuitemradio', { name: /acme/ }))
+    expect((await screen.findByRole('status')).textContent).toMatch(/切换租户失败/)
     expect(await screen.findByRole('button', { name: /当前 demo/ })).toBeTruthy()
   })
 })

@@ -114,8 +114,11 @@ export function setCurrentTenantId(next: string): void {
 }
 
 /**
- * 把会话状态清回「未知」。测试用：模块级状态在同一个测试文件里跨用例
- * 存活，不重置的话上一条用例登录出来的身份会漏进下一条。
+ * 把会话状态清回「未知」。
+ *
+ * @internal 只给测试用：模块级状态在同一个测试文件里跨用例存活，不重置的话
+ * 上一条用例登录出来的身份会漏进下一条。生产代码调它会把当前用户打回
+ * loading（界面整个空白，直到下一次 whoami 回来）——登出请用 logout()。
  */
 export function resetAdminSession(): void {
   inflight = null
