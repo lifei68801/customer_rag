@@ -41,12 +41,12 @@ router = APIRouter(
 
 class AgentChatRequest(BaseModel):
     question: str
-    # tenant_id / user_id 保留但不再使用：租户与用户一律取自会话
-    # （deps.require_chat_session）。删掉这两个字段会让还在发它们的既有
-    # 客户端直接 422，而忽略它们是无声的兼容。
+    # tenant_id 保留但不再使用：租户一律取自会话（deps.require_chat_session）。
+    # 留着它是为了让"这个字段被显式忽略"出现在 OpenAPI schema 里，而不是因为
+    # 删掉会 422——这个模型没有 extra="forbid"，pydantic v2 默认忽略未知字段，
+    # 实测 AgentChatRequest(question="x", tenant_id="t") 构造成功。
     tenant_id: str | None = None
     session_id: str = "default"
-    user_id: str = "anonymous"
     # 按需触发：仅当本轮以语音提问时才为 true，文字提问始终为 false，
     # 避免不必要的 TTS 成本和延迟。
     voice_response: bool = False

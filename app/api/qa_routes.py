@@ -29,8 +29,10 @@ router = APIRouter(
 
 class QARequest(BaseModel):
     question: str
-    # 保留但不再使用：租户一律取自会话（deps.require_chat_session）。删掉
-    # 这个字段会让还在发它的既有客户端直接 422，而忽略它是无声的兼容。
+    # 保留但不再使用：租户一律取自会话（deps.require_chat_session）。留着它
+    # 是为了让"这个字段被显式忽略"出现在 OpenAPI schema 里，而不是因为删掉
+    # 会 422——这个模型没有 extra="forbid"，pydantic v2 默认忽略未知字段，
+    # 实测 QARequest(question="x", tenant_id="t") 构造成功。
     tenant_id: str | None = None
 
 
