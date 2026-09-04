@@ -331,7 +331,7 @@ class NeptuneGraphClient:
             await self._client.execute_open_cypher(query)
         await self._client.execute_open_cypher(_BACKFILL_LEGACY_TERM_NODES_QUERY)
 
-    # 以下 7 个方法是 GraphWriteProtocol（neo4j_client.py）声明的后台管理写
+    # 以下 9 个方法是 GraphWriteProtocol（neo4j_client.py）声明的后台管理写
     # 接口——NeptuneGraphClient 尚未实现，显式存根报 NotImplementedError，
     # 而不是任由调用方撞上一个没有说明的 AttributeError。收窄 GraphWriteProtocol
     # 本身不会在 CI 里拦住误接的调用（本项目 CI 只跑 pytest，不跑类型检查），
@@ -371,6 +371,23 @@ class NeptuneGraphClient:
     ) -> int:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 delete_relation_edge——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
+    async def list_inconsistent_relation_edges(
+        self, *, tenant_id: str, node_key: str
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 list_inconsistent_relation_edges——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
+    async def delete_inconsistent_relation_edge(
+        self, *, subject_tenant_id: str, subject_node_key: str, relation_type: str,
+        object_tenant_id: str, object_node_key: str,
+    ) -> int:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 delete_inconsistent_relation_edge——见 "
             "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
         )
 

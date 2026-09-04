@@ -224,7 +224,7 @@ async def test_execute_structured_filter_query_expand_includes_optional_match_an
 
 
 # 后台管理写接口（GraphWriteProtocol，见 neo4j_client.py）在 NeptuneGraphClient
-# 上尚未实现——这 7 个测试确认每个方法都报清晰的 NotImplementedError，而不是
+# 上尚未实现——这 9 个测试确认每个方法都报清晰的 NotImplementedError，而不是
 # 调用方撞上一个没有说明的 AttributeError。见 2026-08-27 架构评审："收窄协议
 # 本身不会在 CI 里拦住这类调用（本项目 CI 只跑 pytest，不跑类型检查），存根
 # 才是运行时真正生效的防线"。
@@ -333,4 +333,21 @@ async def test_delete_relation_edge_raises_not_implemented():
         await client.delete_relation_edge(
             tenant_id="t1", subject_node_key="a", relation_type="RELATED_TO",
             object_node_key="b",
+        )
+
+
+async def test_list_inconsistent_relation_edges_raises_not_implemented():
+    client = NeptuneGraphClient(client=FakeNeptuneClient())
+
+    with pytest.raises(NotImplementedError, match="list_inconsistent_relation_edges"):
+        await client.list_inconsistent_relation_edges(tenant_id="t1", node_key="k1")
+
+
+async def test_delete_inconsistent_relation_edge_raises_not_implemented():
+    client = NeptuneGraphClient(client=FakeNeptuneClient())
+
+    with pytest.raises(NotImplementedError, match="delete_inconsistent_relation_edge"):
+        await client.delete_inconsistent_relation_edge(
+            subject_tenant_id="t1", subject_node_key="a", relation_type="RELATED_TO",
+            object_tenant_id="t1", object_node_key="b",
         )

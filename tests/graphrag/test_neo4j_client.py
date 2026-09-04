@@ -1370,3 +1370,118 @@ async def test_inconsistent_relation_edge_survey_query_covers_both_dirty_classes
     # 分类必须由查询本身给出，否则调用方没法分别报两类的条数
     assert "'cross_tenant'" in query
     assert "'edge_tenant_mismatch'" in query
+
+
+async def test_list_inconsistent_relation_edges_finds_edges_the_detail_page_hides():
+    """详情页和守卫都按边的 tenant_id 过滤，脏边在界面上根本不出现——
+    用户找不到它，也就无从删起。这个方法是它们唯一的入口：按两端节点
+    的租户定位，不按边自己标的租户。"""
+    session = FakeSession(rows=[
+        {"direction": "out", "relation_type": "RELATED_TO", "node_key": "t:B",
+         "standard_name": "B", "term_type": "t", "other_tenant_id": "default",
+         "edge_tenant_id": "demo"},
+    ])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    rows = await client.list_inconsistent_relation_edges(tenant_id="default", node_key="t:A")
+
+    assert rows == [
+        {"direction": "out", "relation_type": "RELATED_TO", "node_key": "t:B",
+         "standard_name": "B", "term_type": "t", "other_tenant_id": "default",
+         "edge_tenant_id": "demo"},
+    ]
+    assert session.last_parameters == {"tenant_id": "default", "node_key": "t:A"}
+    # 起点节点仍然按本租户锁定——列的是"我这个实体身上挂着的脏边"，
+    # 不是全库的脏边。
+    assert "(t:Term {tenant_id: $tenant_id, node_key: $node_key})" in session.last_query
+    # 两端各自的租户和边自己的租户都要返回：不返回的话，前端既显示不出
+    # 这条边到底哪儿不对，删除时也拼不出对端节点的租户。
+    assert "related.tenant_id AS other_tenant_id" in session.last_query
+    assert "r.tenant_id AS edge_tenant_id" in session.last_query
+
+
+async def test_list_inconsistent_relation_edges_excludes_healthy_edges():
+    """健康的边（边的租户 = 两端节点的租户）不能出现在这份清单里——
+    它们在详情页正常那一栏里已经能看能删，出现在这里只会让用户以为
+    自己的图谱一团糟。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.list_inconsistent_relation_edges(tenant_id="default", node_key="t:A")
+
+    where_clause = session.last_query.split("RETURN")[0]
+    assert "r.tenant_id IS NULL" in where_clause
+    assert "r.tenant_id <> t.tenant_id" in where_clause
+    assert "related.tenant_id <> t.tenant_id" in where_clause
+    assert "type(r) <> 'ALIAS_OF'" in where_clause
+
+
+async def test_delete_inconsistent_relation_edge_locates_both_ends_by_their_own_tenants():
+    """脏边删不掉的根因是 _DELETE_RELATION_EDGE_QUERY 按边的 tenant_id 过滤，
+    而这些边的 tenant_id 恰恰是错的。这条路径改用两端节点各自的租户定位——
+    节点的租户是更可靠的判据（边的租户已经被证明会说谎）。"""
+    session = FakeSession(rows=[{"removed": 1}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    removed = await client.delete_inconsistent_relation_edge(
+        subject_tenant_id="default", subject_node_key="t:A",
+        relation_type="RELATED_TO",
+        object_tenant_id="demo", object_node_key="t:B",
+    )
+
+    assert removed == 1
+    assert session.last_parameters == {
+        "subject_tenant_id": "default", "subject_node_key": "t:A",
+        "relation_type": "RELATED_TO",
+        "object_tenant_id": "demo", "object_node_key": "t:B",
+    }
+    assert (
+        "MATCH (a:Term {tenant_id: $subject_tenant_id, node_key: $subject_node_key})"
+        "-[r]->(b:Term {tenant_id: $object_tenant_id, node_key: $object_node_key})"
+    ) in session.last_query
+    assert "DELETE r" in session.last_query
+
+
+async def test_delete_inconsistent_relation_edge_refuses_to_touch_healthy_edges():
+    """这条路径不按边的 tenant_id 定位，如果不另加限制，它就成了一个能
+    删任意边的后门（两端节点都指定得出来的话）。所以匹配条件里必须写死
+    "只删违反不变式的边"：边没有租户、两端节点跨租户、或边的租户和起点
+    对不上。健康的边一条都不能从这里删掉。"""
+    session = FakeSession(rows=[{"removed": 0}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.delete_inconsistent_relation_edge(
+        subject_tenant_id="t1", subject_node_key="a",
+        relation_type="RELATED_TO", object_tenant_id="t1", object_node_key="b",
+    )
+
+    where_clause = session.last_query.split("DELETE")[0]
+    assert "r.tenant_id IS NULL" in where_clause
+    assert "a.tenant_id <> b.tenant_id" in where_clause
+    assert "r.tenant_id <> a.tenant_id" in where_clause
+    # 关系类型仍然走参数，理由同 delete_relation_edge：值来自 HTTP 请求。
+    assert "type(r) = $relation_type" in where_clause
+
+
+async def test_delete_inconsistent_relation_edge_passes_relation_type_as_a_parameter():
+    session = FakeSession(rows=[{"removed": 0}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.delete_inconsistent_relation_edge(
+        subject_tenant_id="t1", subject_node_key="a", relation_type="EVIL_TYPE",
+        object_tenant_id="t1", object_node_key="b",
+    )
+
+    assert "EVIL_TYPE" not in session.last_query
+
+
+async def test_delete_inconsistent_relation_edge_returns_zero_when_no_rows():
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    removed = await client.delete_inconsistent_relation_edge(
+        subject_tenant_id="t1", subject_node_key="a", relation_type="RELATED_TO",
+        object_tenant_id="t1", object_node_key="b",
+    )
+
+    assert removed == 0

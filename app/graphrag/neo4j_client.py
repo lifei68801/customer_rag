@@ -292,6 +292,63 @@ RETURN count(r) AS removed
 # 的边数——这个语义已经在 _DELETE_STALE_RELATIONS_QUERY 上用真实 Neo4j
 # 5.22 验证过（见该查询的说明）。
 
+_LIST_INCONSISTENT_RELATION_EDGES_QUERY = """
+MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term)
+WHERE type(r) <> 'ALIAS_OF'
+  AND (r.tenant_id IS NULL
+       OR related.tenant_id IS NULL
+       OR r.tenant_id <> t.tenant_id
+       OR related.tenant_id <> t.tenant_id)
+RETURN CASE WHEN startNode(r) = t THEN 'out' ELSE 'in' END AS direction,
+       type(r) AS relation_type,
+       related.node_key AS node_key,
+       related.standard_name AS standard_name,
+       related.type AS term_type,
+       related.tenant_id AS other_tenant_id,
+       r.tenant_id AS edge_tenant_id
+ORDER BY relation_type, node_key
+"""
+# _TERM_RELATIONS_QUERY 的补集：那条按 r.tenant_id = $tenant_id 过滤，于是
+# 租户标记异常的边在详情页上根本不出现——用户找不到它，也就无从删起，而
+# 它照样挡着实体的删除。这条把同一个节点身上的那批边单独列出来。
+#
+# 起点仍然按 {tenant_id, node_key} 锁定：列的是"我这个实体身上挂着的脏
+# 边"，不是全库的脏边——后者是运维的事，走启动时那条普查告警。
+#
+# 三个 IS NULL 分支不是冗余：Cypher 里 null <> 'x' 求值为 null（不是
+# true），只写 <> 的话 tenant_id 缺失的那些边会被静默漏掉，而它们正是
+# 这次要暴露的对象之一。
+#
+# 两端各自的租户和边自己的租户都要返回：前端要靠它们说清这条边到底哪儿
+# 不对，删除时也要靠对端节点的租户去定位那条边。
+
+_DELETE_INCONSISTENT_RELATION_EDGE_QUERY = """
+MATCH (a:Term {tenant_id: $subject_tenant_id, node_key: $subject_node_key})-[r]->(b:Term {tenant_id: $object_tenant_id, node_key: $object_node_key})
+WHERE type(r) = $relation_type
+  AND type(r) <> 'ALIAS_OF'
+  AND (r.tenant_id IS NULL
+       OR a.tenant_id <> b.tenant_id
+       OR r.tenant_id <> a.tenant_id)
+DELETE r
+RETURN count(r) AS removed
+"""
+# 删脏边。_DELETE_RELATION_EDGE_QUERY 按边的 tenant_id 过滤，而这些边的
+# tenant_id 恰恰就是错的那个属性，所以它们删不掉——本方法改用两端节点
+# 各自的租户定位，节点的租户是更可靠的判据（边的租户已经被证明会说谎）。
+#
+# 最后那个 WHERE 分支是安全边界，不是优化：不按边的 tenant_id 过滤之后，
+# 如果不写死"只删违反不变式的边"，这条语句就成了一个能删任意边的后门。
+# 三个分支恰好覆盖回填故意不碰的那两类（边没有租户 / 两端跨租户 / 边的
+# 租户和起点对不上），健康的边一条都匹配不上。
+#
+# 谁有权调它由路由层判定（见 admin_terms_routes.py 的删除路由）：起点
+# 节点固定取 URL 里那个已经过 require_tenant_access 校验的租户，所以
+# member 借这条路径也只能碰到自己租户节点身上的边；两端节点分属不同租户
+# 的那一类另外要求平台管理员。
+#
+# 有向模式、关系类型走参数、DELETE 后 count(r) 的语义，理由全同
+# _DELETE_RELATION_EDGE_QUERY。
+
 _RENAME_TERM_NODE_QUERY = """
 MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})
 SET t.standard_name = $new_standard_name
@@ -477,6 +534,15 @@ class GraphWriteProtocol(Protocol):
     async def delete_relation_edge(
         self, *, tenant_id: str, subject_node_key: str, relation_type: str,
         object_node_key: str,
+    ) -> int: ...
+
+    async def list_inconsistent_relation_edges(
+        self, *, tenant_id: str, node_key: str
+    ) -> list[dict[str, Any]]: ...
+
+    async def delete_inconsistent_relation_edge(
+        self, *, subject_tenant_id: str, subject_node_key: str, relation_type: str,
+        object_tenant_id: str, object_node_key: str,
     ) -> int: ...
 
     async def ensure_extra_field_indexes(
@@ -936,6 +1002,47 @@ class Neo4jGraphClient:
                     "tenant_id": tenant_id,
                     "subject_node_key": subject_node_key,
                     "relation_type": relation_type,
+                    "object_node_key": object_node_key,
+                },
+            )
+            rows = await result.data()
+            return rows[0]["removed"] if rows else 0
+
+    async def list_inconsistent_relation_edges(
+        self, *, tenant_id: str, node_key: str
+    ) -> list[dict[str, Any]]:
+        """这个实体身上租户标记异常的边——详情页那份清单（list_term_relations）
+        看不到的那些。见 _LIST_INCONSISTENT_RELATION_EDGES_QUERY。"""
+        async with self._driver.session() as session:
+            result = await session.run(
+                _LIST_INCONSISTENT_RELATION_EDGES_QUERY,
+                {"tenant_id": tenant_id, "node_key": node_key},
+            )
+            return await result.data()
+
+    async def delete_inconsistent_relation_edge(
+        self,
+        *,
+        subject_tenant_id: str,
+        subject_node_key: str,
+        relation_type: str,
+        object_tenant_id: str,
+        object_node_key: str,
+    ) -> int:
+        """删掉一条租户标记异常的边，返回实际删掉的条数（0 表示没匹配到）。
+
+        跟 delete_relation_edge 一样，调用方必须把 0 如实报出去。两端节点
+        按各自的租户定位，且只会匹配违反租户不变式的边——见
+        _DELETE_INCONSISTENT_RELATION_EDGE_QUERY。
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                _DELETE_INCONSISTENT_RELATION_EDGE_QUERY,
+                {
+                    "subject_tenant_id": subject_tenant_id,
+                    "subject_node_key": subject_node_key,
+                    "relation_type": relation_type,
+                    "object_tenant_id": object_tenant_id,
                     "object_node_key": object_node_key,
                 },
             )
