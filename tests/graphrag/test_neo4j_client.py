@@ -271,6 +271,78 @@ async def test_query_subgraph_sends_two_hop_union_query_for_chain_relations():
     assert session.last_parameters == {"node_key": "错误码E502", "tenant_id": "t1"}
 
 
+def _subgraph_union_branches(query: str) -> tuple[str, str]:
+    """把 _SUBGRAPH_QUERY 拆成 UNION 前后两段。
+
+    下面几条断言必须钉住"这一段里有租户过滤"，而不是"整条语句某处出现过"
+    ——两段各自匹配对端节点，只补其中一段的话，另一段照样会把别的租户的
+    节点返回给 LLM，而一条整体查找的断言仍然是绿的。
+    """
+    branches = query.split("UNION")
+    assert len(branches) == 2, f"期望 _SUBGRAPH_QUERY 恰好有两段 UNION：{query}"
+    return branches[0], branches[1]
+
+
+async def test_list_term_relations_scopes_related_node_by_tenant():
+    """详情页的关系列表里，对端节点也必须按租户过滤。
+
+    起点节点和边都过滤了、唯独对端节点没有的话，一条"边标着本租户、对端
+    节点属别的租户"的边会把别人的 standard_name 列进管理界面。这类边正常
+    写入路径产生不了（merge_relation 给两端节点和边用同一个 $tenant_id），
+    但早期示例数据里出现过租户标记不一致的历史脏边——查询不该依赖数据干净。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.list_term_relations(tenant_id="t1", node_key="k1")
+
+    assert (
+        "MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})"
+        "-[r]-(related:Term {tenant_id: $tenant_id})"
+    ) in session.last_query
+    assert session.last_parameters == {"tenant_id": "t1", "node_key": "k1"}
+
+
+async def test_query_subgraph_one_hop_branch_scopes_related_node_by_tenant():
+    """检索上下文的 1 跳分支：对端节点按租户过滤。泄漏点比详情页更严重
+    ——这里返回的 standard_name 会直接进 LLM 的回答。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.query_subgraph("k1", tenant_id="t1")
+
+    one_hop, _ = _subgraph_union_branches(session.last_query)
+    assert "-[r]-(related:Term {tenant_id: $tenant_id})" in one_hop
+
+
+async def test_query_subgraph_two_hop_branch_scopes_related_node_by_tenant():
+    """检索上下文的 2 跳分支：终点节点按租户过滤。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.query_subgraph("k1", tenant_id="t1")
+
+    _, two_hop = _subgraph_union_branches(session.last_query)
+    assert "(related:Term {tenant_id: $tenant_id})" in two_hop
+
+
+async def test_query_subgraph_two_hop_branch_scopes_intermediate_nodes_by_tenant():
+    """2 跳分支里还有一个中间节点，它同样要按租户校验。
+
+    ALL(rel IN r WHERE ...) 只管住了路径上的每条边，给终点节点补上
+    {tenant_id: $tenant_id} 也只管住了两头——中间那个节点仍然可以是别的
+    租户的。校验必须覆盖路径上的全部节点（nodes(p)），只钉终点的实现要红。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.query_subgraph("k1", tenant_id="t1")
+
+    _, two_hop = _subgraph_union_branches(session.last_query)
+    assert "MATCH p = (t:Term {tenant_id: $tenant_id, node_key: $node_key})" in two_hop
+    assert "ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id)" in two_hop
+
+
 async def test_count_relation_edges_for_term_returns_edge_count():
     session = FakeSession(rows=[{"edge_count": 3}])
     client = Neo4jGraphClient(driver=FakeDriver(session))

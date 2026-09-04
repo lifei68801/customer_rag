@@ -38,8 +38,16 @@ _CAST_BY_VALUE_TYPE = {"number": "toFloat", "integer": "toInteger"}
 #
 # 方向要分出来：「公司 生产 产品」和「产品 生产 公司」是两回事，混在一起
 # 看不出这个实体在关系里扮演什么角色。
+#
+# 对端节点 (related:Term {tenant_id: $tenant_id}) 也要按租户匹配，不能只过滤
+# 起点和边：一条「边标着本租户、对端节点属别的租户」的边能通过 r.tenant_id
+# 这道过滤，对端的 standard_name 就会被列进管理界面。这是纵深防御，不是在
+# 修一处正在发生的泄漏——正常写入路径产生不了这种边（merge_relation 给两端
+# 节点和边用的是同一个 $tenant_id 参数），但早期示例数据留下过租户标记不一致
+# 的脏边（见 _SURVEY_INCONSISTENT_RELATION_EDGES_QUERY 的两类），所以查询
+# 不再依赖数据干净。
 _TERM_RELATIONS_QUERY = """
-MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term)
+MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term {tenant_id: $tenant_id})
 WHERE r.tenant_id = $tenant_id
 RETURN CASE WHEN startNode(r) = t THEN 'out' ELSE 'in' END AS direction,
        type(r) AS relation_type,
@@ -50,14 +58,16 @@ ORDER BY relation_type, standard_name
 """
 
 _SUBGRAPH_QUERY = """
-MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term)
+MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term {tenant_id: $tenant_id})
 WHERE r.tenant_id = $tenant_id
 RETURN related.standard_name AS related_name, type(r) AS relation_type, 1 AS hops
 
 UNION
 
-MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r:REQUIRES|PRECEDES|PART_OF*2..2]-(related:Term)
-WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id) AND related <> t
+MATCH p = (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r:REQUIRES|PRECEDES|PART_OF*2..2]-(related:Term {tenant_id: $tenant_id})
+WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id)
+  AND ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id)
+  AND related <> t
 RETURN related.standard_name AS related_name,
        [rel IN r | type(rel)][-1] AS relation_type,
        2 AS hops
@@ -66,6 +76,18 @@ RETURN related.standard_name AS related_name,
 # 恰好 2 跳（*2..2，不是 *1..2，避免和第一段的 1 跳结果重复）——前提链、
 # 流程顺序、包含层级经常需要连续追问两步；其余关系类型语义上查 1 跳就
 # 有意义，继续放开多跳容易发散、引入噪声上下文。
+#
+# 两段 UNION 的对端节点都写成 (related:Term {tenant_id: $tenant_id})，理由同
+# _TERM_RELATIONS_QUERY 的说明——区别只在泄漏的去向：这条查询的结果直接进
+# LLM 的检索上下文，别的租户的 standard_name 会出现在回答里。
+#
+# 第二段的 ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id) 管的是路径中间
+# 那个节点：*2..2 的路径上除了两端还有一个中间节点，只给终点加
+# {tenant_id: $tenant_id} 是管不到它的。nodes(p) 覆盖路径上的全部节点（起点、
+# 中间、终点），所以这一条本身就把终点也校验了；终点上那份 {tenant_id: ...}
+# 保留着是让匹配阶段就收窄，也让「对端按租户过滤」这件事在模式里一眼可见。
+# 为此把这一段改成具名路径 MATCH p = (...)——nodes() 要拿路径，只有关系列表 r
+# 是不够的。
 #
 # ALL(rel IN r WHERE rel.tenant_id = $tenant_id) 必须校验路径上每一条边
 # 的租户归属，不能只查其中一条——:Term 标准节点本身不分租户、可能被
@@ -312,12 +334,13 @@ ORDER BY relation_type, node_key
 # 租户标记异常的边在详情页上根本不出现——用户找不到它，也就无从删起，而
 # 它照样挂在节点上。这条把同一个节点身上的那批边单独列出来。
 #
-# 有一类脏边反而**会**出现在那份正常清单里：两端节点跨租户、边自己标着
-# 本租户时，_TERM_RELATIONS_QUERY 的 r.tenant_id = $tenant_id 通得过，而
-# related 那一端并不按租户过滤——于是另一个租户的节点会被列出来（同一个
-# 口子在 _SUBGRAPH_QUERY 上意味着它还会进检索上下文）。它在那份清单里
-# 的删除按钮是无效的：_DELETE_RELATION_EDGE_QUERY 把两端都钉死在同一个
-# 租户上，匹配不到这条边。这也是这份清单要单独存在的理由之一。
+# 「两端节点跨租户、边自己标着本租户」这一类曾经**会**出现在那份正常清单里：
+# _TERM_RELATIONS_QUERY 的 r.tenant_id = $tenant_id 通得过，而当时 related
+# 那一端并不按租户过滤，于是另一个租户的节点会被列出来（同一个口子在
+# _SUBGRAPH_QUERY 上意味着它还会进检索上下文）。现在两条查询的对端节点都
+# 按租户匹配了，这类边跟其余脏边一样从正常清单里消失——于是更需要这份清单：
+# 它是这些边在界面上唯一的出口。它们也删不掉：_DELETE_RELATION_EDGE_QUERY
+# 把两端都钉死在同一个租户上，匹配不到跨租户的那条边。
 #
 # 起点仍然按 {tenant_id, node_key} 锁定：列的是"我这个实体身上挂着的脏
 # 边"，不是全库的脏边——后者是运维的事，走启动时那条普查告警。

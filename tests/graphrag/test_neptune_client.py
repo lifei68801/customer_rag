@@ -351,3 +351,44 @@ async def test_delete_inconsistent_relation_edge_raises_not_implemented():
             subject_tenant_id="t1", subject_node_key="a", relation_type="RELATED_TO",
             object_tenant_id="t1", object_node_key="b",
         )
+
+
+def _subgraph_union_branches(query: str) -> tuple[str, str]:
+    """把 _SUBGRAPH_QUERY 拆成 UNION 前后两段——理由同 Neo4j 侧的同名助手：
+    两段各自匹配对端节点，一条整体查找的断言分不出"只补了其中一段"。"""
+    branches = query.split("UNION")
+    assert len(branches) == 2, f"期望 _SUBGRAPH_QUERY 恰好有两段 UNION：{query}"
+    return branches[0], branches[1]
+
+
+async def test_query_subgraph_one_hop_branch_scopes_related_node_by_tenant():
+    """Neptune 侧维护的是独立一份查询文本，同一个租户隔离口径要各自钉住。"""
+    client_stub = FakeNeptuneClient(rows=[])
+    client = NeptuneGraphClient(client=client_stub)
+
+    await client.query_subgraph("k1", tenant_id="t1")
+
+    one_hop, _ = _subgraph_union_branches(client_stub.last_query)
+    assert "-[r]-(related:Term {tenant_id: $tenant_id})" in one_hop
+
+
+async def test_query_subgraph_two_hop_branch_scopes_related_node_by_tenant():
+    client_stub = FakeNeptuneClient(rows=[])
+    client = NeptuneGraphClient(client=client_stub)
+
+    await client.query_subgraph("k1", tenant_id="t1")
+
+    _, two_hop = _subgraph_union_branches(client_stub.last_query)
+    assert "(related:Term {tenant_id: $tenant_id})" in two_hop
+
+
+async def test_query_subgraph_two_hop_branch_scopes_intermediate_nodes_by_tenant():
+    """2 跳路径中间那个节点也要校验租户，只钉终点的实现要红。"""
+    client_stub = FakeNeptuneClient(rows=[])
+    client = NeptuneGraphClient(client=client_stub)
+
+    await client.query_subgraph("k1", tenant_id="t1")
+
+    _, two_hop = _subgraph_union_branches(client_stub.last_query)
+    assert "MATCH p = (t:Term {tenant_id: $tenant_id, node_key: $node_key})" in two_hop
+    assert "ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id)" in two_hop

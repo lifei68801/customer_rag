@@ -43,18 +43,35 @@ RETURN max(k) AS fanout
 # （Neptune 从 2021 年起原生支持 openCypher），但刻意不 import 共享，见
 # 本计划 Global Constraints 的说明。
 _SUBGRAPH_QUERY = """
-MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term)
+MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term {tenant_id: $tenant_id})
 WHERE r.tenant_id = $tenant_id
 RETURN related.standard_name AS related_name, type(r) AS relation_type, 1 AS hops
 
 UNION
 
-MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r:REQUIRES|PRECEDES|PART_OF*2..2]-(related:Term)
-WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id) AND related <> t
+MATCH p = (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r:REQUIRES|PRECEDES|PART_OF*2..2]-(related:Term {tenant_id: $tenant_id})
+WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id)
+  AND ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id)
+  AND related <> t
 RETURN related.standard_name AS related_name,
        [rel IN r | type(rel)][-1] AS relation_type,
        2 AS hops
 """
+# Both UNION branches scope the far-side node with
+# (related:Term {tenant_id: $tenant_id}): filtering only the start node and the
+# edges lets an edge that is labelled with this tenant but points at another
+# tenant's node leak that node's standard_name straight into the LLM's
+# retrieval context. This is defence in depth, not a fix for a leak in
+# progress — the normal write path cannot produce such an edge (neo4j_client's
+# merge_relation, the only writer, uses the same $tenant_id for both endpoint
+# nodes and the edge) — the query simply no longer depends on clean data.
+#
+# ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id) covers the *intermediate*
+# node of the 2-hop path: a *2..2 path has one node between the endpoints, and
+# {tenant_id: $tenant_id} on the far end does not reach it. nodes(p) spans
+# every node on the path (start, middle, end), which is why the branch is now
+# a named path MATCH p = (...) — the relationship list r alone cannot yield it.
+#
 # ALL(rel IN r WHERE rel.tenant_id = $tenant_id) must check every edge on the
 # 2-hop path, not just one of them — :Term nodes here aren't themselves
 # tenant-scoped and can be shared across tenants, so a path that only checks
