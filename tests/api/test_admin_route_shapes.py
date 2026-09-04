@@ -199,6 +199,19 @@ def test_every_write_route_behind_a_session_checks_csrf():
     assert checked > 20, f"只检查了 {checked} 条写路由，遍历器多半失效了"
 
 
+def test_only_login_is_exempt_from_csrf():
+    """上面那条查的是「依赖挂没挂」，看不见运行时的豁免名单。
+
+    往名单里加一条写接口路径，上面那条照样全绿——校验确实挂着，只是进
+    去之后直接放行了。豁免登录是必要的：后端重启后会话字典空了，浏览器
+    里那对 Cookie 还在，此时去登录会被自己作废的会话挡在门外。但这个理
+    由只适用于登录，所以名单钉死成一条，加第二条必须先改这里。
+    """
+    from app.api.deps import _CSRF_EXEMPT_PATHS
+
+    assert _CSRF_EXEMPT_PATHS == frozenset({"/api/admin/auth/login"})
+
+
 def test_non_tenant_routes_do_not_check_tenant_access():
     """反向断言。
 
