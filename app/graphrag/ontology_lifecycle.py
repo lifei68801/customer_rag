@@ -428,10 +428,11 @@ async def replace_draft(
             (tenant_id, subject_term_type, relation_type_name, object_term_type),
         )
 
-    # 写过草稿就意味着已检出。不标记的话，下一次 checkout_draft 会以为
-    # "还没检出过"，把已确认版本复制回来盖在引导刚写的草稿上。
-    # 映射跟本体草稿同一次提交落库。为 None 时**不动**已有映射——本体结构页
-    # 那三个 tab 改草稿时不带映射，不能因此把引导写的映射抹掉。
+    # 映射跟本体草稿同一次提交落库。etl_mapping 可选，是因为这个函数的语义是
+    # "整份替换本体草稿"，映射是可以独立于它存在的另一份东西——今天
+    # /draft/replace 的唯一调用方是引导页（GuidedOntologyPage.handleSubmit），
+    # 它每次都带映射，但 buildMappingYaml() 的返回类型是可空的，API 层也把
+    # etl_mapping 显式声明成可选，所以"不带"是对外承诺过的合法调用。
     if etl_mapping is not None:
         await set_draft_etl_mapping(
             conn,
@@ -443,7 +444,26 @@ async def replace_draft(
             # 关于单例连接的那段论证）。
             commit=False,
         )
+    else:
+        # 不带映射 = "这次提交不改映射"，不是"把映射清掉"。少了这条复制，
+        # 已确认的映射会静默消失：下面那条 checkout 标记让后续的
+        # checkout_draft 早退，它里面那条同形的 confirmed→draft 复制因此
+        # 永远走不到，draft 侧一直是空的；再 confirm 一次，confirm 先删
+        # confirmed 行、再把空 draft 提升，映射就没了——全程 200，用户下次
+        # 进表格导入页只会发现界面变回了"从头配置"。回归测试见
+        # tests/api/test_admin_ontology_routes.py::
+        # test_replace_draft_without_mapping_keeps_confirmed_mapping_across_next_confirm
+        # （把这条 INSERT 注释掉，那条测试变红）。
+        await conn.execute(
+            "INSERT OR IGNORE INTO ontology_etl_mapping "
+            "(tenant_id, status, config_yaml, source_file_name, created_at) "
+            "SELECT tenant_id, 'draft', config_yaml, source_file_name, created_at "
+            "FROM ontology_etl_mapping WHERE tenant_id = ? AND status = 'confirmed'",
+            (tenant_id,),
+        )
 
+    # 写过草稿就意味着已检出。不标记的话，下一次 checkout_draft 会以为
+    # "还没检出过"，把已确认版本复制回来盖在引导刚写的草稿上。
     await conn.execute(
         "INSERT OR IGNORE INTO ontology_draft_checkout_state (tenant_id) VALUES (?)",
         (tenant_id,),

@@ -885,10 +885,10 @@ def test_replace_draft_stores_etl_mapping(client):
 
 
 def test_replace_draft_without_mapping_leaves_it_absent(client):
-    """etl_mapping 是可选的。
+    """etl_mapping 是可选的：不带映射的提交不能凭空造一份出来。
 
-    本体结构页那三个 tab 也会改草稿，它们不带映射；不能因为没带就把引导
-    写的映射抹掉，也不能凭空造一份。
+    这是"从没写过映射"的基线——租户此前既没有 draft 也没有 confirmed 映射，
+    一次不带映射的整份替换之后，draft 侧仍然应该是"没有映射"。
     """
     response = client.post(
         "/api/admin/ontology/t1/draft/replace",
@@ -903,12 +903,17 @@ def test_replace_draft_without_mapping_leaves_it_absent(client):
 
 
 def test_replace_draft_without_mapping_does_not_erase_existing_mapping(client):
-    """不带映射的提交不能把已有映射抹掉。
+    """不带映射的提交不能把 draft 侧已有的映射抹掉。
 
-    本体结构页那三个 tab 改草稿时不带 etl_mapping，这是它们的常规路径——
-    不是"从没写过映射"的场景，而是"引导写过一次映射之后，用户又去那三个
-    tab 里改了点别的"。这条覆盖的正是这个真实场景：先带映射提交一次，
-    再不带映射提交一次，映射必须原样还在。
+    这条只覆盖 draft 侧：两次提交之间没有 confirm，第二次提交看到的
+    draft 行还是第一次写的那份。中间隔着一次 confirm 的那条路是另一回事，
+    也是真正会丢数据的那条，见
+    test_replace_draft_without_mapping_keeps_confirmed_mapping_across_next_confirm。
+
+    （这里以前写着"本体结构页那三个 tab 改草稿时不带 etl_mapping"。不成立：
+    那三个 tab 走的是 /checkout 加逐条的 term-types / relation-types /
+    constraints 端点，全仓库 /draft/replace 只有 GuidedOntologyPage 一个
+    调用方。）
     """
     with_mapping = client.post(
         "/api/admin/ontology/t1/draft/replace",
@@ -941,3 +946,73 @@ def test_replace_draft_without_mapping_does_not_erase_existing_mapping(client):
     )
     assert got.json()["mapping"]["source_file_name"] == "orders.csv"
     assert got.json()["mapping"]["config_yaml"] == "entities: []"
+
+
+def test_replace_draft_without_mapping_keeps_confirmed_mapping_across_next_confirm(client):
+    """已确认的映射不能因为一次不带映射的整份替换而消失。
+
+    上一条只走到 draft 侧：那两次提交之间没有 confirm，第二次 replace_draft
+    看到的 draft 行还是第一次写的那份，"原样还在"是自动成立的。真正会丢
+    数据的是中间有一次 confirm 的这条路：
+
+        replace_draft(带映射) → confirm     # confirmed 映射 = orders.csv
+        replace_draft(不带映射)             # 写三张草稿表 + 写 checkout 标记
+        checkout                            # 标记已在 → 早退 → 不复制映射
+        confirm                             # 删 confirmed 映射 + 提升空 draft
+
+    终点是 get_etl_mapping(status='confirmed') is None，全程 200、没有任何
+    提示：用户下次进表格导入页，界面从"引导流程已为这个本体配好映射"变回
+    "把这张表映射到已有本体"，他不知道为什么，也无从恢复。
+    """
+    with_mapping = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [{"value": "客户", "extra_fields": []}],
+            "relation_types": [],
+            "constraints": [],
+            "etl_mapping": {
+                "config_yaml": "entities: []",
+                "source_file_name": "orders.csv",
+            },
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert with_mapping.status_code == 200
+    assert (
+        client.post(
+            "/api/admin/ontology/t1/confirm", headers={"Authorization": "Bearer x"}
+        ).status_code
+        == 200
+    )
+    confirmed = client.get(
+        "/api/admin/ontology/t1/etl-mapping?status=confirmed",
+        headers={"Authorization": "Bearer x"},
+    )
+    # 前置条件，不是本条要测的东西：确认这条路的起点确实有一份已确认映射，
+    # 否则后面那句"映射还在"会在"从来就没有过映射"的情况下也绿。
+    assert confirmed.json()["mapping"]["source_file_name"] == "orders.csv"
+
+    without_mapping = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [{"value": "客户", "extra_fields": []}],
+            "relation_types": [],
+            "constraints": [],
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert without_mapping.status_code == 200
+    client.post("/api/admin/ontology/t1/checkout", headers={"Authorization": "Bearer x"})
+    assert (
+        client.post(
+            "/api/admin/ontology/t1/confirm", headers={"Authorization": "Bearer x"}
+        ).status_code
+        == 200
+    )
+
+    got = client.get(
+        "/api/admin/ontology/t1/etl-mapping?status=confirmed",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert got.json()["mapping"] is not None, "第二次确认之后已确认映射不见了"
+    assert got.json()["mapping"]["source_file_name"] == "orders.csv"
