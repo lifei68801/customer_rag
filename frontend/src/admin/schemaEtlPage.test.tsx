@@ -187,6 +187,20 @@ describe('预演转正式执行', () => {
     expect(lastRequest()?.url).toMatch(/\/promote$/)
   })
 
+  it('按钮旁说清转正会重新受安全阀限制，不承诺「按这次预演」包括那个开关', async () => {
+    // 转正硬编码 allow_large_sweep=false（一次点击不该能触发大规模清理）。
+    // 勾了那个开关跑出来的预演转正时会直接撞阀失败，用户只能回去重传两个
+    // 文件——正是这个功能要消除的那件事，且是在最需要它的场景里回来的。
+    // 本轮不改这个行为，但按钮不能对此只字不提。
+    signIn('admin')
+    stubSelectedRun({ dry_run: true, status: 'completed' })
+    renderAt(ADMIN_ROUTES.etl)
+    const user = userEvent.setup()
+    await user.click(await screen.findByText('run-1'))
+    await screen.findByRole('button', { name: '按这次预演正式执行' })
+    expect(screen.getByText(/正式执行会重新受大规模清理安全阀限制/)).toBeTruthy()
+  })
+
   it('正式运行的报告页没有这个按钮', async () => {
     signIn('admin')
     stubSelectedRun({ dry_run: false, status: 'completed' })
