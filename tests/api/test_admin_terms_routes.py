@@ -74,6 +74,12 @@ async def _open_terms_conn() -> aiosqlite.Connection:
     await create_admin_user(
         conn, username="member1", password="password1", role="member", tenant_id="t1"
     )
+    # "谁改的"那组用例需要一个名字不是 "admin" 的管理员：edited_by 曾经是
+    # 写死的常量 "admin"，用 admin 登录去断言 edited_by == "admin" 两种实现
+    # 都能通过，钉不住"从会话取真实用户名"。
+    await create_admin_user(
+        conn, username="alice", password="password1", role="admin", tenant_id=None
+    )
     for tenant_id in ("t1", "tenant_a", "tenant_b"):
         await create_tenant(conn, tenant_id=tenant_id, name=tenant_id)
     return conn
@@ -97,6 +103,26 @@ def terms_conn():
 def _authed_headers(session_store: AdminSessionStore) -> dict[str, str]:
     token = session_store.create_session(username="admin", role="admin", tenant_id=None)
     return {"Authorization": f"Bearer {token}"}
+
+
+def _authed_headers_as(session_store: AdminSessionStore, username: str) -> dict[str, str]:
+    """以指定用户名登录。给"谁改的"那组用例用，名字故意不是 "admin"。"""
+    token = session_store.create_session(username=username, role="admin", tenant_id=None)
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _read_edited_by(conn: aiosqlite.Connection, node_key: str, field: str) -> str:
+    async def _run() -> str:
+        cursor = await conn.execute(
+            "SELECT edited_by FROM term_edits WHERE tenant_id = 't1' AND node_key = ? "
+            "AND field = ?",
+            (node_key, field),
+        )
+        row = await cursor.fetchone()
+        assert row is not None, f"没有 {field} 这条编辑"
+        return row[0]
+
+    return asyncio.run(_run())
 
 
 def _member_headers(session_store: AdminSessionStore) -> dict[str, str]:
@@ -2136,3 +2162,85 @@ def test_the_subject_side_tenant_always_comes_from_the_url_not_from_the_request(
             "object_tenant_id": "tenant_b", "object_node_key": "t:别家的实体",
         }
     ]
+
+
+# ---------------------------------------------------------------------------
+# edited_by 记的是登录会话里的真实用户名
+#
+# 这三条用例的用户名故意不是 "admin"：edited_by 曾经是模块级常量
+# _EDITED_BY = "admin"，用 admin 登录去断言 edited_by == "admin" 的话，
+# 「从会话取」和「写死 admin」两种实现都会通过。
+# ---------------------------------------------------------------------------
+
+
+def test_create_term_records_the_logged_in_username_as_editor(terms_conn):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/t1/terms",
+            json={"standard_name": "谁改的", "aliases": [], "term_type": "t"},
+            headers=_authed_headers_as(session_store, "alice"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    assert _read_edited_by(terms_conn, "t:谁改的", FIELD_CREATED) == "alice"
+
+
+def test_update_term_records_the_logged_in_username_as_editor(terms_conn):
+    session_store = AdminSessionStore()
+    asyncio.run(
+        upsert_term_with_node_key(
+            terms_conn, tenant_id="t1", node_key="t:待改名", standard_name="待改名",
+            aliases=[], term_type="t", extra_properties={}, source="etl",
+        )
+    )
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.put(
+            "/api/admin/t1/terms/t:待改名",
+            json={"standard_name": "改过名", "aliases": [], "term_type": "t"},
+            headers=_authed_headers_as(session_store, "alice"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    assert _read_edited_by(terms_conn, "t:待改名", "standard_name") == "alice"
+    assert _read_edited_by(terms_conn, "t:待改名", "aliases") == "alice"
+    assert _read_edited_by(terms_conn, "t:待改名", "term_type") == "alice"
+
+
+def test_delete_term_records_the_logged_in_username_as_editor(terms_conn):
+    session_store = AdminSessionStore()
+    asyncio.run(
+        upsert_term_with_node_key(
+            terms_conn, tenant_id="t1", node_key="t:待删除", standard_name="待删除",
+            aliases=[], term_type="t", extra_properties={}, source="etl",
+        )
+    )
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
+    try:
+        client = TestClient(app)
+        response = client.delete(
+            "/api/admin/t1/terms/t:待删除",
+            headers=_authed_headers_as(session_store, "alice"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    assert _read_edited_by(terms_conn, "t:待删除", FIELD_DELETED) == "alice"

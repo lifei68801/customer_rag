@@ -41,13 +41,17 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/{tenant_id}/terms", dependencies=[Depends(deps.require_admin_session)])
 
-# Task 4：这三个写入端点都在 require_admin_session 之下，但那个依赖只校验
-# Authorization: Bearer <token> 是否是有效的管理员 session（app/api/deps.py），
-# 不返回任何身份标识（返回值是 None）。本设计不做编辑历史/审计流水
-# （term_edits 每个 (node_key, field) 只保留当前值，见
-# docs/superpowers/specs/2026-08-30-manual-edits-layer-design.md 非目标），
-# edited_by 目前只是可观测性字段，固定写 "admin"。
-_EDITED_BY = "admin"
+# edited_by 取的是登录会话里的用户名（session.username）。
+#
+# 这里曾经是一个模块级常量 _EDITED_BY = "admin"，写死不变：那时
+# require_admin_session 只校验凭证、不返回身份，拿不到操作者是谁。现在它
+# 返回 AdminSession，username 就在手里，写死的常量只会让 term_edits 里
+# 那一列变成一个恒等于 "admin" 的摆设——alice 和 bob 改的东西记的是同一
+# 个名字，"谁改的"这个问题回答不了。
+#
+# term_edits 仍然只保留每个 (node_key, field) 的当前值，不是流水
+# （见 docs/superpowers/specs/2026-08-30-manual-edits-layer-design.md 非目标）；
+# 这次改的只是"记谁"，不是"记几条"。
 
 #: 删除被挡住时，消息里最多点名几条关系边。跟 ontology_categories 的
 #: _IN_USE_SAMPLE_SIZE 同一个取舍：3 条够用户认出是哪批数据，再多没人读，
@@ -477,6 +481,7 @@ async def create_new_term(
     payload: TermWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> TermResponse:
     """新增术语。Task 4 起改写编辑层：不再往 terms 表插入新行，而是给
     node_key 写一条 __created__ 编辑——terms 表在 ETL 产出同 node_key 的行
@@ -582,7 +587,7 @@ async def create_new_term(
             "aliases": payload.aliases,
             "extra_properties": extra_properties,
         },
-        edited_by=_EDITED_BY,
+        edited_by=session.username,
     )
     # 人工重建一个曾被人工删除的 node_key：撤掉那条 __deleted__ 编辑，让它
     # 重新可见。这不违反"人工删除不可被恢复"——那条规矩的准确表述是
@@ -632,6 +637,7 @@ async def update_existing_term(
     payload: TermWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> TermResponse:
     """编辑术语。Task 4 起改写编辑层：不再 UPDATE terms 表那一行，而是
     按提交的字段写 term_edits——standard_name/aliases/term_type 各一条，
@@ -676,22 +682,22 @@ async def update_existing_term(
 
     await upsert_term_edit(
         review_conn, tenant_id=tenant_id, node_key=node_key, field="standard_name",
-        value=payload.standard_name, edited_by=_EDITED_BY,
+        value=payload.standard_name, edited_by=session.username,
     )
     await upsert_term_edit(
         review_conn, tenant_id=tenant_id, node_key=node_key, field="aliases",
-        value=payload.aliases, edited_by=_EDITED_BY,
+        value=payload.aliases, edited_by=session.username,
     )
     await upsert_term_edit(
         review_conn, tenant_id=tenant_id, node_key=node_key, field="term_type",
-        value=payload.term_type, edited_by=_EDITED_BY,
+        value=payload.term_type, edited_by=session.username,
     )
     if payload.extra_properties is not None:
         # 整字典编辑：提交了（哪怕是空字典）就整体接管这个字段。
         await upsert_term_edit(
             review_conn, tenant_id=tenant_id, node_key=node_key,
             field=FIELD_EXTRA_PROPERTIES, value=payload.extra_properties,
-            edited_by=_EDITED_BY,
+            edited_by=session.username,
         )
     if payload.standard_name != existing_before_update.standard_name:
         # 改名：先对同一个图节点做属性级联更新（保留已有关系边），再用
@@ -771,6 +777,7 @@ async def delete_existing_term(
     node_key: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> Response:
     """删除术语。Task 4 起改写编辑层：不再 DELETE terms 表那一行，只写
     一条 __deleted__ 编辑——terms 表那一行（如果存在）继续留着，ETL 还在
@@ -829,7 +836,7 @@ async def delete_existing_term(
         )
     await upsert_term_edit(
         review_conn, tenant_id=tenant_id, node_key=term.node_key, field=FIELD_DELETED,
-        value=None, edited_by=_EDITED_BY,
+        value=None, edited_by=session.username,
     )
     try:
         await graph_client.delete_term_node(tenant_id=tenant_id, node_key=term.node_key)
