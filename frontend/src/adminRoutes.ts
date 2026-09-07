@@ -32,10 +32,10 @@ export const ADMIN_ROUTES = {
   etl: '/admin/ingest/etl',
   reviewRelations: '/admin/review/relations',
   reviewDuplicates: '/admin/review/duplicates',
-  // 两段式：实体列表不属于任何阶段，路径里留一个「browse」段就是个孤儿
+  // 两段式：实体明细不属于任何阶段，路径里留一个「browse」段就是个孤儿
   // ——侧边栏没有那个组，URL 里却有。形状本身说清楚它不在流程里。
   terms: '/admin/terms',
-  // 问答诊断：从「这次答错了」反查到「哪个实体不对」。跟实体列表一样是
+  // 问答明细：从「这次答错了」反查到「哪个实体不对」。跟实体明细一样是
   // 流程外的——它不是某一步，是出问题时才来的地方。
   diagnostics: '/admin/diagnostics',
   // 账号设置。不在任何导航分组里——它不是流程的一站，是账号级的偏好。
@@ -53,7 +53,7 @@ export const ADMIN_ROUTES = {
  * 而且中间那一代哪天删掉就会断。
  */
 export const LEGACY_REDIRECTS: Record<string, string> = {
-  // 第一代。'/admin/terms' 不在这里——它现在就是实体列表的正式路径，旧
+  // 第一代。'/admin/terms' 不在这里——它现在就是实体明细的正式路径，旧
   // 书签直接命中；留一条指向自己的垫片会变成无限重定向。
   '/admin/graph-reviews': ADMIN_ROUTES.reviewRelations,
   '/admin/schema-etl': ADMIN_ROUTES.etl,
@@ -63,7 +63,7 @@ export const LEGACY_REDIRECTS: Record<string, string> = {
   '/admin/data-entry/etl': ADMIN_ROUTES.etl,
   // 本体页这次单独改名
   '/admin/ontology': ADMIN_ROUTES.ontology,
-  // 只活了一天的第三代：实体列表曾经归在「浏览」组下。
+  // 只活了一天的第三代：实体明细曾经归在「浏览」组下。
   '/admin/browse/terms': ADMIN_ROUTES.terms,
 }
 
@@ -122,7 +122,7 @@ export const NAV_GROUPS: NavGroup[] = [
 /**
  * 不属于任何阶段的目的地。
  *
- * 建模、接入、审核是流程步骤，有先后；实体列表是结果视图，任何一步之后
+ * 建模、接入、审核是流程步骤，有先后；实体明细是结果视图，任何一步之后
  * 都可能用到——塞进流程末尾会让人以为它是「最后一步」，而它其实是每一步
  * 的落点。
  *
@@ -131,9 +131,21 @@ export const NAV_GROUPS: NavGroup[] = [
  * 里的两个分组。分界是「定义 vs 实例」，不是流程第几步。
  */
 export const NAV_STANDALONE: NavItem[] = [
-  { path: ADMIN_ROUTES.terms, label: '实体列表', icon: Boxes },
-  { path: ADMIN_ROUTES.diagnostics, label: '问答诊断', icon: Stethoscope },
+  { path: ADMIN_ROUTES.terms, label: '实体明细', icon: Boxes },
+  { path: ADMIN_ROUTES.diagnostics, label: '问答明细', icon: Stethoscope },
 ]
+
+/**
+ * 上面那两项的组标题。
+ *
+ * 没有标题时它们跟流程组的叶子缩在同一个视觉层级，读起来像「第四组漏了
+ * 标题」；而它们其实是流程外的目的地。给一个标题，形式上就跟三个流程组
+ * 平级了——差别落在行为上：流程组可折叠，这一组常驻（见 AdminLayout）。
+ *
+ * 名字说的是内容（明细），跟建模/接入/审核一个口径；此前的「实体列表」
+ * 说的是形式（一个列表），同一条侧边栏里两套口径。
+ */
+export const NAV_STANDALONE_LABEL = '明细查询'
 
 /** 当前 URL 落在哪个分组里——侧边栏用它决定默认展开哪一组。 */
 export function groupIdForPath(pathname: string): NavGroup['id'] | null {

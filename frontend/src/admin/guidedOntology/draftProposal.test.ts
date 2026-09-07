@@ -56,7 +56,7 @@ function noIdentifierColumns(): RoledColumn[] {
 describe('默认决定', () => {
   it('所有维度列默认建成实体类型', () => {
     // 少建是静默错误（那类问题就是答不出来，不报错），多建看得见
-    // （实体列表里就有）。所以默认往实体偏。
+    // （实体明细里就有）。所以默认往实体偏。
     const decision = initialDecision(demoColumns())
     for (const name of ['产品', '公司', '类目', '用户名', 'customer_state']) {
       expect(decision.dimensionsAsEntity[name]).toBe(true)
@@ -483,7 +483,7 @@ describe('顺带产出 ETL 映射', () => {
  * 中心（root）与无效上级。
  *
  * 这一组守的是同一类失败：**界面画出一条边，提交出去却没有**。
- * buildProposal 从前遇到「上级缺失或指向一个已经不在实体列表里的名字」
+ * buildProposal 从前遇到「上级缺失或指向一个已经不在实体明细里的名字」
  * 就 `continue`，那个实体一条边都不会被提交；而 ProposalReview 照样为它
  * 画一行「X 挂在 Y」，用户不点开那个下拉框就永远发现不了。
  */
@@ -518,7 +518,7 @@ describe('中心实体', () => {
 
   it('猜测根被改判成属性后，关系不会全部静默消失', () => {
     // 修复前实测：constraints = []、relationTypes = []，而 decision.parentOf
-    // 里三个孩子还全都指向那个已经不在实体列表里的旧根。前端没有空关系
+    // 里三个孩子还全都指向那个已经不在实体明细里的旧根。前端没有空关系
     // 校验，这份"零条关系"会被直接 POST 出去，然后显示成功。
     const roled = threeDimensionColumns()
     const decision = initialDecision(roled)

@@ -41,7 +41,7 @@ const card = 'rounded-card border border-subtle bg-card p-4'
 const sectionTitle = 'font-mono text-sm font-bold uppercase tracking-wide text-ink-soft'
 
 /**
- * 问答诊断页。
+ * 问答明细页。
  *
  * 「答错了 → 哪个实体不对」这条路的中间一跳。选一次真实的错误回答，看它
  * 用了哪些工具、匹配到哪些实体，每个实体链到详情页。
@@ -79,7 +79,7 @@ export function DiagnosticsPage() {
         const response = await adminFetch(base, sessionToken)
         if (!response.ok) {
           const body = await response.json().catch(() => ({}))
-          throw new Error(extractErrorDetail(body, '加载诊断记录失败'))
+          throw new Error(extractErrorDetail(body, '加载明细记录失败'))
         }
         const data = (await response.json()) as { diagnostics: DiagnosticSummary[] }
         if (!cancelled) {
@@ -87,7 +87,7 @@ export function DiagnosticsPage() {
           setError(null)
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : '加载诊断记录失败')
+        if (!cancelled) setError(err instanceof Error ? err.message : '加载明细记录失败')
       } finally {
         if (!cancelled) setListLoaded(true)
       }
@@ -97,7 +97,7 @@ export function DiagnosticsPage() {
     }
   }, [sessionToken, base])
 
-  // 换租户时清掉选中项——上一个租户的诊断 id 在这个租户里查不到。跳过
+  // 换租户时清掉选中项——上一个租户的明细 id 在这个租户里查不到。跳过
   // 首次挂载：那不是切换，而且会把带着 ?d= 直接打开的链接当场清掉。
   const lastTenant = useRef(tenantId)
   useEffect(() => {
@@ -122,7 +122,7 @@ export function DiagnosticsPage() {
         const response = await adminFetch(`${base}/${selectedId}`, sessionToken)
         if (!response.ok) {
           const body = await response.json().catch(() => ({}))
-          throw new Error(extractErrorDetail(body, '加载诊断详情失败'))
+          throw new Error(extractErrorDetail(body, '加载明细详情失败'))
         }
         const detail = (await response.json()) as DiagnosticDetail
         if (!cancelled) {
@@ -130,7 +130,7 @@ export function DiagnosticsPage() {
           setError(null)
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : '加载诊断详情失败')
+        if (!cancelled) setError(err instanceof Error ? err.message : '加载明细详情失败')
       }
     })()
     return () => {
@@ -161,13 +161,8 @@ export function DiagnosticsPage() {
           {listLoaded && list.length === 0 && (
             <EmptyState
               icon={MessageSquareOff}
-              title="还没有诊断记录"
-              action={
-                <span>
-                  诊断快照是从这个功能上线之后才开始记的，之前的问答没有留下。
-                  去前台问几个问题，再回来这里看。
-                </span>
-              }
+              title="还没有明细记录"
+              action={null}
             />
           )}
           <ul className="flex flex-col gap-2">

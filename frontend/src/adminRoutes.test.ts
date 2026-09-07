@@ -4,6 +4,7 @@ import {
   LEGACY_REDIRECTS,
   NAV_GROUPS,
   NAV_STANDALONE,
+  NAV_STANDALONE_LABEL,
   groupIdForPath,
   routeRequiresTenant,
   NON_TENANT_ROUTE_KEYS,
@@ -19,7 +20,7 @@ import {
  */
 
 describe('新路由表', () => {
-  it('七个工作流目的地，加上流程外的诊断页、账号页和设置页', () => {
+  it('七个工作流目的地，加上流程外的问答明细页、账号页和设置页', () => {
     expect(ADMIN_ROUTES).toEqual({
       ontology: '/admin/model/ontology',
       ontologyGraph: '/admin/model/graph',
@@ -39,7 +40,7 @@ describe('新路由表', () => {
   })
 
   it('流程内的路径带阶段段，流程外的不带', () => {
-    // 实体列表是两段式的 /admin/terms：它不属于任何阶段，路径里留一个
+    // 实体明细是两段式的 /admin/terms：它不属于任何阶段，路径里留一个
     // 「browse」段就是个孤儿——侧边栏没有那个组，URL 里却有。路径形状
     // 本身要说清楚「这个页面不在流程里」。
     const inFlow = NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path))
@@ -57,7 +58,7 @@ describe('旧路径垫片', () => {
     // 第一代（data-entry 之前）+ 第二代（data-entry/*）+ 单独改名的
     // ontology + 短命的 /admin/browse/terms。
     //
-    // '/admin/terms' 不在这里：它现在就是实体列表的正式路径，旧书签直接
+    // '/admin/terms' 不在这里：它现在就是实体明细的正式路径，旧书签直接
     // 命中，不需要垫片——垫片指向自己会变成无限重定向。
     expect(Object.keys(LEGACY_REDIRECTS).sort()).toEqual([
       '/admin/browse/terms',
@@ -147,9 +148,9 @@ describe('导航分组', () => {
 })
 
 describe('流程外的独立项', () => {
-  it('实体列表和问答诊断', () => {
-    // 建模、接入、审核是流程步骤，有先后；这两个不是——实体列表是结果
-    // 视图，任何一步之后都可能用到；问答诊断是出问题时才来的地方。塞进
+  it('实体明细和问答明细', () => {
+    // 建模、接入、审核是流程步骤，有先后；这两个不是——实体明细是结果
+    // 视图，任何一步之后都可能用到；问答明细是出问题时才来的地方。塞进
     // 流程末尾会让人以为它们是「最后一步」。
     //
     // Foundry 也是这么分的：Ontology Manager 管定义，Object Explorer 查
@@ -158,6 +159,18 @@ describe('流程外的独立项', () => {
       ADMIN_ROUTES.terms,
       ADMIN_ROUTES.diagnostics,
     ])
+  })
+
+  it('名字的口径跟三个流程组对齐，说的是内容不是形式', () => {
+    // 建模/接入/审核说的是动作，「实体列表」说的却是形式（一个列表）。
+    // 同一条侧边栏里两套口径，读起来像是两个人各写各的。
+    expect(NAV_STANDALONE.map((i) => i.label)).toEqual(['实体明细', '问答明细'])
+  })
+
+  it('这两项也有组标题，不是漏了标题的第四组', () => {
+    // 没有标题时它们跟流程组的叶子处于同一视觉层级，看上去像第四组忘了
+    // 写标题。标题说清它们是一组「明细查询」，只是不属于任何流程阶段。
+    expect(NAV_STANDALONE_LABEL).toBe('明细查询')
   })
 
   it('不属于任何分组', () => {

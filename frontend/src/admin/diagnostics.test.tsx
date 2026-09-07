@@ -28,7 +28,7 @@ function whoamiResponse() {
 }
 
 /**
- * 问答诊断页。
+ * 问答明细页。
  *
  * 这是「答错了 → 哪个实体不对」这条路的中间一跳。选一次真实的错误回答，
  * 看它用了哪些工具、匹配到哪些实体，每个实体链到详情页。
@@ -124,7 +124,7 @@ describe('历史列表', () => {
   })
 })
 
-describe('诊断详情', () => {
+describe('明细详情', () => {
   it('点一次问答，列出它碰到的实体，每个链到详情页', async () => {
     const user = userEvent.setup()
     await renderAt()
@@ -176,9 +176,9 @@ describe('诊断详情', () => {
 })
 
 describe('还没有记录', () => {
-  it('说明诊断是从这之后才开始记的', async () => {
-    // 空列表在这里有个特殊含义：功能刚上线，历史问答没有快照。不说清楚
-    // 的话，用户会以为是坏了。
+  it('只说这里还是空的，不再解释快照是从什么时候开始记的', async () => {
+    // 「快照是从这个功能上线之后才开始记的」这句是发布当时的临时说明：
+    // 它解释的是历史，不是用户此刻能做的事，留着只是让空屏更长。
     vi.stubGlobal(
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
@@ -190,6 +190,7 @@ describe('还没有记录', () => {
       }),
     )
     await renderAt()
-    await waitFor(() => expect(page().getByText(/还没有/)).toBeTruthy())
+    await waitFor(() => expect(page().getByText('还没有明细记录')).toBeTruthy())
+    expect(page().queryByText(/快照是从这个功能上线之后/)).toBeNull()
   })
 })

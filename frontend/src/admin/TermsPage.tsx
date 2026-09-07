@@ -155,7 +155,7 @@ export function TermsPage() {
   const [deletingKey, setDeletingKey] = useState<string | null>(null)
 
   useEffect(() => {
-    document.title = '实体列表 · 管理后台'
+    document.title = '实体明细 · 管理后台'
   }, [])
 
   useEffect(() => {
@@ -364,7 +364,7 @@ export function TermsPage() {
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-ink">
                     {/* 名字是通往详情的链接：关系、来源、完整属性都在那边，
-                        列表行里放不下。这也是问答诊断反查的落点。 */}
+                        列表行里放不下。这也是问答明细反查的落点。 */}
                     <Link
                       to={termDetailPath(term.node_key)}
                       className={`font-bold text-ink underline underline-offset-2 hover:text-accent-primary ${focusRing}`}

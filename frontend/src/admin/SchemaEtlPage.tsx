@@ -622,7 +622,7 @@ export function SchemaEtlPage() {
                 <p className="text-sm text-ink">
                   数据已写入。去
                   <Link to={ADMIN_ROUTES.terms} className={`mx-1 font-bold underline ${focusRing}`}>
-                    实体列表
+                    实体明细
                   </Link>
                   看结果；有待人工确认的关系时去
                   <Link to={ADMIN_ROUTES.reviewRelations} className={`mx-1 font-bold underline ${focusRing}`}>

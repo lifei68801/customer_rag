@@ -15,11 +15,11 @@ import { NAV_GROUPS, NAV_STANDALONE } from '../adminRoutes'
  */
 
 const ROOT = join(__dirname, '..')
-// NAV_STANDALONE（「实体列表」「问答诊断」）也是合法的导航目的地——分组
+// NAV_STANDALONE（「实体明细」「问答明细」）也是合法的导航目的地——分组
 // 之外不代表不是目的地，只是不属于任何流程阶段（见 adminRoutes.ts 里
 // NAV_STANDALONE 上方的注释）。此前这里只取了 NAV_GROUPS：全仓库 grep 过，
 // 此前没有任何单行纯文本 <Link> 指向过这两个目的地，所以这个缺口一直没被
-// 触发过；forwardLinks 的「实体列表」出口第一次用到，才会被误判成文案对
+// 触发过；forwardLinks 的「实体明细」出口第一次用到，才会被误判成文案对
 // 不上，因此在这里补上。
 const KNOWN_LABELS = new Set([
   ...NAV_GROUPS.flatMap((g) => g.items.map((i) => i.label)),

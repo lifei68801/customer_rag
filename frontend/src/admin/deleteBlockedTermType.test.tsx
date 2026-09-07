@@ -12,9 +12,9 @@ import { resetAdminSession } from './useAdminAuth'
 /**
  * 删掉分类被"还有实体在用"挡住之后的去处。
  *
- * 后端现在会点名挡路的是哪几条术语，但用户仍然要自己去实体列表里把它们
+ * 后端现在会点名挡路的是哪几条术语，但用户仍然要自己去实体明细里把它们
  * 翻出来——两万条实体的租户里那是一段真实的苦工。这个文件钉住两件事：
- * 错误提示里有一条能直接筛出这些术语的链接；实体列表能读懂那个链接。
+ * 错误提示里有一条能直接筛出这些术语的链接；实体明细能读懂那个链接。
  */
 
 function whoamiResponse() {
@@ -37,7 +37,7 @@ const IN_USE_BODY = {
   blocking_constraints_total: 0,
 }
 
-/** 只被草稿约束挡住的 409：实体列表里没有东西可处理。 */
+/** 只被草稿约束挡住的 409：实体明细里没有东西可处理。 */
 const CONSTRAINT_ONLY_BODY = {
   detail: "分类 'module' 仍被 1 条关系约束（module -PART_OF-> product）引用，无法删除",
   blocking_terms: { term_type: 'module', total: 0, node_keys: [] },
@@ -121,7 +121,7 @@ function renderAt(path: string) {
 }
 
 describe('删除实体类型被占用时的出口', () => {
-  it('错误提示里给出一条按该类型筛好的实体列表链接', async () => {
+  it('错误提示里给出一条按该类型筛好的实体明细链接', async () => {
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.ontology)
     const deleteButton = await screen.findByRole('button', { name: '删除' })
@@ -135,7 +135,7 @@ describe('删除实体类型被占用时的出口', () => {
     expect(link.getAttribute('href')).toBe(`${ADMIN_ROUTES.terms}?term_type=module`)
   })
 
-  it('只被关系约束挡住时不给这条链接——实体列表里没东西可处理', async () => {
+  it('只被关系约束挡住时不给这条链接——实体明细里没东西可处理', async () => {
     deleteBody = CONSTRAINT_ONLY_BODY
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.ontology)
@@ -150,7 +150,7 @@ describe('删除实体类型被占用时的出口', () => {
   })
 })
 
-describe('实体列表读 URL 上的类型过滤', () => {
+describe('实体明细读 URL 上的类型过滤', () => {
   it('带 term_type 时只列出那个类型', async () => {
     renderAt(`${ADMIN_ROUTES.terms}?term_type=module`)
     await waitFor(() => expect(screen.getByRole('group', { name: /module/ })).toBeTruthy())

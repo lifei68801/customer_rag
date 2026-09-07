@@ -44,7 +44,7 @@ export function termDetailPath(nodeKey: string): string {
 /**
  * 用户是从哪儿点进详情页的。
  *
- * 返回键写死指向实体列表的话，从问答诊断点进来的人会被送到一个跟当前
+ * 返回键写死指向实体明细的话，从问答明细点进来的人会被送到一个跟当前
  * 调查无关的页面，还得回头在几十条问答里找回刚才那一条。
  */
 export interface TermOrigin {
@@ -52,7 +52,7 @@ export interface TermOrigin {
   label: string
 }
 
-const DEFAULT_ORIGIN: TermOrigin = { path: ADMIN_ROUTES.terms, label: '实体列表' }
+const DEFAULT_ORIGIN: TermOrigin = { path: ADMIN_ROUTES.terms, label: '实体明细' }
 
 /**
  * 详情页链接的 to + state。来路走 router state 而不是 query：URL 干净，
@@ -110,7 +110,7 @@ const sectionTitle = 'font-mono text-sm font-bold uppercase tracking-wide text-i
  * 存在的理由是**关系**：一个实体有没有用，取决于它连着谁。这在列表行里
  * 放不下，而它正是 GraphRAG 的核心——孤立实体占着存储却从不被命中。
  *
- * 独立 URL 也是刚需：问答诊断页要能直接链过来，同事之间要能发链接。
+ * 独立 URL 也是刚需：问答明细页要能直接链过来，同事之间要能发链接。
  */
 export function TermDetailPage() {
   const { nodeKey = '' } = useParams()

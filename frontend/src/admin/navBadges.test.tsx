@@ -117,13 +117,13 @@ describe('徽标', () => {
 })
 
 describe('实体总数', () => {
-  it('显示在实体列表上，但不是待办徽标', async () => {
+  it('显示在实体明细上，但不是待办徽标', async () => {
     // 「有 20017 条实体」不是一件等着你处理的事。跟待办用同样的样式会
     // 稀释审核那两个数字的意义——那才是真的有事等着你。
     stubFetch({ pending_relations: 7, pending_duplicates: 3, total_terms: 20017 })
     await renderAt(ADMIN_ROUTES.documents)
-    await waitFor(() => expect(nav().getByLabelText('实体列表：共 20,017 条')).toBeTruthy())
-    expect(nav().queryByLabelText(/实体列表：.*待处理/)).toBeNull()
+    await waitFor(() => expect(nav().getByLabelText('实体明细：共 20,017 条')).toBeTruthy())
+    expect(nav().queryByLabelText(/实体明细：.*待处理/)).toBeNull()
   })
 
   it('不算进任何组的待办合计里', async () => {
@@ -137,7 +137,7 @@ describe('实体总数', () => {
   it('零条实体不显示——空租户不需要被提醒它是空的', async () => {
     stubFetch({ pending_relations: 0, pending_duplicates: 0, total_terms: 0 })
     await renderAt(ADMIN_ROUTES.documents)
-    await waitFor(() => expect(nav().getByRole('link', { name: /实体列表/ })).toBeTruthy())
+    await waitFor(() => expect(nav().getByRole('link', { name: /实体明细/ })).toBeTruthy())
     expect(nav().queryByLabelText(/共 .* 条/)).toBeNull()
   })
 })

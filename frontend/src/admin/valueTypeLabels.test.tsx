@@ -147,7 +147,7 @@ describe('本体结构页的类型下拉', () => {
   })
 })
 
-describe('实体列表的属性类型提示', () => {
+describe('实体明细的属性类型提示', () => {
   it('属性旁边的类型提示也说人话', async () => {
     const user = userEvent.setup()
     renderAt(`${ADMIN_ROUTES.terms}?term_type=商品`)

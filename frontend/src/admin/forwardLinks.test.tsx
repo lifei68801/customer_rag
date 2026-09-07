@@ -214,12 +214,12 @@ describe('前向出口', () => {
     renderAt(ADMIN_ROUTES.etl)
     // 选中这条跑批记录，才会渲染详情区——出口挂在详情区里。
     await user.click(await screen.findByText('run-1'))
-    // 「实体列表」同时也是侧边栏 NAV_STANDALONE 里始终常驻的一个链接——
+    // 「实体明细」同时也是侧边栏 NAV_STANDALONE 里始终常驻的一个链接——
     // 不管本任务改没改对，那个链接都在，直接用 screen 查会假绿。这里
     // 把查询范围收进跑批详情区（data-testid="etl-run-detail"），只有
     // 那里面的链接才是本任务加的出口。
     const detail = await screen.findByTestId('etl-run-detail')
-    const link = await within(detail).findByRole('link', { name: '实体列表' })
+    const link = await within(detail).findByRole('link', { name: '实体明细' })
     expect(link.getAttribute('href')).toBe(ADMIN_ROUTES.terms)
     const reviewLink = await within(detail).findByRole('link', { name: '待审关系' })
     expect(reviewLink.getAttribute('href')).toBe(ADMIN_ROUTES.reviewRelations)
@@ -233,7 +233,7 @@ describe('前向出口', () => {
     await user.click(await screen.findByText('run-1'))
     const detail = await screen.findByTestId('etl-run-detail')
     await within(detail).findByText(/这是一次预演/)
-    // 同上：查询范围收进详情区，避免撞上侧边栏常驻的「实体列表」链接。
-    expect(within(detail).queryByRole('link', { name: '实体列表' })).toBeNull()
+    // 同上：查询范围收进详情区，避免撞上侧边栏常驻的「实体明细」链接。
+    expect(within(detail).queryByRole('link', { name: '实体明细' })).toBeNull()
   })
 })

@@ -164,7 +164,7 @@ describe('本体结构页的属性显示名', () => {
   })
 })
 
-describe('实体列表的属性显示名', () => {
+describe('实体明细的属性显示名', () => {
   it('编辑实体时属性按显示名展示', async () => {
     const user = userEvent.setup()
     renderAt(`${ADMIN_ROUTES.terms}?term_type=商品`)

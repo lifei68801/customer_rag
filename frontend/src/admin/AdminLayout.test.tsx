@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { ADMIN_ROUTES, NAV_STANDALONE_LABEL } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
@@ -76,10 +76,10 @@ describe('分组', () => {
     expect(headers).toEqual(['建模', '接入数据', '审核'])
   })
 
-  it('流程外的实体列表在分组之外，始终可见', async () => {
-    // 它不归任何组，所以不该被折叠——每一步之后都可能用到。
+  it('流程外的实体明细在流程组之外，始终可见', async () => {
+    // 它不归任何流程组，所以不该被折叠——每一步之后都可能用到。
     await renderAt(ADMIN_ROUTES.documents)
-    expect(nav().getByRole('link', { name: '实体列表' })).toBeTruthy()
+    expect(nav().getByRole('link', { name: '实体明细' })).toBeTruthy()
   })
 
   it('当前所在的组自动展开，其余收起', async () => {
@@ -97,6 +97,29 @@ describe('分组', () => {
     for (const label of ['建模', '接入数据', '审核']) {
       expect(nav().getByRole('button', { name: label }).getAttribute('aria-expanded')).toBe('false')
     }
+  })
+})
+
+describe('明细查询组', () => {
+  // 分隔线下那两项此前没有组标题，视觉上跟流程组的叶子同级，读起来像是
+  // 第四组漏了标题。给它一个标题，同时不让它可折叠——它是每一步的落点，
+  // 折起来等于把落点藏了。
+  it('分隔线下的两项有组标题', async () => {
+    await renderAt(ADMIN_ROUTES.documents)
+    expect(nav().getByText(NAV_STANDALONE_LABEL)).toBeTruthy()
+  })
+
+  it('组标题不是按钮：这一组不折叠', async () => {
+    await renderAt(ADMIN_ROUTES.documents)
+    expect(nav().queryByRole('button', { name: NAV_STANDALONE_LABEL })).toBeNull()
+  })
+
+  it('点组标题不会让两项消失——这是它和流程组的区别', async () => {
+    const user = userEvent.setup()
+    await renderAt(ADMIN_ROUTES.documents)
+    await user.click(nav().getByText(NAV_STANDALONE_LABEL))
+    expect(nav().getByRole('link', { name: /实体明细/ })).toBeTruthy()
+    expect(nav().getByRole('link', { name: /问答明细/ })).toBeTruthy()
   })
 })
 

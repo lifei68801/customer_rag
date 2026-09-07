@@ -24,7 +24,7 @@ export function NavBadge({
   const scale = kind === 'scale'
   return (
     <span
-      // 屏幕阅读器听到的是「待审关系：7 项待处理」或「实体列表：共 20,017 条」，
+      // 屏幕阅读器听到的是「待审关系：7 项待处理」或「实体明细：共 20,017 条」，
       // 不是一个孤零零的数字。
       aria-label={
         scale ? `${label}：共 ${count.toLocaleString()} 条` : `${label}：${count} 项待处理`

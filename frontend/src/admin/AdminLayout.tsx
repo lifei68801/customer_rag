@@ -1,7 +1,7 @@
 import { Building2, ChevronDown, Menu, SquareArrowOutUpRight, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
-import { NAV_GROUPS, NAV_STANDALONE, routeRequiresTenant } from '../adminRoutes'
+import { NAV_GROUPS, NAV_STANDALONE, NAV_STANDALONE_LABEL, routeRequiresTenant } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
 import { DensityProvider } from './DensityContext'
 import { TenantProvider } from './TenantContext'
@@ -74,9 +74,14 @@ function AdminNav() {
                   </div>
                 )
               })}
-              {/* 分隔线之下是流程外的目的地。它不归任何组，因为它不是
-                  「最后一步」，是每一步的落点。 */}
+              {/* 分隔线之下是流程外的目的地：不是「最后一步」，是每一步的
+                  落点。标题跟流程组同一个视觉层级，差别在行为——流程组的
+                  标题是可折叠的按钮，这一组常驻，所以标题就是个静态标签，
+                  没有按钮语义可点。 */}
               <div className="my-1 border-t border-subtle" />
+              <p className="flex min-h-[36px] items-center rounded-control px-2 text-xs font-bold uppercase tracking-wide text-ink-soft">
+                {NAV_STANDALONE_LABEL}
+              </p>
               {NAV_STANDALONE.map((item) => (
                 <NavLink key={item.path} to={item.path} className={navLinkClass}>
                   <item.icon aria-hidden="true" className="h-4 w-4 flex-shrink-0" />

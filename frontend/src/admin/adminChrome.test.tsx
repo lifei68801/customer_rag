@@ -88,7 +88,7 @@ describe('返回前台常驻在后台右上角', () => {
   for (const [name, path] of [
     ['本体结构', ADMIN_ROUTES.ontology],
     ['文档', ADMIN_ROUTES.documents],
-    ['实体列表', ADMIN_ROUTES.terms],
+    ['实体明细', ADMIN_ROUTES.terms],
     ['设置', ADMIN_ROUTES.settings],
   ] as const) {
     it(`${name}页在顶栏右端有「返回前台」`, async () => {

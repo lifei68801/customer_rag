@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 /**
  * 禁止在组件里硬编码 /admin/* 路径。
  *
- * 这条规则不是洁癖。查出这条规则时，⌘K 的「实体列表」指向
+ * 这条规则不是洁癖。查出这条规则时，⌘K 的「实体明细」指向
  * `/admin/data-entry/terms`——一个**从来没有存在过**的路径（真实路径是
  * `/admin/data-entry/manual`）。因为当时没有 404 兜底，点它只会渲染一片
  * 空白，看起来像页面在加载，没人报过 bug。

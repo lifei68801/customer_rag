@@ -108,7 +108,7 @@ export function OntologySchemaPage() {
   const [confirmed, setConfirmed] = useState<boolean | null>(null)
   const [pageError, setPageError] = useState<string | null>(null)
   // 删分类被"还有实体在用"挡住时，后端会连挡路的术语一起报回来。光有一句
-  // 人话，用户还得自己去实体列表里翻——把类型名留住，错误框里给一条筛好的
+  // 人话，用户还得自己去实体明细里翻——把类型名留住，错误框里给一条筛好的
   // 链接。
   const [deleteBlockedTermType, setDeleteBlockedTermType] = useState<string | null>(null)
   const reportError = useCallback((msg: string | null) => {
@@ -346,7 +346,7 @@ export function OntologySchemaPage() {
                 to={`${ADMIN_ROUTES.terms}?term_type=${encodeURIComponent(deleteBlockedTermType)}`}
                 className={`font-bold underline ${focusRing}`}
               >
-                去实体列表处理这些实体
+                去实体明细处理这些实体
               </Link>
             </>
           )}
@@ -490,7 +490,7 @@ function TermTypesTab({
   tenantId: string
   onError: (msg: string | null) => void
   /** 删除被"分类仍在用"挡住时，把挡路的实体类型名交回页面级，用来生成
-   * "去实体列表按这个类型筛出来"的链接。 */
+   * "去实体明细按这个类型筛出来"的链接。 */
   onDeleteBlocked: (termType: string) => void
   view: ViewMode
   confirmVersion: number
@@ -624,7 +624,7 @@ function TermTypesTab({
         const body = await response.json().catch(() => ({}))
         // 409 会带一份结构化的挡路术语（见 app/api/admin_ontology_routes.py
         // ::delete_term_type_category）。有 node_keys 才说明真的是被术语挡住
-        // 的——只被草稿约束挡住时实体列表里没东西可处理，不该给这条链接。
+        // 的——只被草稿约束挡住时实体明细里没东西可处理，不该给这条链接。
         const blocking = (body as { blocking_terms?: { term_type?: string; node_keys?: string[] } })
           .blocking_terms
         if (blocking?.term_type && (blocking.node_keys?.length ?? 0) > 0) {

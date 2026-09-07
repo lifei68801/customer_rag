@@ -41,7 +41,7 @@ export interface TermTypeGroup {
   total: number
 }
 
-/** 按实体类型分组的条数，实体列表的分组摘要用。 */
+/** 按实体类型分组的条数，实体明细的分组摘要用。 */
 export async function fetchTermsSummary(
   sessionToken: string,
   tenantId: string,

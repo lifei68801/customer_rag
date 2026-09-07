@@ -118,7 +118,7 @@ export function initialDecision(roled: RoledColumn[]): GuidedDecision {
     }
     if (column.role !== 'dimension') continue
     // 默认建成实体：少建是静默错误（那类问题就是答不出来，不报错），
-    // 多建看得见（实体列表里就有）。
+    // 多建看得见（实体明细里就有）。
     dimensionsAsEntity[name] = true
     if (name === root) continue
     // 默认星型：一定连通，不会漏掉任何实体；多一条冗余边是看得见的。
@@ -161,7 +161,7 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     entityColumnIndexes.add(index)
   })
 
-  // 中心实体：列顺序里第一个还留在实体列表里的标识列。标识列被用户改判成
+  // 中心实体：列顺序里第一个还留在实体明细里的标识列。标识列被用户改判成
   // 属性（或这张表本来就没有标识列）时，顺延给列顺序里第一个还留在
   // entityNames 里的实体；一个实体都不剩时是空串。
   //
@@ -245,7 +245,7 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     if (child === rootName) continue
     const declared = decision.parentOf[child]
     // 上级缺失、指向自己（自环 A-[R]->A 会让图谱查询陷进去）、或者指向一个
-    // 已经不在实体列表里的名字：都不能照单全收，但也**不能跳过**。跳过的
+    // 已经不在实体明细里的名字：都不能照单全收，但也**不能跳过**。跳过的
     // 后果是这个实体一条边都没有，而 UI 照样画出「X 挂在 Y」——界面显示
     // 连好了，提交出去是孤儿。改挂到中心下面，并把名字收集起来让 UI 明说。
     //
