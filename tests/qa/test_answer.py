@@ -81,7 +81,13 @@ async def test_answer_question_uses_retrieved_context_in_the_prompt():
 
 
 class FakeGraphClient:
-    async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
+    def __init__(self) -> None:
+        self.queried_chain_types: list[set[str]] = []
+
+    async def query_subgraph(
+        self, standard_name: str, *, tenant_id: str, chain_query_relation_types: set[str]
+    ) -> list[dict]:
+        self.queried_chain_types.append(chain_query_relation_types)
         return [{"related_name": "示例登录模块", "relation_type": "RELATED_TO"}]
 
 
@@ -117,6 +123,7 @@ async def test_answer_question_injects_term_guard_context_when_term_matched():
         )
     ]
 
+    graph_client = FakeGraphClient()
     await answer_question(
         "我这边报了网关超时示例，麻烦看下",
         embedding_registry=embedding_registry,
@@ -127,7 +134,8 @@ async def test_answer_question_injects_term_guard_context_when_term_matched():
         llm_provider_name="fake-llm",
         query_rewrite_enabled=False,
         terms=terms,
-        graph_client=FakeGraphClient(),
+        graph_client=graph_client,
+        chain_query_relation_types={"DEPENDS_ON", "FOLLOWS"},
         top_k=1,
         tenant_id="t1",
     )
@@ -136,6 +144,9 @@ async def test_answer_question_injects_term_guard_context_when_term_matched():
     prompt = llm_provider.requests[0].messages[0]["content"]
     assert "示例错误码E502" in prompt
     assert "示例登录模块" in prompt
+    # 租户勾选的链式关系类型要一路透传到图查询，否则本体结构页上的
+    # 「支持链式查询」开关照样改变不了检索行为。
+    assert graph_client.queried_chain_types == [{"DEPENDS_ON", "FOLLOWS"}]
 
 
 async def test_answer_question_short_circuits_on_unsafe_input():
@@ -264,7 +275,9 @@ async def test_answer_question_runs_term_guard_and_hybrid_search_concurrently(mo
     term_guard_started = asyncio.Event()
     hybrid_search_started = asyncio.Event()
 
-    async def fake_build_term_guard_context(question, *, terms, tenant_id, graph_client):
+    async def fake_build_term_guard_context(
+        question, *, terms, tenant_id, graph_client, chain_query_relation_types
+    ):
         term_guard_started.set()
         await asyncio.wait_for(hybrid_search_started.wait(), timeout=5)
         return "检测到专有名词：示例术语"

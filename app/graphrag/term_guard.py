@@ -11,7 +11,7 @@ from app.graphrag.term_matcher import match_terms
 
 class GraphClientProtocol(Protocol):
     async def query_subgraph(
-        self, node_key: str, *, tenant_id: str
+        self, node_key: str, *, tenant_id: str, chain_query_relation_types: set[str]
     ) -> list[dict[str, Any]]: ...
 
     async def execute_structured_filter_query(
@@ -47,6 +47,7 @@ async def build_term_guard_context(
     terms: list[Term],
     tenant_id: str,
     graph_client: GraphClientProtocol,
+    chain_query_relation_types: set[str],
 ) -> str | None:
     """术语安全网：命中术语表则强制查图谱并生成上下文，未命中返回 None。
 
@@ -56,6 +57,12 @@ async def build_term_guard_context(
 
     tenant_id 透传给 query_subgraph，保证强制注入的图谱上下文只包含
     当前租户自己的关系事实，不会把其它租户的知识泄露进来。
+
+    chain_query_relation_types 同样只是透传：该租户在本体结构页勾了
+    「支持链式查询」（tenant_relation_types.allow_chain_query）的已确认关系
+    类型，决定 query_subgraph 的 2 跳分支走哪些关系。必填、没有默认值——
+    默认值会让调用方漏接时悄悄按别的关系集合查两跳，正是这次要修的
+    "开关和行为脱钩"缺陷的翻版。
     """
     # match_terms 是纯 CPU 计算（对整个术语表做模糊匹配），可能有实际
     # 耗时——包一层 asyncio.to_thread，避免它在事件循环上同步跑完才把
@@ -90,7 +97,9 @@ async def build_term_guard_context(
     async def _query_one(term: Term) -> list[dict[str, Any]]:
         async with query_semaphore:
             return await graph_client.query_subgraph(
-                term.node_key, tenant_id=tenant_id
+                term.node_key,
+                tenant_id=tenant_id,
+                chain_query_relation_types=chain_query_relation_types,
             )
 
     results = await asyncio.gather(
@@ -114,7 +123,7 @@ async def build_term_guard_context(
         # limit=20 一致的量级，超出部分只说明"还有多少条"，不逐条列出。
         for row in subgraph[:_MAX_NEIGHBORS_PER_TERM]:
             # hops 字段区分直接事实（1 跳）和推导出的间接事实（2 跳，只有
-            # REQUIRES/PRECEDES/PART_OF 这类链式关系才会出现），标注清楚
+            # 租户放开了链式查询的那些关系类型才会出现），标注清楚
             # 避免 LLM 把两者当同等确定性的信息——见
             # neo4j_client.py::query_subgraph 的 UNION 查询设计。
             hops = row.get("hops", 1)

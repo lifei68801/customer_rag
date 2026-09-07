@@ -145,6 +145,12 @@ def build_agent_graph(
     terms: list[Term] | None = None,
     graph_client: Neo4jGraphClient | None = None,
     confirmed_relation_types: set[str] | None = None,
+    # 该租户在本体结构页勾了「支持链式查询」的已确认关系类型，透传给
+    # TermGuard 的 2 跳子图查询。形状跟 confirmed_relation_types 一致
+    # （None = 调用方没提供，按空集合处理），但两者含义不同：None 表示
+    # 这条注入路径没接上，空集合表示该租户确实一个都没勾——所以 None 会
+    # 在 term_guard_node 真正要用它时打一条警告，不静默降级。
+    chain_query_relation_types: set[str] | None = None,
     term_type_schema: dict[str, TermTypeCategory] | None = None,
     allowed_combinations: list[AllowedCombination] | None = None,
     banned_terms: list[str] | None = None,
@@ -349,6 +355,12 @@ def build_agent_graph(
     async def term_guard_node(state: AgentState) -> dict[str, Any]:
         if not (terms and graph_client is not None):
             return {"term_guard_context": None}
+        if chain_query_relation_types is None:
+            logger.warning(
+                "build_agent_graph 没有收到 chain_query_relation_types，"
+                "本次强制注入的图谱上下文只有 1 跳关系："
+                "该租户在本体结构页勾选的「支持链式查询」不会生效"
+            )
         context = await build_term_guard_context(
             # 用 Layer 1 消解指代后的问题（resolve_question_node 产出）。
             # 兜底回原始 question：该节点没跑过或失败时不写这个字段。
@@ -356,6 +368,7 @@ def build_agent_graph(
             terms=terms,
             tenant_id=state["tenant_id"],
             graph_client=graph_client,
+            chain_query_relation_types=chain_query_relation_types or set(),
         )
         return {"term_guard_context": context}
 

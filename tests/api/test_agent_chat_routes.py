@@ -615,3 +615,95 @@ def test_agent_chat_emits_tool_status_event_when_planner_calls_a_tool():
     assert tool_status_event["text"] == "正在查询相关信息..."
     assert event_types.index("tool_status") < len(event_types) - 1  # 不是最后一个事件
     assert event_types[-1] == "final"
+
+
+class RecordingGraphClient:
+    """记录 query_subgraph 收到的链式关系类型：/agent/chat 是这个开关最主要
+    的消费路径，接线断在这里，本体结构页上的复选框就还是个摆设。"""
+
+    def __init__(self) -> None:
+        self.queried_chain_types: list[set[str]] = []
+
+    async def query_subgraph(
+        self, node_key: str, *, tenant_id: str, chain_query_relation_types: set[str]
+    ) -> list[dict]:
+        self.queried_chain_types.append(chain_query_relation_types)
+        return []
+
+
+def test_agent_chat_passes_tenant_chain_query_relation_types_to_graph():
+    """只有已确认且勾了 allow_chain_query 的关系类型才进链式查询：没勾的
+    （MENTIONS）和还在草稿里的（DRAFT_ONLY）都不算。"""
+    import asyncio
+
+    from app.graphrag.terms_store import create_term
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, FakeLLMProvider()
+    )
+    vector_store = asyncio.run(_fake_vector_store())
+    graph_client = RecordingGraphClient()
+
+    base_review_conn = _review_conn_override()
+
+    async def _seeded_review_conn() -> aiosqlite.Connection:
+        conn = await base_review_conn()
+        if not getattr(conn, "_seeded_for_chain_test", False):
+            for relation_type, allow_chain, status in (
+                ("DEPENDS_ON", 1, "confirmed"),
+                ("FOLLOWS", 1, "confirmed"),
+                ("MENTIONS", 0, "confirmed"),
+                ("DRAFT_ONLY", 1, "draft"),
+            ):
+                await conn.execute(
+                    "INSERT INTO tenant_relation_types "
+                    "(tenant_id, relation_type, example_phrase, description, "
+                    "allow_chain_query, source, status) VALUES (?, ?, ?, '', ?, 'custom', ?)",
+                    ("t1", relation_type, relation_type, allow_chain, status),
+                )
+            await conn.execute(
+                "INSERT INTO ontology_term_types (tenant_id, value, status) "
+                "VALUES ('t1', 'error_code', 'confirmed')"
+            )
+            await conn.commit()
+            await create_term(
+                conn,
+                tenant_id="t1",
+                standard_name="错误码E502",
+                aliases=[],
+                term_type="error_code",
+            )
+            conn._seeded_for_chain_test = True
+        return conn
+
+    async def _override_get_memory_conn() -> aiosqlite.Connection:
+        conn = await aiosqlite.connect(":memory:")
+        await ensure_schema(conn)
+        return conn
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_review_conn] = _seeded_review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
+    app.dependency_overrides[deps.get_tts_provider] = lambda: None
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    try:
+        client = login_client("member-t1")
+        with client.stream(
+            "POST", "/agent/chat", json={"question": "错误码E502是什么意思？"}
+        ) as response:
+            assert response.status_code == 200
+            "".join(response.iter_text())
+    finally:
+        app.dependency_overrides.clear()
+
+    assert graph_client.queried_chain_types == [{"DEPENDS_ON", "FOLLOWS"}]

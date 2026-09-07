@@ -133,9 +133,17 @@ async def agent_chat_endpoint(
     # 悄悄回退到硬编码的 "default" 租户，跟这里的 tenant_id 不是同一个值，
     # 见 app/api/deps.py 顶部关于这几个函数已删除的说明。
     terms = await list_terms_merged(review_conn, tenant_id)
+    confirmed_relation_type_defs = await list_relation_types(
+        review_conn, tenant_id, status="confirmed"
+    )
     confirmed_relation_types = {
-        rt.relation_type
-        for rt in await list_relation_types(review_conn, tenant_id, status="confirmed")
+        rt.relation_type for rt in confirmed_relation_type_defs
+    }
+    # 本体结构页上勾了「支持链式查询」的已确认关系类型：TermGuard 的 2 跳
+    # 子图查询按这一份来。不在这里查出来传进 build_agent_graph 的话，那个
+    # 复选框只会被写库和回显，改变不了任何检索行为。
+    chain_query_relation_types = {
+        rt.relation_type for rt in confirmed_relation_type_defs if rt.allow_chain_query
     }
     term_type_schema = {
         c.value: c for c in await list_term_types(review_conn, tenant_id, status="confirmed")
@@ -186,6 +194,7 @@ async def agent_chat_endpoint(
             rerank_provider=rerank_provider,
             terms=terms,
             confirmed_relation_types=confirmed_relation_types,
+            chain_query_relation_types=chain_query_relation_types,
             term_type_schema=term_type_schema,
             allowed_combinations=allowed_combinations,
             graph_client=graph_client,

@@ -300,7 +300,10 @@ async def test_planner_graph_uses_structured_filter_query_tool_with_term_guard_c
     ]
 
     class FakeGraphClient:
-        async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
+        async def query_subgraph(
+            self, standard_name: str, *, tenant_id: str,
+            chain_query_relation_types: set[str],
+        ) -> list[dict]:
             return [{"related_name": "示例登录模块", "relation_type": "RELATED_TO"}]
 
         async def execute_structured_filter_query(self, args, *, resolved, tenant_id, term_type_schema):

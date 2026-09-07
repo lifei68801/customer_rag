@@ -1,9 +1,15 @@
+import logging
+
 import pytest
 
 from app.graphrag.neptune_client import NeptuneGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import ExtraFieldSpec, TermTypeCategory
 from app.graphrag.structured_filter_query import AttributeConstraint, ExpandSpec, ResolvedAnchor, TypeAnchor
+
+# 理由同 Neo4j 侧的同名常量：刻意避开 REQUIRES/PRECEDES/PART_OF，否则
+# "按传入集合拼接"和"仍然硬编码"两种实现都能让断言变绿。
+_CHAIN_TYPES = {"DEPENDS_ON", "FOLLOWS"}
 
 
 class FakeNeptuneClient:
@@ -36,7 +42,7 @@ async def test_query_subgraph_returns_related_terms():
     )
     client = NeptuneGraphClient(client=client_stub)
 
-    results = await client.query_subgraph("错误码E502", tenant_id="t1")
+    results = await client.query_subgraph("错误码E502", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES)
 
     assert results == [{"related_name": "登录模块", "relation_type": "RELATED_TO"}]
     assert client_stub.last_parameters == {"node_key": "错误码E502", "tenant_id": "t1"}
@@ -366,7 +372,7 @@ async def test_query_subgraph_one_hop_branch_scopes_related_node_by_tenant():
     client_stub = FakeNeptuneClient(rows=[])
     client = NeptuneGraphClient(client=client_stub)
 
-    await client.query_subgraph("k1", tenant_id="t1")
+    await client.query_subgraph("k1", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES)
 
     one_hop, _ = _subgraph_union_branches(client_stub.last_query)
     assert "-[r]-(related:Term {tenant_id: $tenant_id})" in one_hop
@@ -376,7 +382,7 @@ async def test_query_subgraph_two_hop_branch_scopes_related_node_by_tenant():
     client_stub = FakeNeptuneClient(rows=[])
     client = NeptuneGraphClient(client=client_stub)
 
-    await client.query_subgraph("k1", tenant_id="t1")
+    await client.query_subgraph("k1", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES)
 
     _, two_hop = _subgraph_union_branches(client_stub.last_query)
     assert "(related:Term {tenant_id: $tenant_id})" in two_hop
@@ -387,8 +393,107 @@ async def test_query_subgraph_two_hop_branch_scopes_intermediate_nodes_by_tenant
     client_stub = FakeNeptuneClient(rows=[])
     client = NeptuneGraphClient(client=client_stub)
 
-    await client.query_subgraph("k1", tenant_id="t1")
+    await client.query_subgraph("k1", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES)
 
     _, two_hop = _subgraph_union_branches(client_stub.last_query)
     assert "MATCH p = (t:Term {tenant_id: $tenant_id, node_key: $node_key})" in two_hop
     assert "ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id)" in two_hop
+
+
+async def test_query_subgraph_two_hop_branch_uses_tenant_chain_relation_types():
+    """Neptune 侧独立维护的同一份查询：2 跳的关系类型同样来自租户配置。"""
+    client_stub = FakeNeptuneClient(rows=[])
+    client = NeptuneGraphClient(client=client_stub)
+
+    await client.query_subgraph(
+        "k1", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES
+    )
+
+    _, two_hop = _subgraph_union_branches(client_stub.last_query)
+    assert "[r:DEPENDS_ON|FOLLOWS*2..2]" in two_hop
+    assert "REQUIRES" not in client_stub.last_query
+    assert "PART_OF" not in client_stub.last_query
+    assert "ALL(rel IN r WHERE rel.tenant_id = $tenant_id)" in two_hop
+    assert "AND related <> t" in two_hop
+
+
+class ChainAwareFakeNeptuneClient(FakeNeptuneClient):
+    """只按查询文本里有没有 `*2..2` 决定要不要返回一行 hops=2 的数据——
+    这个 fake 不解释 openCypher，理由同 Neo4j 侧的 ChainAwareFakeSession。"""
+
+    async def execute_open_cypher(self, query: str, parameters: dict | None = None) -> list[dict]:
+        await super().execute_open_cypher(query, parameters)
+        rows = [{"related_name": "登录模块", "relation_type": "RELATED_TO", "hops": 1}]
+        if "*2..2" in query:
+            rows.append(
+                {"related_name": "会员资格", "relation_type": "DEPENDS_ON", "hops": 2}
+            )
+        return rows
+
+
+async def test_query_subgraph_skips_two_hop_branch_when_no_chain_relation_types():
+    """一个链式关系类型都没有时整段 UNION 不发——`[r:*2..2]` 会匹配所有关系
+    类型，无差别两跳发散比固定三种更糟。"""
+    client_stub = ChainAwareFakeNeptuneClient()
+    client = NeptuneGraphClient(client=client_stub)
+
+    results = await client.query_subgraph(
+        "k1", tenant_id="t1", chain_query_relation_types=set()
+    )
+
+    assert [row for row in results if row.get("hops") == 2] == []
+    assert "*2..2" not in client_stub.last_query
+    assert "UNION" not in client_stub.last_query
+    assert "-[r]-(related:Term {tenant_id: $tenant_id})" in client_stub.last_query
+
+
+async def test_query_subgraph_returns_two_hop_rows_when_chain_relation_types_given():
+    """跟上一条配对：同一个 fake 下传了链式关系类型就该拿到 2 跳行。"""
+    client_stub = ChainAwareFakeNeptuneClient()
+    client = NeptuneGraphClient(client=client_stub)
+
+    results = await client.query_subgraph(
+        "k1", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES
+    )
+
+    assert [row["related_name"] for row in results if row.get("hops") == 2] == ["会员资格"]
+
+
+async def test_query_subgraph_drops_malformed_chain_relation_types(caplog):
+    """关系类型拼进 openCypher 前必须过格式校验，不合格的跳过并记日志。"""
+    client_stub = FakeNeptuneClient(rows=[])
+    client = NeptuneGraphClient(client=client_stub)
+
+    with caplog.at_level(logging.WARNING, logger="app.graphrag.neptune_client"):
+        await client.query_subgraph(
+            "k1",
+            tenant_id="t1",
+            chain_query_relation_types={"DEPENDS_ON", "bad-type", "X] OR true //"},
+        )
+
+    assert "[r:DEPENDS_ON*2..2]" in client_stub.last_query
+    assert "bad-type" not in client_stub.last_query
+    assert "OR true" not in client_stub.last_query
+    warnings = "\n".join(r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+    assert "bad-type" in warnings
+    assert "X] OR true //" in warnings
+
+
+async def test_query_subgraph_skips_two_hop_branch_when_all_chain_types_malformed():
+    client_stub = FakeNeptuneClient(rows=[])
+    client = NeptuneGraphClient(client=client_stub)
+
+    await client.query_subgraph(
+        "k1", tenant_id="t1", chain_query_relation_types={"bad-type"}
+    )
+
+    assert "*2..2" not in client_stub.last_query
+    assert "UNION" not in client_stub.last_query
+
+
+async def test_query_subgraph_requires_chain_relation_types_argument():
+    """不给默认值：漏传立刻 TypeError，不悄悄回退到写死的三种关系。"""
+    client = NeptuneGraphClient(client=FakeNeptuneClient(rows=[]))
+
+    with pytest.raises(TypeError):
+        await client.query_subgraph("k1", tenant_id="t1")

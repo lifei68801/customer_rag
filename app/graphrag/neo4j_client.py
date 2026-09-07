@@ -57,14 +57,14 @@ RETURN CASE WHEN startNode(r) = t THEN 'out' ELSE 'in' END AS direction,
 ORDER BY relation_type, standard_name
 """
 
-_SUBGRAPH_QUERY = """
+_SUBGRAPH_ONE_HOP_QUERY = """
 MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term {tenant_id: $tenant_id})
 WHERE r.tenant_id = $tenant_id
 RETURN related.standard_name AS related_name, type(r) AS relation_type, 1 AS hops
+"""
 
-UNION
-
-MATCH p = (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r:REQUIRES|PRECEDES|PART_OF*2..2]-(related:Term {tenant_id: $tenant_id})
+_SUBGRAPH_TWO_HOP_QUERY_TEMPLATE = """
+MATCH p = (t:Term {{tenant_id: $tenant_id, node_key: $node_key}})-[r:{relation_types}*2..2]-(related:Term {{tenant_id: $tenant_id}})
 WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id)
   AND ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id)
   AND related <> t
@@ -72,10 +72,16 @@ RETURN related.standard_name AS related_name,
        [rel IN r | type(rel)][-1] AS relation_type,
        2 AS hops
 """
-# 第二段 UNION 只对 REQUIRES/PRECEDES/PART_OF 这三种"链式"关系放开到
-# 恰好 2 跳（*2..2，不是 *1..2，避免和第一段的 1 跳结果重复）——前提链、
-# 流程顺序、包含层级经常需要连续追问两步；其余关系类型语义上查 1 跳就
-# 有意义，继续放开多跳容易发散、引入噪声上下文。
+# 第二段 UNION 只对"链式"关系放开到恰好 2 跳（*2..2，不是 *1..2，避免和
+# 第一段的 1 跳结果重复）——前提链、流程顺序、包含层级经常需要连续追问
+# 两步；其余关系类型语义上查 1 跳就有意义，继续放开多跳容易发散、引入
+# 噪声上下文。
+#
+# 哪些关系类型算"链式"由租户自己在管理后台勾选（tenant_relation_types.
+# allow_chain_query），调用方查出来后经 query_subgraph 的
+# chain_query_relation_types 参数传进来，不再写死 REQUIRES/PRECEDES/
+# PART_OF——写死的那版让界面上的「支持链式查询」复选框跟实际检索行为完全
+# 脱钩：勾上自定义关系没有任何效果，取消勾选默认关系也照样两跳。
 #
 # 两段 UNION 的对端节点都写成 (related:Term {tenant_id: $tenant_id})，理由同
 # _TERM_RELATIONS_QUERY 的说明——区别只在泄漏的去向：这条查询的结果直接进
@@ -100,6 +106,36 @@ RETURN related.standard_name AS related_name,
 # ——关系抽取经常在同一对术语之间产出双向边（如 A-REQUIRES->B 又
 # B-PART_OF->A），若不加这个过滤，2 跳查询会把 t 自己当成"与自己间接
 # 关联"的结果返回。
+
+
+def _build_subgraph_query(chain_query_relation_types: set[str]) -> str:
+    """按租户放开链式查询的关系类型拼出子图查询。
+
+    关系类型没法参数化绑定，只能拼进查询文本，所以拼之前必须再过一次
+    ontology_relations._RELATION_TYPE_PATTERN 那份格式校验——数据是从
+    SQLite 读出来的，写入路径校验过不等于读出来就能免检。不合格的丢掉
+    并记日志，不让它进 Cypher。
+
+    一个合格的链式关系类型都没有时，整段 UNION 不拼：`[r:*2..2]` 会匹配
+    所有关系类型，是比"固定三种"更糟的无差别两跳发散。
+    """
+    safe_types = sorted(
+        rt for rt in chain_query_relation_types if _RELATION_TYPE_NAME_PATTERN.match(rt)
+    )
+    rejected = sorted(set(chain_query_relation_types) - set(safe_types))
+    if rejected:
+        logger.warning(
+            "子图查询跳过了 %d 个格式不合法的链式关系类型（不会拼进 Cypher）：%s",
+            len(rejected),
+            "、".join(rejected),
+        )
+    if not safe_types:
+        return _SUBGRAPH_ONE_HOP_QUERY
+    two_hop = _SUBGRAPH_TWO_HOP_QUERY_TEMPLATE.format(
+        relation_types="|".join(safe_types)
+    )
+    return f"{_SUBGRAPH_ONE_HOP_QUERY}\nUNION\n{two_hop}"
+
 
 # 保留关系类型：ALIAS_OF 只能由 sync_term 写入别名边（不带 tenant_id/source/
 # provenance，语义和 merge_relation 写入的关系边不同）——merge_relation 硬性
@@ -612,11 +648,17 @@ class Neo4jGraphClient:
             return await result.data()
 
     async def query_subgraph(
-        self, node_key: str, *, tenant_id: str
+        self, node_key: str, *, tenant_id: str, chain_query_relation_types: set[str]
     ) -> list[dict[str, Any]]:
+        """chain_query_relation_types 必填、没有默认值：调用方必须显式给出该
+        租户放开了链式查询的关系类型（tenant_relation_types.allow_chain_query
+        = 1 且已确认）。给一个"回退到三种默认关系"的默认值会让注入路径没接好
+        时悄悄按错的关系集合查两跳，跟这次要修的缺陷是同一类问题；漏传直接
+        TypeError，立刻暴露。
+        """
         async with self._driver.session() as session:
             result = await session.run(
-                _SUBGRAPH_QUERY,
+                _build_subgraph_query(chain_query_relation_types),
                 {"node_key": node_key, "tenant_id": tenant_id},
             )
             return await result.data()

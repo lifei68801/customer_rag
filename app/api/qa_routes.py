@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from app.api import deps
 from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.terms_store import list_terms_merged
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
@@ -58,6 +59,14 @@ async def qa_endpoint(
     # 直接用会话里的权威 tenant_id 查术语表，不经过 deps.get_terms
     # 那套独立解析 tenant_id 的 Depends，见 app/api/deps.py 顶部说明。
     terms = await list_terms_merged(review_conn, tenant_id)
+    # 本体结构页上勾了「支持链式查询」的已确认关系类型——决定强制注入的
+    # 图谱上下文里 2 跳分支走哪些关系。不在这里查出来传下去的话，那个
+    # 复选框就只是存进库里给自己看，改变不了任何检索行为。
+    chain_query_relation_types = {
+        rt.relation_type
+        for rt in await list_relation_types(review_conn, tenant_id, status="confirmed")
+        if rt.allow_chain_query
+    }
     result = await answer_question(
         payload.question,
         embedding_registry=embedding_registry,
@@ -69,6 +78,7 @@ async def qa_endpoint(
         rerank_provider=rerank_provider,
         terms=terms,
         graph_client=graph_client,
+        chain_query_relation_types=chain_query_relation_types,
         tenant_id=tenant_id,
         banned_terms=deps.parse_banned_terms(settings.banned_terms),
     )

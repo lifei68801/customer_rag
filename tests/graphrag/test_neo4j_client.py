@@ -10,6 +10,11 @@ from app.graphrag.structured_filter_query import AttributeConstraint, ExpandSpec
 
 _NOW = datetime(2026, 8, 12, 12, 0, 0)
 
+# 链式查询资格来自租户本体配置（tenant_relation_types.allow_chain_query），
+# 不是写死的那三种。这份测试数据刻意避开 REQUIRES/PRECEDES/PART_OF：用默认
+# 那三种的话，"按传入集合动态拼接"和"仍然硬编码"两种实现都能让断言变绿。
+_CHAIN_TYPES = {"DEPENDS_ON", "FOLLOWS"}
+
 
 class FakeResult:
     def __init__(self, rows: list[dict]) -> None:
@@ -64,7 +69,7 @@ async def test_query_subgraph_returns_related_terms():
     )
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    results = await client.query_subgraph("错误码E502", tenant_id="t1")
+    results = await client.query_subgraph("错误码E502", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES)
 
     assert results == [{"related_name": "登录模块", "relation_type": "RELATED_TO"}]
     assert session.last_parameters == {"node_key": "错误码E502", "tenant_id": "t1"}
@@ -262,10 +267,13 @@ async def test_query_subgraph_sends_two_hop_union_query_for_chain_relations():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    await client.query_subgraph("错误码E502", tenant_id="t1")
+    await client.query_subgraph("错误码E502", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES)
 
     assert "UNION" in session.last_query
-    assert "REQUIRES|PRECEDES|PART_OF*2..2" in session.last_query
+    # 关系类型按传入集合排序后拼接，不再是写死的 REQUIRES|PRECEDES|PART_OF。
+    assert "[r:DEPENDS_ON|FOLLOWS*2..2]" in session.last_query
+    assert "REQUIRES" not in session.last_query
+    assert "PART_OF" not in session.last_query
     assert "ALL(rel IN r WHERE rel.tenant_id = $tenant_id)" in session.last_query
     assert "AND related <> t" in session.last_query
     assert session.last_parameters == {"node_key": "错误码E502", "tenant_id": "t1"}
@@ -309,7 +317,7 @@ async def test_query_subgraph_one_hop_branch_scopes_related_node_by_tenant():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    await client.query_subgraph("k1", tenant_id="t1")
+    await client.query_subgraph("k1", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES)
 
     one_hop, _ = _subgraph_union_branches(session.last_query)
     assert "-[r]-(related:Term {tenant_id: $tenant_id})" in one_hop
@@ -320,7 +328,7 @@ async def test_query_subgraph_two_hop_branch_scopes_related_node_by_tenant():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    await client.query_subgraph("k1", tenant_id="t1")
+    await client.query_subgraph("k1", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES)
 
     _, two_hop = _subgraph_union_branches(session.last_query)
     assert "(related:Term {tenant_id: $tenant_id})" in two_hop
@@ -336,7 +344,7 @@ async def test_query_subgraph_two_hop_branch_scopes_intermediate_nodes_by_tenant
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    await client.query_subgraph("k1", tenant_id="t1")
+    await client.query_subgraph("k1", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES)
 
     _, two_hop = _subgraph_union_branches(session.last_query)
     assert "MATCH p = (t:Term {tenant_id: $tenant_id, node_key: $node_key})" in two_hop
@@ -503,7 +511,7 @@ async def test_query_subgraph_matches_by_tenant_and_node_key():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    await client.query_subgraph("k1", tenant_id="t1")
+    await client.query_subgraph("k1", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES)
 
     assert "MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})" in session.last_query
     assert session.last_parameters["node_key"] == "k1"
@@ -1557,3 +1565,96 @@ async def test_delete_inconsistent_relation_edge_returns_zero_when_no_rows():
     )
 
     assert removed == 0
+
+
+class ChainAwareFakeSession(FakeSession):
+    """只按查询文本里有没有 `*2..2` 决定要不要返回一行 hops=2 的数据。
+
+    仓库的 FakeSession 不解释 Cypher，无法真的按关系类型匹配。这个子类
+    把「查询里问了 2 跳」和「结果里出现 2 跳行」绑在一起，用来断言"没有
+    链式关系类型时不会拿到 2 跳结果"这件事本身，而不只是断言查询文本。
+    """
+
+    async def run(self, query: str, parameters: dict | None = None) -> FakeResult:
+        await super().run(query, parameters)
+        rows = [{"related_name": "登录模块", "relation_type": "RELATED_TO", "hops": 1}]
+        if "*2..2" in query:
+            rows.append(
+                {"related_name": "会员资格", "relation_type": "DEPENDS_ON", "hops": 2}
+            )
+        return FakeResult(rows)
+
+
+async def test_query_subgraph_skips_two_hop_branch_when_no_chain_relation_types():
+    """一个链式关系类型都没有时，整段 UNION 不发出去。
+
+    不能退化成 `[r:*2..2]`：那会匹配所有关系类型、无差别两跳发散，比现状
+    （固定三种）更糟。
+    """
+    session = ChainAwareFakeSession()
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    results = await client.query_subgraph(
+        "错误码E502", tenant_id="t1", chain_query_relation_types=set()
+    )
+
+    assert [row for row in results if row.get("hops") == 2] == []
+    assert "*2..2" not in session.last_query
+    assert "UNION" not in session.last_query
+    # 1 跳那段必须原样还在——跳过的只是 2 跳。
+    assert "-[r]-(related:Term {tenant_id: $tenant_id})" in session.last_query
+
+
+async def test_query_subgraph_returns_two_hop_rows_when_chain_relation_types_given():
+    """跟上一条配对：同一个 fake 下，传了链式关系类型就应该拿到 2 跳行。
+    否则上一条的"没有 2 跳行"可能只是因为 fake 从来不产出 2 跳行。"""
+    session = ChainAwareFakeSession()
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    results = await client.query_subgraph(
+        "错误码E502", tenant_id="t1", chain_query_relation_types=_CHAIN_TYPES
+    )
+
+    assert [row["related_name"] for row in results if row.get("hops") == 2] == ["会员资格"]
+
+
+async def test_query_subgraph_drops_malformed_chain_relation_types(caplog):
+    """读出来再拼进 Cypher 的关系类型同样要过格式校验——关系类型没法参数化
+    绑定，只能拼字符串，这是注入防线。不合格的跳过并记日志，不进 Cypher。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    with caplog.at_level(logging.WARNING, logger="app.graphrag.neo4j_client"):
+        await client.query_subgraph(
+            "k1",
+            tenant_id="t1",
+            chain_query_relation_types={"DEPENDS_ON", "bad-type", "X] OR true //"},
+        )
+
+    assert "[r:DEPENDS_ON*2..2]" in session.last_query
+    assert "bad-type" not in session.last_query
+    assert "OR true" not in session.last_query
+    warnings = "\n".join(r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+    assert "bad-type" in warnings
+    assert "X] OR true //" in warnings
+
+
+async def test_query_subgraph_skips_two_hop_branch_when_all_chain_types_malformed():
+    """全都不合格时等价于空集合：不能拼出一个空的关系类型列表 `[r:*2..2]`。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.query_subgraph(
+        "k1", tenant_id="t1", chain_query_relation_types={"bad-type"}
+    )
+
+    assert "*2..2" not in session.last_query
+    assert "UNION" not in session.last_query
+
+
+async def test_query_subgraph_requires_chain_relation_types_argument():
+    """不给默认值：漏传立刻 TypeError，而不是悄悄回退到写死的三种关系。"""
+    client = Neo4jGraphClient(driver=FakeDriver(FakeSession(rows=[])))
+
+    with pytest.raises(TypeError):
+        await client.query_subgraph("k1", tenant_id="t1")

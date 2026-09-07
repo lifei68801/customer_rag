@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 
 from app.graphrag.ontology import Term
@@ -16,6 +17,8 @@ from app.safety.leakage_detection import detect_internal_leakage
 from app.safety.prompt_injection import detect_prompt_injection
 from app.safety.rules import UNSAFE_INPUT_MESSAGE, UNSAFE_OUTPUT_MESSAGE, check_text
 from app.safety.semantic_review import semantic_safety_review
+
+logger = logging.getLogger(__name__)
 
 _PROMPT_TEMPLATE = (
     "根据以下资料回答问题。请使用 markdown 排版（分点用列表、强调用加粗、"
@@ -48,6 +51,10 @@ async def answer_question(
     query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
     graph_client: GraphClientProtocol | None = None,
+    # 该租户勾了「支持链式查询」的已确认关系类型，透传给 term_guard 的
+    # 2 跳子图查询。None = 调用方没接这条注入路径（会警告并退化成只查
+    # 1 跳），空集合 = 该租户确实一个都没勾（是配置结果，不警告）。
+    chain_query_relation_types: set[str] | None = None,
     top_k: int = 3,
     banned_terms: list[str] | None = None,
 ) -> AnswerResult:
@@ -60,8 +67,18 @@ async def answer_question(
 
     async def _maybe_term_guard() -> str | None:
         if terms and graph_client is not None:
+            if chain_query_relation_types is None:
+                logger.warning(
+                    "answer_question 没有收到 chain_query_relation_types，"
+                    "本次强制注入的图谱上下文只有 1 跳关系："
+                    "该租户在本体结构页勾选的「支持链式查询」不会生效"
+                )
             return await build_term_guard_context(
-                question, terms=terms, tenant_id=tenant_id, graph_client=graph_client
+                question,
+                terms=terms,
+                tenant_id=tenant_id,
+                graph_client=graph_client,
+                chain_query_relation_types=chain_query_relation_types or set(),
             )
         return None
 

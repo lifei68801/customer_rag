@@ -140,6 +140,9 @@ async def run_eval_suite(
     query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
     graph_client: GraphClientProtocol | None = None,
+    # 评测跑的是同一条问答路径，链式关系类型同样要由调用方给出——不给
+    # （None）时 answer_question 会警告并只查 1 跳。
+    chain_query_relation_types: set[str] | None = None,
     top_k: int = 3,
 ) -> EvalReport:
     """对评测集里的每个用例真正跑一遍检索+生成，汇总 RAGAS 类指标。
@@ -172,6 +175,7 @@ async def run_eval_suite(
             query_rewrite_enabled=query_rewrite_enabled,
             terms=terms,
             graph_client=graph_client,
+            chain_query_relation_types=chain_query_relation_types,
             top_k=top_k,
         )
         case_results.append(
@@ -256,6 +260,7 @@ async def compare_planner_modes(
     query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
     graph_client: GraphClientProtocol | None = None,
+    chain_query_relation_types: set[str] | None = None,
     top_k: int = 3,
     max_tool_call_rounds: int = 3,
 ) -> PlannerComparisonReport:
@@ -286,6 +291,7 @@ async def compare_planner_modes(
         query_rewrite_enabled=query_rewrite_enabled,
         terms=terms,
         graph_client=graph_client,
+        chain_query_relation_types=chain_query_relation_types,
         top_k=top_k,
     )
 

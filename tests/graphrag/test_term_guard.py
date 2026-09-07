@@ -1,7 +1,12 @@
 import asyncio
 
+import pytest
+
 from app.graphrag.ontology import Term
 from app.graphrag.term_guard import build_term_guard_context, describe_association
+
+# 链式关系类型由租户本体配置决定，刻意避开写死的 REQUIRES/PRECEDES/PART_OF。
+_CHAIN_TYPES = {"DEPENDS_ON", "FOLLOWS"}
 
 _TERMS = [
     Term(
@@ -18,10 +23,14 @@ class FakeGraphClient:
         self._rows = subgraph_rows
         self.queried_names: list[str] = []
         self.queried_tenant_ids: list[str] = []
+        self.queried_chain_types: list[set[str]] = []
 
-    async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
+    async def query_subgraph(
+        self, standard_name: str, *, tenant_id: str, chain_query_relation_types: set[str]
+    ) -> list[dict]:
         self.queried_names.append(standard_name)
         self.queried_tenant_ids.append(tenant_id)
+        self.queried_chain_types.append(chain_query_relation_types)
         return self._rows
 
 
@@ -29,7 +38,8 @@ async def test_returns_none_when_no_term_matched():
     graph_client = FakeGraphClient(subgraph_rows=[])
 
     context = await build_term_guard_context(
-        "今天天气怎么样", terms=_TERMS, tenant_id="t1", graph_client=graph_client
+        "今天天气怎么样", terms=_TERMS, tenant_id="t1", graph_client=graph_client,
+        chain_query_relation_types=_CHAIN_TYPES,
     )
 
     assert context is None
@@ -42,7 +52,8 @@ async def test_returns_context_and_queries_graph_when_term_matched():
     )
 
     context = await build_term_guard_context(
-        "我这边报了网关超时", terms=_TERMS, tenant_id="t1", graph_client=graph_client
+        "我这边报了网关超时", terms=_TERMS, tenant_id="t1", graph_client=graph_client,
+        chain_query_relation_types=_CHAIN_TYPES,
     )
 
     assert context is not None
@@ -61,7 +72,8 @@ async def test_marks_two_hop_results_as_indirect_association():
     )
 
     context = await build_term_guard_context(
-        "我这边报了网关超时", terms=_TERMS, tenant_id="t1", graph_client=graph_client
+        "我这边报了网关超时", terms=_TERMS, tenant_id="t1", graph_client=graph_client,
+        chain_query_relation_types=_CHAIN_TYPES,
     )
 
     assert "关联: 登录模块" in context
@@ -76,7 +88,8 @@ async def test_defaults_to_direct_association_when_hops_field_is_missing():
     )
 
     context = await build_term_guard_context(
-        "我这边报了网关超时", terms=_TERMS, tenant_id="t1", graph_client=graph_client
+        "我这边报了网关超时", terms=_TERMS, tenant_id="t1", graph_client=graph_client,
+        chain_query_relation_types=_CHAIN_TYPES,
     )
 
     assert "关联: 登录模块" in context
@@ -102,7 +115,8 @@ async def test_caps_injected_neighbors_per_term_and_notes_the_remainder():
     graph_client = FakeGraphClient(subgraph_rows=many_rows)
 
     context = await build_term_guard_context(
-        "我这边报了网关超时", terms=_TERMS, tenant_id="t1", graph_client=graph_client
+        "我这边报了网关超时", terms=_TERMS, tenant_id="t1", graph_client=graph_client,
+        chain_query_relation_types=_CHAIN_TYPES,
     )
 
     assert context.count("关联: 订单") == _MAX_NEIGHBORS_PER_TERM
@@ -130,7 +144,10 @@ async def test_build_term_guard_context_queries_multiple_matched_terms_concurren
     started = {"错误码E502": asyncio.Event(), "登录模块": asyncio.Event()}
 
     class SyncGraphClient:
-        async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
+        async def query_subgraph(
+            self, standard_name: str, *, tenant_id: str,
+            chain_query_relation_types: set[str],
+        ) -> list[dict]:
             started[standard_name].set()
             other = "登录模块" if standard_name == "错误码E502" else "错误码E502"
             await asyncio.wait_for(started[other].wait(), timeout=5)
@@ -139,6 +156,7 @@ async def test_build_term_guard_context_queries_multiple_matched_terms_concurren
     context = await build_term_guard_context(
         "网关超时导致登录失败", terms=_TWO_TERMS, tenant_id="t1",
         graph_client=SyncGraphClient(),
+        chain_query_relation_types=_CHAIN_TYPES,
     )
 
     # 展示顺序必须按 matched（即 terms 表里的原始顺序）排列，不能因为
@@ -146,3 +164,32 @@ async def test_build_term_guard_context_queries_multiple_matched_terms_concurren
     assert context.index("错误码E502") < context.index("登录模块")
     assert "错误码E502关联项" in context
     assert "登录模块关联项" in context
+
+
+async def test_forwards_chain_query_relation_types_to_graph_client():
+    """租户勾选的链式关系类型必须一路透传到图查询——这条链断在哪一层，
+    界面上的「支持链式查询」开关就又变回一个不影响任何行为的摆设。"""
+    graph_client = FakeGraphClient(
+        subgraph_rows=[{"related_name": "登录模块", "relation_type": "RELATED_TO"}]
+    )
+
+    await build_term_guard_context(
+        "我这边报了网关超时",
+        terms=_TERMS,
+        tenant_id="t1",
+        graph_client=graph_client,
+        chain_query_relation_types={"DEPENDS_ON", "FOLLOWS"},
+    )
+
+    assert graph_client.queried_chain_types == [{"DEPENDS_ON", "FOLLOWS"}]
+
+
+async def test_requires_chain_query_relation_types_argument():
+    """不给默认值：漏传立刻 TypeError，不悄悄按写死的三种关系查两跳。"""
+    with pytest.raises(TypeError):
+        await build_term_guard_context(
+            "我这边报了网关超时",
+            terms=_TERMS,
+            tenant_id="t1",
+            graph_client=FakeGraphClient(subgraph_rows=[]),
+        )

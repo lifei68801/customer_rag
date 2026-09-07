@@ -896,9 +896,13 @@ async def test_correction_check_does_not_trigger_for_normal_question():
 class _FakeTermGuardGraphClient:
     def __init__(self) -> None:
         self.queried_tenant_ids: list[str] = []
+        self.queried_chain_types: list[set[str]] = []
 
-    async def query_subgraph(self, standard_name: str, *, tenant_id: str) -> list[dict]:
+    async def query_subgraph(
+        self, standard_name: str, *, tenant_id: str, chain_query_relation_types: set[str]
+    ) -> list[dict]:
         self.queried_tenant_ids.append(tenant_id)
+        self.queried_chain_types.append(chain_query_relation_types)
         return []
 
 
@@ -932,6 +936,90 @@ async def test_term_guard_node_forwards_tenant_id_to_graph_client():
     await graph.ainvoke({"question": "错误码E502是什么意思？", "tenant_id": "t2"})
 
     assert graph_client.queried_tenant_ids == ["t2"]
+
+
+async def test_term_guard_node_forwards_chain_query_relation_types_to_graph_client():
+    """租户勾选的链式关系类型要经 build_agent_graph 一路传到图查询。
+
+    这条注入路径是这次修复的关键：断在这里的话，本体结构页上的
+    「支持链式查询」复选框依旧改变不了任何检索行为。
+    """
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(with_records=True, llm_text="重启路由器即可解决。")
+    )
+    terms = [
+        Term(
+            tenant_id="t2",
+            node_key="错误码E502",
+            standard_name="错误码E502",
+            aliases=[],
+            term_type="error_code",
+        )
+    ]
+    graph_client = _FakeTermGuardGraphClient()
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
+        query_rewrite_enabled=False,
+        terms=terms,
+        graph_client=graph_client,
+        chain_query_relation_types={"DEPENDS_ON", "FOLLOWS"},
+    )
+
+    await graph.ainvoke({"question": "错误码E502是什么意思？", "tenant_id": "t2"})
+
+    assert graph_client.queried_chain_types == [{"DEPENDS_ON", "FOLLOWS"}]
+
+
+async def test_term_guard_node_warns_when_chain_query_relation_types_not_wired(caplog):
+    """没接上这条注入路径时要出声：查询会退化成只有 1 跳，租户勾的
+    「支持链式查询」不生效——这种降级不能悄悄发生。
+
+    注意跟"该租户一个都没勾"（显式传空集合）区分开：那是配置结果，不告警。
+    """
+    embedding_registry, vector_store, bm25_index, llm_registry, llm_provider = (
+        await _build_dependencies(with_records=True, llm_text="重启路由器即可解决。")
+    )
+    terms = [
+        Term(
+            tenant_id="t2", node_key="错误码E502", standard_name="错误码E502",
+            aliases=[], term_type="error_code",
+        )
+    ]
+    common = dict(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
+        query_rewrite_enabled=False,
+        terms=terms,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.agent.graph"):
+        await build_agent_graph(
+            **common, graph_client=_FakeTermGuardGraphClient()
+        ).ainvoke({"question": "错误码E502是什么意思？", "tenant_id": "t2"})
+    unwired = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="app.agent.graph"):
+        await build_agent_graph(
+            **common,
+            graph_client=_FakeTermGuardGraphClient(),
+            chain_query_relation_types=set(),
+        ).ainvoke({"question": "错误码E502是什么意思？", "tenant_id": "t2"})
+    empty_on_purpose = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+    assert any("chain_query_relation_types" in m for m in unwired)
+    assert empty_on_purpose == []
 
 
 async def test_output_safety_flags_internal_leakage_without_calling_semantic_review(caplog):
@@ -1129,7 +1217,9 @@ class _RecordingTermGuardGraphClient:
     def __init__(self) -> None:
         self.queried_node_keys: list[str] = []
 
-    async def query_subgraph(self, node_key: str, *, tenant_id: str) -> list[dict]:
+    async def query_subgraph(
+        self, node_key: str, *, tenant_id: str, chain_query_relation_types: set[str]
+    ) -> list[dict]:
         self.queried_node_keys.append(node_key)
         return []
 

@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
+from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
@@ -71,6 +72,9 @@ def _review_conn_override():
             # Task 3：qa_endpoint 现在经 list_terms_merged() 读术语表，测试连接要
             # 把 term_edits 表也建好，否则会报 "no such table: term_edits"。
             await ensure_term_edits_schema(conn)
+            # qa_endpoint 现在还要查该租户勾了「支持链式查询」的已确认关系
+            # 类型，ontology schema（tenant_relation_types 等表）也得建好。
+            await ensure_ontology_schema(conn)
             await ensure_admin_users_schema(conn)
             for username, tenant_id in (("member-t1", "t1"), ("member-t2", "t2")):
                 await create_admin_user(
@@ -257,3 +261,88 @@ def test_qa_endpoint_rejects_wrong_gateway_secret_when_configured():
         app.dependency_overrides.clear()
 
     assert response.status_code == 401
+
+
+class RecordingGraphClient:
+    """记录 query_subgraph 收到的链式关系类型——这条路由是"界面开关能不能
+    影响检索"的最后一段接线，断在这里前面几层接对了也没用。"""
+
+    def __init__(self) -> None:
+        self.queried_chain_types: list[set[str]] = []
+
+    async def query_subgraph(
+        self, node_key: str, *, tenant_id: str, chain_query_relation_types: set[str]
+    ) -> list[dict]:
+        self.queried_chain_types.append(chain_query_relation_types)
+        return []
+
+
+def test_qa_endpoint_passes_tenant_chain_query_relation_types_to_graph():
+    """只有该租户已确认、且勾了 allow_chain_query 的关系类型才进链式查询：
+    草稿状态的、没勾的，都不算。"""
+    import asyncio
+
+    from app.graphrag.ontology_lifecycle import ensure_ontology_schema
+    from app.graphrag.terms_store import create_term
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(
+        deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider()
+    )
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM, deps.DEFAULT_LLM_PROVIDER_NAME, FakeLLMProvider()
+    )
+    vector_store = asyncio.run(_fake_vector_store())
+    graph_client = RecordingGraphClient()
+
+    base_review_conn = _review_conn_override()
+
+    async def _seeded_review_conn() -> aiosqlite.Connection:
+        conn = await base_review_conn()
+        if not getattr(conn, "_seeded_for_chain_test", False):
+            for relation_type, allow_chain, status in (
+                ("DEPENDS_ON", 1, "confirmed"),
+                ("FOLLOWS", 1, "confirmed"),
+                ("MENTIONS", 0, "confirmed"),
+                ("DRAFT_ONLY", 1, "draft"),
+            ):
+                await conn.execute(
+                    "INSERT INTO tenant_relation_types "
+                    "(tenant_id, relation_type, example_phrase, description, "
+                    "allow_chain_query, source, status) VALUES (?, ?, ?, '', ?, 'custom', ?)",
+                    ("t1", relation_type, relation_type, allow_chain, status),
+                )
+            await conn.execute(
+                "INSERT INTO ontology_term_types (tenant_id, value, status) "
+                "VALUES ('t1', 'error_code', 'confirmed')"
+            )
+            await conn.commit()
+            await create_term(
+                conn,
+                tenant_id="t1",
+                standard_name="错误码E502",
+                aliases=[],
+                term_type="error_code",
+            )
+            conn._seeded_for_chain_test = True
+        return conn
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_review_conn] = _seeded_review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    try:
+        client = login_client("member-t1")
+        response = client.post(
+            "/qa", json={"question": "错误码E502 是什么意思？"}
+        )
+        assert response.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+    assert graph_client.queried_chain_types == [{"DEPENDS_ON", "FOLLOWS"}]

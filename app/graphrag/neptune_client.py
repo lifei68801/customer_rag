@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import re
 from typing import TYPE_CHECKING, Any, Protocol
 
 from app.graphrag.ontology import Term
@@ -15,6 +17,12 @@ from app.graphrag.structured_filter_query import (
 
 if TYPE_CHECKING:
     from app.graphrag.ontology_categories import ExtraFieldSpec
+
+logger = logging.getLogger(__name__)
+
+# 跟 neo4j_client.py / ontology_relations.py 的同一份约定，按本文件"两个后端
+# 实现完全独立、刻意不跨模块 import"的惯例各自定义一份。
+_RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 
 _RESERVED_FIELD_NAME = "standard_name"
 _CAST_BY_VALUE_TYPE = {"number": "toFloat", "integer": "toInteger"}
@@ -42,14 +50,14 @@ RETURN max(k) AS fanout
 # 独立于 neo4j_client.py 维护的一份查询文本——语义上跟 Neo4j 那边几乎相同
 # （Neptune 从 2021 年起原生支持 openCypher），但刻意不 import 共享，见
 # 本计划 Global Constraints 的说明。
-_SUBGRAPH_QUERY = """
+_SUBGRAPH_ONE_HOP_QUERY = """
 MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term {tenant_id: $tenant_id})
 WHERE r.tenant_id = $tenant_id
 RETURN related.standard_name AS related_name, type(r) AS relation_type, 1 AS hops
+"""
 
-UNION
-
-MATCH p = (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r:REQUIRES|PRECEDES|PART_OF*2..2]-(related:Term {tenant_id: $tenant_id})
+_SUBGRAPH_TWO_HOP_QUERY_TEMPLATE = """
+MATCH p = (t:Term {{tenant_id: $tenant_id, node_key: $node_key}})-[r:{relation_types}*2..2]-(related:Term {{tenant_id: $tenant_id}})
 WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id)
   AND ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id)
   AND related <> t
@@ -57,6 +65,14 @@ RETURN related.standard_name AS related_name,
        [rel IN r | type(rel)][-1] AS relation_type,
        2 AS hops
 """
+# Which relation types count as "chain" ones is per-tenant configuration
+# (tenant_relation_types.allow_chain_query), passed in by the caller via
+# query_subgraph's chain_query_relation_types argument. They used to be
+# hard-coded as REQUIRES|PRECEDES|PART_OF, which left the admin UI's
+# "supports chain query" checkbox wired to nothing: ticking it for a custom
+# relation changed no retrieval behaviour, and unticking a default one still
+# produced 2-hop results.
+#
 # Both UNION branches scope the far-side node with
 # (related:Term {tenant_id: $tenant_id}): filtering only the start node and the
 # edges lets an edge that is labelled with this tenant but points at another
@@ -86,6 +102,40 @@ RETURN related.standard_name AS related_name,
 # routinely produces edges in both directions between the same pair of terms
 # (e.g. A-REQUIRES->B and B-PART_OF->A). Without this filter, the 2-hop branch
 # would return t itself as if it were "indirectly related to itself".
+
+
+def _build_subgraph_query(chain_query_relation_types: set[str]) -> str:
+    """Assemble the subgraph query for the relation types this tenant has
+    opened up to chain queries.
+
+    Relation types cannot be bound as parameters, so they are interpolated
+    into the query text — which is why they are re-checked against the same
+    ^[A-Z][A-Z0-9_]{0,63}$ format as every write path (ontology_relations.
+    _RELATION_TYPE_PATTERN) before being interpolated. Values read back out of
+    SQLite are not exempt from that check. Anything that fails it is dropped
+    and logged instead of reaching the query.
+
+    With no usable chain relation type left, the whole UNION is omitted:
+    `[r:*2..2]` would match every relation type, an undirected 2-hop blow-up
+    that is worse than the hard-coded three types this replaces.
+    """
+    safe_types = sorted(
+        rt for rt in chain_query_relation_types if _RELATION_TYPE_NAME_PATTERN.match(rt)
+    )
+    rejected = sorted(set(chain_query_relation_types) - set(safe_types))
+    if rejected:
+        logger.warning(
+            "子图查询跳过了 %d 个格式不合法的链式关系类型（不会拼进 openCypher）：%s",
+            len(rejected),
+            "、".join(rejected),
+        )
+    if not safe_types:
+        return _SUBGRAPH_ONE_HOP_QUERY
+    two_hop = _SUBGRAPH_TWO_HOP_QUERY_TEMPLATE.format(
+        relation_types="|".join(safe_types)
+    )
+    return f"{_SUBGRAPH_ONE_HOP_QUERY}\nUNION\n{two_hop}"
+
 
 _ENSURE_INDEXES_QUERIES: list[str] = []
 # Neptune 对属性没有 Neo4j 那种显式 CREATE INDEX 语法（它按内部存储结构
@@ -202,10 +252,14 @@ class NeptuneGraphClient:
         self._client = client
 
     async def query_subgraph(
-        self, node_key: str, *, tenant_id: str
+        self, node_key: str, *, tenant_id: str, chain_query_relation_types: set[str]
     ) -> list[dict[str, Any]]:
+        """chain_query_relation_types 必填、没有默认值——理由同 Neo4j 侧的
+        同名方法：给一个"回退到三种默认关系"的默认值，会让注入路径没接好时
+        悄悄按错的关系集合查两跳。"""
         return await self._client.execute_open_cypher(
-            _SUBGRAPH_QUERY, {"node_key": node_key, "tenant_id": tenant_id}
+            _build_subgraph_query(chain_query_relation_types),
+            {"node_key": node_key, "tenant_id": tenant_id},
         )
 
     async def execute_structured_filter_query(
