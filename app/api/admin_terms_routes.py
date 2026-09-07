@@ -11,6 +11,12 @@ import aiosqlite
 
 from app.api import deps
 from app.api.admin_session import AdminSession
+from app.api.bulk_delete import (
+    BulkDeleteBlocked,
+    BulkDeleteResult,
+    resolve_bulk_delete_mode,
+    run_bulk_delete,
+)
 from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.duplicate_detection import find_similar_terms
 from app.graphrag.neo4j_client import GraphWriteProtocol
@@ -400,6 +406,49 @@ async def get_term_detail(
     return TermDetailResponse(**_to_response(term).model_dump(), relations=relations)
 
 
+class TermFilters(BaseModel):
+    """实体列表的筛选条件——跟 GET /terms 的同名 query 参数一一对应。
+
+    批量删除的「全部」= **当前筛选条件下的全部**，判据必须和列表页看到的
+    完全一致：用户按 term_type=module 筛完点「全部」，删的就是他眼前那一
+    组，不是整个租户的两万条。所以这三个条件在这里成为一个显式的对象，而
+    不是让批量删除自己再抄一遍过滤逻辑——抄一遍就会漂移，而漂移的表现是
+    「确认框说 7 条、实际删了 20017 条」。
+    """
+
+    term_type: str | None = None
+    source: str | None = None
+    q: str | None = None
+
+
+async def _list_terms_matching_filters(
+    conn: aiosqlite.Connection, tenant_id: str, filters: TermFilters
+) -> list[Term]:
+    """当前筛选条件下的全部实体（不分页）。
+
+    列表接口的搜索/类型筛选分支和批量删除的「全部」共用这一个函数：确认框
+    上写的条数来自列表接口的 total，删掉的条数来自这里，两边各算各的时用户
+    会看到「确定删除 7 条吗」然后删掉 9 条，而批量删除没有第二次机会。
+
+    过滤一律发生在**合并视图**上，不在 SQL 里：人工改过展示名或类型的实体，
+    按 terms 表的原始值筛只能用旧值找到、用界面上看到的新值反而找不到——
+    正好反了。代价是全量载入，跟 list_terms 在 agent 每轮消歧、摄取管线上
+    的用法同一个量级。
+    """
+    terms = await list_terms_merged(
+        conn, tenant_id, source=filters.source, term_type=filters.term_type
+    )
+    needle = (filters.q or "").strip().casefold()
+    if not needle:
+        return terms
+    return [
+        term
+        for term in terms
+        if needle in term.standard_name.casefold()
+        or any(needle in alias.casefold() for alias in term.aliases)
+    ]
+
+
 @router.get("", response_model=TermListResponse)
 async def list_all_terms(
     tenant_id: str,
@@ -425,13 +474,12 @@ async def list_all_terms(
     # 别的路径上（agent 每轮消歧、摄取管线）以全量方式被调用，这不是新引入
     # 的量级。真成为瓶颈时再考虑把编辑层的展示名物化成可索引的列。
     if q is not None and q.strip():
-        needle = q.strip().casefold()
-        matched = [
-            t
-            for t in await list_terms_merged(review_conn, tenant_id, source=source)
-            if needle in t.standard_name.casefold()
-            or any(needle in alias.casefold() for alias in t.aliases)
-        ]
+        # term_type 一并带上：从本体页点进来再搜一个词时，链接说的是"这个
+        # 类型"，结果里就不该混进别的类型。这也让这条分支的 total 和批量
+        # 删除的「全部」用的是同一份筛选结果。
+        matched = await _list_terms_matching_filters(
+            review_conn, tenant_id, TermFilters(term_type=term_type, source=source, q=q)
+        )
         effective_page_size = page_size or 20
         offset = ((page or 1) - 1) * effective_page_size
         return TermListResponse(
@@ -450,7 +498,9 @@ async def list_all_terms(
         #
         # 代价是全量载入，跟上面的搜索路径一样。可以接受：list_terms 本来
         # 就在别的路径上（agent 每轮消歧、摄取管线）以全量方式被调用。
-        matched = await list_terms_merged(review_conn, tenant_id, source=source, term_type=term_type)
+        matched = await _list_terms_matching_filters(
+            review_conn, tenant_id, TermFilters(term_type=term_type, source=source)
+        )
         effective_page_size = page_size or 20
         offset = ((page or 1) - 1) * effective_page_size
         return TermListResponse(
@@ -769,6 +819,89 @@ async def delete_term_relation_edge(
             detail=f"没有找到这条关系（{subject} -{relation_type}-> {obj}），它可能已经被删掉了",
         )
     return {"deleted": removed}
+
+
+class BulkDeleteTermsRequest(BaseModel):
+    """批量删除的请求体。两种模式二选一：
+
+    * node_keys：本页全选。前端手里已经有这一页的 node_key，直接给。
+    * filters：当前筛选条件下的全部。条数可能是两万，前端手里没有也不该有
+      这份列表——这正是这个模式存在的理由，「全部」必须在服务端展开。
+
+    两个都给或都不给都是客户端 bug，报 400 而不是猜（见
+    resolve_bulk_delete_mode）。filters 传一个所有条件都为空的对象是合法的，
+    语义是"没有任何筛选时的全部"，也就是整租户。
+    """
+
+    node_keys: list[str] | None = None
+    filters: TermFilters | None = None
+
+
+@router.post("/bulk-delete", response_model=BulkDeleteResult)
+async def bulk_delete_terms(
+    tenant_id: str,
+    payload: BulkDeleteTermsRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    session: AdminSession = Depends(deps.require_admin_session),
+) -> BulkDeleteResult:
+    """批量删除实体。语义跟单条删除（DELETE /{node_key}）逐条相同——写
+    __deleted__ 编辑 + 删图谱节点，terms 行留着，ETL 重跑也不会让它复活——
+    只是一次做很多条，且**能删的删掉、挡住的逐条报出来**，不整批回滚。
+
+    守卫（"图谱里还有非 ALIAS_OF 的关系边就拒绝"）在这里是一次
+    list_node_keys_with_relation_edges + 应用层差集，不是逐条
+    count_relation_edges_for_term：两万条实体逐条问 Neo4j 就是两万次网络
+    往返，这个功能在 demo 租户上根本跑不完。图谱节点同理，一次批量删。
+
+    图谱节点的删除放在所有 __deleted__ 编辑写完之后一次性做：单条路径上是
+    "先写编辑、再删节点"，这里保持同一个顺序，只是把 N 次节点删除合并成
+    一次。顺序反过来的话，编辑写失败会留下"图上没有、词表里还在"的实体。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    mode = resolve_bulk_delete_mode(keys=payload.node_keys, filters=payload.filters)
+    if mode == "keys":
+        node_keys = list(payload.node_keys or [])
+    else:
+        matched = await _list_terms_matching_filters(
+            review_conn, tenant_id, payload.filters or TermFilters()
+        )
+        node_keys = [term.node_key for term in matched]
+
+    blocked = await graph_client.list_node_keys_with_relation_edges(tenant_id=tenant_id)
+    deleted_keys: list[str] = []
+
+    async def _delete_one(node_key: str) -> None:
+        # 存在性先于守卫，跟单条路径的 404 优先于 409 同一个理由：一个根本
+        # 不存在的 key 不该因为图谱里凑巧有同名孤儿边而被报成"已在图谱中
+        # 使用"，那会让用户去查一个从未存在过的实体。
+        try:
+            term = await get_term_merged_by_node_key(review_conn, tenant_id, node_key)
+        except TermNotFoundError:
+            raise BulkDeleteBlocked("实体不存在，可能已经被删掉了")
+        if term.node_key in blocked:
+            raise BulkDeleteBlocked(
+                "该实体还被图谱里的关系边使用，无法删除；"
+                "请先在实体详情页删掉这些关系再删它"
+            )
+        await upsert_term_edit(
+            review_conn, tenant_id=tenant_id, node_key=term.node_key, field=FIELD_DELETED,
+            value=None, edited_by=session.username,
+        )
+        deleted_keys.append(term.node_key)
+
+    result = await run_bulk_delete(node_keys, _delete_one)
+
+    try:
+        await graph_client.delete_term_nodes(tenant_id=tenant_id, node_keys=deleted_keys)
+    except Exception:
+        logger.exception(
+            "租户 %r 的 %d 条实体已写入 __deleted__ 编辑，但批量删除图谱节点失败——"
+            "这些实体对管理后台已不可见，图谱节点仍然存在，需要人工核对：%s",
+            tenant_id, len(deleted_keys), deleted_keys,
+        )
+        raise
+    return result
 
 
 @router.delete("/{node_key}")

@@ -434,6 +434,31 @@ DETACH DELETE t, a
 # MATCH 让"没有别名"的术语也能正常匹配到 t（DELETE 一个 null 值是
 # Cypher 里的合法操作，不会报错）。
 
+_LIST_NODE_KEYS_WITH_RELATION_EDGES_QUERY = """
+MATCH (t:Term {tenant_id: $tenant_id})-[r]-()
+WHERE r.tenant_id = $tenant_id AND type(r) <> 'ALIAS_OF'
+RETURN DISTINCT t.node_key AS node_key
+"""
+# 批量删除的守卫：一次问出"这个租户里哪些实体还挂着关系边"，调用方在应用层
+# 做差集。等价于对每个 node_key 各跑一次 _COUNT_TERM_RELATION_EDGES_QUERY 再看
+# 是否 > 0，但只有一次往返——两万条实体逐条问就是两万次网络往返，那是这个
+# 方法存在的全部理由。
+#
+# 过滤口径必须和 _COUNT_TERM_RELATION_EDGES_QUERY 逐字一致（r.tenant_id 过滤 +
+# 排除 ALIAS_OF + 无向匹配）：两处不一致的话，同一个实体单条删得掉、批量删
+# 却被挡住（或反过来），用户看到的是"删除按钮的行为取决于我勾了几条"。
+# 这里不需要 count(DISTINCT r)——只关心"有没有边"，自环多匹配一行不影响
+# DISTINCT node_key 的结果。
+
+_DELETE_TERM_NODES_QUERY = """
+UNWIND $node_keys AS node_key
+MATCH (t:Term {tenant_id: $tenant_id, node_key: node_key})
+OPTIONAL MATCH (a:Term)-[:ALIAS_OF]->(t)
+DETACH DELETE t, a
+"""
+# _DELETE_TERM_NODE_QUERY 的批量版，语义逐字相同（连别名节点一起删），
+# 只是把 node_key 换成 UNWIND 的一个列表参数。
+
 _FANOUT_QUERY_TEMPLATE = """
 MATCH (a:Term){arrow_left}[r:{relation_type}]{arrow_right}(b:Term)
 WHERE a.tenant_id = $tenant_id AND a.type = $from_term_type
@@ -594,6 +619,14 @@ class GraphWriteProtocol(Protocol):
     async def count_relation_edges_for_term(
         self, *, tenant_id: str, node_key: str
     ) -> int: ...
+
+    async def list_node_keys_with_relation_edges(
+        self, *, tenant_id: str
+    ) -> set[str]: ...
+
+    async def delete_term_nodes(
+        self, *, tenant_id: str, node_keys: list[str]
+    ) -> None: ...
 
     async def list_term_relations(
         self, *, tenant_id: str, node_key: str
@@ -992,6 +1025,33 @@ class Neo4jGraphClient:
             )
             rows = await result.data()
             return rows[0]["edge_count"] if rows else 0
+
+    async def list_node_keys_with_relation_edges(self, *, tenant_id: str) -> set[str]:
+        """该租户里所有还挂着非 ALIAS_OF 关系边的 node_key，一次查完。
+
+        供批量删除的守卫用：调用方拿这个集合跟待删列表做差集，交集里的就是
+        被图谱边挡住的那几条。见 _LIST_NODE_KEYS_WITH_RELATION_EDGES_QUERY。
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                _LIST_NODE_KEYS_WITH_RELATION_EDGES_QUERY, {"tenant_id": tenant_id}
+            )
+            rows = await result.data()
+            return {row["node_key"] for row in rows}
+
+    async def delete_term_nodes(self, *, tenant_id: str, node_keys: list[str]) -> None:
+        """批量删除术语节点及其别名节点，一次往返。
+
+        空列表直接返回、不发查询：批量删除里"全被守卫挡住"是常见结果，
+        那次请求不该在图谱上留下一次无意义的往返。
+        """
+        if not node_keys:
+            return
+        async with self._driver.session() as session:
+            await session.run(
+                _DELETE_TERM_NODES_QUERY,
+                {"tenant_id": tenant_id, "node_keys": list(node_keys)},
+            )
 
     async def probe_relation_fanout(
         self,

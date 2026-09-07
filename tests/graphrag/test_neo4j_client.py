@@ -1658,3 +1658,72 @@ async def test_query_subgraph_requires_chain_relation_types_argument():
 
     with pytest.raises(TypeError):
         await client.query_subgraph("k1", tenant_id="t1")
+
+
+async def test_list_node_keys_with_relation_edges_returns_one_set_for_the_whole_tenant():
+    """批量删除的守卫要一次拿到"该租户所有还带着关系边的 node_key"。
+
+    逐条 count_relation_edges_for_term 在两万条实体上就是两万次 Neo4j 往返；
+    这个方法存在的理由就是把那 N 次压成 1 次，调用方在应用层做差集。
+    """
+    session = FakeSession(rows=[{"node_key": "t:甲"}, {"node_key": "t:乙"}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    keys = await client.list_node_keys_with_relation_edges(tenant_id="t1")
+
+    assert keys == {"t:甲", "t:乙"}
+    # 整个租户一次查完：参数里不该有 node_key，有的话就说明它还是按单条问的。
+    assert session.last_parameters == {"tenant_id": "t1"}
+    assert len(session.calls) == 1
+
+
+async def test_list_node_keys_with_relation_edges_excludes_alias_edges():
+    """ALIAS_OF 是词表→图谱的结构性同步边，不代表"这个实体已经出现在真实
+    知识图谱数据里"。不排掉它，每个有别名的实体都会被守卫永远挡住——跟
+    单条守卫 _COUNT_TERM_RELATION_EDGES_QUERY 同一个理由，两处口径必须一致。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.list_node_keys_with_relation_edges(tenant_id="t1")
+
+    assert "type(r) <> 'ALIAS_OF'" in session.last_query
+
+
+async def test_list_node_keys_with_relation_edges_filters_by_edge_tenant():
+    """边自己的 tenant_id 也要过滤，不只是节点的。
+
+    真实库里存在两端节点 tenant_id=default、边自己 tenant_id=demo 的历史脏边
+    （见 _COUNT_TERM_RELATION_EDGES_QUERY 的说明）。不按 r.tenant_id 过滤的话，
+    别的租户写的边会挡住本租户的批量删除，而用户在自己的界面上根本看不到
+    那条边、无从下手。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.list_node_keys_with_relation_edges(tenant_id="t1")
+
+    assert "r.tenant_id = $tenant_id" in session.last_query
+
+
+async def test_delete_term_nodes_deletes_the_whole_batch_in_one_round_trip():
+    """批量删图谱节点是一次 UNWIND，不是 N 次单条删除——N 次往返正是这个
+    功能要消灭的东西。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.delete_term_nodes(tenant_id="t1", node_keys=["t:甲", "t:乙", "t:丙"])
+
+    assert len(session.calls) == 1
+    assert session.last_parameters == {"tenant_id": "t1", "node_keys": ["t:甲", "t:乙", "t:丙"]}
+    assert "UNWIND" in session.last_query
+
+
+async def test_delete_term_nodes_with_empty_batch_does_not_touch_the_graph():
+    """一条都没有时不该发查询：批量删除里"全被守卫挡住"是常见结果，
+    那次请求不该在图谱上留下任何一次无意义的往返。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.delete_term_nodes(tenant_id="t1", node_keys=[])
+
+    assert session.calls == []

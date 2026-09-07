@@ -436,6 +436,18 @@ class NeptuneGraphClient:
             "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
         )
 
+    async def list_node_keys_with_relation_edges(self, *, tenant_id: str) -> set[str]:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 list_node_keys_with_relation_edges——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
+    async def delete_term_nodes(self, *, tenant_id: str, node_keys: list[str]) -> None:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 delete_term_nodes——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
     async def delete_relation_edge(
         self, *, tenant_id: str, subject_node_key: str, relation_type: str,
         object_node_key: str,

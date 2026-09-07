@@ -141,7 +141,13 @@ class SpyGraphClient:
         relations_error: Exception | None = None,
         removed_edges: int = 1,
         inconsistent: list[dict] | None = None,
+        blocked_node_keys: set[str] | None = None,
     ) -> None:
+        # 批量删除：被图谱边挡住的 node_key 集合（守卫的答案），以及
+        # 守卫查询/批量删节点各被调了几次。
+        self._blocked_node_keys = blocked_node_keys or set()
+        self.guard_calls: list[str] = []
+        self.delete_batches: list[list[str]] = []
         # 租户标记异常的边：列出来的内容，以及收到的删除定位参数。
         self._inconsistent = inconsistent or []
         self.listed_inconsistent: list[dict] = []
@@ -224,6 +230,16 @@ class SpyGraphClient:
 
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
         self.deleted.append(node_key)
+
+    async def list_node_keys_with_relation_edges(self, *, tenant_id: str) -> set[str]:
+        # 批量删除的守卫问的是"这个租户里哪些实体还挂着边"，一次问完。
+        # guard_calls 记录它被调了几次——O(N) 次的实现会让性能用例变红。
+        self.guard_calls.append(tenant_id)
+        return set(self._blocked_node_keys)
+
+    async def delete_term_nodes(self, *, tenant_id: str, node_keys: list[str]) -> None:
+        self.delete_batches.append(list(node_keys))
+        self.deleted.extend(node_keys)
 
 
 def test_list_terms_returns_all_terms(terms_conn):
@@ -2244,3 +2260,277 @@ def test_delete_term_records_the_logged_in_username_as_editor(terms_conn):
 
     assert response.status_code == 200, response.text
     assert _read_edited_by(terms_conn, "t:待删除", FIELD_DELETED) == "alice"
+
+
+# ---------------------------------------------------------------------------
+# 批量删除
+#
+# 「本页全选」和「当前筛选条件下的全部」是两级，破坏力差两个数量级，接口上
+# 也是两种互斥的模式。下面这组用例里，本页永远取 3 条、筛选条件下永远是 7 条
+# ——两个数字必须不同：相等的话「删本页」和「删全部」两种实现都能让断言变绿，
+# 这组用例最容易写出的假绿就是这一个。
+# ---------------------------------------------------------------------------
+
+_PAGE_KEYS = ["t:甲", "t:乙", "t:丙"]  # 本页 3 条
+_TYPE_T_NAMES = ["甲", "乙", "丙", "丁", "戊", "己", "庚"]  # 这个类型下共 7 条
+
+
+def _seed_bulk_terms(conn) -> None:
+    async def _run() -> None:
+        for name in _TYPE_T_NAMES:
+            await create_term(conn, tenant_id="t1", standard_name=name, aliases=[], term_type="t")
+        # 另一个类型：按 term_type=t 筛选时它们必须活下来。
+        for name in ("辛", "壬"):
+            await create_term(conn, tenant_id="t1", standard_name=name, aliases=[], term_type="t2")
+
+    asyncio.run(_run())
+
+
+def _remaining_names(conn) -> list[str]:
+    """合并视图里还看得见的标准名——__deleted__ 编辑写下之后就不该再出现。"""
+
+    async def _run() -> list[str]:
+        from app.graphrag.terms_store import list_terms_merged
+
+        terms = await list_terms_merged(conn, "t1")
+        return sorted(t.standard_name for t in terms)
+
+    return asyncio.run(_run())
+
+
+def _bulk_delete(terms_conn, graph_client, payload, *, username: str = "admin"):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        return client.post(
+            "/api/admin/t1/terms/bulk-delete",
+            json=payload,
+            headers=_authed_headers_as(session_store, username),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_bulk_delete_by_node_keys_deletes_only_the_listed_ones(terms_conn):
+    """本页全选：只删传进来的那 3 条，同一筛选条件下另外 4 条不受影响。
+
+    「删的是这 3 条」和「删的是这个类型的 7 条」必须能被区分开——本页条数
+    和筛选条件下的总条数在这组用例里故意取了不同的值。
+    """
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient()
+
+    response = _bulk_delete(terms_conn, graph_client, {"node_keys": _PAGE_KEYS})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["requested"] == 3
+    assert body["deleted"] == 3
+    assert body["failures"] == []
+    assert _remaining_names(terms_conn) == ["丁", "壬", "己", "庚", "戊", "辛"]
+
+
+def test_bulk_delete_by_filters_deletes_every_match_not_just_one_page(terms_conn):
+    """「全部」= 当前筛选条件下的全部，服务端自己算出是哪些。
+
+    请求里一个 node_key 都没有，删掉的却是这个类型下全部 7 条——前端不需要
+    （也不允许）先把两万条拉回来再逐条删。
+    """
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient()
+
+    response = _bulk_delete(terms_conn, graph_client, {"filters": {"term_type": "t"}})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["requested"] == 7
+    assert body["deleted"] == 7
+    # 另一个类型完好：「全部」说的是当前筛选条件下的全部，不是整个租户。
+    assert _remaining_names(terms_conn) == ["壬", "辛"]
+
+
+def test_bulk_delete_by_empty_filters_deletes_the_whole_tenant(terms_conn):
+    """没有任何筛选条件时，「全部」才真的是整租户的 9 条。"""
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient()
+
+    response = _bulk_delete(terms_conn, graph_client, {"filters": {}})
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 9
+    assert _remaining_names(terms_conn) == []
+
+
+def test_bulk_delete_by_filters_honours_the_search_keyword(terms_conn):
+    """搜索框里的词也是筛选条件的一部分。
+
+    只按类型删而忽略 q，用户看到的是「我搜出 1 条、点了全部、结果整个类型
+    没了」——这正是这个功能最不能出的错。
+    """
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient()
+
+    response = _bulk_delete(terms_conn, graph_client, {"filters": {"term_type": "t", "q": "甲"}})
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 1
+    assert _remaining_names(terms_conn) == ["丁", "丙", "乙", "壬", "己", "庚", "戊", "辛"]
+
+
+def test_bulk_delete_by_filters_matches_what_the_list_endpoint_counts(terms_conn):
+    """确认框上写的条数来自列表接口的 total，删掉的条数必须跟它逐一对上。
+
+    两边各算各的时，用户会看到「确定删除 1 条吗」然后删掉 7 条——批量删除
+    不可撤销，这个偏差没有第二次机会。
+    """
+    _seed_bulk_terms(terms_conn)
+    session_store = AdminSessionStore()
+    graph_client = SpyGraphClient()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        headers = _authed_headers(session_store)
+        listed = client.get(
+            "/api/admin/t1/terms?page=1&page_size=2&term_type=t&q=甲", headers=headers
+        ).json()
+        deleted = client.post(
+            "/api/admin/t1/terms/bulk-delete",
+            json={"filters": {"term_type": "t", "q": "甲"}},
+            headers=headers,
+        ).json()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert listed["total"] == 1
+    assert deleted["deleted"] == listed["total"]
+
+
+def test_bulk_delete_with_both_modes_returns_400(terms_conn):
+    """两种模式互斥。同时给 node_keys 和筛选条件是客户端 bug——猜一个执行
+    就等于在「删 3 条」和「删 20017 条」之间替用户瞎选。"""
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient()
+
+    response = _bulk_delete(
+        terms_conn, graph_client, {"node_keys": _PAGE_KEYS, "filters": {"term_type": "t"}}
+    )
+
+    assert response.status_code == 400
+    # 一条都不许删：模式没定下来就动手，删错了没法撤销。
+    assert len(_remaining_names(terms_conn)) == 9
+    assert graph_client.deleted == []
+
+
+def test_bulk_delete_with_neither_mode_returns_400(terms_conn):
+    """两个都不给同样是客户端 bug，不能当成「删整租户」。"""
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient()
+
+    response = _bulk_delete(terms_conn, graph_client, {})
+
+    assert response.status_code == 400
+    assert len(_remaining_names(terms_conn)) == 9
+
+
+def test_bulk_delete_deletes_what_it_can_and_names_each_failure(terms_conn):
+    """部分失败：能删的删掉，挡住的逐条报出来。
+
+    两万条里只要有一条被图谱边挡着就整批回滚的话，这次清理永远做不成，
+    而且用户还得先手工找出是哪一条。
+    """
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient(blocked_node_keys={"t:乙"})
+
+    response = _bulk_delete(terms_conn, graph_client, {"node_keys": _PAGE_KEYS})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["requested"] == 3
+    assert body["deleted"] == 2
+    # 失败的那条被点名，并且说清为什么。
+    assert [f["key"] for f in body["failures"]] == ["t:乙"]
+    assert "关系边" in body["failures"][0]["reason"]
+    # 成功的确实删了、失败的确实没删——两边都要钉住。
+    assert _remaining_names(terms_conn) == ["丁", "乙", "壬", "己", "庚", "戊", "辛"]
+    assert sorted(graph_client.deleted) == sorted(["t:甲", "t:丙"])
+
+
+def test_bulk_delete_reports_missing_node_keys_instead_of_counting_them_as_deleted(terms_conn):
+    """不存在的 node_key 要报出来，不能算进成功数。
+
+    静默把它当成功，用户会以为那条已经清掉了——实际上它可能只是 key 拼错了，
+    真正想删的那条还在。
+    """
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient()
+
+    response = _bulk_delete(terms_conn, graph_client, {"node_keys": ["t:甲", "t:根本不存在"]})
+
+    body = response.json()
+    assert body["deleted"] == 1
+    assert [f["key"] for f in body["failures"]] == ["t:根本不存在"]
+
+
+def test_bulk_delete_asks_the_graph_guard_once_no_matter_how_many_terms(terms_conn):
+    """守卫检查是 O(1) 次图查询，不是 O(N) 次。
+
+    两万条实体逐条问 Neo4j 就是两万次网络往返——这个功能在 demo 租户上根本
+    跑不完。删图谱节点同理，一次批量删而不是 N 次单条删除。
+    """
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient()
+
+    response = _bulk_delete(terms_conn, graph_client, {"filters": {}})
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 9
+    # 9 条实体，守卫只问了 1 次；单条守卫（count_relation_edges_for_term）
+    # 一次都不该被用上。
+    assert len(graph_client.guard_calls) == 1
+    assert len(graph_client.delete_batches) == 1
+    assert sorted(graph_client.delete_batches[0]) == sorted(
+        [f"t:{n}" for n in _TYPE_T_NAMES] + ["t2:辛", "t2:壬"]
+    )
+
+
+def test_bulk_delete_records_the_real_operator(terms_conn):
+    """批量删除也要记真实操作者，不许走回写死的常量。"""
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient()
+
+    _bulk_delete(terms_conn, graph_client, {"node_keys": ["t:甲"]}, username="alice")
+
+    assert _read_edited_by(terms_conn, "t:甲", FIELD_DELETED) == "alice"
+
+
+def test_bulk_delete_writes_deleted_edits_and_keeps_the_terms_rows(terms_conn):
+    """批量删除仍然是写 __deleted__ 编辑，不是真删 terms 行——人工删除不可被
+    ETL 恢复这条不变式不因为「一次删很多」而改变。"""
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient()
+
+    _bulk_delete(terms_conn, graph_client, {"node_keys": _PAGE_KEYS})
+
+    raw = asyncio.run(list_terms(terms_conn, "t1"))
+    assert sorted(t.standard_name for t in raw) == sorted(_TYPE_T_NAMES + ["辛", "壬"])
+    for node_key in _PAGE_KEYS:
+        edits = asyncio.run(list_term_edits_for_node_key(terms_conn, "t1", node_key))
+        assert FIELD_DELETED in edits
+
+
+def test_bulk_delete_blocked_terms_keep_their_graph_nodes(terms_conn):
+    """被守卫挡住的那条，图谱节点也不许删——SQLite 侧没标删除、图上却没了，
+    是这个项目最不想造出来的那种不一致。"""
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient(blocked_node_keys={"t:乙"})
+
+    _bulk_delete(terms_conn, graph_client, {"node_keys": _PAGE_KEYS})
+
+    assert "t:乙" not in graph_client.deleted
