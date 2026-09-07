@@ -15,7 +15,7 @@ import { usePaginatedAdminList } from './usePaginatedAdminList'
 import { ADMIN_ROUTES } from '../adminRoutes'
 import { termDetailPath } from './TermDetailPage'
 import { PAGE_TITLES } from '../adminRoutes'
-import { fieldDisplayName } from './extraFieldDisplay'
+import { fieldDisplayName, valueTypeLabel } from './extraFieldDisplay'
 
 // 50 而不是 20：20017 条实体在 20/页 下是 1001 页。搜索已经解决了「找特定
 // 一条」（90% 的实际需求），剩下的浏览场景把每页调大就拿到了虚拟滚动八成的
@@ -466,7 +466,7 @@ export function TermsPage() {
                         <label key={spec.name} className="flex min-w-[10rem] flex-1 flex-col gap-1">
                           <span className="text-sm text-ink-soft">
                             {fieldDisplayName(spec)}
-                            <span className="ml-1 text-xs">({spec.value_type})</span>
+                            <span className="ml-1 text-xs">({valueTypeLabel(spec.value_type)})</span>
                           </span>
                           <input
                             value={editDraft.extra_properties[spec.name] ?? ''}

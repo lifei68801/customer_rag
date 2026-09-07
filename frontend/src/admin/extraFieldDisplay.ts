@@ -20,3 +20,40 @@ export function fieldDisplayName(field: DisplayableField): string {
   // 那一栏会变成空白，用户认不出这是哪个字段。
   return field.label?.trim() || field.name
 }
+
+/**
+ * 取值类型在界面上的说法。
+ *
+ * 存储的枚举值不动（改一次要迁移所有租户的存量声明），只改展示。用户问过
+ * "属性没有 float 类型，无法用于售价和收入"——float 一直都在，它叫
+ * number：ETL 写入时走的是 Python 的 float()（见
+ * schema_etl_row_processing.py::convert_field_value），Neo4j 侧对应
+ * toFloat。看不出 number 是双精度浮点，等于没有这个类型。
+ *
+ * 两套说法：下拉选项里带例子（选之前要判断得出该选哪个），行内提示只给
+ * 短词（每个属性输入框旁边挂一整句会把表单淹掉）。短词是长句的前半段，
+ * 用的是同一个词汇。
+ */
+const VALUE_TYPE_SHORT_LABELS: Record<string, string> = {
+  string: '文本',
+  number: '小数',
+  integer: '整数',
+  'number[]': '小数列表',
+}
+
+const VALUE_TYPE_OPTION_LABELS: Record<string, string> = {
+  string: '文本',
+  number: '小数（如 19.99，售价/金额）',
+  integer: '整数',
+  'number[]': '小数列表',
+}
+
+/** 行内提示用的短说法。认不出的枚举值原样返回——显示成空白更糟。 */
+export function valueTypeLabel(valueType: string): string {
+  return VALUE_TYPE_SHORT_LABELS[valueType] ?? valueType
+}
+
+/** 下拉选项用的说法，带例子。 */
+export function valueTypeOptionLabel(valueType: string): string {
+  return VALUE_TYPE_OPTION_LABELS[valueType] ?? valueType
+}

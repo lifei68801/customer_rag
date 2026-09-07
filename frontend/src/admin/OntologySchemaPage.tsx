@@ -9,6 +9,7 @@ import { Skeleton } from './Skeleton'
 import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 import { buildOntologyDiff, type OntologyDiff } from './ontologyDiff'
+import { valueTypeOptionLabel } from './extraFieldDisplay'
 import { fetchTermsSummary } from './termsApi'
 import { useOntologyData } from './useOntologyData'
 import { useOntologyVersion } from './useOntologyVersion'
@@ -783,16 +784,17 @@ function TermTypesTab({
             自身取值类型
             <select
               value={draft.standard_name_value_type}
+              aria-label="自身取值类型"
               onChange={(e) => setDraft((prev) => ({ ...prev, standard_name_value_type: e.target.value }))}
               className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink focus:outline-none ${focusRing}`}
             >
               {STANDARD_NAME_VALUE_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
+                <option key={t} value={t}>{valueTypeOptionLabel(t)}</option>
               ))}
             </select>
             <span className="text-xs font-normal text-ink-soft">
               这个类型的实例本身代表什么类型的值（比如"销量""收入"这类每个取值都是独立节点的类型，
-              应该声明成 number，才能用"大于/小于"做区间查询；大多数类型（产品名、公司名…）保持默认的 string 即可）
+              应该选"小数"，才能用"大于/小于"做区间查询；大多数类型（产品名、公司名…）保持默认的"文本"即可）
             </span>
           </label>
 
@@ -830,7 +832,7 @@ function TermTypesTab({
                 >
                   {VALUE_TYPES.map((t) => (
                     <option key={t} value={t}>
-                      {t}
+                      {valueTypeOptionLabel(t)}
                     </option>
                   ))}
                 </select>

@@ -1,5 +1,5 @@
 import type { AddedFile, BuilderEntity, ColumnKeyPart, ConfirmedTermType } from './types'
-import { fieldDisplayName } from '../extraFieldDisplay'
+import { fieldDisplayName, valueTypeLabel } from '../extraFieldDisplay'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -215,7 +215,7 @@ export function EntityMappingEditor({
               {fieldDisplayName(field) !== field.name && (
                 <span className="font-mono font-normal text-ink-soft">{field.name}</span>
               )}
-              <span className="font-normal text-ink-soft">（{field.value_type}）</span>
+              <span className="font-normal text-ink-soft">（{valueTypeLabel(field.value_type)}）</span>
               <select
                 value={entity.fieldMappings[field.name] ?? ''}
                 onChange={(e) => {
