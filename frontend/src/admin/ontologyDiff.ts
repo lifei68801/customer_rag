@@ -61,7 +61,7 @@ function diffByKey<T>(
 
 export interface TermTypeLike {
   value: string
-  extra_fields: { name: string; value_type: string }[]
+  extra_fields: { name: string; value_type: string; label?: string }[]
 }
 
 export interface RelationTypeLike {
@@ -79,9 +79,12 @@ export interface ConstraintLike {
 
 /** 字段列表按名字排序后比对——顺序变化不是语义变化，不该报成"改了"。 */
 function describeFieldChange(before: TermTypeLike, after: TermTypeLike): string | null {
+  // 显示名也进比对：它出现在界面和问答里，改了是用户看得见的改动，漏掉
+  // 的话确认面板会对一处真实改动闭口不谈。空显示名和缺省的显示名渲染成
+  // 同一段文本，两者之间不该报出变更。
   const render = (t: TermTypeLike) =>
     t.extra_fields
-      .map((f) => `${f.name}:${f.value_type}`)
+      .map((f) => `${f.name}:${f.value_type}${f.label ? `（${f.label}）` : ''}`)
       .sort()
       .join(', ')
   const a = render(before)

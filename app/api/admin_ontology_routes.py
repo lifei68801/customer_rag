@@ -56,6 +56,9 @@ router = APIRouter(prefix="/api/admin/ontology", dependencies=[Depends(deps.requ
 class ExtraFieldSpecRequest(BaseModel):
     name: str
     value_type: str
+    #: 显示名，可以是中文。允许缺省：既有的直连调用方不带这个键，缺省时
+    #: 前端按内部名显示（见 ExtraFieldSpec.display_name）。
+    label: str = ""
 
 
 class TermTypeWriteRequest(BaseModel):
@@ -65,11 +68,18 @@ class TermTypeWriteRequest(BaseModel):
 
 
 def _to_extra_field_specs(items: list[ExtraFieldSpecRequest]) -> list[ExtraFieldSpec]:
-    return [ExtraFieldSpec(name=item.name, value_type=item.value_type) for item in items]
+    return [
+        ExtraFieldSpec(name=item.name, value_type=item.value_type, label=item.label)
+        for item in items
+    ]
 
 
 def _extra_field_spec_to_dict(spec: ExtraFieldSpec) -> dict:
-    return {"name": spec.name, "value_type": spec.value_type}
+    # label 原样回传（可能是空串），不在这里替调用方回退到 name：接口的
+    # 职责是如实报出存了什么，回退是显示层的事（前端 fieldDisplayName）。
+    # 在这里回退的话，前端的显示名输入框会被预填成内部名，用户看不出这个
+    # 字段其实还没起显示名。
+    return {"name": spec.name, "value_type": spec.value_type, "label": spec.label}
 
 
 @router.get("/{tenant_id}/term-types")

@@ -221,7 +221,10 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     if (fieldName !== base) collidedFields.push(name)
     usedFieldNames.add(fieldName)
     if (fieldName !== name) renamedFields[name] = fieldName
-    hostFields.push({ name: fieldName, value_type: measureValueType(column) })
+    // 显示名记原始列名：sanitizeFieldName 对中文列名只能兜底成 field_N
+    // 这种占位名，不记的话用户在界面上再也见不到自己写的那个列名。内部名
+    // 仍然是清洗后的名字——它要进 Cypher 和索引。
+    hostFields.push({ name: fieldName, value_type: measureValueType(column), label: name })
     attributeColumns.push(name)
   })
 

@@ -15,6 +15,7 @@ import { usePaginatedAdminList } from './usePaginatedAdminList'
 import { ADMIN_ROUTES } from '../adminRoutes'
 import { termDetailPath } from './TermDetailPage'
 import { PAGE_TITLES } from '../adminRoutes'
+import { fieldDisplayName } from './extraFieldDisplay'
 
 // 50 而不是 20：20017 条实体在 20/页 下是 1001 页。搜索已经解决了「找特定
 // 一条」（90% 的实际需求），剩下的浏览场景把每页调大就拿到了虚拟滚动八成的
@@ -33,6 +34,8 @@ const focusRing =
 interface ExtraFieldSpec {
   name: string
   value_type: string
+  /** 显示名。缺省/为空时按内部名显示，见 fieldDisplayName。 */
+  label?: string
 }
 
 interface TermDraft {
@@ -462,7 +465,7 @@ export function TermsPage() {
                       {(extraFieldsByType[editDraft.term_type] ?? []).map((spec) => (
                         <label key={spec.name} className="flex min-w-[10rem] flex-1 flex-col gap-1">
                           <span className="text-sm text-ink-soft">
-                            {spec.name}
+                            {fieldDisplayName(spec)}
                             <span className="ml-1 text-xs">({spec.value_type})</span>
                           </span>
                           <input
@@ -481,7 +484,7 @@ export function TermsPage() {
                               )
                             }
                             placeholder={spec.value_type === 'number[]' ? '分号分隔，如 1.5; 2.0' : ''}
-                            aria-label={`${spec.name}（${term.standard_name}）`}
+                            aria-label={`${fieldDisplayName(spec)}（${term.standard_name}）`}
                             className={`rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:outline-none ${focusRing}`}
                           />
                         </label>

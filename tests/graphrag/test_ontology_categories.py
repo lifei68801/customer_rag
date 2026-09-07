@@ -841,3 +841,56 @@ async def test_delete_term_type_still_blocked_by_terms_that_are_not_deleted():
     assert excinfo.value.blocking_term_node_keys == ["在用模块"]
     # 分类没被删掉。
     assert [t.value for t in await list_term_types(conn, tenant_id="default", status="draft")] == ["module"]
+
+
+async def test_extra_field_label_round_trips_and_is_independent_of_name():
+    """属性的内部名（落 Cypher / Neo4j 索引）仍是 ASCII，显示名可以是中文。
+
+    name 和 label 刻意取不同的值：取成一样的话，"存了 label"和"根本没存、
+    读的时候回退到 name"这两种实现都能让断言通过。
+    """
+    conn = await _conn()
+    await create_term_type(
+        conn, tenant_id="t1", value="商品",
+        extra_fields=[ExtraFieldSpec(name="price", value_type="number", label="售价")],
+    )
+
+    types = await list_term_types(conn, tenant_id="t1", status="draft")
+    assert types[0].extra_fields == [
+        ExtraFieldSpec(name="price", value_type="number", label="售价")
+    ]
+    assert types[0].extra_fields[0].display_name == "售价"
+
+
+async def test_update_term_type_persists_extra_field_label():
+    conn = await _conn()
+    await create_term_type(conn, tenant_id="t1", value="商品", extra_fields=[])
+
+    await update_term_type(
+        conn, tenant_id="t1", value="商品", new_value="商品",
+        extra_fields=[ExtraFieldSpec(name="revenue", value_type="number", label="收入")],
+    )
+
+    types = await list_term_types(conn, tenant_id="t1", status="draft")
+    assert types[0].extra_fields[0].label == "收入"
+    assert types[0].extra_fields[0].name == "revenue"
+
+
+async def test_extra_field_display_name_falls_back_to_name_for_rows_without_label():
+    """存量行没有 label 键——不做数据迁移，读的时候回退到内部名。
+
+    直接写裸 JSON 而不是走 create_term_type：走接口的话写出来的就是带
+    label 键的新形态，钉不住"存量行"这个前提。
+    """
+    conn = await _conn()
+    await conn.execute(
+        "INSERT INTO ontology_term_types "
+        "(tenant_id, value, extra_fields, standard_name_value_type, status) "
+        "VALUES ('t1', '商品', ?, 'string', 'draft')",
+        ('[{"name": "price", "value_type": "number"}]',),
+    )
+    await conn.commit()
+
+    types = await list_term_types(conn, tenant_id="t1", status="draft")
+    assert types[0].extra_fields[0].label == ""
+    assert types[0].extra_fields[0].display_name == "price"

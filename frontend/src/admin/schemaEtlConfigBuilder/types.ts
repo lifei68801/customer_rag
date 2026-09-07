@@ -1,6 +1,9 @@
 export interface ExtraFieldSpec {
+  /** 内部名。ETL 配置 YAML 里的字段键用它。 */
   name: string
   value_type: string
+  /** 显示名。可能缺省（存量字段没有），缺省时按内部名显示。 */
+  label?: string
 }
 
 export interface ConfirmedTermType {

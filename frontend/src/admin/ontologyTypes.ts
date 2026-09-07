@@ -8,8 +8,14 @@
 export type ViewMode = 'draft' | 'confirmed'
 
 export interface ExtraFieldSpec {
+  /** 内部名。落 Cypher / Neo4j 索引 / 结构化查询字段名，只能是 ASCII 标识符。 */
   name: string
   value_type: string
+  /**
+   * 显示名，给人看的，可以是中文。可选：后端不做存量数据迁移，2026-09-07
+   * 之前声明的字段读出来是空串，显示时回退到内部名（fieldDisplayName）。
+   */
+  label?: string
 }
 
 export interface TermType {

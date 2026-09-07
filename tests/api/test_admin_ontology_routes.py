@@ -141,7 +141,9 @@ def test_create_and_list_term_types(client):
         "term_types": [
             {
                 "value": "错误码",
-                "extra_fields": [{"name": "severity_level", "value_type": "string"}],
+                "extra_fields": [
+                    {"name": "severity_level", "value_type": "string", "label": ""}
+                ],
                 "standard_name_value_type": "string",
             }
         ]
@@ -168,8 +170,8 @@ def test_create_term_type_with_typed_extra_fields(client):
             {
                 "value": "VariantValue",
                 "extra_fields": [
-                    {"name": "numeric_value", "value_type": "number"},
-                    {"name": "dims", "value_type": "number[]"},
+                    {"name": "numeric_value", "value_type": "number", "label": ""},
+                    {"name": "dims", "value_type": "number[]", "label": ""},
                 ],
                 "standard_name_value_type": "string",
             }
@@ -1052,3 +1054,63 @@ def test_replace_draft_without_mapping_keeps_confirmed_mapping_across_next_confi
     )
     assert got.json()["mapping"] is not None, "第二次确认之后已确认映射不见了"
     assert got.json()["mapping"]["source_file_name"] == "orders.csv"
+
+
+def test_term_type_extra_field_label_round_trips_through_api(client):
+    """属性的显示名要能存进去、读出来，且跟内部名是两个独立的值。"""
+    resp = client.post(
+        "/api/admin/ontology/t1/term-types",
+        json={
+            "value": "商品",
+            "extra_fields": [{"name": "price", "value_type": "number", "label": "售价"}],
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 200
+
+    resp = client.get("/api/admin/ontology/t1/term-types", headers={"Authorization": "Bearer x"})
+    assert resp.json()["term_types"][0]["extra_fields"] == [
+        {"name": "price", "value_type": "number", "label": "售价"}
+    ]
+
+
+def test_term_type_extra_field_label_defaults_to_empty_when_not_given(client):
+    """不带 label 的旧调用方照常工作，读回来 label 是空串——前端据此回退到
+    内部名显示。后端不替调用方猜一个显示名。"""
+    resp = client.post(
+        "/api/admin/ontology/t1/term-types",
+        json={"value": "商品", "extra_fields": [{"name": "price", "value_type": "number"}]},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 200
+
+    resp = client.get("/api/admin/ontology/t1/term-types", headers={"Authorization": "Bearer x"})
+    assert resp.json()["term_types"][0]["extra_fields"] == [
+        {"name": "price", "value_type": "number", "label": ""}
+    ]
+
+
+def test_replace_draft_keeps_extra_field_label(client):
+    resp = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [
+                {
+                    "value": "商品",
+                    "extra_fields": [
+                        {"name": "price", "value_type": "number", "label": "售价"}
+                    ],
+                    "standard_name_value_type": "string",
+                }
+            ],
+            "relation_types": [],
+            "constraints": [],
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert resp.status_code == 200
+
+    resp = client.get("/api/admin/ontology/t1/term-types", headers={"Authorization": "Bearer x"})
+    assert resp.json()["term_types"][0]["extra_fields"] == [
+        {"name": "price", "value_type": "number", "label": "售价"}
+    ]

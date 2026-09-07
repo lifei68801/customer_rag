@@ -608,3 +608,30 @@ describe('中心实体', () => {
     expect(proposal.constraints).toEqual([])
   })
 })
+
+describe('属性的显示名', () => {
+  it('中文列名被清洗成内部名后，原列名留作显示名', () => {
+    // sanitizeFieldName 对纯中文列名只能兜底成 field_N 这种占位名——没有
+    // 显示名的话，用户在界面上再也见不到「销售额」这三个字，只剩一个
+    // field_6。原列名正是用户自己写的那个名字，拿它当显示名不需要猜。
+    const columns = demoColumns().map((c) =>
+      c.stats.name === 'revenue' ? { ...c, stats: { ...c.stats, name: '销售额' } } : c,
+    )
+    const proposal = buildProposal(columns, initialDecision(columns))
+    const host = proposal.termTypes.find((t) => t.value === proposal.rootName)
+    const field = host?.extra_fields.find((f) => f.label === '销售额')
+
+    expect(field).toBeDefined()
+    // 内部名必须仍然是清洗后的 ASCII 名字——显示名不能反过来污染它。
+    expect(field?.name).not.toBe('销售额')
+    expect(field?.name).toMatch(/^[a-zA-Z_][a-zA-Z0-9_]*$/)
+  })
+
+  it('列名本来就是合法内部名时，显示名仍然记原列名', () => {
+    const columns = demoColumns()
+    const proposal = buildProposal(columns, initialDecision(columns))
+    const host = proposal.termTypes.find((t) => t.value === proposal.rootName)
+
+    expect(host?.extra_fields.find((f) => f.name === 'revenue')?.label).toBe('revenue')
+  })
+})

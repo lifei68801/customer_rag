@@ -38,7 +38,10 @@ _RELATION_TYPE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 
 def _validate_draft_extra_fields(extra_fields: list[dict]) -> list[dict]:
     """校验并规整一个 term_type 的 extra_fields 声明，返回只含 name/value_type
-    两个键的规整列表（原始 dict 里混入的多余键不落库）。"""
+    /label 三个键的规整列表（原始 dict 里混入的多余键不落库）。
+
+    label 是显示名，没有格式校验（可以是中文，也可以是空）——它不进 Cypher，
+    也不做索引名，格式限制只对内部名 name 成立。"""
     normalized: list[dict] = []
     for field in extra_fields:
         name = field["name"]
@@ -52,7 +55,9 @@ def _validate_draft_extra_fields(extra_fields: list[dict]) -> list[dict]:
                 f"字段 {name!r} 声明的类型 {value_type!r} 不合法，"
                 f"仅支持: {sorted(_VALID_EXTRA_FIELD_VALUE_TYPES)}"
             )
-        normalized.append({"name": name, "value_type": value_type})
+        normalized.append(
+            {"name": name, "value_type": value_type, "label": field.get("label", "")}
+        )
     return normalized
 
 

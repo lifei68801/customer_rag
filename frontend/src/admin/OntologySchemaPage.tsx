@@ -560,7 +560,10 @@ function TermTypesTab({
   }
 
   const addField = () => {
-    setDraft((prev) => ({ ...prev, extra_fields: [...prev.extra_fields, { name: '', value_type: 'string' }] }))
+    setDraft((prev) => ({
+      ...prev,
+      extra_fields: [...prev.extra_fields, { name: '', value_type: 'string', label: '' }],
+    }))
   }
 
   const updateField = (index: number, patch: Partial<ExtraFieldSpec>) => {
@@ -795,16 +798,29 @@ function TermTypesTab({
 
           <div className="flex flex-col gap-2">
             <span className="text-sm font-bold text-ink">属性字段</span>
+            <span className="text-xs font-normal text-ink-soft">
+              每个属性有两个名字：显示名给人看（界面、问答里显示，可以写中文，比如「售价」），
+              字段名给系统用（存储、索引和结构化查询用它，只能是字母/数字/下划线，比如 price）。
+              显示名留空的话，界面上就直接显示字段名。
+            </span>
             {draft.extra_fields.map((field, index) => (
               <div key={index} className="flex flex-wrap items-center gap-2">
                 <input
                   type="text"
-                  placeholder="字段名"
+                  placeholder="显示名，如 售价"
+                  aria-label="字段显示名"
+                  value={field.label ?? ''}
+                  onChange={(e) => updateField(index, { label: e.target.value })}
+                  className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink placeholder:text-ink-soft focus:outline-none ${focusRing}`}
+                />
+                <input
+                  type="text"
+                  placeholder="字段名，如 price"
                   aria-label="字段名"
                   required
                   value={field.name}
                   onChange={(e) => updateField(index, { name: e.target.value })}
-                  className={`rounded-control border border-subtle bg-paper px-2 py-1.5 text-ink placeholder:text-ink-soft focus:outline-none ${focusRing}`}
+                  className={`rounded-control border border-subtle bg-paper px-2 py-1.5 font-mono text-ink placeholder:text-ink-soft focus:outline-none ${focusRing}`}
                 />
                 <select
                   value={field.value_type}

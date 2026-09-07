@@ -84,8 +84,31 @@ class InvalidExtraFieldTypeError(Exception):
 
 @dataclass(frozen=True)
 class ExtraFieldSpec:
+    """属性字段的声明。
+
+    name 是**内部名**，必须是 ASCII 标识符：它会被拼进 Cypher 文本、成为
+    Neo4j 索引的属性名和结构化查询接受的字段名（见
+    structured_filter_query.py::_resolve_field_value_type）。label 是
+    **显示名**，只给人看，可以是中文，没有格式限制。
+
+    两者分开而不是把 name 放开成中文，是因为这两个名字服务于不同的读者：
+    内部名要出现在 Cypher、索引和报错信息里，显示名要出现在界面和问答里。
+    客户（MUJI 商品知识中台）的字段设计表本来就是「字段中文名」和「字段ID」
+    两列并存（中文名「当前售价」对应 ID md_sku_price），这个拆分是这类项目
+    实际的工作方式，不是我们为了绕开格式校验发明的抽象。
+
+    label 允许为空：不做存量数据迁移，2026-09-07 之前声明的字段读出来
+    label 就是 ""，此时显示名回退到内部名（见 display_name）。
+    """
+
     name: str
     value_type: str
+    label: str = ""
+
+    @property
+    def display_name(self) -> str:
+        """给人看的名字：有显示名就用显示名，没有就回退到内部名。"""
+        return self.label or self.name
 
 
 @dataclass(frozen=True)
@@ -119,13 +142,21 @@ def _validate_standard_name_value_type(value_type: str) -> None:
 
 def _extra_fields_to_json(extra_fields: list[ExtraFieldSpec]) -> str:
     return json.dumps(
-        [{"name": f.name, "value_type": f.value_type} for f in extra_fields],
+        [{"name": f.name, "value_type": f.value_type, "label": f.label} for f in extra_fields],
         ensure_ascii=False,
     )
 
 
 def _extra_fields_from_json(raw: str) -> list[ExtraFieldSpec]:
-    return [ExtraFieldSpec(name=item["name"], value_type=item["value_type"]) for item in json.loads(raw)]
+    # label 用 get 兜底而不是 []：存量行的 JSON 里没有这个键，这里不做
+    # 数据迁移，缺失就是空串，显示时由 ExtraFieldSpec.display_name 回退到
+    # 内部名。
+    return [
+        ExtraFieldSpec(
+            name=item["name"], value_type=item["value_type"], label=item.get("label", "")
+        )
+        for item in json.loads(raw)
+    ]
 
 
 async def _migrate_term_types_table_if_needed(conn: aiosqlite.Connection) -> None:

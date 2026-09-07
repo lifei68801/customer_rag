@@ -1,4 +1,5 @@
 import type { AddedFile, BuilderEntity, ColumnKeyPart, ConfirmedTermType } from './types'
+import { fieldDisplayName } from '../extraFieldDisplay'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -202,8 +203,19 @@ export function EntityMappingEditor({
         <div className="flex flex-col gap-2">
           <span className="text-sm font-bold text-ink">属性字段映射</span>
           {selectedTermType.extra_fields.map((field) => (
-            <label key={field.name} className="flex flex-col gap-1 text-xs font-bold text-ink">
-              {field.name}（{field.value_type}）
+            <label
+              key={field.name}
+              data-testid={`field-mapping-${field.name}`}
+              className="flex flex-col gap-1 text-xs font-bold text-ink"
+            >
+              {/* 显示名给人认，内部名是写进 ETL 配置 YAML 的键——只给一个的
+                  话，用户要么认不出这是哪个属性，要么对不上下载的 YAML。
+                  两者相同时不重复一遍。 */}
+              {fieldDisplayName(field)}
+              {fieldDisplayName(field) !== field.name && (
+                <span className="font-mono font-normal text-ink-soft">{field.name}</span>
+              )}
+              <span className="font-normal text-ink-soft">（{field.value_type}）</span>
               <select
                 value={entity.fieldMappings[field.name] ?? ''}
                 onChange={(e) => {

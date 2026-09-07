@@ -32,3 +32,47 @@ describe('确认差异的数据影响', () => {
     expect(diff.termTypes.find((r) => r.kind === 'added')?.impact).toBeUndefined()
   })
 })
+
+describe('属性显示名的差异', () => {
+  it('只改了显示名也算一处变更', () => {
+    // 显示名会出现在界面和问答里，改它是用户看得见的改动。差异面板漏掉它
+    // 的话，用户按下不可逆的「确认」时不知道自己还改了这个。
+    const diff = buildOntologyDiff(
+      {
+        termTypes: [
+          { value: '商品', extra_fields: [{ name: 'price', value_type: 'number', label: '当前售价' }] },
+        ],
+        relationTypes: [],
+        constraints: [],
+      },
+      {
+        termTypes: [
+          { value: '商品', extra_fields: [{ name: 'price', value_type: 'number', label: '售价' }] },
+        ],
+        relationTypes: [],
+        constraints: [],
+      },
+    )
+    const changed = diff.termTypes.find((r) => r.kind === 'changed')
+    expect(changed?.detail).toContain('售价')
+    expect(changed?.detail).toContain('当前售价')
+  })
+
+  it('两边都没有显示名时不报成改动', () => {
+    const diff = buildOntologyDiff(
+      {
+        termTypes: [{ value: '商品', extra_fields: [{ name: 'price', value_type: 'number' }] }],
+        relationTypes: [],
+        constraints: [],
+      },
+      {
+        termTypes: [
+          { value: '商品', extra_fields: [{ name: 'price', value_type: 'number', label: '' }] },
+        ],
+        relationTypes: [],
+        constraints: [],
+      },
+    )
+    expect(diff.termTypes).toEqual([])
+  })
+})

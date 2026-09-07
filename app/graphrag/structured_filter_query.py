@@ -278,7 +278,17 @@ def _resolve_field_value_type(
                     f"需要在管理后台重新声明这个字段才能通过校验"
                 )
             return spec.value_type
-    available_fields = sorted({_RESERVED_FIELD_NAME} | {spec.name for spec in category.extra_fields})
+    # 报错文案里，声明了显示名的字段写成 "price（售价）"：用户和 LLM 手上
+    # 拿到的往往是界面上的中文名，只列内部名的话对不上。接受的字段名不变，
+    # 仍然只有内部名——两套名字都能用会让同一个字段在 LLM 产出的查询里出现
+    # 两种写法，而 Cypher 里只有内部名。
+    available_fields = sorted(
+        {_RESERVED_FIELD_NAME}
+        | {
+            f"{spec.name}（{spec.label}）" if spec.label else spec.name
+            for spec in category.extra_fields
+        }
+    )
     raise StructuredFilterQueryError(
         f"字段 {field!r} 不是 {term_type!r} 已确认的属性字段，可用字段: {available_fields}"
     )

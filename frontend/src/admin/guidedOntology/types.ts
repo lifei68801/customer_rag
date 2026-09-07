@@ -35,8 +35,11 @@ export interface RoledColumn {
 }
 
 export interface DraftExtraField {
+  /** 内部名。清洗过的 ASCII 标识符，见 sanitizeFieldName。 */
   name: string
   value_type: 'string' | 'number' | 'integer' | 'number[]'
+  /** 显示名。引导建模里记的是原始列名——那是用户自己写的名字。 */
+  label?: string
 }
 
 export interface DraftTermType {

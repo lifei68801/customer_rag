@@ -397,3 +397,58 @@ async def test_replace_draft_marks_the_tenant_as_checked_out():
     assert values == ["引导建的"]
     relation_values = [r.relation_type for r in await list_relation_types(conn, "t1", status="draft")]
     assert relation_values == [], "标记了检出状态的话，第二次 checkout_draft 应该什么都不做"
+
+
+async def test_replace_draft_keeps_extra_field_label():
+    """引导页整份提交的属性带显示名，_validate_draft_extra_fields 规整时
+    不能把它丢掉——它只保留白名单里的键，漏加 label 就是静默丢弃。
+
+    name 和 label 取不同的值，否则"保留了 label"和"回退到 name"两种实现
+    都能让断言通过。
+    """
+    conn = await _conn()
+    await checkout_draft(conn, "t1")
+
+    await replace_draft(
+        conn,
+        "t1",
+        term_types=[
+            {
+                "value": "商品",
+                "extra_fields": [
+                    {"name": "price", "value_type": "number", "label": "售价"}
+                ],
+                "standard_name_value_type": "string",
+            }
+        ],
+        relation_types=[],
+        constraints=[],
+    )
+
+    spec = (await list_term_types(conn, "t1", status="draft"))[0].extra_fields[0]
+    assert spec.name == "price"
+    assert spec.label == "售价"
+
+
+async def test_replace_draft_accepts_extra_field_without_label():
+    """既有调用方（和存量草案）不带 label 键，不能因此报错。"""
+    conn = await _conn()
+    await checkout_draft(conn, "t1")
+
+    await replace_draft(
+        conn,
+        "t1",
+        term_types=[
+            {
+                "value": "商品",
+                "extra_fields": [{"name": "price", "value_type": "number"}],
+                "standard_name_value_type": "string",
+            }
+        ],
+        relation_types=[],
+        constraints=[],
+    )
+
+    spec = (await list_term_types(conn, "t1", status="draft"))[0].extra_fields[0]
+    assert spec.label == ""
+    assert spec.display_name == "price"

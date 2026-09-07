@@ -1699,3 +1699,60 @@ def test_resolve_or_raise_names_the_actual_term_type_on_type_mismatch():
     message = str(excinfo.value)
     assert "公司" in message
     assert "Pepsi" in message
+
+
+_LABELED_SKU_SCHEMA = TermTypeCategory(
+    value="SKU",
+    extra_fields=[ExtraFieldSpec(name="price", value_type="number", label="售价")],
+)
+
+
+def test_validate_error_on_unknown_field_shows_display_name_next_to_internal_name():
+    """字段有显示名时，"可用字段"要把两个名字一起报出来。
+
+    只报内部名的话，用户拿着界面上看到的「售价」去对一列 price/md_sku_price
+    这样的名字，对不上就以为字段没声明。内部名必须仍然在场——它才是这个
+    接口接受的值（见下一条测试）。
+    """
+    args = parse_structured_filter_query_args({
+        "anchor": {"term_type": "SKU"},
+        "constraints": [{"kind": "attribute", "field": "unknown_field", "operator": "gt", "value": 500}],
+    })
+    with pytest.raises(StructuredFilterQueryError) as exc_info:
+        validate_structured_filter_query(
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types=set(), term_type_schema={"SKU": _LABELED_SKU_SCHEMA},
+        )
+    message = str(exc_info.value)
+    assert "price（售价）" in message
+
+
+def test_validate_still_rejects_the_display_name_as_a_field_name():
+    """显示名只出现在报错文案里，不是这个接口接受的字段名。
+
+    接受显示名等于让 LLM 面对同一个字段的两套名字，而 Cypher 里只有内部名
+    ——这条测试钉住上一条改的是文案、不是接受的输入。
+    """
+    args = parse_structured_filter_query_args({
+        "anchor": {"term_type": "SKU"},
+        "constraints": [{"kind": "attribute", "field": "售价", "operator": "gt", "value": 500}],
+    })
+    with pytest.raises(StructuredFilterQueryError):
+        validate_structured_filter_query(
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types=set(), term_type_schema={"SKU": _LABELED_SKU_SCHEMA},
+        )
+
+
+def test_validate_error_lists_unlabeled_field_without_empty_parentheses():
+    """没起显示名的字段照旧只报内部名——补一对空括号是纯噪音。"""
+    args = parse_structured_filter_query_args({
+        "anchor": {"term_type": "SKU"},
+        "constraints": [{"kind": "attribute", "field": "unknown_field", "operator": "gt", "value": 500}],
+    })
+    with pytest.raises(StructuredFilterQueryError) as exc_info:
+        validate_structured_filter_query(
+            args, resolved=ResolvedAnchor(term_type="SKU", node_key=None),
+            confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
+        )
+    assert "numeric_value（" not in str(exc_info.value)
