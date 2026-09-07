@@ -129,20 +129,29 @@ export function summarizeBulkDeleteResult(result: BulkDeleteResult, noun: string
   )
 }
 
+/** 实体明细页那套请求体形状，也是没特别指定时的默认。 */
+function defaultBulkDeleteBody(target: BulkDeleteTarget): unknown {
+  return target.mode === 'keys' ? { node_keys: target.keys } : { filters: target.filters }
+}
+
 /**
  * 发一次批量删除请求。
  *
  * endpoint 由各个删除点自己给（实体是 /api/admin/{tenant}/terms/bulk-delete），
  * 请求体的两种模式在这里落成互斥的两个字段——「全部」发的是筛选条件而不是
  * id 列表，前端不许先把两万条拉回来再逐条删。
+ *
+ * buildBody 让删除点换掉这个默认形状。默认的 node_keys 是实体那边的字段名，
+ * 本体结构页那三张表要的是 values / relation_types / constraints——让所有
+ * 端点都叫 node_keys 的话，另外几个地方的字段名就在说谎。
  */
 export async function requestBulkDelete(
   sessionToken: string,
   endpoint: string,
   target: BulkDeleteTarget,
+  buildBody: (target: BulkDeleteTarget) => unknown = defaultBulkDeleteBody,
 ): Promise<BulkDeleteResult> {
-  const body =
-    target.mode === 'keys' ? { node_keys: target.keys } : { filters: target.filters }
+  const body = buildBody(target)
   const response = await adminFetch(endpoint, sessionToken, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

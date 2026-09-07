@@ -9,6 +9,14 @@ import { Skeleton } from './Skeleton'
 import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 import { buildOntologyDiff, type OntologyDiff } from './ontologyDiff'
+import { BulkDeleteOutcome, BulkSelectionBar } from './BulkSelectionBar'
+import { useBulkSelection } from './useBulkSelection'
+import {
+  buildBulkDeleteConfirmMessage,
+  requestBulkDelete,
+  type BulkDeleteResult,
+  type BulkDeleteTarget,
+} from './bulkDelete'
 import { valueTypeOptionLabel } from './extraFieldDisplay'
 import { fetchTermsSummary } from './termsApi'
 import { useOntologyData } from './useOntologyData'
@@ -69,6 +77,25 @@ function describeConfirmDiff(tenantId: string, diff: OntologyDiff | null): strin
     (omitted > 0 ? NL + `  ...另有 ${omitted} 行未列出` : '') +
     tail
   )
+}
+
+/**
+ * 本体结构页的三张表都只有**一档**选中。
+ *
+ * 实体明细页的批量删除分两档（本页 / 筛选条件下的全部），因为那里有
+ * 分页也有筛选，两档的破坏力差两个数量级。这三张表是一次性全量渲染的
+ * 十几行，没有分页也没有筛选——两档在这里指的是同一批行，给同一件事配
+ * 两个按钮只会让用户先去想区别在哪、再猜错一个。
+ *
+ * 所以这里只用 useBulkSelection 的 'keys' 档：selectAllMatching 一次都
+ * 不调用，BulkSelectionBar 拿到的 total 就是列出来的行数（它据此不给
+ * 「改为选中全部」那个按钮），表头复选框勾的就是整张表。
+ */
+const BULK_SCOPE = 'list'
+
+/** 取出这次批量删除的那些 key。'filters' 档在这个页面造不出来（见 BULK_SCOPE）。 */
+function bulkKeys(target: BulkDeleteTarget): string[] {
+  return target.mode === 'keys' ? target.keys : []
 }
 
 const VALUE_TYPES = ['string', 'number', 'integer', 'number[]'] as const
@@ -609,6 +636,38 @@ function TermTypesTab({
     }
   }
 
+  const bulk = useBulkSelection()
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [bulkOutcome, setBulkOutcome] = useState<BulkDeleteResult | null>(null)
+  const listedKeys = items.map((item) => item.value)
+
+  const handleBulkDelete = async () => {
+    const target = bulk.targetFor(BULK_SCOPE)
+    if (!sessionToken || target === null || bulkDeleting) return
+    if (!(await confirm(buildBulkDeleteConfirmMessage(target, '实体类型')))) return
+    onError(null)
+    setBulkDeleting(true)
+    try {
+      const result = await requestBulkDelete(
+        sessionToken,
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types/bulk-delete`,
+        target,
+        (t) => ({ values: bulkKeys(t) }),
+      )
+      // 结果面板留在页面上而不是弹个 toast：删 10 个类型有 8 个被引用
+      // 守卫挡住是这张表的常态，那 8 条是谁挡的才是用户接下来要处理的
+      // 东西，一闪而过就等于没报。
+      setBulkOutcome(result)
+      bulk.clear()
+      await refresh()
+      onDataChanged()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '批量删除失败')
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   const handleDelete = async (value: string) => {
     if (!sessionToken || deletingValue !== null) return
     if (!(await confirm(`确定要删除实体类型「${value}」吗？此操作不可撤销。`))) return
@@ -695,11 +754,32 @@ function TermTypesTab({
           }
         />
       )}
+      {bulkOutcome !== null && (
+        <BulkDeleteOutcome
+          result={bulkOutcome}
+          noun="实体类型"
+          onDismiss={() => setBulkOutcome(null)}
+        />
+      )}
+      {view === 'draft' && items.length > 0 && (
+        <BulkSelectionBar
+          scopeId={BULK_SCOPE}
+          listedKeys={listedKeys}
+          total={listedKeys.length}
+          filters={{}}
+          noun="实体类型"
+          scopeLabel="全部"
+          selection={bulk}
+          onDelete={handleBulkDelete}
+          deleting={bulkDeleting}
+        />
+      )}
       {items.length > 0 && (
         <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-subtle bg-paper text-ink">
+                {view === 'draft' && <th className={cellPadding} aria-label="选中" />}
                 <th className={cellPadding}>类型名</th>
                 <th className={cellPadding}>属性字段数</th>
                 <th className={cellPadding}>自身取值类型</th>
@@ -709,6 +789,17 @@ function TermTypesTab({
             <tbody>
               {items.map((item) => (
                 <tr key={item.value} className="border-b border-subtle text-ink last:border-b-0">
+                  {view === 'draft' && (
+                    <td className={cellPadding}>
+                      <input
+                        type="checkbox"
+                        checked={bulk.isSelected(BULK_SCOPE, item.value)}
+                        onChange={() => bulk.toggleKey(BULK_SCOPE, item.value)}
+                        aria-label={`选中实体类型 ${item.value}`}
+                        className={`h-4 w-4 cursor-pointer ${focusRing}`}
+                      />
+                    </td>
+                  )}
                   <td className={cellPadding}>{item.value}</td>
                   <td className={cellPadding}>{item.extra_fields.length}</td>
                   <td className={cellPadding}>{item.standard_name_value_type}</td>
@@ -1037,6 +1128,35 @@ function RelationTypesTab({
     }
   }
 
+  const bulk = useBulkSelection()
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [bulkOutcome, setBulkOutcome] = useState<BulkDeleteResult | null>(null)
+  const listedKeys = items.map((item) => item.relation_type)
+
+  const handleBulkDelete = async () => {
+    const target = bulk.targetFor(BULK_SCOPE)
+    if (!sessionToken || target === null || bulkDeleting) return
+    if (!(await confirm(buildBulkDeleteConfirmMessage(target, '关系类型')))) return
+    onError(null)
+    setBulkDeleting(true)
+    try {
+      const result = await requestBulkDelete(
+        sessionToken,
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types/bulk-delete`,
+        target,
+        (t) => ({ relation_types: bulkKeys(t) }),
+      )
+      setBulkOutcome(result)
+      bulk.clear()
+      await refresh()
+      onDataChanged()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '批量删除失败')
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   const handleDelete = async (relationType: string) => {
     if (!sessionToken || deletingType !== null) return
     if (!(await confirm(`确定要删除关系类型「${relationType}」吗？此操作不可撤销。`))) return
@@ -1115,11 +1235,32 @@ function RelationTypesTab({
           }
         />
       )}
+      {bulkOutcome !== null && (
+        <BulkDeleteOutcome
+          result={bulkOutcome}
+          noun="关系类型"
+          onDismiss={() => setBulkOutcome(null)}
+        />
+      )}
+      {view === 'draft' && items.length > 0 && (
+        <BulkSelectionBar
+          scopeId={BULK_SCOPE}
+          listedKeys={listedKeys}
+          total={listedKeys.length}
+          filters={{}}
+          noun="关系类型"
+          scopeLabel="全部"
+          selection={bulk}
+          onDelete={handleBulkDelete}
+          deleting={bulkDeleting}
+        />
+      )}
       {items.length > 0 && (
         <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-subtle bg-paper text-ink">
+                {view === 'draft' && <th className={cellPadding} aria-label="选中" />}
                 <th className={cellPadding}>关系类型</th>
                 <th className={cellPadding}>示例短语</th>
                 <th className={cellPadding}>说明</th>
@@ -1130,6 +1271,17 @@ function RelationTypesTab({
             <tbody>
               {items.map((item) => (
                 <tr key={item.relation_type} className="border-b border-subtle text-ink last:border-b-0">
+                  {view === 'draft' && (
+                    <td className={cellPadding}>
+                      <input
+                        type="checkbox"
+                        checked={bulk.isSelected(BULK_SCOPE, item.relation_type)}
+                        onChange={() => bulk.toggleKey(BULK_SCOPE, item.relation_type)}
+                        aria-label={`选中关系类型 ${item.relation_type}`}
+                        className={`h-4 w-4 cursor-pointer ${focusRing}`}
+                      />
+                    </td>
+                  )}
                   <td className={`${cellPadding} font-mono text-xs`}>{item.relation_type}</td>
                   <td className={cellPadding}>{item.example_phrase}</td>
                   <td className={cellPadding}>{item.description || '-'}</td>
@@ -1372,6 +1524,42 @@ function ConstraintsTab({
     }
   }
 
+  const bulk = useBulkSelection()
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [bulkOutcome, setBulkOutcome] = useState<BulkDeleteResult | null>(null)
+  const listedKeys = constraints.map(constraintKey)
+
+  const handleBulkDelete = async () => {
+    const target = bulk.targetFor(BULK_SCOPE)
+    if (!sessionToken || target === null || bulkDeleting) return
+    if (!(await confirm(buildBulkDeleteConfirmMessage(target, '约束')))) return
+    onError(null)
+    setBulkDeleting(true)
+    try {
+      const byKey = new Map(constraints.map((c) => [constraintKey(c), c]))
+      const result = await requestBulkDelete(
+        sessionToken,
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/constraints/bulk-delete`,
+        target,
+        // 约束没有单列的主键，服务端要的是三元组本身；选中状态里那个 key
+        // 只是这张表内部用来认行的。
+        (t) => ({
+          constraints: bulkKeys(t)
+            .map((key) => byKey.get(key))
+            .filter((c): c is Constraint => c !== undefined),
+        }),
+      )
+      setBulkOutcome(result)
+      bulk.clear()
+      await refresh()
+      onDataChanged()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '批量删除失败')
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   const handleRemove = async (constraint: Constraint) => {
     if (!sessionToken || removingKey !== null) return
     const key = constraintKey(constraint)
@@ -1427,11 +1615,32 @@ function ConstraintsTab({
           }
         />
       )}
+      {bulkOutcome !== null && (
+        <BulkDeleteOutcome
+          result={bulkOutcome}
+          noun="约束"
+          onDismiss={() => setBulkOutcome(null)}
+        />
+      )}
+      {view === 'draft' && constraints.length > 0 && (
+        <BulkSelectionBar
+          scopeId={BULK_SCOPE}
+          listedKeys={listedKeys}
+          total={listedKeys.length}
+          filters={{}}
+          noun="约束"
+          scopeLabel="全部"
+          selection={bulk}
+          onDelete={handleBulkDelete}
+          deleting={bulkDeleting}
+        />
+      )}
       {constraints.length > 0 && (
         <div className="overflow-x-auto overflow-y-hidden rounded-card border border-subtle bg-card">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-subtle bg-paper text-ink">
+                {view === 'draft' && <th className={cellPadding} aria-label="选中" />}
                 <th className={cellPadding}>主体类型</th>
                 <th className={cellPadding}>关系类型</th>
                 <th className={cellPadding}>客体类型</th>
@@ -1441,6 +1650,17 @@ function ConstraintsTab({
             <tbody>
               {constraints.map((c) => (
                 <tr key={constraintKey(c)} className="border-b border-subtle text-ink last:border-b-0">
+                  {view === 'draft' && (
+                    <td className={cellPadding}>
+                      <input
+                        type="checkbox"
+                        checked={bulk.isSelected(BULK_SCOPE, constraintKey(c))}
+                        onChange={() => bulk.toggleKey(BULK_SCOPE, constraintKey(c))}
+                        aria-label={`选中约束 ${c.subject_term_type} -${c.relation_type}-> ${c.object_term_type}`}
+                        className={`h-4 w-4 cursor-pointer ${focusRing}`}
+                      />
+                    </td>
+                  )}
                   <td className={cellPadding}>{c.subject_term_type}</td>
                   <td className={`${cellPadding} font-mono text-xs`}>{c.relation_type}</td>
                   <td className={cellPadding}>{c.object_term_type}</td>

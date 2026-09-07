@@ -16,6 +16,14 @@ interface BulkSelectionBarProps {
   filters: BulkDeleteFilters
   /** 被删对象的量词说法，比如「实体」。 */
   noun: string
+  /**
+   * 「本页」这个词的替代说法。
+   *
+   * 默认「本页」对着有分页的列表。本体结构页那三张表一次性全量渲染，没有
+   * 分页也没有筛选，那里传「全部」——在那种列表上说「本页」会让用户去找
+   * 第二页，而第二页并不存在。
+   */
+  scopeLabel?: string
   selection: BulkSelectionApi
   onDelete: (scopeId: string) => void
   deleting: boolean
@@ -37,6 +45,7 @@ export function BulkSelectionBar({
   total,
   filters,
   noun,
+  scopeLabel = '本页',
   selection,
   onDelete,
   deleting,
@@ -59,10 +68,12 @@ export function BulkSelectionBar({
             type="checkbox"
             checked={pageAllChecked}
             onChange={() => selection.togglePage(scopeId, listedKeys)}
-            aria-label={`选中本页 ${listedKeys.length} 条${noun}`}
+            aria-label={`选中${scopeLabel} ${listedKeys.length} 条${noun}`}
             className={`h-4 w-4 cursor-pointer ${focusRing}`}
           />
-          <span>选中本页（{listedKeys.length}）</span>
+          <span>
+            选中{scopeLabel}（{listedKeys.length}）
+          </span>
         </label>
         {active && (
           <>
@@ -100,7 +111,7 @@ export function BulkSelectionBar({
             </span>
           ) : (
             <span>
-              已选中本页 {selectedCount.toLocaleString()} 条{noun}。
+              已选中{scopeLabel} {selectedCount.toLocaleString()} 条{noun}。
             </span>
           )}
           {canEscalate && (

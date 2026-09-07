@@ -1282,3 +1282,242 @@ def test_replacing_the_draft_logs_the_logged_in_user(client_as_alice, conn_for_t
     assert change.action == "replace"
     assert change.object_kind == "ontology_draft"
     assert change.details["term_type_values"] == ["产品", "公司"]
+
+
+# ---------------------------------------------------------------------------
+# 批量删除：本体结构页三张表（实体类型 / 关系类型 / 关系约束）
+#
+# 这三张表都没有分页也没有筛选，所以只有"选中的这些"一种模式，没有实体
+# 明细页那种"筛选条件下的全部"。共用的是 run_bulk_delete 的执行语义：
+# 能删的删掉、挡住的逐条报出来、不整批回滚。
+#
+# 这组用例的每个批次都**同时**放了能删的和删不掉的。全能删或全删不掉的
+# 批次是假绿：那样"逐条收集失败"和"一律成功/一律失败"两种实现都能过。
+# ---------------------------------------------------------------------------
+
+
+def _bulk_delete_setup(client, tenant: str = "t1") -> None:
+    """一份三类都有的草稿：两个空闲类型、被约束占住的两个类型、一条关系、一条约束。"""
+    for value in ("空闲甲", "空闲乙", "产品", "公司"):
+        client.post(
+            f"/api/admin/ontology/{tenant}/term-types", json={"value": value}, headers=_headers()
+        )
+    client.post(
+        f"/api/admin/ontology/{tenant}/relation-types",
+        json={"relation_type": "SOLD_BY", "example_phrase": "产品 SOLD_BY 公司"},
+        headers=_headers(),
+    )
+    client.post(
+        f"/api/admin/ontology/{tenant}/constraints",
+        json={
+            "subject_term_type": "产品", "relation_type": "SOLD_BY", "object_term_type": "公司",
+        },
+        headers=_headers(),
+    )
+
+
+def _term_type_values(client, tenant: str = "t1") -> list[str]:
+    resp = client.get(f"/api/admin/ontology/{tenant}/term-types", headers=_headers())
+    return [t["value"] for t in resp.json()["term_types"]]
+
+
+async def test_bulk_delete_term_types_deletes_what_it_can_and_names_each_blocker(
+    client_as_alice, conn_for_testing
+):
+    """批次里有能删的、有被术语挡住的、有被草稿约束挡住的、有根本不存在的。
+
+    四种混在一起是刻意的：只放能删的那种，"一律成功"的实现也能过。
+    """
+    _bulk_delete_setup(client_as_alice)
+    client_as_alice.post(
+        "/api/admin/ontology/t1/term-types", json={"value": "module"}, headers=_headers()
+    )
+    await conn_for_testing["conn"].execute(
+        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, extra_properties) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("t1", "示例登录模块", "示例登录模块", "[]", "module", "{}"),
+    )
+    await conn_for_testing["conn"].commit()
+
+    resp = client_as_alice.post(
+        "/api/admin/ontology/t1/term-types/bulk-delete",
+        json={"values": ["空闲甲", "module", "产品", "查无此类"]},
+        headers=_headers(),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["requested"] == 4
+    assert body["deleted"] == 1
+    failures = {f["key"]: f["reason"] for f in body["failures"]}
+    assert set(failures) == {"module", "产品", "查无此类"}
+    # 沿用单条删除的报错原文：它点名了挡路的是谁，退化成"删除失败"用户就
+    # 只能自己去翻。
+    assert "示例登录模块" in failures["module"]
+    assert "产品 -SOLD_BY-> 公司" in failures["产品"]
+    assert "不存在" in failures["查无此类"]
+    # 失败的那几条确实还在——只断言 failures 非空的话，"报了失败但照删不误"
+    # 也能过。
+    remaining = _term_type_values(client_as_alice)
+    assert "空闲甲" not in remaining
+    assert "module" in remaining
+    assert "产品" in remaining
+
+
+async def test_bulk_delete_term_types_logs_only_the_ones_it_actually_deleted(
+    client_as_alice, conn_for_testing
+):
+    _bulk_delete_setup(client_as_alice)
+    client_as_alice.post(
+        "/api/admin/ontology/t1/term-types", json={"value": "module"}, headers=_headers()
+    )
+    await conn_for_testing["conn"].execute(
+        "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, extra_properties) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("t1", "示例登录模块", "示例登录模块", "[]", "module", "{}"),
+    )
+    await conn_for_testing["conn"].commit()
+
+    resp = client_as_alice.post(
+        "/api/admin/ontology/t1/term-types/bulk-delete",
+        json={"values": ["空闲甲", "空闲乙", "module", "查无此类"]},
+        headers=_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+
+    # 直接 await 而不是走 _changes()：那个辅助函数内部是 asyncio.run，在
+    # async 用例里会撞上"已经有事件循环在跑"。
+    changes = await list_ontology_changes(conn_for_testing["conn"], "t1")
+    deletions = [
+        (c.actor, c.object_id)
+        for c in changes
+        if c.action == "delete" and c.object_kind == "term_type"
+    ]
+    # 挡住的和不存在的没有发生变更，不该在日志里留痕；actor 是登录的 alice
+    # 而不是写死的 admin。
+    assert deletions == [("alice", "空闲甲"), ("alice", "空闲乙")]
+
+
+def test_bulk_delete_relation_types_deletes_what_it_can_and_names_each_failure(client_as_alice):
+    _bulk_delete_setup(client_as_alice)
+    client_as_alice.post(
+        "/api/admin/ontology/t1/relation-types",
+        json={"relation_type": "PART_OF", "example_phrase": "模块 PART_OF 产品"},
+        headers=_headers(),
+    )
+
+    resp = client_as_alice.post(
+        "/api/admin/ontology/t1/relation-types/bulk-delete",
+        json={"relation_types": ["PART_OF", "查无此关系"]},
+        headers=_headers(),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["requested"], body["deleted"]) == (2, 1)
+    assert [(f["key"], "不存在" in f["reason"]) for f in body["failures"]] == [("查无此关系", True)]
+    listed = [
+        r["relation_type"]
+        for r in client_as_alice.get(
+            "/api/admin/ontology/t1/relation-types", headers=_headers()
+        ).json()["relation_types"]
+    ]
+    assert "PART_OF" not in listed
+    assert "SOLD_BY" in listed
+
+
+def test_bulk_delete_relation_types_logs_only_the_ones_it_actually_deleted(
+    client_as_alice, conn_for_testing
+):
+    _bulk_delete_setup(client_as_alice)
+
+    client_as_alice.post(
+        "/api/admin/ontology/t1/relation-types/bulk-delete",
+        json={"relation_types": ["SOLD_BY", "查无此关系"]},
+        headers=_headers(),
+    )
+
+    deletions = [
+        (c.actor, c.object_id)
+        for c in _changes(conn_for_testing)
+        if c.action == "delete" and c.object_kind == "relation_type"
+    ]
+    assert deletions == [("alice", "SOLD_BY")]
+
+
+def test_bulk_delete_constraints_deletes_what_it_can_and_names_each_failure(client_as_alice):
+    _bulk_delete_setup(client_as_alice)
+    client_as_alice.post(
+        "/api/admin/ontology/t1/constraints",
+        json={
+            "subject_term_type": "公司", "relation_type": "SOLD_BY", "object_term_type": "产品",
+        },
+        headers=_headers(),
+    )
+
+    resp = client_as_alice.post(
+        "/api/admin/ontology/t1/constraints/bulk-delete",
+        json={
+            "constraints": [
+                {"subject_term_type": "产品", "relation_type": "SOLD_BY", "object_term_type": "公司"},
+                {"subject_term_type": "产品", "relation_type": "SOLD_BY", "object_term_type": "产品"},
+            ]
+        },
+        headers=_headers(),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["requested"], body["deleted"]) == (2, 1)
+    # key 用跟变更日志同一种写法（"主语 -关系-> 宾语"）：约束没有单列主键，
+    # 它的身份就是那个三元组。
+    assert [(f["key"], "不存在" in f["reason"]) for f in body["failures"]] == [
+        ("产品 -SOLD_BY-> 产品", True)
+    ]
+    remaining = [
+        (c["subject_term_type"], c["relation_type"], c["object_term_type"])
+        for c in client_as_alice.get(
+            "/api/admin/ontology/t1/constraints", headers=_headers()
+        ).json()["constraints"]
+    ]
+    assert ("产品", "SOLD_BY", "公司") not in remaining
+    assert ("公司", "SOLD_BY", "产品") in remaining
+
+
+def test_bulk_delete_constraints_logs_only_the_ones_it_actually_deleted(
+    client_as_alice, conn_for_testing
+):
+    _bulk_delete_setup(client_as_alice)
+
+    client_as_alice.post(
+        "/api/admin/ontology/t1/constraints/bulk-delete",
+        json={
+            "constraints": [
+                {"subject_term_type": "产品", "relation_type": "SOLD_BY", "object_term_type": "公司"},
+                {"subject_term_type": "产品", "relation_type": "SOLD_BY", "object_term_type": "产品"},
+            ]
+        },
+        headers=_headers(),
+    )
+
+    deletions = [
+        (c.actor, c.object_id)
+        for c in _changes(conn_for_testing)
+        if c.action == "delete" and c.object_kind == "constraint"
+    ]
+    assert deletions == [("alice", "产品 -SOLD_BY-> 公司")]
+
+
+def test_bulk_delete_routes_reject_unknown_tenant(client):
+    for path, payload in (
+        ("term-types/bulk-delete", {"values": ["x"]}),
+        ("relation-types/bulk-delete", {"relation_types": ["X"]}),
+        (
+            "constraints/bulk-delete",
+            {"constraints": [{"subject_term_type": "a", "relation_type": "R", "object_term_type": "b"}]},
+        ),
+    ):
+        resp = client.post(
+            f"/api/admin/ontology/no_such_tenant/{path}", json=payload, headers=_headers()
+        )
+        assert resp.status_code == 404, (path, resp.text)

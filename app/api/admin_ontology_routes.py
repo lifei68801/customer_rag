@@ -22,10 +22,16 @@ from app.graphrag.ontology_categories import (
     list_term_types,
     update_term_type,
 )
+from app.api.bulk_delete import (
+    BulkDeleteBlocked,
+    BulkDeleteResult,
+    run_bulk_delete,
+)
 from app.graphrag.ontology_constraints import (
     UnknownCategoryError as ConstraintUnknownCategoryError,
     UnknownRelationTypeError,
     add_allowed_combination,
+    combination_object_id,
     list_allowed_combinations,
     remove_allowed_combination,
 )
@@ -463,6 +469,121 @@ async def remove_tenant_constraint(
         actor=session.username,
     )
     return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# 批量删除（本体结构页的三张表）
+#
+# 跟实体明细页的批量删除共用 app/api/bulk_delete.py 的执行语义——能删的删掉、
+# 挡住的逐条报出来、不整批回滚——但**只有一种请求模式**：这三张表都是一次性
+# 全量渲染，没有分页也没有筛选，"选中的这些"和"筛选条件下的全部"在这里是
+# 同一件事。所以请求体里直接给要删的那些，不走 resolve_bulk_delete_mode
+# （那个函数是用来在两种模式之间做互斥判定的，这里没有第二种模式可判）。
+#
+# 三个端点都逐条复用各自的单条删除函数，不另写一条批量 SQL：守卫、草稿
+# status 范围、以及每删掉一条写一行 ontology_change_log，都由那些函数负责，
+# 绕过去就意味着批量删除和单条删除会慢慢长成两套规矩。
+#
+# "这一条已经不在了"算失败而不算删掉：批次里混着别人刚删掉的行时，把它计入
+# deleted 会让用户以为自己删掉了一个其实早就不在的东西。
+# ---------------------------------------------------------------------------
+
+_TERM_TYPE_GONE = "实体类型不存在，可能已经被别人删掉了"
+_RELATION_TYPE_GONE = "关系类型不存在，可能已经被别人删掉了"
+_CONSTRAINT_GONE = "这条约束不存在，可能已经被别人删掉了"
+
+
+class BulkDeleteTermTypesRequest(BaseModel):
+    values: list[str]
+
+
+class BulkDeleteRelationTypesRequest(BaseModel):
+    relation_types: list[str]
+
+
+class BulkDeleteConstraintsRequest(BaseModel):
+    constraints: list[ConstraintWriteRequest]
+
+
+@router.post("/{tenant_id}/term-types/bulk-delete")
+async def bulk_delete_term_type_categories(
+    tenant_id: str,
+    payload: BulkDeleteTermTypesRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    session: AdminSession = Depends(deps.require_admin_session),
+) -> BulkDeleteResult:
+    await require_active_tenant_or_404(review_conn, tenant_id)
+
+    async def delete_one(value: str) -> None:
+        # 存在性每条现查而不是开头查一次存成集合：批次里出现两次同一个值时，
+        # 快照会让第二次删到空气还照样记一行审计。这三张表都是十几行的量级，
+        # 多查几次的代价可以忽略。
+        draft_values = {t.value for t in await list_term_types(review_conn, tenant_id, status="draft")}
+        if value not in draft_values:
+            raise BulkDeleteBlocked(_TERM_TYPE_GONE)
+        try:
+            await delete_term_type(review_conn, tenant_id, value, actor=session.username)
+        except CategoryInUseError as exc:
+            # 原样透传单条删除的那句话：它点名了挡路的是哪几条术语/哪几条
+            # 约束，换成"删除失败"用户就只剩自己去列表里翻这一条路。
+            raise BulkDeleteBlocked(str(exc)) from exc
+
+    return await run_bulk_delete(payload.values, delete_one)
+
+
+@router.post("/{tenant_id}/relation-types/bulk-delete")
+async def bulk_delete_tenant_relation_types(
+    tenant_id: str,
+    payload: BulkDeleteRelationTypesRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    session: AdminSession = Depends(deps.require_admin_session),
+) -> BulkDeleteResult:
+    await require_active_tenant_or_404(review_conn, tenant_id)
+
+    async def delete_one(relation_type: str) -> None:
+        draft_types = {
+            r.relation_type
+            for r in await list_relation_types(review_conn, tenant_id, status="draft")
+        }
+        if relation_type not in draft_types:
+            raise BulkDeleteBlocked(_RELATION_TYPE_GONE)
+        await delete_relation_type(
+            review_conn, tenant_id, relation_type, actor=session.username
+        )
+
+    return await run_bulk_delete(payload.relation_types, delete_one)
+
+
+@router.post("/{tenant_id}/constraints/bulk-delete")
+async def bulk_delete_tenant_constraints(
+    tenant_id: str,
+    payload: BulkDeleteConstraintsRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    session: AdminSession = Depends(deps.require_admin_session),
+) -> BulkDeleteResult:
+    """约束没有单列的主键，请求体里给的是三元组，失败明细的 key 是
+    "主语 -关系-> 宾语"——跟变更日志的 object_id 同一种写法。"""
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    wanted = {
+        combination_object_id(c.subject_term_type, c.relation_type, c.object_term_type): c
+        for c in payload.constraints
+    }
+
+    async def delete_one(key: str) -> None:
+        item = wanted[key]
+        existing = {
+            combination_object_id(c.subject_term_type, c.relation_type, c.object_term_type)
+            for c in await list_allowed_combinations(review_conn, tenant_id, status="draft")
+        }
+        if key not in existing:
+            raise BulkDeleteBlocked(_CONSTRAINT_GONE)
+        await remove_allowed_combination(
+            review_conn, tenant_id, subject_term_type=item.subject_term_type,
+            relation_type=item.relation_type, object_term_type=item.object_term_type,
+            actor=session.username,
+        )
+
+    return await run_bulk_delete(list(wanted), delete_one)
 
 
 @router.post("/{tenant_id}/checkout")
