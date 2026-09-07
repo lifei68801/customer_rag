@@ -8,6 +8,7 @@ from app.api import deps
 from app.api.admin_session import AdminSession
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
+from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
 from app.main import app
 
@@ -35,6 +36,10 @@ async def _review_conn() -> aiosqlite.Connection:
     # /api/admin/terms 创建一条术语来制造"分类在用"的场景（terms 表由 Task 6 的
     # terms_store.py 管理，不在 ontology_lifecycle 的统一建表入口里）。
     await ensure_terms_schema(conn)
+    # delete_term_type 的 terms 引用检查走合并视图（terms 叠加 term_edits），
+    # 要读 term_edits 表。真实的 open_ontology_store_conn 会建它，这个手工
+    # 建表的连接必须显式补上。
+    await ensure_term_edits_schema(conn)
     # Task 4：这个文件里的写接口现在会先用 review_conn 调
     # require_active_tenant() 校验 tenant_id——真实的 deps.get_review_conn()
     # 会自动建好 tenants 表并回填历史租户，这里是手工建表的测试连接，绕开了

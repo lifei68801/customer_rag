@@ -17,6 +17,7 @@ from app.graphrag.ontology_categories import (
     update_term_type,
 )
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
+from app.graphrag.term_edits_store import FIELD_DELETED, ensure_term_edits_schema, upsert_term_edit
 
 pytestmark = pytest.mark.anyio
 
@@ -29,6 +30,11 @@ async def _conn() -> aiosqlite.Connection:
     # 表存在，测试这里也建整套本体 schema 而不是只建分类表，跟生产环境的调用
     # 顺序保持一致。
     await ensure_ontology_schema(conn)
+    # delete_term_type 的 terms 引用检查现在走合并视图（terms 叠加
+    # term_edits），要读 term_edits 表。生产环境由
+    # ontology_store.open_ontology_store_conn 统一建这张表，这里补上，
+    # 同样是跟生产调用顺序保持一致。
+    await ensure_term_edits_schema(conn)
     return conn
 
 
@@ -44,6 +50,7 @@ async def _conn() -> aiosqlite.Connection:
 _TERMS_TABLE_SQL = (
     "CREATE TABLE terms (tenant_id TEXT NOT NULL, standard_name TEXT NOT NULL, "
     "term_type TEXT NOT NULL, aliases TEXT NOT NULL DEFAULT '[]', "
+    "extra_properties TEXT NOT NULL DEFAULT '{}', source TEXT NOT NULL DEFAULT 'unknown', "
     "node_key TEXT NOT NULL, PRIMARY KEY (tenant_id, standard_name))"
 )
 
@@ -776,3 +783,61 @@ async def test_delete_term_type_in_use_message_still_reports_both_counts():
     assert "PART_OF" in message
     assert excinfo.value.terms_count == 1
     assert excinfo.value.allowlist_count == 1
+
+
+async def test_delete_term_type_ignores_manually_deleted_terms():
+    """被人工删除（__deleted__）的实体不该再挡住分类删除。
+
+    用户在实体列表里把这个类型删空了（列表走合并视图，一条不剩），删分类
+    却仍被拒——守卫读的是 terms 裸表，看不见编辑层。挡路的东西用户在界面上
+    根本找不到，这道墙就没法翻过去。
+    """
+    conn = await _conn()
+    await create_term_type(conn, tenant_id="default", value="module")
+    await conn.execute(_TERMS_TABLE_SQL)
+    await conn.execute(
+        "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
+        ("default", "示例登录模块", "module", "示例登录模块"),
+    )
+    await conn.commit()
+    await upsert_term_edit(
+        conn, tenant_id="default", node_key="示例登录模块",
+        field=FIELD_DELETED, value=None, edited_by="admin",
+    )
+
+    await delete_term_type(conn, tenant_id="default", value="module")
+
+    assert await list_term_types(conn, tenant_id="default", status="draft") == []
+
+
+async def test_delete_term_type_still_blocked_by_terms_that_are_not_deleted():
+    """反方向：没被删掉的实体照旧挡得住，而且计数/点名都只算看得见的那些。
+
+    同一个类型下一条被人工删除、一条没有：读裸表会数出 2 条并点名那条用户
+    在实体列表里根本找不到的"已删模块"，读合并视图才是 1 条。两个口径在这
+    组数据上给出不同答案，断言因此能真正区分实现。
+    """
+    conn = await _conn()
+    await create_term_type(conn, tenant_id="default", value="module")
+    await conn.execute(_TERMS_TABLE_SQL)
+    for standard_name in ("已删模块", "在用模块"):
+        await conn.execute(
+            "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
+            ("default", standard_name, "module", standard_name),
+        )
+    await conn.commit()
+    await upsert_term_edit(
+        conn, tenant_id="default", node_key="已删模块",
+        field=FIELD_DELETED, value=None, edited_by="admin",
+    )
+
+    with pytest.raises(CategoryInUseError) as excinfo:
+        await delete_term_type(conn, tenant_id="default", value="module")
+
+    message = str(excinfo.value)
+    assert "在用模块" in message
+    assert "已删模块" not in message
+    assert excinfo.value.terms_count == 1
+    assert excinfo.value.blocking_term_node_keys == ["在用模块"]
+    # 分类没被删掉。
+    assert [t.value for t in await list_term_types(conn, tenant_id="default", status="draft")] == ["module"]

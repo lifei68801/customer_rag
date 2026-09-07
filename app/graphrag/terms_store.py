@@ -464,6 +464,70 @@ async def count_terms_merged_by_term_type(
     return {term_type: count for term_type, count in counts.items() if count > 0}
 
 
+async def count_and_sample_terms_merged_by_term_type(
+    conn: aiosqlite.Connection,
+    tenant_id: str,
+    term_type: str,
+    *,
+    sample_limit: int,
+) -> tuple[int, list[Term]]:
+    """合并视图下**单个** term_type 有多少实体，外加按 standard_name 排在
+    最前面的几条——供"这个类型还有实体在用吗"这类守卫用（当前唯一调用方是
+    ontology_categories.delete_term_type）。
+
+    为什么不复用 count_terms_merged_by_term_type：那个函数按整个租户分组
+    （一次全表 GROUP BY），只为取其中一个键；这里按 (tenant_id, term_type)
+    直接命中 idx_terms_tenant_standard_name 前缀，两万条实体的租户上不会
+    为了一个数字扫全表。守卫还需要"挡路的是谁"，计数和取样共用同一次编辑层
+    合并，也不该拆成两次。
+
+    合并语义不在这里重写：被人工碰过的那些行（term_edits 只包含它们，通常
+    远小于 terms）整行取出来交给 apply_edits，再按类型过滤——人工删除的不
+    算，人工改成别的类型的不算，人工改成这个类型的（含纯编辑层创建的）算。
+    没被碰过的行的类型就是表里那个值，直接在 SQL 里数和取样。
+    """
+    conn.row_factory = aiosqlite.Row
+    edits = await list_term_edits(conn, tenant_id)
+    edited_keys = list(edits)
+    exclusion = ""
+    params: tuple[object, ...] = (tenant_id, term_type)
+    if edited_keys:
+        placeholders = ",".join("?" * len(edited_keys))
+        exclusion = f" AND node_key NOT IN ({placeholders})"
+        params = (tenant_id, term_type, *edited_keys)
+    cursor = await conn.execute(
+        f"SELECT COUNT(*) FROM terms WHERE tenant_id = ? AND term_type = ?{exclusion}", params
+    )
+    untouched_total = (await cursor.fetchone())[0]
+    cursor = await conn.execute(
+        "SELECT tenant_id, node_key, standard_name, aliases, term_type, extra_properties, source "
+        f"FROM terms WHERE tenant_id = ? AND term_type = ?{exclusion} "
+        "ORDER BY standard_name LIMIT ?",
+        (*params, sample_limit),
+    )
+    untouched_sample = [_row_to_term(row) for row in await cursor.fetchall()]
+
+    edited_of_this_type: list[Term] = []
+    if edited_keys:
+        placeholders = ",".join("?" * len(edited_keys))
+        cursor = await conn.execute(
+            "SELECT tenant_id, node_key, standard_name, aliases, term_type, extra_properties, "
+            f"source FROM terms WHERE tenant_id = ? AND node_key IN ({placeholders})",
+            (tenant_id, *edited_keys),
+        )
+        touched = [_row_to_term(row) for row in await cursor.fetchall()]
+        edited_of_this_type = [
+            term for term in apply_edits(touched, edits, tenant_id=tenant_id)
+            if term.term_type == term_type
+        ]
+
+    total = untouched_total + len(edited_of_this_type)
+    sample = sorted(
+        [*untouched_sample, *edited_of_this_type], key=lambda term: term.standard_name
+    )[:sample_limit]
+    return total, sample
+
+
 async def count_terms_merged(
     conn: aiosqlite.Connection, tenant_id: str, *, source: str | None = None
 ) -> int:

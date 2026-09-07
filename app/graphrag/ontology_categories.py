@@ -358,14 +358,31 @@ def _format_samples(samples: list[str], total: int) -> str:
 
 
 async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: str) -> None:
-    """terms 表引用检查范围不变（真实术语只引用已确认类型，这个检查天然
-    对应"已确认版本是否在用"）；term_type_relation_allowlist 引用检查加
-    status='draft'——只拦"删除会破坏当前草稿自洽性"的情况，跟这次删除无关
-    的已确认约束不受影响。"""
-    cursor = await conn.execute(
-        "SELECT COUNT(*) FROM terms WHERE tenant_id = ? AND term_type = ?", (tenant_id, value)
+    """terms 表引用检查走**合并视图**（terms 叠加 term_edits），不是裸表：
+    这道守卫回答的是"用户还看得见这个类型下的实体吗"，跟实体列表页同一个
+    口径——被人工删除（__deleted__）的实体在列表里已经不存在，不该在这里
+    挡住删除，否则用户面对的是一堵他在界面上找不到砖头的墙。裸表那个数字
+    （count_terms_by_term_type）回答的是另一个问题——"管道往这个类型里写了
+    多少"，本体图的节点数量叠加用它，两者不该混用。检查范围仍不区分
+    ontology_term_types 自己的 status（真实术语只引用已确认类型，这个检查
+    天然对应"已确认版本是否在用"）。
+
+    term_type_relation_allowlist 引用检查加 status='draft'——只拦"删除会
+    破坏当前草稿自洽性"的情况，跟这次删除无关的已确认约束不受影响。这条
+    检查跟编辑层无关（它查的是约束表，不是 terms），维持裸查。
+    """
+    # 函数内导入：terms_store 在模块顶层导入了本模块（list_term_types /
+    # ensure_categories_schema），顶层反向导入会形成循环。
+    from app.graphrag.terms_store import count_and_sample_terms_merged_by_term_type
+
+    # 计数和"挡路的是谁"一次拿全：只报"1 条术语"用户得自己去实体列表里翻找
+    # 挡路的是哪条。样本和计数出自同一次合并，点名的必然是用户在列表里真找
+    # 得到的那几条——按裸表点名会报出已被人工删除、界面上根本不存在的名字。
+    # 样本按 standard_name 排序：同一份数据每次点名同样那几条，顺序随机时
+    # 用户处理掉一条再删会换一批名字，看起来像"越删越多"。
+    terms_count, blocking_terms = await count_and_sample_terms_merged_by_term_type(
+        conn, tenant_id, value, sample_limit=_IN_USE_SAMPLE_SIZE
     )
-    terms_count = (await cursor.fetchone())[0]
     cursor = await conn.execute(
         "SELECT COUNT(*) FROM term_type_relation_allowlist "
         "WHERE tenant_id = ? AND status = 'draft' AND (subject_term_type = ? OR object_term_type = ?)",
@@ -373,16 +390,8 @@ async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: st
     )
     allowlist_count = (await cursor.fetchone())[0]
     if terms_count > 0 or allowlist_count > 0:
-        # 计数查完还要再查一次样本：只报"1 条术语"，用户得自己去实体列表里
-        # 翻找挡路的是哪条。ORDER BY standard_name 是为了同一份数据每次点名
-        # 同样那几条——顺序随机时用户处理掉一条再删，消息里换一批名字，看
-        # 起来像"越删越多"。
-        cursor = await conn.execute(
-            "SELECT node_key, standard_name FROM terms "
-            "WHERE tenant_id = ? AND term_type = ? ORDER BY standard_name LIMIT ?",
-            (tenant_id, value, _IN_USE_SAMPLE_SIZE),
-        )
-        term_rows = await cursor.fetchall()
+        # 约束这一类同样要点名到具体三元组，理由同上；固定的 ORDER BY
+        # 也是同一个理由。
         cursor = await conn.execute(
             "SELECT subject_term_type, relation_type, object_term_type "
             "FROM term_type_relation_allowlist "
@@ -394,7 +403,8 @@ async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: st
         parts = []
         if terms_count > 0:
             parts.append(
-                f"{terms_count} 条术语（{_format_samples([row[1] for row in term_rows], terms_count)}）"
+                f"{terms_count} 条术语（"
+                f"{_format_samples([t.standard_name for t in blocking_terms], terms_count)}）"
             )
         if allowlist_count > 0:
             parts.append(
@@ -406,7 +416,7 @@ async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: st
             term_type=value,
             terms_count=terms_count,
             allowlist_count=allowlist_count,
-            blocking_term_node_keys=[row[0] for row in term_rows],
+            blocking_term_node_keys=[t.node_key for t in blocking_terms],
         )
     await conn.execute(
         "DELETE FROM ontology_term_types WHERE tenant_id = ? AND value = ? AND status = 'draft'",
