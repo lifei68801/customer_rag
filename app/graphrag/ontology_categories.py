@@ -7,6 +7,14 @@ from dataclasses import dataclass
 import aiosqlite
 
 from app.db_migrations import add_column_if_missing
+from app.graphrag.ontology_change_log import (
+    ACTION_CREATE,
+    ACTION_DELETE,
+    ACTION_UPDATE,
+    KIND_TERM_TYPE,
+    commit_with_change_log,
+    ensure_change_log_schema,
+)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS ontology_term_types (
@@ -140,11 +148,14 @@ def _validate_standard_name_value_type(value_type: str) -> None:
         )
 
 
+def _extra_fields_to_dicts(extra_fields: list[ExtraFieldSpec]) -> list[dict]:
+    return [
+        {"name": f.name, "value_type": f.value_type, "label": f.label} for f in extra_fields
+    ]
+
+
 def _extra_fields_to_json(extra_fields: list[ExtraFieldSpec]) -> str:
-    return json.dumps(
-        [{"name": f.name, "value_type": f.value_type, "label": f.label} for f in extra_fields],
-        ensure_ascii=False,
-    )
+    return json.dumps(_extra_fields_to_dicts(extra_fields), ensure_ascii=False)
 
 
 def _extra_fields_from_json(raw: str) -> list[ExtraFieldSpec]:
@@ -292,6 +303,10 @@ async def _migrate_term_types_add_standard_name_value_type_if_needed(
 
 
 async def ensure_categories_schema(conn: aiosqlite.Connection) -> None:
+    # 变更日志表跟着建：本模块每个写入函数都往它写一行，而单独调用
+    # ensure_categories_schema 的连接（测试里就有）不会经过
+    # ensure_ontology_schema，缺表会在第一次写入时撞 no such table。
+    await ensure_change_log_schema(conn)
     await conn.execute("DROP TABLE IF EXISTS ontology_product_lines")
     await _migrate_term_types_table_if_needed(conn)
     await _migrate_term_types_add_status_if_needed(conn)
@@ -327,9 +342,12 @@ async def create_term_type(
     tenant_id: str,
     *,
     value: str,
+    actor: str,
     extra_fields: list[ExtraFieldSpec] | None = None,
     standard_name_value_type: str = "string",
 ) -> None:
+    """actor 是这次变更的操作者，必填、无默认值——见
+    ontology_change_log 模块 docstring 里为什么不给默认值。"""
     extra_fields = extra_fields or []
     _validate_extra_field_specs(extra_fields)
     _validate_standard_name_value_type(standard_name_value_type)
@@ -342,7 +360,15 @@ async def create_term_type(
         )
     except aiosqlite.IntegrityError:
         raise CategoryNameConflictError(f"{value!r} 已经是该租户草稿里的分类，不能重复创建")
-    await conn.commit()
+    await commit_with_change_log(
+        conn, tenant_id, actor=actor, action=ACTION_CREATE, object_kind=KIND_TERM_TYPE,
+        object_id=value,
+        details={
+            "extra_fields": _extra_fields_to_dicts(extra_fields),
+            "standard_name_value_type": standard_name_value_type,
+            "status": "draft",
+        },
+    )
 
 
 async def update_term_type(
@@ -352,6 +378,7 @@ async def update_term_type(
     value: str,
     new_value: str,
     extra_fields: list[ExtraFieldSpec],
+    actor: str,
     standard_name_value_type: str = "string",
 ) -> None:
     """value 是草稿里的当前名字，new_value 是提交的新名字，允许相同（即不
@@ -387,7 +414,18 @@ async def update_term_type(
             "WHERE tenant_id = ? AND object_term_type = ? AND status = 'draft'",
             (new_value, tenant_id, value),
         )
-    await conn.commit()
+    await commit_with_change_log(
+        conn, tenant_id, actor=actor, action=ACTION_UPDATE, object_kind=KIND_TERM_TYPE,
+        # object_id 记的是改名前的名字（这次变更操作的是哪一行），改成什么
+        # 在 details.new_value 里——两个都要有，否则日志上一条改名前后接不
+        # 上另一条。
+        object_id=value,
+        details={
+            "new_value": new_value,
+            "extra_fields": _extra_fields_to_dicts(extra_fields),
+            "standard_name_value_type": standard_name_value_type,
+        },
+    )
 
 
 #: CategoryInUseError 消息里每类引用最多点名几条。3 条够用户认出"哦是那批
@@ -404,7 +442,9 @@ def _format_samples(samples: list[str], total: int) -> str:
     return listed
 
 
-async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: str) -> None:
+async def delete_term_type(
+    conn: aiosqlite.Connection, tenant_id: str, value: str, *, actor: str
+) -> None:
     """terms 表引用检查走**合并视图**（terms 叠加 term_edits），不是裸表：
     这道守卫回答的是"用户还看得见这个类型下的实体吗"，跟实体列表页同一个
     口径——被人工删除（__deleted__）的实体在列表里已经不存在，不该在这里
@@ -469,4 +509,8 @@ async def delete_term_type(conn: aiosqlite.Connection, tenant_id: str, value: st
         "DELETE FROM ontology_term_types WHERE tenant_id = ? AND value = ? AND status = 'draft'",
         (tenant_id, value),
     )
-    await conn.commit()
+    # 行已经没了，"谁删的"从此只能问这张日志表——这是它存在的全部理由。
+    await commit_with_change_log(
+        conn, tenant_id, actor=actor, action=ACTION_DELETE, object_kind=KIND_TERM_TYPE,
+        object_id=value, details={"status": "draft"},
+    )

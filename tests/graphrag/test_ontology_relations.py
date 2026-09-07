@@ -64,7 +64,7 @@ async def test_create_relation_type_with_valid_name():
 
     await create_relation_type(
         conn, "t1", relation_type="SUITABLE_FOR", example_phrase="大床房 SUITABLE_FOR 家庭出行"
-    )
+    , actor="alice")
 
     result = await list_relation_types(conn, "t1", status="draft")
     assert result == [
@@ -82,14 +82,14 @@ async def test_create_relation_type_rejects_invalid_format():
     conn = await _conn()
 
     with pytest.raises(InvalidRelationTypeNameError):
-        await create_relation_type(conn, "t1", relation_type="suitable-for", example_phrase="x")
+        await create_relation_type(conn, "t1", relation_type="suitable-for", example_phrase="x", actor="alice")
 
 
 async def test_create_relation_type_rejects_empty_example_phrase():
     conn = await _conn()
 
     with pytest.raises(InvalidRelationTypeNameError):
-        await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="")
+        await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="", actor="alice")
 
 
 async def test_create_relation_type_rejects_trailing_newline():
@@ -99,12 +99,12 @@ async def test_create_relation_type_rejects_trailing_newline():
     conn = await _conn()
 
     with pytest.raises(InvalidRelationTypeNameError):
-        await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR\n", example_phrase="x")
+        await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR\n", example_phrase="x", actor="alice")
 
 
 async def test_update_relation_type_changes_example_and_chain_flag():
     conn = await _conn()
-    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x SUITABLE_FOR y")
+    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x SUITABLE_FOR y", actor="alice")
 
     await update_relation_type(
         conn, "t1",
@@ -112,7 +112,7 @@ async def test_update_relation_type_changes_example_and_chain_flag():
         example_phrase="大床房 SUITABLE_FOR 家庭出行",
         description="适合的出行类型",
         allow_chain_query=True,
-    )
+    actor="alice")
 
     result = await list_relation_types(conn, "t1", status="draft")
     assert result == [
@@ -133,7 +133,7 @@ async def test_update_nonexistent_relation_type_raises_not_found():
         await update_relation_type(
             conn, "t1", relation_type="NOPE", example_phrase="x", description="",
             allow_chain_query=False,
-        )
+        actor="alice")
 
 
 async def test_delete_relation_type_removes_default_row_without_protection():
@@ -142,7 +142,7 @@ async def test_delete_relation_type_removes_default_row_without_protection():
     conn = await _conn()
     await seed_default_relation_types(conn, "t1")
 
-    await delete_relation_type(conn, "t1", "PRECEDES")
+    await delete_relation_type(conn, "t1", "PRECEDES", actor="alice")
 
     remaining = {r.relation_type for r in await list_relation_types(conn, "t1", status="draft")}
     assert "PRECEDES" not in remaining
@@ -154,7 +154,7 @@ async def test_delete_relation_type_is_scoped_per_tenant():
     await seed_default_relation_types(conn, "t1")
     await seed_default_relation_types(conn, "t2")
 
-    await delete_relation_type(conn, "t1", "PRECEDES")
+    await delete_relation_type(conn, "t1", "PRECEDES", actor="alice")
 
     assert len(await list_relation_types(conn, "t2", status="draft")) == 10
 
@@ -173,7 +173,7 @@ async def test_delete_relation_type_removes_dangling_draft_allowlist_rows():
     )
     await conn.commit()
 
-    await delete_relation_type(conn, "t1", "PRECEDES")
+    await delete_relation_type(conn, "t1", "PRECEDES", actor="alice")
 
     cursor = await conn.execute(
         "SELECT COUNT(*) FROM term_type_relation_allowlist WHERE tenant_id = 't1'"
@@ -188,10 +188,10 @@ async def test_create_relation_type_rejects_duplicate_name():
     ontology_categories.py::create_term_type 对重复名字正确报 Conflict 不对称。
     改成纯 INSERT 后，重复创建必须报错。"""
     conn = await _conn()
-    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x")
+    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x", actor="alice")
 
     with pytest.raises(RelationTypeNameConflictError):
-        await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="y")
+        await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="y", actor="alice")
 
     result = await list_relation_types(conn, "t1", status="draft")
     assert result == [
@@ -204,17 +204,17 @@ async def test_create_relation_type_rejects_duplicate_name():
 
 async def test_update_relation_type_renames_primary_key_and_cascades_to_allowlist():
     conn = await _conn()
-    await create_term_type(conn, "t1", value="客房")
-    await create_term_type(conn, "t1", value="酒店")
-    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x SUITABLE_FOR y")
+    await create_term_type(conn, "t1", value="客房", actor="alice")
+    await create_term_type(conn, "t1", value="酒店", actor="alice")
+    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x SUITABLE_FOR y", actor="alice")
     await add_allowed_combination(
         conn, "t1", subject_term_type="客房", relation_type="SUITABLE_FOR", object_term_type="酒店"
-    )
+    , actor="alice")
 
     await update_relation_type(
         conn, "t1", relation_type="SUITABLE_FOR", new_relation_type="GOOD_FOR",
         example_phrase="x GOOD_FOR y", description="", allow_chain_query=False,
-    )
+    actor="alice")
 
     result = {r.relation_type for r in await list_relation_types(conn, "t1", status="draft")}
     assert "GOOD_FOR" in result
@@ -228,13 +228,13 @@ async def test_update_relation_type_renames_primary_key_and_cascades_to_allowlis
 
 async def test_update_relation_type_rename_into_existing_name_raises_conflict():
     conn = await _conn()
-    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x")
-    await create_relation_type(conn, "t1", relation_type="GOOD_FOR", example_phrase="y")
+    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x", actor="alice")
+    await create_relation_type(conn, "t1", relation_type="GOOD_FOR", example_phrase="y", actor="alice")
 
     with pytest.raises(RelationTypeNameConflictError):
         await update_relation_type(
             conn, "t1", relation_type="SUITABLE_FOR", new_relation_type="GOOD_FOR",
             example_phrase="x", description="", allow_chain_query=False,
-        )
+        actor="alice")
 
 

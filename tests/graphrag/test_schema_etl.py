@@ -91,25 +91,25 @@ async def _confirmed_conn() -> aiosqlite.Connection:
     await create_term_type(
         conn, tenant_id="muji", value="Product",
         extra_fields=[ExtraFieldSpec(name="md_no", value_type="string")],
-    )
-    await create_term_type(conn, tenant_id="muji", value="SKU")
-    await create_term_type(conn, tenant_id="muji", value="VariantValue")
+    actor="alice")
+    await create_term_type(conn, tenant_id="muji", value="SKU", actor="alice")
+    await create_term_type(conn, tenant_id="muji", value="VariantValue", actor="alice")
     await checkout_draft(conn, "muji")
     await create_relation_type(
         conn, "muji", relation_type="HAS_SKU", example_phrase="Product HAS_SKU SKU",
-    )
+    actor="alice")
     await create_relation_type(
         conn, "muji", relation_type="HAS_VARIANT_VALUE",
         example_phrase="VariantValue HAS_VARIANT_VALUE VariantValue",
-    )
+    actor="alice")
     await add_allowed_combination(
         conn, "muji", subject_term_type="Product", relation_type="HAS_SKU", object_term_type="SKU",
-    )
+    actor="alice")
     await add_allowed_combination(
         conn, "muji", subject_term_type="VariantValue", relation_type="HAS_VARIANT_VALUE",
         object_term_type="VariantValue",
-    )
-    await confirm_ontology(conn, "muji")
+    actor="alice")
+    await confirm_ontology(conn, "muji", actor="alice")
     return conn
 
 

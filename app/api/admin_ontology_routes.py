@@ -9,6 +9,7 @@ from pydantic import BaseModel
 import aiosqlite
 
 from app.api import deps
+from app.api.admin_session import AdminSession
 from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.ontology_categories import (
     CategoryInUseError,
@@ -107,6 +108,7 @@ async def create_term_type_category(
     payload: TermTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
     extra_field_specs = _to_extra_field_specs(payload.extra_fields)
@@ -115,6 +117,7 @@ async def create_term_type_category(
             review_conn, tenant_id, value=payload.value,
             extra_fields=extra_field_specs,
             standard_name_value_type=payload.standard_name_value_type,
+            actor=session.username,
         )
     except CategoryNameConflictError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -144,6 +147,7 @@ async def update_term_type_category(
     payload: TermTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
     extra_field_specs = _to_extra_field_specs(payload.extra_fields)
@@ -152,6 +156,7 @@ async def update_term_type_category(
             review_conn, tenant_id, value=value, new_value=payload.value,
             extra_fields=extra_field_specs,
             standard_name_value_type=payload.standard_name_value_type,
+            actor=session.username,
         )
     except CategoryNotFoundError:
         raise HTTPException(status_code=404, detail="分类不存在")
@@ -175,11 +180,13 @@ async def update_term_type_category(
 
 @router.delete("/{tenant_id}/term-types/{value}")
 async def delete_term_type_category(
-    tenant_id: str, value: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn)
+    tenant_id: str, value: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> Response:
     await require_active_tenant_or_404(review_conn, tenant_id)
     try:
-        await delete_term_type(review_conn, tenant_id, value)
+        await delete_term_type(review_conn, tenant_id, value, actor=session.username)
     except CategoryInUseError as exc:
         # 不用 HTTPException：它只能放一个 detail。detail 保持是一句人话
         # （既有前端和测试直接展示它），旁边再挂一份结构化的挡路术语，前端
@@ -284,13 +291,14 @@ async def list_tenant_relation_types(
 async def create_tenant_relation_type(
     tenant_id: str, payload: RelationTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
     try:
         await create_relation_type(
             review_conn, tenant_id, relation_type=payload.relation_type,
             example_phrase=payload.example_phrase, description=payload.description,
-            allow_chain_query=payload.allow_chain_query,
+            allow_chain_query=payload.allow_chain_query, actor=session.username,
         )
     except InvalidRelationTypeNameError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -303,6 +311,7 @@ async def create_tenant_relation_type(
 async def update_tenant_relation_type(
     tenant_id: str, relation_type: str, payload: RelationTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
     try:
@@ -310,7 +319,7 @@ async def update_tenant_relation_type(
             review_conn, tenant_id, relation_type=relation_type,
             new_relation_type=payload.relation_type,
             example_phrase=payload.example_phrase, description=payload.description,
-            allow_chain_query=payload.allow_chain_query,
+            allow_chain_query=payload.allow_chain_query, actor=session.username,
         )
     except InvalidRelationTypeNameError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -325,9 +334,10 @@ async def update_tenant_relation_type(
 async def delete_tenant_relation_type(
     tenant_id: str, relation_type: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
-    await delete_relation_type(review_conn, tenant_id, relation_type)
+    await delete_relation_type(review_conn, tenant_id, relation_type, actor=session.username)
     return {"deleted": True}
 
 
@@ -426,12 +436,14 @@ async def list_tenant_constraints(
 async def add_tenant_constraint(
     tenant_id: str, payload: ConstraintWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
     try:
         await add_allowed_combination(
             review_conn, tenant_id, subject_term_type=payload.subject_term_type,
             relation_type=payload.relation_type, object_term_type=payload.object_term_type,
+            actor=session.username,
         )
     except (ConstraintUnknownCategoryError, UnknownRelationTypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -442,11 +454,13 @@ async def add_tenant_constraint(
 async def remove_tenant_constraint(
     tenant_id: str, payload: ConstraintWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
     await remove_allowed_combination(
         review_conn, tenant_id, subject_term_type=payload.subject_term_type,
         relation_type=payload.relation_type, object_term_type=payload.object_term_type,
+        actor=session.username,
     )
     return {"deleted": True}
 
@@ -463,9 +477,10 @@ async def checkout_tenant_ontology_draft(
 @router.post("/{tenant_id}/confirm")
 async def confirm_tenant_ontology(
     tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
-    await confirm_ontology(review_conn, tenant_id)
+    await confirm_ontology(review_conn, tenant_id, actor=session.username)
     return {"confirmed": True}
 
 
@@ -512,6 +527,7 @@ async def replace_ontology_draft(
     tenant_id: str,
     payload: ReplaceDraftRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict[str, bool]:
     """整份替换草稿。引导页用它一次写入整套本体。
 
@@ -527,6 +543,7 @@ async def replace_ontology_draft(
             relation_types=[r.model_dump() for r in payload.relation_types],
             constraints=[c.model_dump() for c in payload.constraints],
             etl_mapping=payload.etl_mapping.model_dump() if payload.etl_mapping else None,
+            actor=session.username,
         )
     # replace_draft 内部除了引用未声明类型的 ConstraintUnknownCategoryError，
     # 还会对 extra_fields / standard_name_value_type / relation_type 做跟单条

@@ -36,13 +36,13 @@ async def _confirm_error_code_module_related_to_ontology(
     """
     await ensure_ontology_schema(conn)
     await checkout_draft(conn, tenant_id)
-    await create_term_type(conn, tenant_id, value="error_code")
-    await create_term_type(conn, tenant_id, value="module")
+    await create_term_type(conn, tenant_id, value="error_code", actor="alice")
+    await create_term_type(conn, tenant_id, value="module", actor="alice")
     await add_allowed_combination(
         conn, tenant_id,
         subject_term_type="error_code", relation_type="RELATED_TO", object_term_type="module",
-    )
-    await confirm_ontology(conn, tenant_id)
+    actor="alice")
+    await confirm_ontology(conn, tenant_id, actor="alice")
 
 
 class FakeEmbeddingProvider:
@@ -873,12 +873,12 @@ async def test_ingest_chunks_reports_built_when_extraction_runs():
     await ensure_ontology_schema(conn)
     await ensure_review_schema(conn)
     await checkout_draft(conn, "t1")
-    await create_term_type(conn, tenant_id="t1", value="error_code")
+    await create_term_type(conn, tenant_id="t1", value="error_code", actor="alice")
     await add_allowed_combination(
         conn, tenant_id="t1", subject_term_type="error_code",
         relation_type="RELATED_TO", object_term_type="error_code",
-    )
-    await confirm_ontology(conn, "t1")
+    actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
     try:
         result = await _run_ingest_chunks(graph_review_conn=conn, with_graph_resources=True)
     finally:

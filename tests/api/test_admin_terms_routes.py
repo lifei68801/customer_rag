@@ -52,10 +52,10 @@ async def _open_terms_conn() -> aiosqlite.Connection:
     # 租户各注册一份。真实术语只认
     # 已确认的实体类型（见 validate_term_categories），这里创建完就立刻确认。
     for tenant_id in ("t1", "tenant_a"):
-        await create_term_type(conn, tenant_id=tenant_id, value="error_code")
-        await create_term_type(conn, tenant_id=tenant_id, value="t")
-        await create_term_type(conn, tenant_id=tenant_id, value="t2")
-        await confirm_ontology(conn, tenant_id)
+        await create_term_type(conn, tenant_id=tenant_id, value="error_code", actor="alice")
+        await create_term_type(conn, tenant_id=tenant_id, value="t", actor="alice")
+        await create_term_type(conn, tenant_id=tenant_id, value="t2", actor="alice")
+        await confirm_ontology(conn, tenant_id, actor="alice")
     # Task 4：这个文件里的写接口（create_new_term/update_existing_term/
     # delete_existing_term）现在会先用 review_conn 调 require_active_tenant()
     # 校验 tenant_id——真实的 deps.get_review_conn() 会自动建好 tenants 表
@@ -735,9 +735,9 @@ def test_create_term_with_typed_extra_properties_returns_200(terms_conn):
         create_term_type(
             terms_conn, tenant_id="t1", value="VariantValue",
             extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
-        )
+        actor="alice")
     )
-    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(confirm_ontology(terms_conn, "t1", actor="alice"))
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -765,9 +765,9 @@ def test_create_term_rejects_extra_property_wrong_type_returns_400(terms_conn):
         create_term_type(
             terms_conn, tenant_id="t1", value="VariantValue",
             extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
-        )
+        actor="alice")
     )
-    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(confirm_ontology(terms_conn, "t1", actor="alice"))
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -822,9 +822,9 @@ def test_create_term_rejects_bool_extra_property_via_http(terms_conn):
         create_term_type(
             terms_conn, tenant_id="t1", value="VariantValue",
             extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
-        )
+        actor="alice")
     )
-    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(confirm_ontology(terms_conn, "t1", actor="alice"))
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -996,9 +996,9 @@ def test_update_term_without_extra_properties_preserves_existing_values(terms_co
         create_term_type(
             terms_conn, tenant_id="t1", value="订单号",
             extra_fields=[ExtraFieldSpec(name="revenue", value_type="number")],
-        )
+        actor="alice")
     )
-    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(confirm_ontology(terms_conn, "t1", actor="alice"))
     asyncio.run(
         create_term(
             terms_conn, tenant_id="t1", standard_name="1-143-51064-X", aliases=[],
@@ -1036,9 +1036,9 @@ def test_update_term_without_extra_properties_preserves_them_in_graph_too(terms_
         create_term_type(
             terms_conn, tenant_id="t1", value="订单号",
             extra_fields=[ExtraFieldSpec(name="revenue", value_type="number")],
-        )
+        actor="alice")
     )
-    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(confirm_ontology(terms_conn, "t1", actor="alice"))
     asyncio.run(
         create_term(
             terms_conn, tenant_id="t1", standard_name="1-143-51064-X", aliases=[],
@@ -1085,9 +1085,9 @@ def test_update_term_with_empty_extra_properties_clears_them(terms_conn):
         create_term_type(
             terms_conn, tenant_id="t1", value="订单号",
             extra_fields=[ExtraFieldSpec(name="revenue", value_type="number")],
-        )
+        actor="alice")
     )
-    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(confirm_ontology(terms_conn, "t1", actor="alice"))
     asyncio.run(
         create_term(
             terms_conn, tenant_id="t1", standard_name="1-143-51064-X", aliases=[],
@@ -1304,9 +1304,9 @@ def test_create_term_rejects_bool_inside_number_array_via_http(terms_conn):
         create_term_type(
             terms_conn, tenant_id="t1", value="VariantValue",
             extra_fields=[ExtraFieldSpec(name="dims", value_type="number[]")],
-        )
+        actor="alice")
     )
-    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(confirm_ontology(terms_conn, "t1", actor="alice"))
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -1484,9 +1484,9 @@ def test_put_only_writes_edits_for_the_fields_actually_submitted(terms_conn):
         create_term_type(
             terms_conn, tenant_id="t1", value="订单号2",
             extra_fields=[ExtraFieldSpec(name="revenue", value_type="number")],
-        )
+        actor="alice")
     )
-    asyncio.run(confirm_ontology(terms_conn, "t1"))
+    asyncio.run(confirm_ontology(terms_conn, "t1", actor="alice"))
     asyncio.run(
         create_term(
             terms_conn, tenant_id="t1", standard_name="订单X", aliases=[],

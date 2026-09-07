@@ -139,8 +139,8 @@ async def test_approve_duplicate_suggestion_merges_via_real_terms_store_and_mark
     await ensure_terms_schema(conn)
     await ensure_term_edits_schema(conn)
     await ensure_ontology_schema(conn)
-    await create_term_type(conn, tenant_id="default", value="公司")
-    await confirm_ontology(conn, "default")
+    await create_term_type(conn, tenant_id="default", value="公司", actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
     await ensure_duplicate_review_schema(conn)
 
     await create_term(
@@ -198,8 +198,8 @@ async def test_approve_duplicate_suggestion_propagates_conflict_and_leaves_row_p
     await ensure_terms_schema(conn)
     await ensure_term_edits_schema(conn)
     await ensure_ontology_schema(conn)
-    await create_term_type(conn, tenant_id="default", value="公司")
-    await confirm_ontology(conn, "default")
+    await create_term_type(conn, tenant_id="default", value="公司", actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
     await ensure_duplicate_review_schema(conn)
 
     await create_term(

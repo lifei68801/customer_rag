@@ -30,7 +30,7 @@ async def _seed_ontology_draft(conn) -> None:
         term_types=[{"value": "客户", "extra_fields": []}],
         relation_types=[],
         constraints=[],
-    )
+    actor="alice")
 
 
 async def test_draft_mapping_survives_confirm():
@@ -43,7 +43,7 @@ async def test_draft_mapping_survives_confirm():
         source_file_name="orders.csv",
         created_at="2026-09-03T00:00:00",
     )
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
     confirmed = await get_etl_mapping(conn, "t1", status="confirmed")
     assert confirmed is not None
     assert confirmed.config_yaml == "entities: []"
@@ -67,7 +67,7 @@ async def test_mapping_alone_does_not_trigger_confirm():
         source_file_name="orders.csv",
         created_at="2026-09-03T00:00:00",
     )
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
     assert await get_etl_mapping(conn, "t1", status="confirmed") is None
     assert await get_etl_mapping(conn, "t1", status="draft") is not None
 
@@ -88,7 +88,7 @@ async def test_checkout_copies_confirmed_mapping_to_draft():
         source_file_name="orders.csv",
         created_at="2026-09-03T00:00:00",
     )
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
     await checkout_draft(conn, "t1")
     draft = await get_etl_mapping(conn, "t1", status="draft")
     assert draft is not None

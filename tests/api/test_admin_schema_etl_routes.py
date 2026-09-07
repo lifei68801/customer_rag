@@ -91,9 +91,9 @@ def client(review_conn, tmp_path):
 
 
 async def _confirm_muji_schema(review_conn: aiosqlite.Connection) -> None:
-    await create_term_type(review_conn, tenant_id="muji", value="Product")
+    await create_term_type(review_conn, tenant_id="muji", value="Product", actor="alice")
     await checkout_draft(review_conn, "muji")
-    await confirm_ontology(review_conn, "muji")
+    await confirm_ontology(review_conn, "muji", actor="alice")
 
 
 def test_status_returns_false_when_schema_not_confirmed(client):
@@ -314,8 +314,8 @@ def test_get_sample_returns_400_when_schema_confirmed_but_has_no_term_types():
     async def override_review_conn():
         conn = await _open_review_conn()
         await checkout_draft(conn, "demo")
-        await create_relation_type(conn, "demo", relation_type="SAMPLE_LINK", example_phrase="A SAMPLE_LINK B")
-        await confirm_ontology(conn, "demo")
+        await create_relation_type(conn, "demo", relation_type="SAMPLE_LINK", example_phrase="A SAMPLE_LINK B", actor="alice")
+        await confirm_ontology(conn, "demo", actor="alice")
         yield conn
         await conn.close()
 
@@ -334,10 +334,10 @@ def test_get_sample_returns_400_when_schema_confirmed_but_has_no_term_types():
 def test_get_sample_returns_files_with_config_yaml_first():
     async def override_review_conn():
         conn = await _open_review_conn()
-        await create_term_type(conn, tenant_id="demo", value="商品")
+        await create_term_type(conn, tenant_id="demo", value="商品", actor="alice")
         await checkout_draft(conn, "demo")
-        await create_relation_type(conn, "demo", relation_type="SAMPLE_LINK", example_phrase="A SAMPLE_LINK B")
-        await confirm_ontology(conn, "demo")
+        await create_relation_type(conn, "demo", relation_type="SAMPLE_LINK", example_phrase="A SAMPLE_LINK B", actor="alice")
+        await confirm_ontology(conn, "demo", actor="alice")
         yield conn
         await conn.close()
 
@@ -361,10 +361,10 @@ def test_download_sample_zip_returns_a_valid_zip_containing_the_same_files():
 
     async def override_review_conn():
         conn = await _open_review_conn()
-        await create_term_type(conn, tenant_id="demo", value="商品")
+        await create_term_type(conn, tenant_id="demo", value="商品", actor="alice")
         await checkout_draft(conn, "demo")
-        await create_relation_type(conn, "demo", relation_type="SAMPLE_LINK", example_phrase="A SAMPLE_LINK B")
-        await confirm_ontology(conn, "demo")
+        await create_relation_type(conn, "demo", relation_type="SAMPLE_LINK", example_phrase="A SAMPLE_LINK B", actor="alice")
+        await confirm_ontology(conn, "demo", actor="alice")
         yield conn
         await conn.close()
 

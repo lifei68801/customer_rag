@@ -28,7 +28,7 @@ async def _confirm_default_ontology(conn: aiosqlite.Connection, tenant_id: str =
     要么根本没有走到 LLM 抽取那一步）。"""
     await ensure_ontology_schema(conn)
     await checkout_draft(conn, tenant_id)
-    await confirm_ontology(conn, tenant_id)
+    await confirm_ontology(conn, tenant_id, actor="alice")
 
 
 async def test_main_ingests_directory_using_injected_registry_and_store(tmp_path):

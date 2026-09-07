@@ -63,7 +63,7 @@ async def test_create_and_list_term_type_with_extra_fields():
             ExtraFieldSpec(name="severity_level", value_type="string"),
             ExtraFieldSpec(name="impact_scope", value_type="string"),
         ],
-    )
+    actor="alice")
 
     result = await list_term_types(conn, tenant_id="default", status="draft")
 
@@ -78,7 +78,7 @@ async def test_create_and_list_term_type_with_extra_fields():
 
 async def test_create_term_type_without_extra_fields_defaults_to_empty_list():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="地点")
+    await create_term_type(conn, tenant_id="default", value="地点", actor="alice")
 
     result = await list_term_types(conn, tenant_id="default", status="draft")
 
@@ -92,7 +92,7 @@ async def test_create_term_type_is_draft_only_not_visible_in_confirmed():
     test_ontology_relations.py::test_create_relation_type_with_valid_name
     的模式。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="错误码")
+    await create_term_type(conn, tenant_id="default", value="错误码", actor="alice")
 
     draft_result = await list_term_types(conn, tenant_id="default", status="draft")
     confirmed_result = await list_term_types(conn, tenant_id="default", status="confirmed")
@@ -103,10 +103,10 @@ async def test_create_term_type_is_draft_only_not_visible_in_confirmed():
 
 async def test_create_duplicate_term_type_raises_conflict():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="错误码")
+    await create_term_type(conn, tenant_id="default", value="错误码", actor="alice")
 
     with pytest.raises(CategoryNameConflictError):
-        await create_term_type(conn, tenant_id="default", value="错误码")
+        await create_term_type(conn, tenant_id="default", value="错误码", actor="alice")
 
 
 async def test_update_term_type_renames_draft_category():
@@ -114,7 +114,7 @@ async def test_update_term_type_renames_draft_category():
     await create_term_type(
         conn, tenant_id="default", value="错误码",
         extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")],
-    )
+    actor="alice")
 
     await update_term_type(
         conn, tenant_id="default", value="错误码", new_value="故障码",
@@ -122,7 +122,7 @@ async def test_update_term_type_renames_draft_category():
             ExtraFieldSpec(name="severity_level", value_type="string"),
             ExtraFieldSpec(name="impact_scope", value_type="string"),
         ],
-    )
+    actor="alice")
 
     result = await list_term_types(conn, tenant_id="default", status="draft")
     assert result == [TermTypeCategory(
@@ -139,7 +139,7 @@ async def test_update_term_type_rename_does_not_cascade_to_terms():
     反过来：改名只改草稿定义，不再级联更新 terms 表——真实术语只引用已确认
     类型，草稿改名不影响它们（决策 4，见 spec 文档）。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="错误码")
+    await create_term_type(conn, tenant_id="default", value="错误码", actor="alice")
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.execute(
         "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
@@ -147,7 +147,7 @@ async def test_update_term_type_rename_does_not_cascade_to_terms():
     )
     await conn.commit()
 
-    await update_term_type(conn, tenant_id="default", value="错误码", new_value="故障码", extra_fields=[])
+    await update_term_type(conn, tenant_id="default", value="错误码", new_value="故障码", extra_fields=[], actor="alice")
 
     cursor = await conn.execute(
         "SELECT term_type FROM terms WHERE tenant_id = ? AND standard_name = ?", ("default", "错误码E502",)
@@ -158,11 +158,11 @@ async def test_update_term_type_rename_does_not_cascade_to_terms():
 
 async def test_update_term_type_into_existing_name_raises_conflict():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="错误码")
-    await create_term_type(conn, tenant_id="default", value="模块")
+    await create_term_type(conn, tenant_id="default", value="错误码", actor="alice")
+    await create_term_type(conn, tenant_id="default", value="模块", actor="alice")
 
     with pytest.raises(CategoryNameConflictError):
-        await update_term_type(conn, tenant_id="default", value="错误码", new_value="模块", extra_fields=[])
+        await update_term_type(conn, tenant_id="default", value="错误码", new_value="模块", extra_fields=[], actor="alice")
 
 
 async def test_update_term_type_on_confirmed_only_row_raises_not_found():
@@ -177,16 +177,16 @@ async def test_update_term_type_on_confirmed_only_row_raises_not_found():
     await conn.commit()
 
     with pytest.raises(CategoryNotFoundError):
-        await update_term_type(conn, tenant_id="default", value="错误码", new_value="故障码", extra_fields=[])
+        await update_term_type(conn, tenant_id="default", value="错误码", new_value="故障码", extra_fields=[], actor="alice")
 
 
 async def test_delete_term_type_not_in_use_succeeds():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="错误码")
+    await create_term_type(conn, tenant_id="default", value="错误码", actor="alice")
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.commit()
 
-    await delete_term_type(conn, tenant_id="default", value="错误码")
+    await delete_term_type(conn, tenant_id="default", value="错误码", actor="alice")
 
     assert await list_term_types(conn, tenant_id="default", status="draft") == []
 
@@ -195,7 +195,7 @@ async def test_delete_term_type_in_use_raises_conflict():
     """删除保护测试：草稿中的实体类型删除时，如果 terms 表里有真实术语引用
     它（模拟"已确认版本在用"的场景），删除必须被 CategoryInUseError 拦住。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="错误码")
+    await create_term_type(conn, tenant_id="default", value="错误码", actor="alice")
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.execute(
         "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
@@ -204,7 +204,7 @@ async def test_delete_term_type_in_use_raises_conflict():
     await conn.commit()
 
     with pytest.raises(CategoryInUseError):
-        await delete_term_type(conn, tenant_id="default", value="错误码")
+        await delete_term_type(conn, tenant_id="default", value="错误码", actor="alice")
 
 
 async def test_delete_term_type_in_use_by_confirmed_counterpart_raises_conflict():
@@ -213,7 +213,7 @@ async def test_delete_term_type_in_use_by_confirmed_counterpart_raises_conflict(
     仍然要被这份引用拦住——terms 表使用量检查不区分 ontology_term_types 自己
     的 status。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="错误码")
+    await create_term_type(conn, tenant_id="default", value="错误码", actor="alice")
     await conn.execute(
         "INSERT INTO ontology_term_types (tenant_id, value, extra_fields, status) "
         "VALUES ('default', '错误码', '[]', 'confirmed')"
@@ -226,14 +226,14 @@ async def test_delete_term_type_in_use_by_confirmed_counterpart_raises_conflict(
     await conn.commit()
 
     with pytest.raises(CategoryInUseError):
-        await delete_term_type(conn, tenant_id="default", value="错误码")
+        await delete_term_type(conn, tenant_id="default", value="错误码", actor="alice")
 
 
 async def test_delete_term_type_only_deletes_draft_row_leaves_confirmed_row():
     """delete_term_type 只删 status='draft' 的行，不影响同名的
     status='confirmed' 行。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="错误码")
+    await create_term_type(conn, tenant_id="default", value="错误码", actor="alice")
     await conn.execute(
         "INSERT INTO ontology_term_types (tenant_id, value, extra_fields, status) "
         "VALUES ('default', '错误码', '[]', 'confirmed')"
@@ -241,7 +241,7 @@ async def test_delete_term_type_only_deletes_draft_row_leaves_confirmed_row():
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.commit()
 
-    await delete_term_type(conn, tenant_id="default", value="错误码")
+    await delete_term_type(conn, tenant_id="default", value="错误码", actor="alice")
 
     assert await list_term_types(conn, tenant_id="default", status="draft") == []
     confirmed = await list_term_types(conn, tenant_id="default", status="confirmed")
@@ -253,8 +253,8 @@ async def test_update_term_type_cascades_rename_to_draft_allowlist_references():
     唯一还保留的级联范围（不再级联 terms 表，见
     test_update_term_type_rename_does_not_cascade_to_terms）。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="t1", value="客房")
-    await create_term_type(conn, tenant_id="t1", value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房", actor="alice")
+    await create_term_type(conn, tenant_id="t1", value="酒店", actor="alice")
     await conn.executescript(_TERMS_TABLE_SQL + ";")
     await conn.execute(
         "INSERT INTO term_type_relation_allowlist "
@@ -264,7 +264,7 @@ async def test_update_term_type_cascades_rename_to_draft_allowlist_references():
     )
     await conn.commit()
 
-    await update_term_type(conn, tenant_id="t1", value="客房", new_value="大床房", extra_fields=[])
+    await update_term_type(conn, tenant_id="t1", value="客房", new_value="大床房", extra_fields=[], actor="alice")
 
     cursor = await conn.execute(
         "SELECT subject_term_type FROM term_type_relation_allowlist WHERE tenant_id = 't1'"
@@ -277,8 +277,8 @@ async def test_update_term_type_rename_does_not_cascade_to_confirmed_allowlist_r
     """改名级联范围收窄到只更新 draft 行——confirmed 的约束条目不受草稿改名
     影响。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="t1", value="客房")
-    await create_term_type(conn, tenant_id="t1", value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房", actor="alice")
+    await create_term_type(conn, tenant_id="t1", value="酒店", actor="alice")
     await conn.executescript(_TERMS_TABLE_SQL + ";")
     await conn.execute(
         "INSERT INTO term_type_relation_allowlist "
@@ -288,7 +288,7 @@ async def test_update_term_type_rename_does_not_cascade_to_confirmed_allowlist_r
     )
     await conn.commit()
 
-    await update_term_type(conn, tenant_id="t1", value="客房", new_value="大床房", extra_fields=[])
+    await update_term_type(conn, tenant_id="t1", value="客房", new_value="大床房", extra_fields=[], actor="alice")
 
     cursor = await conn.execute(
         "SELECT subject_term_type FROM term_type_relation_allowlist WHERE tenant_id = 't1'"
@@ -299,8 +299,8 @@ async def test_update_term_type_rename_does_not_cascade_to_confirmed_allowlist_r
 
 async def test_delete_term_type_referenced_only_by_draft_allowlist_raises_conflict():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="t1", value="客房")
-    await create_term_type(conn, tenant_id="t1", value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房", actor="alice")
+    await create_term_type(conn, tenant_id="t1", value="酒店", actor="alice")
     await conn.executescript(_TERMS_TABLE_SQL + ";")
     await conn.execute(
         "INSERT INTO term_type_relation_allowlist "
@@ -311,15 +311,15 @@ async def test_delete_term_type_referenced_only_by_draft_allowlist_raises_confli
     await conn.commit()
 
     with pytest.raises(CategoryInUseError):
-        await delete_term_type(conn, tenant_id="t1", value="客房")
+        await delete_term_type(conn, tenant_id="t1", value="客房", actor="alice")
 
 
 async def test_delete_term_type_referenced_only_by_confirmed_allowlist_succeeds():
     """delete_term_type 的 allowlist 引用检查加了 status='draft'——只拦草稿
     自洽性相关的引用，跟本次删除无关的 confirmed 约束不挡删除。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="t1", value="客房")
-    await create_term_type(conn, tenant_id="t1", value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房", actor="alice")
+    await create_term_type(conn, tenant_id="t1", value="酒店", actor="alice")
     await conn.executescript(_TERMS_TABLE_SQL + ";")
     await conn.execute(
         "INSERT INTO term_type_relation_allowlist "
@@ -329,7 +329,7 @@ async def test_delete_term_type_referenced_only_by_confirmed_allowlist_succeeds(
     )
     await conn.commit()
 
-    await delete_term_type(conn, tenant_id="t1", value="客房")
+    await delete_term_type(conn, tenant_id="t1", value="客房", actor="alice")
 
     remaining = {t.value for t in await list_term_types(conn, tenant_id="t1", status="draft")}
     assert "客房" not in remaining
@@ -415,8 +415,8 @@ async def test_create_and_list_term_types_isolated_per_tenant():
     await create_term_type(
         conn, tenant_id="tenant_a", value="错误码",
         extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")],
-    )
-    await create_term_type(conn, tenant_id="tenant_b", value="VariantValue", extra_fields=[])
+    actor="alice")
+    await create_term_type(conn, tenant_id="tenant_b", value="VariantValue", extra_fields=[], actor="alice")
 
     types_a = await list_term_types(conn, tenant_id="tenant_a", status="draft")
     types_b = await list_term_types(conn, tenant_id="tenant_b", status="draft")
@@ -433,10 +433,10 @@ async def test_update_term_type_allowlist_cascade_scoped_to_same_tenant_only():
     改成手写 SQL 直接插入（绕开 create_term 内部对 list_term_types 的调用
     ——那个调用点的 status 参数补齐属于本 plan 后续任务范围）。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="tenant_a", value="客房", extra_fields=[])
-    await create_term_type(conn, tenant_id="tenant_a", value="酒店", extra_fields=[])
-    await create_term_type(conn, tenant_id="tenant_b", value="客房", extra_fields=[])
-    await create_term_type(conn, tenant_id="tenant_b", value="酒店", extra_fields=[])
+    await create_term_type(conn, tenant_id="tenant_a", value="客房", extra_fields=[], actor="alice")
+    await create_term_type(conn, tenant_id="tenant_a", value="酒店", extra_fields=[], actor="alice")
+    await create_term_type(conn, tenant_id="tenant_b", value="客房", extra_fields=[], actor="alice")
+    await create_term_type(conn, tenant_id="tenant_b", value="酒店", extra_fields=[], actor="alice")
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.execute(
         "INSERT INTO term_type_relation_allowlist "
@@ -463,7 +463,7 @@ async def test_update_term_type_allowlist_cascade_scoped_to_same_tenant_only():
     await update_term_type(
         conn, tenant_id="tenant_a", value="客房", new_value="客房间",
         extra_fields=[],
-    )
+    actor="alice")
 
     cursor = await conn.execute(
         "SELECT subject_term_type FROM term_type_relation_allowlist WHERE tenant_id = 'tenant_a'"
@@ -489,8 +489,8 @@ async def test_delete_term_type_in_use_by_constraint_returns_error():
     调用路径，断言逻辑不变：草稿中的实体类型被草稿约束引用时，删除被
     CategoryInUseError 拦住。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="t1", value="客房", extra_fields=[])
-    await create_term_type(conn, tenant_id="t1", value="酒店", extra_fields=[])
+    await create_term_type(conn, tenant_id="t1", value="客房", extra_fields=[], actor="alice")
+    await create_term_type(conn, tenant_id="t1", value="酒店", extra_fields=[], actor="alice")
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.execute(
         "INSERT INTO term_type_relation_allowlist "
@@ -501,7 +501,7 @@ async def test_delete_term_type_in_use_by_constraint_returns_error():
     await conn.commit()
 
     with pytest.raises(CategoryInUseError):
-        await delete_term_type(conn, tenant_id="t1", value="客房")
+        await delete_term_type(conn, tenant_id="t1", value="客房", actor="alice")
 
 
 async def test_create_term_type_with_typed_extra_fields():
@@ -512,7 +512,7 @@ async def test_create_term_type_with_typed_extra_fields():
             ExtraFieldSpec(name="severity_level", value_type="string"),
             ExtraFieldSpec(name="impact_count", value_type="integer"),
         ],
-    )
+    actor="alice")
 
     types = await list_term_types(conn, tenant_id="t1", status="draft")
     assert types[0].extra_fields == [
@@ -527,12 +527,12 @@ async def test_create_term_type_rejects_invalid_value_type():
         await create_term_type(
             conn, tenant_id="t1", value="错误码",
             extra_fields=[ExtraFieldSpec(name="severity_level", value_type="不存在的类型")],
-        )
+        actor="alice")
 
 
 async def test_update_term_type_with_typed_extra_fields():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="t1", value="VariantValue", extra_fields=[])
+    await create_term_type(conn, tenant_id="t1", value="VariantValue", extra_fields=[], actor="alice")
 
     await update_term_type(
         conn, tenant_id="t1", value="VariantValue", new_value="VariantValue",
@@ -540,7 +540,7 @@ async def test_update_term_type_with_typed_extra_fields():
             ExtraFieldSpec(name="numeric_value", value_type="number"),
             ExtraFieldSpec(name="dims", value_type="number[]"),
         ],
-    )
+    actor="alice")
 
     types = await list_term_types(conn, tenant_id="t1", status="draft")
     assert types[0].extra_fields == [
@@ -582,7 +582,7 @@ async def test_ensure_categories_schema_extra_fields_migration_is_idempotent():
     await create_term_type(
         conn, tenant_id="t1", value="错误码",
         extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")],
-    )
+    actor="alice")
 
     await ensure_categories_schema(conn)
     await ensure_categories_schema(conn)
@@ -597,7 +597,7 @@ async def test_create_term_type_rejects_extra_field_with_invalid_name_characters
         await create_term_type(
             conn, tenant_id="t1", value="Product",
             extra_fields=[ExtraFieldSpec(name="numeric value", value_type="number")],
-        )
+        actor="alice")
 
 
 async def test_create_term_type_accepts_extra_field_with_underscore_name():
@@ -605,7 +605,7 @@ async def test_create_term_type_accepts_extra_field_with_underscore_name():
     await create_term_type(
         conn, tenant_id="t1", value="Product",
         extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
-    )
+    actor="alice")
     result = await list_term_types(conn, "t1", status="draft")
     assert result[0].extra_fields[0].name == "numeric_value"
 
@@ -614,7 +614,7 @@ async def test_create_term_type_with_standard_name_value_type():
     conn = await _conn()
     await create_term_type(
         conn, tenant_id="default", value="销量", standard_name_value_type="number",
-    )
+    actor="alice")
 
     result = await list_term_types(conn, tenant_id="default", status="draft")
 
@@ -623,7 +623,7 @@ async def test_create_term_type_with_standard_name_value_type():
 
 async def test_create_term_type_without_standard_name_value_type_defaults_to_string():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="产品")
+    await create_term_type(conn, tenant_id="default", value="产品", actor="alice")
 
     result = await list_term_types(conn, tenant_id="default", status="draft")
 
@@ -635,17 +635,17 @@ async def test_create_term_type_rejects_invalid_standard_name_value_type():
     with pytest.raises(InvalidExtraFieldTypeError):
         await create_term_type(
             conn, tenant_id="default", value="销量", standard_name_value_type="number[]",
-        )
+        actor="alice")
 
 
 async def test_update_term_type_changes_standard_name_value_type():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="销量")
+    await create_term_type(conn, tenant_id="default", value="销量", actor="alice")
 
     await update_term_type(
         conn, tenant_id="default", value="销量", new_value="销量",
         extra_fields=[], standard_name_value_type="number",
-    )
+    actor="alice")
 
     result = await list_term_types(conn, tenant_id="default", status="draft")
     assert result[0].standard_name_value_type == "number"
@@ -692,7 +692,7 @@ async def test_delete_term_type_in_use_message_names_blocking_terms():
     """只报"1 条术语"用户还得自己去实体列表里翻找挡路的是哪条——消息里必须
     直接点名，否则这条提示看得见却纠正不了。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="module")
+    await create_term_type(conn, tenant_id="default", value="module", actor="alice")
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.execute(
         "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
@@ -701,7 +701,7 @@ async def test_delete_term_type_in_use_message_names_blocking_terms():
     await conn.commit()
 
     with pytest.raises(CategoryInUseError) as excinfo:
-        await delete_term_type(conn, tenant_id="default", value="module")
+        await delete_term_type(conn, tenant_id="default", value="module", actor="alice")
 
     assert "示例登录模块" in str(excinfo.value)
     assert excinfo.value.blocking_term_node_keys == ["示例登录模块"]
@@ -712,7 +712,7 @@ async def test_delete_term_type_in_use_message_lists_at_most_three_names_but_rep
     """挡路的术语多到列不完时，名字截断，但总数必须原样报出来——"3 条名字"
     和"共 12 条"是两个不同的信息量，丢掉后者用户会低估工作量。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="module")
+    await create_term_type(conn, tenant_id="default", value="module", actor="alice")
     await conn.execute(_TERMS_TABLE_SQL)
     for index in range(5):
         await conn.execute(
@@ -722,7 +722,7 @@ async def test_delete_term_type_in_use_message_lists_at_most_three_names_but_rep
     await conn.commit()
 
     with pytest.raises(CategoryInUseError) as excinfo:
-        await delete_term_type(conn, tenant_id="default", value="module")
+        await delete_term_type(conn, tenant_id="default", value="module", actor="alice")
 
     message = str(excinfo.value)
     assert "模块0" in message and "模块1" in message and "模块2" in message
@@ -737,8 +737,8 @@ async def test_delete_term_type_in_use_message_lists_at_most_three_names_but_rep
 async def test_delete_term_type_in_use_message_names_blocking_constraint():
     """草稿约束挡路时同样要点名到具体三元组，而不只是"1 条关系约束"。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="t1", value="客房")
-    await create_term_type(conn, tenant_id="t1", value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房", actor="alice")
+    await create_term_type(conn, tenant_id="t1", value="酒店", actor="alice")
     await conn.executescript(_TERMS_TABLE_SQL + ";")
     await conn.execute(
         "INSERT INTO term_type_relation_allowlist "
@@ -749,7 +749,7 @@ async def test_delete_term_type_in_use_message_names_blocking_constraint():
     await conn.commit()
 
     with pytest.raises(CategoryInUseError) as excinfo:
-        await delete_term_type(conn, tenant_id="t1", value="客房")
+        await delete_term_type(conn, tenant_id="t1", value="客房", actor="alice")
 
     message = str(excinfo.value)
     assert "客房" in message and "PART_OF" in message and "酒店" in message
@@ -760,8 +760,8 @@ async def test_delete_term_type_in_use_message_still_reports_both_counts():
     """两类引用同时存在时，两个总数都要报——只报其中一类会让用户清掉一类
     之后再撞一次墙。"""
     conn = await _conn()
-    await create_term_type(conn, tenant_id="t1", value="客房")
-    await create_term_type(conn, tenant_id="t1", value="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房", actor="alice")
+    await create_term_type(conn, tenant_id="t1", value="酒店", actor="alice")
     await conn.executescript(_TERMS_TABLE_SQL + ";")
     await conn.execute(
         "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
@@ -776,7 +776,7 @@ async def test_delete_term_type_in_use_message_still_reports_both_counts():
     await conn.commit()
 
     with pytest.raises(CategoryInUseError) as excinfo:
-        await delete_term_type(conn, tenant_id="t1", value="客房")
+        await delete_term_type(conn, tenant_id="t1", value="客房", actor="alice")
 
     message = str(excinfo.value)
     assert "豪华大床房" in message
@@ -793,7 +793,7 @@ async def test_delete_term_type_ignores_manually_deleted_terms():
     根本找不到，这道墙就没法翻过去。
     """
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="module")
+    await create_term_type(conn, tenant_id="default", value="module", actor="alice")
     await conn.execute(_TERMS_TABLE_SQL)
     await conn.execute(
         "INSERT INTO terms (tenant_id, standard_name, term_type, node_key) VALUES (?, ?, ?, ?)",
@@ -805,7 +805,7 @@ async def test_delete_term_type_ignores_manually_deleted_terms():
         field=FIELD_DELETED, value=None, edited_by="admin",
     )
 
-    await delete_term_type(conn, tenant_id="default", value="module")
+    await delete_term_type(conn, tenant_id="default", value="module", actor="alice")
 
     assert await list_term_types(conn, tenant_id="default", status="draft") == []
 
@@ -818,7 +818,7 @@ async def test_delete_term_type_still_blocked_by_terms_that_are_not_deleted():
     组数据上给出不同答案，断言因此能真正区分实现。
     """
     conn = await _conn()
-    await create_term_type(conn, tenant_id="default", value="module")
+    await create_term_type(conn, tenant_id="default", value="module", actor="alice")
     await conn.execute(_TERMS_TABLE_SQL)
     for standard_name in ("已删模块", "在用模块"):
         await conn.execute(
@@ -832,7 +832,7 @@ async def test_delete_term_type_still_blocked_by_terms_that_are_not_deleted():
     )
 
     with pytest.raises(CategoryInUseError) as excinfo:
-        await delete_term_type(conn, tenant_id="default", value="module")
+        await delete_term_type(conn, tenant_id="default", value="module", actor="alice")
 
     message = str(excinfo.value)
     assert "在用模块" in message
@@ -853,7 +853,7 @@ async def test_extra_field_label_round_trips_and_is_independent_of_name():
     await create_term_type(
         conn, tenant_id="t1", value="商品",
         extra_fields=[ExtraFieldSpec(name="price", value_type="number", label="售价")],
-    )
+    actor="alice")
 
     types = await list_term_types(conn, tenant_id="t1", status="draft")
     assert types[0].extra_fields == [
@@ -864,12 +864,12 @@ async def test_extra_field_label_round_trips_and_is_independent_of_name():
 
 async def test_update_term_type_persists_extra_field_label():
     conn = await _conn()
-    await create_term_type(conn, tenant_id="t1", value="商品", extra_fields=[])
+    await create_term_type(conn, tenant_id="t1", value="商品", extra_fields=[], actor="alice")
 
     await update_term_type(
         conn, tenant_id="t1", value="商品", new_value="商品",
         extra_fields=[ExtraFieldSpec(name="revenue", value_type="number", label="收入")],
-    )
+    actor="alice")
 
     types = await list_term_types(conn, tenant_id="t1", status="draft")
     assert types[0].extra_fields[0].label == "收入"

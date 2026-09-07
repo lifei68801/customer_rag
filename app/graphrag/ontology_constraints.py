@@ -6,6 +6,13 @@ from typing import Iterable
 import aiosqlite
 
 from app.graphrag.ontology_categories import list_term_types
+from app.graphrag.ontology_change_log import (
+    ACTION_CREATE,
+    ACTION_DELETE,
+    KIND_CONSTRAINT,
+    commit_with_change_log,
+    ensure_change_log_schema,
+)
 from app.graphrag.ontology_relations import list_relation_types
 
 _SCHEMA_SQL = """
@@ -57,6 +64,8 @@ def to_combination_keys(
 
 
 async def ensure_constraints_schema(conn: aiosqlite.Connection) -> None:
+    # 理由同 ensure_categories_schema：本模块的写入函数都要往变更日志表写一行。
+    await ensure_change_log_schema(conn)
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
 
@@ -96,6 +105,15 @@ async def _validate_references(
         raise UnknownRelationTypeError(f"该租户草稿里不存在关系类型: {relation_type!r}")
 
 
+def _combination_object_id(
+    subject_term_type: str, relation_type: str, object_term_type: str
+) -> str:
+    """约束没有单列的主键，它的身份就是那个三元组。日志里的 object_id 用
+    跟 CategoryInUseError 消息里同一种写法（"主语 -关系-> 宾语"），读日志
+    的人和读报错的人看到的是同一个字符串。"""
+    return f"{subject_term_type} -{relation_type}-> {object_term_type}"
+
+
 async def add_allowed_combination(
     conn: aiosqlite.Connection,
     tenant_id: str,
@@ -103,7 +121,9 @@ async def add_allowed_combination(
     subject_term_type: str,
     relation_type: str,
     object_term_type: str,
+    actor: str,
 ) -> None:
+    """actor 是这次变更的操作者，必填、无默认值。"""
     await _validate_references(
         conn, tenant_id, subject_term_type=subject_term_type,
         relation_type=relation_type, object_term_type=object_term_type,
@@ -114,7 +134,16 @@ async def add_allowed_combination(
         "VALUES (?, ?, ?, ?, 'draft')",
         (tenant_id, subject_term_type, relation_type, object_term_type),
     )
-    await conn.commit()
+    await commit_with_change_log(
+        conn, tenant_id, actor=actor, action=ACTION_CREATE, object_kind=KIND_CONSTRAINT,
+        object_id=_combination_object_id(subject_term_type, relation_type, object_term_type),
+        details={
+            "subject_term_type": subject_term_type,
+            "relation_type": relation_type,
+            "object_term_type": object_term_type,
+            "status": "draft",
+        },
+    )
 
 
 async def remove_allowed_combination(
@@ -124,10 +153,21 @@ async def remove_allowed_combination(
     subject_term_type: str,
     relation_type: str,
     object_term_type: str,
+    actor: str,
 ) -> None:
+    """actor 是这次变更的操作者，必填、无默认值。"""
     await conn.execute(
         "DELETE FROM term_type_relation_allowlist WHERE tenant_id = ? AND "
         "subject_term_type = ? AND relation_type = ? AND object_term_type = ? AND status = 'draft'",
         (tenant_id, subject_term_type, relation_type, object_term_type),
     )
-    await conn.commit()
+    await commit_with_change_log(
+        conn, tenant_id, actor=actor, action=ACTION_DELETE, object_kind=KIND_CONSTRAINT,
+        object_id=_combination_object_id(subject_term_type, relation_type, object_term_type),
+        details={
+            "subject_term_type": subject_term_type,
+            "relation_type": relation_type,
+            "object_term_type": object_term_type,
+            "status": "draft",
+        },
+    )

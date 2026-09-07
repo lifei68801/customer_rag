@@ -42,9 +42,9 @@ async def test_is_ontology_confirmed_false_before_first_confirm():
 async def test_confirm_ontology_promotes_draft_to_confirmed():
     conn = await _conn()
     await checkout_draft(conn, "t1")
-    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x")
+    await create_relation_type(conn, "t1", relation_type="SUITABLE_FOR", example_phrase="x", actor="alice")
 
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     confirmed = await list_relation_types(conn, "t1", status="confirmed")
     assert len(confirmed) == 11
@@ -55,7 +55,7 @@ async def test_confirm_ontology_clears_draft():
     conn = await _conn()
     await checkout_draft(conn, "t1")
 
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     assert await list_relation_types(conn, "t1", status="draft") == []
 
@@ -63,12 +63,12 @@ async def test_confirm_ontology_clears_draft():
 async def test_confirm_ontology_replaces_previous_confirmed_version():
     conn = await _conn()
     await checkout_draft(conn, "t1")
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
     await checkout_draft(conn, "t1")
     from app.graphrag.ontology_relations import delete_relation_type
-    await delete_relation_type(conn, "t1", "PRECEDES")
+    await delete_relation_type(conn, "t1", "PRECEDES", actor="alice")
 
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     confirmed = {r.relation_type for r in await list_relation_types(conn, "t1", status="confirmed")}
     assert "PRECEDES" not in confirmed
@@ -78,7 +78,7 @@ async def test_confirm_ontology_replaces_previous_confirmed_version():
 async def test_checkout_draft_after_confirm_copies_confirmed_into_new_draft():
     conn = await _conn()
     await checkout_draft(conn, "t1")
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     await checkout_draft(conn, "t1")
 
@@ -103,15 +103,15 @@ async def test_checkout_draft_does_not_reseed_after_user_deletes_all_draft_rows(
     conn = await _conn()
     await set_ingestion_mode(conn, "t1", "etl")
     await checkout_draft(conn, "t1")
-    await create_relation_type(conn, "t1", relation_type="HAS_SKU", example_phrase="x")
-    await confirm_ontology(conn, "t1")
+    await create_relation_type(conn, "t1", relation_type="HAS_SKU", example_phrase="x", actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     # 重新检出草稿：从已确认版本复制一条过来
     await checkout_draft(conn, "t1")
     assert [r.relation_type for r in await list_relation_types(conn, "t1", status="draft")] == ["HAS_SKU"]
 
     # 用户在管理后台把这条唯一的草稿记录删掉
-    await delete_relation_type(conn, "t1", "HAS_SKU")
+    await delete_relation_type(conn, "t1", "HAS_SKU", actor="alice")
     assert await list_relation_types(conn, "t1", status="draft") == []
 
     # 前端删除后会紧接着再调用一次 checkout 刷新界面：草稿必须保持为空，
@@ -123,7 +123,7 @@ async def test_checkout_draft_does_not_reseed_after_user_deletes_all_draft_rows(
 async def test_checkout_draft_is_idempotent_when_draft_already_exists():
     conn = await _conn()
     await checkout_draft(conn, "t1")
-    await create_relation_type(conn, "t1", relation_type="CUSTOM", example_phrase="x")
+    await create_relation_type(conn, "t1", relation_type="CUSTOM", example_phrase="x", actor="alice")
 
     await checkout_draft(conn, "t1")
 
@@ -134,11 +134,11 @@ async def test_checkout_draft_is_idempotent_when_draft_already_exists():
 async def test_confirm_ontology_promotes_constraints_too():
     conn = await _conn()
     await checkout_draft(conn, "t1")
-    await create_term_type(conn, tenant_id="t1", value="客房")
-    await create_term_type(conn, tenant_id="t1", value="酒店")
-    await add_allowed_combination(conn, "t1", subject_term_type="客房", relation_type="PART_OF", object_term_type="酒店")
+    await create_term_type(conn, tenant_id="t1", value="客房", actor="alice")
+    await create_term_type(conn, tenant_id="t1", value="酒店", actor="alice")
+    await add_allowed_combination(conn, "t1", subject_term_type="客房", relation_type="PART_OF", object_term_type="酒店", actor="alice")
 
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     confirmed = await list_allowed_combinations(conn, "t1", status="confirmed")
     assert confirmed == [
@@ -152,13 +152,13 @@ async def test_confirm_ontology_is_idempotent_no_op_without_draft():
     """Regression test: confirm called without draft should be a no-op, not data loss."""
     conn = await _conn()
     await checkout_draft(conn, "t1")
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     confirmed_after_first = await list_relation_types(conn, "t1", status="confirmed")
     assert len(confirmed_after_first) == 10
 
     # Second confirm without checkout should be a no-op
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     confirmed_after_second = await list_relation_types(conn, "t1", status="confirmed")
     assert len(confirmed_after_second) == 10
@@ -169,14 +169,14 @@ async def test_confirm_ontology_with_no_draft_does_not_delete_confirmed():
     """Regression test: confirm on a tenant with only confirmed data should not wipe it."""
     conn = await _conn()
     await checkout_draft(conn, "t1")
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     # Verify 10 confirmed rows exist
     confirmed = await list_relation_types(conn, "t1", status="confirmed")
     assert len(confirmed) == 10
 
     # Call confirm again without any draft
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     # Confirmed data should still be intact
     confirmed_after = await list_relation_types(conn, "t1", status="confirmed")
@@ -209,8 +209,8 @@ async def test_checkout_draft_still_seeds_defaults_for_extraction_tenants():
 async def test_checkout_draft_copies_confirmed_term_types_into_new_draft():
     conn = await _conn()
     await checkout_draft(conn, "t1")
-    await create_term_type(conn, tenant_id="t1", value="客房")
-    await confirm_ontology(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="客房", actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     await checkout_draft(conn, "t1")
 
@@ -229,9 +229,9 @@ async def test_checkout_draft_does_not_seed_default_term_types_for_brand_new_ten
 async def test_confirm_ontology_promotes_term_types_too():
     conn = await _conn()
     await checkout_draft(conn, "t1")
-    await create_term_type(conn, tenant_id="t1", value="客房")
+    await create_term_type(conn, tenant_id="t1", value="客房", actor="alice")
 
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     confirmed = await list_term_types(conn, "t1", status="confirmed")
     assert [t.value for t in confirmed] == ["客房"]
@@ -243,13 +243,13 @@ async def test_confirm_ontology_is_idempotent_no_op_without_any_draft():
     confirm_ontology 依然直接返回，不动已确认数据。"""
     conn = await _conn()
     await checkout_draft(conn, "t1")
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     confirmed_relations_after_first = await list_relation_types(conn, "t1", status="confirmed")
     confirmed_term_types_after_first = await list_term_types(conn, "t1", status="confirmed")
 
     # Second confirm without checkout should be a no-op
-    await confirm_ontology(conn, "t1")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     assert await list_relation_types(conn, "t1", status="confirmed") == confirmed_relations_after_first
     assert await list_term_types(conn, "t1", status="confirmed") == confirmed_term_types_after_first
@@ -273,13 +273,13 @@ async def test_concurrent_checkout_draft_does_not_violate_primary_key():
     conn = await _conn()
     await create_relation_type(
         conn, "t1", relation_type="BELONG_TO", example_phrase="A BELONG_TO B"
-    )
-    await create_term_type(conn, tenant_id="t1", value="产品")
+    , actor="alice")
+    await create_term_type(conn, tenant_id="t1", value="产品", actor="alice")
     await add_allowed_combination(
         conn, tenant_id="t1", subject_term_type="产品",
         relation_type="BELONG_TO", object_term_type="产品",
-    )
-    await confirm_ontology(conn, "t1")
+    actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     # confirm 会清掉检出标记，所以这三次并发调用都会走到"需要重新复制"的分支。
     await asyncio.gather(
@@ -303,7 +303,7 @@ async def test_replace_draft_swaps_the_whole_draft():
     库里还在，确认时又冒出来。
     """
     await checkout_draft(conn, "t1")
-    await create_term_type(conn, tenant_id="t1", value="旧类型")
+    await create_term_type(conn, tenant_id="t1", value="旧类型", actor="alice")
 
     await replace_draft(
         conn,
@@ -311,7 +311,7 @@ async def test_replace_draft_swaps_the_whole_draft():
         term_types=[{"value": "订单号", "extra_fields": [], "standard_name_value_type": "string"}],
         relation_types=[],
         constraints=[],
-    )
+    actor="alice")
 
     values = [t.value for t in await list_term_types(conn, "t1", status="draft")]
     assert values == ["订单号"]
@@ -326,7 +326,7 @@ async def test_replace_draft_is_atomic():
     干净的重来方式，只能去三个 tab 逐个删。
     """
     await checkout_draft(conn, "t1")
-    await create_term_type(conn, tenant_id="t1", value="原有类型")
+    await create_term_type(conn, tenant_id="t1", value="原有类型", actor="alice")
 
     with pytest.raises(Exception):
         await replace_draft(
@@ -340,7 +340,7 @@ async def test_replace_draft_is_atomic():
             constraints=[
                 {"subject_term_type": "订单号", "relation_type": "NOPE", "object_term_type": "幽灵"}
             ],
-        )
+        actor="alice")
 
     values = [t.value for t in await list_term_types(conn, "t1", status="draft")]
     assert values == ["原有类型"], "失败后草稿必须保持原样"
@@ -350,8 +350,8 @@ async def test_replace_draft_does_not_touch_confirmed():
     conn = await _conn()
     """已确认版本是只读快照。替换草稿动到它，等于绕过了确认这道关。"""
     await checkout_draft(conn, "t1")
-    await create_term_type(conn, tenant_id="t1", value="已确认的")
-    await confirm_ontology(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="已确认的", actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     await replace_draft(
         conn,
@@ -359,7 +359,7 @@ async def test_replace_draft_does_not_touch_confirmed():
         term_types=[{"value": "新的", "extra_fields": [], "standard_name_value_type": "string"}],
         relation_types=[],
         constraints=[],
-    )
+    actor="alice")
 
     confirmed = [t.value for t in await list_term_types(conn, "t1", status="confirmed")]
     assert confirmed == ["已确认的"]
@@ -381,8 +381,8 @@ async def test_replace_draft_marks_the_tenant_as_checked_out():
     值重新播种 10 条通用关系类型——所以要断言它保持为空。
     """
     await checkout_draft(conn, "t1")
-    await create_term_type(conn, tenant_id="t1", value="已确认的")
-    await confirm_ontology(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="已确认的", actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     await replace_draft(
         conn,
@@ -390,7 +390,7 @@ async def test_replace_draft_marks_the_tenant_as_checked_out():
         term_types=[{"value": "引导建的", "extra_fields": [], "standard_name_value_type": "string"}],
         relation_types=[],
         constraints=[],
-    )
+    actor="alice")
     await checkout_draft(conn, "t1")
 
     values = [t.value for t in await list_term_types(conn, "t1", status="draft")]
@@ -423,7 +423,7 @@ async def test_replace_draft_keeps_extra_field_label():
         ],
         relation_types=[],
         constraints=[],
-    )
+    actor="alice")
 
     spec = (await list_term_types(conn, "t1", status="draft"))[0].extra_fields[0]
     assert spec.name == "price"
@@ -447,7 +447,7 @@ async def test_replace_draft_accepts_extra_field_without_label():
         ],
         relation_types=[],
         constraints=[],
-    )
+    actor="alice")
 
     spec = (await list_term_types(conn, "t1", status="draft"))[0].extra_fields[0]
     assert spec.label == ""

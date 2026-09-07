@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+
 import aiosqlite
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.api.admin_session import AdminSession
+from app.graphrag.ontology_change_log import list_ontology_changes
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.term_edits_store import ensure_term_edits_schema
@@ -111,6 +114,28 @@ class _FakeGraphClient:
 def conn_for_testing() -> dict[str, aiosqlite.Connection]:
     """Holder for connection shared between client fixture and tests."""
     return {}
+
+
+@pytest.fixture
+def client_as_alice(monkeypatch, conn_for_testing):
+    """跟 client 一样，只是登录身份是 alice 而不是 admin。
+
+    变更日志那组用例必须用这个：_fake_admin_session 的用户名是 "admin"，
+    而"写死一个 admin"正是这次要防的那种实现，用 admin 断言 actor ==
+    "admin" 的话两种实现都能过。"""
+
+    async def _get_conn():
+        if "conn" not in conn_for_testing:
+            conn_for_testing["conn"] = await _review_conn()
+        return conn_for_testing["conn"]
+
+    app.dependency_overrides[deps.get_review_conn] = _get_conn
+    app.dependency_overrides[deps.require_admin_session] = lambda: AdminSession(
+        username="alice", role="admin", tenant_id=None, expires_at=1e18
+    )
+    app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraphClient()
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture
@@ -1114,3 +1139,146 @@ def test_replace_draft_keeps_extra_field_label(client):
     assert resp.json()["term_types"][0]["extra_fields"] == [
         {"name": "price", "value_type": "number", "label": "售价"}
     ]
+
+
+# ---------------------------------------------------------------------------
+# 本体变更日志：API 层把登录会话里的用户名传下去
+#
+# 这组用例登录身份是 alice（client_as_alice），不是 admin——见那个 fixture
+# 的说明。
+# ---------------------------------------------------------------------------
+
+
+def _changes(conn_for_testing, tenant_id: str = "t1"):
+    async def _run():
+        return await list_ontology_changes(conn_for_testing["conn"], tenant_id)
+
+    return asyncio.run(_run())
+
+
+def _headers() -> dict:
+    return {"Authorization": "Bearer x"}
+
+
+def test_creating_a_term_type_logs_the_logged_in_user(client_as_alice, conn_for_testing):
+    resp = client_as_alice.post(
+        "/api/admin/ontology/t1/term-types", json={"value": "错误码"}, headers=_headers()
+    )
+
+    assert resp.status_code == 200, resp.text
+    change = _changes(conn_for_testing)[-1]
+    assert change.actor == "alice"
+    assert change.action == "create"
+    assert change.object_kind == "term_type"
+    assert change.object_id == "错误码"
+
+
+def test_deleting_a_term_type_logs_the_logged_in_user(client_as_alice, conn_for_testing):
+    client_as_alice.post(
+        "/api/admin/ontology/t1/term-types", json={"value": "错误码"}, headers=_headers()
+    )
+
+    resp = client_as_alice.delete(
+        "/api/admin/ontology/t1/term-types/错误码", headers=_headers()
+    )
+
+    assert resp.status_code == 200, resp.text
+    change = _changes(conn_for_testing)[-1]
+    assert change.actor == "alice"
+    assert change.action == "delete"
+    assert change.object_kind == "term_type"
+    assert change.object_id == "错误码"
+
+
+def test_relation_type_writes_log_the_logged_in_user(client_as_alice, conn_for_testing):
+    client_as_alice.post(
+        "/api/admin/ontology/t1/relation-types",
+        json={"relation_type": "SOLD_BY", "example_phrase": "产品 SOLD_BY 公司"},
+        headers=_headers(),
+    )
+    client_as_alice.put(
+        "/api/admin/ontology/t1/relation-types/SOLD_BY",
+        json={"relation_type": "SUPPLIED_BY", "example_phrase": "产品 SUPPLIED_BY 公司"},
+        headers=_headers(),
+    )
+    client_as_alice.delete(
+        "/api/admin/ontology/t1/relation-types/SUPPLIED_BY", headers=_headers()
+    )
+
+    changes = _changes(conn_for_testing)
+    assert [(c.actor, c.action, c.object_id) for c in changes] == [
+        ("alice", "create", "SOLD_BY"),
+        ("alice", "update", "SOLD_BY"),
+        ("alice", "delete", "SUPPLIED_BY"),
+    ]
+
+
+def test_constraint_writes_log_the_logged_in_user(client_as_alice, conn_for_testing):
+    client_as_alice.post(
+        "/api/admin/ontology/t1/term-types", json={"value": "产品"}, headers=_headers()
+    )
+    client_as_alice.post(
+        "/api/admin/ontology/t1/term-types", json={"value": "公司"}, headers=_headers()
+    )
+    client_as_alice.post(
+        "/api/admin/ontology/t1/relation-types",
+        json={"relation_type": "SOLD_BY", "example_phrase": "产品 SOLD_BY 公司"},
+        headers=_headers(),
+    )
+    body = {
+        "subject_term_type": "产品", "relation_type": "SOLD_BY", "object_term_type": "公司",
+    }
+    client_as_alice.post(
+        "/api/admin/ontology/t1/constraints", json=body, headers=_headers()
+    )
+    client_as_alice.request(
+        "DELETE", "/api/admin/ontology/t1/constraints", json=body, headers=_headers()
+    )
+
+    changes = [c for c in _changes(conn_for_testing) if c.object_kind == "constraint"]
+    assert [(c.actor, c.action, c.object_id) for c in changes] == [
+        ("alice", "create", "产品 -SOLD_BY-> 公司"),
+        ("alice", "delete", "产品 -SOLD_BY-> 公司"),
+    ]
+
+
+def test_confirming_the_ontology_logs_the_logged_in_user(client_as_alice, conn_for_testing):
+    client_as_alice.post(
+        "/api/admin/ontology/t1/term-types", json={"value": "错误码"}, headers=_headers()
+    )
+
+    resp = client_as_alice.post("/api/admin/ontology/t1/confirm", headers=_headers())
+
+    assert resp.status_code == 200, resp.text
+    change = _changes(conn_for_testing)[-1]
+    assert change.actor == "alice"
+    assert change.action == "confirm"
+    assert change.object_kind == "ontology"
+    assert change.details["term_types"] == 1
+
+
+def test_replacing_the_draft_logs_the_logged_in_user(client_as_alice, conn_for_testing):
+    resp = client_as_alice.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [{"value": "产品"}, {"value": "公司"}],
+            "relation_types": [
+                {"relation_type": "SOLD_BY", "example_phrase": "产品 SOLD_BY 公司"}
+            ],
+            "constraints": [
+                {
+                    "subject_term_type": "产品",
+                    "relation_type": "SOLD_BY",
+                    "object_term_type": "公司",
+                }
+            ],
+        },
+        headers=_headers(),
+    )
+
+    assert resp.status_code == 200, resp.text
+    change = _changes(conn_for_testing)[-1]
+    assert change.actor == "alice"
+    assert change.action == "replace"
+    assert change.object_kind == "ontology_draft"
+    assert change.details["term_type_values"] == ["产品", "公司"]

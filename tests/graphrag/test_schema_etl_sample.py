@@ -226,16 +226,16 @@ async def test_generated_sample_files_run_successfully_through_run_schema_etl(tm
     await create_term_type(
         conn, tenant_id="demo", value="Product",
         extra_fields=[ExtraFieldSpec(name="price", value_type="number")],
-    )
-    await create_term_type(conn, tenant_id="demo", value="Category")
+    actor="alice")
+    await create_term_type(conn, tenant_id="demo", value="Category", actor="alice")
     await checkout_draft(conn, "demo")
     await create_relation_type(
         conn, "demo", relation_type="BELONG_TO", example_phrase="Product BELONG_TO Category",
-    )
+    actor="alice")
     await add_allowed_combination(
         conn, "demo", subject_term_type="Product", relation_type="BELONG_TO", object_term_type="Category",
-    )
-    await confirm_ontology(conn, "demo")
+    actor="alice")
+    await confirm_ontology(conn, "demo", actor="alice")
 
     term_types = await list_term_types(conn, "demo", status="confirmed")
     combos = await list_allowed_combinations(conn, "demo", status="confirmed")

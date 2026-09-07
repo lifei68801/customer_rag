@@ -7,6 +7,13 @@ from datetime import datetime
 import aiosqlite
 
 from app.graphrag.ontology_categories import InvalidExtraFieldTypeError, ensure_categories_schema
+from app.graphrag.ontology_change_log import (
+    ACTION_CONFIRM,
+    ACTION_REPLACE,
+    KIND_ONTOLOGY,
+    KIND_ONTOLOGY_DRAFT,
+    commit_with_change_log,
+)
 from app.graphrag.ontology_constraints import UnknownCategoryError, ensure_constraints_schema
 from app.graphrag.ontology_etl_mapping import ensure_etl_mapping_schema, set_draft_etl_mapping
 from app.graphrag.ontology_relations import (
@@ -222,7 +229,24 @@ async def checkout_draft(conn: aiosqlite.Connection, tenant_id: str) -> None:
     await conn.commit()
 
 
-async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
+async def _count_draft_rows(conn: aiosqlite.Connection, tenant_id: str) -> dict:
+    """三张草稿表各有多少行。confirm 的日志汇总用它——必须在提升之前调用，
+    提升之后那些行的 status 已经不是 draft 了，数出来是 0。"""
+    counts: dict[str, int] = {}
+    for table, key in (
+        ("ontology_term_types", "term_types"),
+        ("tenant_relation_types", "relation_types"),
+        ("term_type_relation_allowlist", "constraints"),
+    ):
+        cursor = await conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE tenant_id = ? AND status = 'draft'",
+            (tenant_id,),
+        )
+        counts[key] = (await cursor.fetchone())[0]
+    return counts
+
+
+async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str, *, actor: str) -> None:
     """把草稿原子性地提升为已确认版本：先删旧的已确认行，再把草稿行的 status 原地
     改成 confirmed——两张表（关系类型、约束）在同一次 commit 里一起提交，不会出现
     "关系类型确认了但约束表没确认"这种半提交状态。确认之后草稿即被清空（status
@@ -236,6 +260,11 @@ async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
     checkout_draft 应该被当成"还没检出过"，重新从刚确认的版本复制一份新草稿，
     而不是延续本轮已经过期的检出状态（那样会导致新草稿从一开始就是空的，
     checkout_draft 却因为标记还在而不去重新播种）。
+
+    actor 必填、无默认值：这是一次改变本体的操作，跟单条增删改一样要记进
+    ontology_change_log。批量操作只记一条汇总（提升了多少个类型/关系/约束），
+    不逐行展开——逐行展开的日志读起来是几十条完全相同时间戳的噪声，回答不了
+    "这次确认动了什么"这个真正的问题。
     """
     await _ensure_checkout_state_schema(conn)
     # 防御性建表，不能假设调用方一定跑过 ensure_ontology_schema：
@@ -250,8 +279,11 @@ async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
         or await _has_any_row(conn, "ontology_term_types", tenant_id, "draft")
     )
     if not has_draft_in_any_table:
+        # 什么都没改，就不该留下一条"确认过"的日志——否则日志里会积一堆
+        # 没有对应任何实际变更的行。
         return
 
+    promoted_counts = await _count_draft_rows(conn, tenant_id)
     for table in _TABLES_WITH_TENANT_LIFECYCLE:
         await conn.execute(
             f"DELETE FROM {table} WHERE tenant_id = ? AND status = 'confirmed'", (tenant_id,)
@@ -263,7 +295,11 @@ async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str) -> None:
     await conn.execute(
         "DELETE FROM ontology_draft_checkout_state WHERE tenant_id = ?", (tenant_id,)
     )
-    await conn.commit()
+    await commit_with_change_log(
+        conn, tenant_id, actor=actor, action=ACTION_CONFIRM, object_kind=KIND_ONTOLOGY,
+        # 批量操作没有单个被操作对象，object_id 落空串。
+        object_id="", details=promoted_counts,
+    )
 
 
 async def is_ontology_confirmed(conn: aiosqlite.Connection, tenant_id: str) -> bool:
@@ -277,6 +313,7 @@ async def replace_draft(
     term_types: list[dict],
     relation_types: list[dict],
     constraints: list[dict],
+    actor: str,
     etl_mapping: dict | None = None,
 ) -> None:
     """把该租户的三张草稿表整份替换成提交的内容。先把所有会失败的校验做完，
@@ -473,4 +510,19 @@ async def replace_draft(
         "INSERT OR IGNORE INTO ontology_draft_checkout_state (tenant_id) VALUES (?)",
         (tenant_id,),
     )
-    await conn.commit()
+    # 一条汇总，不逐行展开：整份替换一次要写十几个对象，逐行记的话日志里
+    # 一次提交就是十几条同时间戳的行，反而看不出"这次提交把草稿换成了什么"。
+    # 名字列表跟着计数一起记——只有数字的话，事后对着"3 个实体类型"仍然
+    # 说不出被换掉的是哪几个。
+    await commit_with_change_log(
+        conn, tenant_id, actor=actor, action=ACTION_REPLACE,
+        object_kind=KIND_ONTOLOGY_DRAFT, object_id="",
+        details={
+            "term_types": len(normalized_term_types),
+            "relation_types": len(normalized_relation_types),
+            "constraints": len(normalized_constraints),
+            "term_type_values": [value for value, _, _ in normalized_term_types],
+            "relation_type_names": [name for name, _, _, _ in normalized_relation_types],
+            "etl_mapping": etl_mapping is not None,
+        },
+    )

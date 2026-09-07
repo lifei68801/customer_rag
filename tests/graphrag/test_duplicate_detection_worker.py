@@ -32,9 +32,9 @@ async def conn(tmp_path):
         # create_term("t1", term_type="公司"/"产品") would otherwise raise
         # UnknownCategoryError. Seed both term types used below for tenant t1.
         await ensure_ontology_schema(conn)
-        await create_term_type(conn, tenant_id="t1", value="公司")
-        await create_term_type(conn, tenant_id="t1", value="产品")
-        await confirm_ontology(conn, "t1")
+        await create_term_type(conn, tenant_id="t1", value="公司", actor="alice")
+        await create_term_type(conn, tenant_id="t1", value="产品", actor="alice")
+        await confirm_ontology(conn, "t1", actor="alice")
         yield conn
 
 

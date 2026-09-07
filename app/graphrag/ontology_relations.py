@@ -5,6 +5,15 @@ from dataclasses import dataclass
 
 import aiosqlite
 
+from app.graphrag.ontology_change_log import (
+    ACTION_CREATE,
+    ACTION_DELETE,
+    ACTION_UPDATE,
+    KIND_RELATION_TYPE,
+    commit_with_change_log,
+    ensure_change_log_schema,
+)
+
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS tenant_relation_types (
     tenant_id         TEXT NOT NULL,
@@ -64,6 +73,9 @@ class RelationTypeDef:
 
 
 async def ensure_relations_schema(conn: aiosqlite.Connection) -> None:
+    # 理由同 ensure_categories_schema：本模块的写入函数都要往变更日志表
+    # 写一行，单独建关系表的连接也得有它。
+    await ensure_change_log_schema(conn)
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
 
@@ -120,9 +132,11 @@ async def create_relation_type(
     *,
     relation_type: str,
     example_phrase: str,
+    actor: str,
     description: str = "",
     allow_chain_query: bool = False,
 ) -> None:
+    """actor 是这次变更的操作者，必填、无默认值。"""
     _validate_relation_type(relation_type, example_phrase)
     try:
         await conn.execute(
@@ -135,7 +149,17 @@ async def create_relation_type(
         raise RelationTypeNameConflictError(
             f"{relation_type!r} 已经是该租户草稿里的关系类型，不能重复创建"
         )
-    await conn.commit()
+    await commit_with_change_log(
+        conn, tenant_id, actor=actor, action=ACTION_CREATE,
+        object_kind=KIND_RELATION_TYPE, object_id=relation_type,
+        details={
+            "example_phrase": example_phrase,
+            "description": description,
+            "allow_chain_query": allow_chain_query,
+            "source": "custom",
+            "status": "draft",
+        },
+    )
 
 
 async def update_relation_type(
@@ -146,6 +170,7 @@ async def update_relation_type(
     example_phrase: str,
     description: str,
     allow_chain_query: bool,
+    actor: str,
     new_relation_type: str | None = None,
 ) -> None:
     """relation_type 是当前（改名前）的名字，用来定位草稿里的这一行；
@@ -182,11 +207,21 @@ async def update_relation_type(
             "WHERE tenant_id = ? AND relation_type = ? AND status = 'draft'",
             (new_relation_type, tenant_id, relation_type),
         )
-    await conn.commit()
+    await commit_with_change_log(
+        conn, tenant_id, actor=actor, action=ACTION_UPDATE,
+        # object_id 是改名前的名字（这次操作的是哪一行），新名字在 details 里。
+        object_kind=KIND_RELATION_TYPE, object_id=relation_type,
+        details={
+            "new_relation_type": new_relation_type,
+            "example_phrase": example_phrase,
+            "description": description,
+            "allow_chain_query": allow_chain_query,
+        },
+    )
 
 
 async def delete_relation_type(
-    conn: aiosqlite.Connection, tenant_id: str, relation_type: str
+    conn: aiosqlite.Connection, tenant_id: str, relation_type: str, *, actor: str
 ) -> None:
     """不设引用保护——关系类型表只是写入时的白名单闸门，不是任何表的外键约束
     对象；已写入 Neo4j 的旧边不因为闸门关闭而失效（见调用方 ontology_lifecycle.py
@@ -206,4 +241,8 @@ async def delete_relation_type(
         "AND status = 'draft'",
         (tenant_id, relation_type),
     )
-    await conn.commit()
+    await commit_with_change_log(
+        conn, tenant_id, actor=actor, action=ACTION_DELETE,
+        object_kind=KIND_RELATION_TYPE, object_id=relation_type,
+        details={"status": "draft"},
+    )

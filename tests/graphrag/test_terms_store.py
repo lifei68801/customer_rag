@@ -62,13 +62,13 @@ async def _connect() -> aiosqlite.Connection:
     # 早于分类枚举表存在——这里补齐分类，保持既有测试的字面量不变
     # （新增测试自己会为各自用到的分类调用 create_term_type，
     # 不依赖这份预置，两者字面量不重叠）。
-    await create_term_type(conn, tenant_id="default", value="error_code")
-    await create_term_type(conn, tenant_id="default", value="module")
-    await create_term_type(conn, tenant_id="default", value="other")
-    await create_term_type(conn, tenant_id="default", value="t")
+    await create_term_type(conn, tenant_id="default", value="error_code", actor="alice")
+    await create_term_type(conn, tenant_id="default", value="module", actor="alice")
+    await create_term_type(conn, tenant_id="default", value="other", actor="alice")
+    await create_term_type(conn, tenant_id="default", value="t", actor="alice")
     # 真实术语只认已确认的实体类型（见 validate_term_categories），这里创建完就
     # 立刻确认，让共享 fixture 产出的类型对 create_term/update_term 可用。
-    await confirm_ontology(conn, "default")
+    await confirm_ontology(conn, "default", actor="alice")
     return conn
 
 
@@ -76,11 +76,11 @@ async def _setup_default_categories(conn: aiosqlite.Connection) -> None:
     """Set up the standard categories for tests that use the new tenant-scoped functions."""
     # 调用方只 ensure_terms_schema 过——补齐 confirm_ontology 需要的表（幂等）。
     await ensure_ontology_schema(conn)
-    await create_term_type(conn, tenant_id="default", value="error_code")
-    await create_term_type(conn, tenant_id="default", value="module")
-    await create_term_type(conn, tenant_id="default", value="other")
-    await create_term_type(conn, tenant_id="default", value="t")
-    await confirm_ontology(conn, "default")
+    await create_term_type(conn, tenant_id="default", value="error_code", actor="alice")
+    await create_term_type(conn, tenant_id="default", value="module", actor="alice")
+    await create_term_type(conn, tenant_id="default", value="other", actor="alice")
+    await create_term_type(conn, tenant_id="default", value="t", actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
 
 
 async def test_ensure_terms_schema_migrates_legacy_table_to_tenant_scoped():
@@ -173,10 +173,10 @@ async def test_create_term_is_isolated_per_tenant():
     await ensure_terms_schema(conn)
     await _setup_default_categories(conn)
     # Register categories for each tenant that will be used
-    await create_term_type(conn, tenant_id="tenant_a", value="t")
-    await create_term_type(conn, tenant_id="tenant_b", value="t")
-    await confirm_ontology(conn, "tenant_a")
-    await confirm_ontology(conn, "tenant_b")
+    await create_term_type(conn, tenant_id="tenant_a", value="t", actor="alice")
+    await create_term_type(conn, tenant_id="tenant_b", value="t", actor="alice")
+    await confirm_ontology(conn, "tenant_a", actor="alice")
+    await confirm_ontology(conn, "tenant_b", actor="alice")
     await create_term(
         conn, tenant_id="tenant_a", standard_name="错误码E502", aliases=[],
         term_type="t",
@@ -201,8 +201,8 @@ async def test_update_term_rename_keeps_node_key_stable():
     await ensure_terms_schema(conn)
     await _setup_default_categories(conn)
     # Register categories for t1 tenant
-    await create_term_type(conn, tenant_id="t1", value="t")
-    await confirm_ontology(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="t", actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
     await create_term(
         conn, tenant_id="t1", standard_name="错误码E502", aliases=[],
         term_type="t",
@@ -226,10 +226,10 @@ async def test_check_name_conflict_does_not_cross_tenant_boundary():
     await ensure_terms_schema(conn)
     await _setup_default_categories(conn)
     # Register categories for both tenants
-    await create_term_type(conn, tenant_id="tenant_a", value="t")
-    await create_term_type(conn, tenant_id="tenant_b", value="t")
-    await confirm_ontology(conn, "tenant_a")
-    await confirm_ontology(conn, "tenant_b")
+    await create_term_type(conn, tenant_id="tenant_a", value="t", actor="alice")
+    await create_term_type(conn, tenant_id="tenant_b", value="t", actor="alice")
+    await confirm_ontology(conn, "tenant_a", actor="alice")
+    await confirm_ontology(conn, "tenant_b", actor="alice")
     await create_term(
         conn, tenant_id="tenant_a", standard_name="登录模块", aliases=["认证模块"],
         term_type="t",
@@ -247,8 +247,8 @@ async def test_delete_term_scoped_to_tenant():
     await ensure_terms_schema(conn)
     await _setup_default_categories(conn)
     # Register categories for t1 tenant
-    await create_term_type(conn, tenant_id="t1", value="t")
-    await confirm_ontology(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="t", actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
     await create_term(
         conn, tenant_id="t1", standard_name="待删除", aliases=[], term_type="t",
     )
@@ -489,8 +489,8 @@ async def test_delete_term_raises_when_not_found():
 async def test_create_term_persists_extra_properties():
     from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")])
-    await confirm_ontology(conn, "default")
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")], actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
 
     await create_term(
         conn,
@@ -518,8 +518,8 @@ async def test_create_term_rejects_unknown_term_type():
 async def test_create_term_rejects_extra_property_not_declared_on_term_type():
     from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")])
-    await confirm_ontology(conn, "default")
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")], actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
 
     with pytest.raises(UnknownCategoryError):
         await create_term(
@@ -531,8 +531,8 @@ async def test_create_term_rejects_extra_property_not_declared_on_term_type():
 async def test_removing_extra_field_from_term_type_preserves_existing_term_value():
     from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string"), ExtraFieldSpec(name="impact_scope", value_type="string")])
-    await confirm_ontology(conn, "default")
+    await create_term_type(conn, tenant_id="default", value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string"), ExtraFieldSpec(name="impact_scope", value_type="string")], actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
     await create_term(
         conn, tenant_id="default", standard_name="错误码E502", aliases=[], term_type="错误码",
         extra_properties={"severity_level": "高", "impact_scope": "全站不可用"},
@@ -540,7 +540,7 @@ async def test_removing_extra_field_from_term_type_preserves_existing_term_value
 
     # update_term_type 只操作草稿行，确认之后草稿已清空，需要先检出一份新草稿
     await checkout_draft(conn, "default")
-    await update_term_type(conn, tenant_id="default", value="错误码", new_value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")])
+    await update_term_type(conn, tenant_id="default", value="错误码", new_value="错误码", extra_fields=[ExtraFieldSpec(name="severity_level", value_type="string")], actor="alice")
 
     term = await get_term(conn, tenant_id="default", standard_name="错误码E502")
     assert term.extra_properties == {"severity_level": "高", "impact_scope": "全站不可用"}
@@ -552,8 +552,8 @@ async def test_update_term_resubmitting_undeclared_but_already_stored_key_succee
     validate_term_categories 的 existing_extra_property_keys 参数说明。"""
     from app.graphrag.ontology_categories import ExtraFieldSpec
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="房型", extra_fields=[ExtraFieldSpec(name="area", value_type="string")])
-    await confirm_ontology(conn, "default")
+    await create_term_type(conn, tenant_id="default", value="房型", extra_fields=[ExtraFieldSpec(name="area", value_type="string")], actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
     await create_term(
         conn, tenant_id="default", standard_name="大床房", aliases=[], term_type="房型",
         extra_properties={"area": "30"},
@@ -565,8 +565,8 @@ async def test_update_term_resubmitting_undeclared_but_already_stored_key_succee
     # 下面 update_term 的 validate_term_categories（查已确认声明）真正看到
     # "area 已不再声明"这个状态，否则测的就不是这里的豁免逻辑了。
     await checkout_draft(conn, "default")
-    await update_term_type(conn, tenant_id="default", value="房型", new_value="房型", extra_fields=[])
-    await confirm_ontology(conn, "default")
+    await update_term_type(conn, tenant_id="default", value="房型", new_value="房型", extra_fields=[], actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
 
     # 重新保存这条术语，提交里仍然带着这个已经被去掉声明的字段——不应该报错
     await update_term(
@@ -584,8 +584,8 @@ async def test_update_term_rejects_genuinely_new_undeclared_key():
     """字段既不在 term_type 当前声明里，也从未在这条术语上出现过——不能因为
     "existing_extra_property_keys 放行"这条豁免被滥用成完全绕过校验。"""
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="房型", extra_fields=[])
-    await confirm_ontology(conn, "default")
+    await create_term_type(conn, tenant_id="default", value="房型", extra_fields=[], actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
     await create_term(
         conn, tenant_id="default", standard_name="大床房", aliases=[], term_type="房型",
         extra_properties={},
@@ -605,7 +605,7 @@ async def test_validate_term_categories_rejects_term_type_from_another_tenant():
     tenant_b 提交同名 term_type 应该被拒绝（对 tenant_b 而言这是未知分类）。"""
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
-    await create_term_type(conn, tenant_id="tenant_a", value="错误码")
+    await create_term_type(conn, tenant_id="tenant_a", value="错误码", actor="alice")
 
     with pytest.raises(UnknownCategoryError):
         await create_term(
@@ -625,8 +625,8 @@ async def test_create_term_with_typed_extra_properties():
             ExtraFieldSpec(name="numeric_value", value_type="number"),
             ExtraFieldSpec(name="dims", value_type="number[]"),
         ],
-    )
-    await confirm_ontology(conn, "t1")
+    actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     await create_term(
         conn, tenant_id="t1", standard_name="容量750ml", aliases=[],
@@ -646,8 +646,8 @@ async def test_create_term_rejects_extra_property_with_wrong_type():
     await create_term_type(
         conn, tenant_id="t1", value="VariantValue",
         extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
-    )
-    await confirm_ontology(conn, "t1")
+    actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     with pytest.raises(InvalidExtraPropertyTypeError):
         await create_term(
@@ -666,8 +666,8 @@ async def test_create_term_rejects_bool_as_number():
     await create_term_type(
         conn, tenant_id="t1", value="VariantValue",
         extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
-    )
-    await confirm_ontology(conn, "t1")
+    actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     with pytest.raises(InvalidExtraPropertyTypeError):
         await create_term(
@@ -691,8 +691,8 @@ async def test_update_term_grandfathered_field_skips_type_check():
     await create_term_type(
         conn, tenant_id="t1", value="VariantValue",
         extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
-    )
-    await confirm_ontology(conn, "t1")
+    actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
     await create_term(
         conn, tenant_id="t1", standard_name="X", aliases=[],
         term_type="VariantValue",
@@ -703,8 +703,8 @@ async def test_update_term_grandfathered_field_skips_type_check():
     await update_term_type(
         conn, tenant_id="t1", value="VariantValue", new_value="VariantValue",
         extra_fields=[],
-    )
-    await confirm_ontology(conn, "t1")
+    actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
 
     # 不应该抛 InvalidExtraPropertyTypeError 或 UnknownCategoryError
     await update_term(
@@ -719,8 +719,8 @@ async def test_upsert_term_with_node_key_creates_new_row():
     await ensure_terms_schema(conn)
     await ensure_ontology_schema(conn)
     from app.graphrag.ontology_categories import create_term_type
-    await create_term_type(conn, tenant_id="muji", value="Product")
-    await confirm_ontology(conn, "muji")
+    await create_term_type(conn, tenant_id="muji", value="Product", actor="alice")
+    await confirm_ontology(conn, "muji", actor="alice")
 
     await upsert_term_with_node_key(
         conn, tenant_id="muji", node_key="Product:1001", standard_name="圆角收纳盒",
@@ -738,8 +738,8 @@ async def test_upsert_term_with_node_key_updates_existing_row_by_node_key():
     await ensure_terms_schema(conn)
     await ensure_ontology_schema(conn)
     from app.graphrag.ontology_categories import create_term_type
-    await create_term_type(conn, tenant_id="muji", value="Product")
-    await confirm_ontology(conn, "muji")
+    await create_term_type(conn, tenant_id="muji", value="Product", actor="alice")
+    await confirm_ontology(conn, "muji", actor="alice")
     await upsert_term_with_node_key(
         conn, tenant_id="muji", node_key="Product:1001", standard_name="圆角收纳盒",
         aliases=[], term_type="Product",
@@ -767,8 +767,8 @@ async def test_upsert_term_with_node_key_allows_duplicate_standard_name_differen
     await ensure_terms_schema(conn)
     await ensure_ontology_schema(conn)
     from app.graphrag.ontology_categories import create_term_type
-    await create_term_type(conn, tenant_id="muji", value="Product")
-    await confirm_ontology(conn, "muji")
+    await create_term_type(conn, tenant_id="muji", value="Product", actor="alice")
+    await confirm_ontology(conn, "muji", actor="alice")
     await upsert_term_with_node_key(
         conn, tenant_id="muji", node_key="Product:1001", standard_name="圆角收纳盒",
         aliases=[], term_type="Product",
@@ -792,8 +792,8 @@ async def test_upsert_term_with_node_key_typed_extra_properties():
     await create_term_type(
         conn, tenant_id="muji", value="VariantValue",
         extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
-    )
-    await confirm_ontology(conn, "muji")
+    actor="alice")
+    await confirm_ontology(conn, "muji", actor="alice")
 
     await upsert_term_with_node_key(
         conn, tenant_id="muji", node_key="Variant:dim_007:00001", standard_name="抹茶",
@@ -862,8 +862,8 @@ async def test_upsert_term_with_node_key_grandfathers_removed_field_on_re_upsert
     await create_term_type(
         conn, tenant_id="muji", value="VariantValue",
         extra_fields=[ExtraFieldSpec(name="numeric_value", value_type="number")],
-    )
-    await confirm_ontology(conn, "muji")
+    actor="alice")
+    await confirm_ontology(conn, "muji", actor="alice")
     await upsert_term_with_node_key(
         conn, tenant_id="muji", node_key="Variant:dim_007:00001", standard_name="抹茶",
         aliases=[], term_type="VariantValue",
@@ -873,8 +873,8 @@ async def test_upsert_term_with_node_key_grandfathers_removed_field_on_re_upsert
     await update_term_type(
         conn, tenant_id="muji", value="VariantValue", new_value="VariantValue",
         extra_fields=[],
-    )
-    await confirm_ontology(conn, "muji")
+    actor="alice")
+    await confirm_ontology(conn, "muji", actor="alice")
 
     # 不应该抛错
     await upsert_term_with_node_key(
@@ -892,8 +892,8 @@ async def test_migrate_term_type_updates_matching_rows_and_returns_affected_coun
             term_type="t",
         )
     # 不应该被迁移到的另一个租户的同名旧类型行——验证按租户隔离
-    await create_term_type(conn, tenant_id="other-tenant", value="t")
-    await confirm_ontology(conn, "other-tenant")
+    await create_term_type(conn, tenant_id="other-tenant", value="t", actor="alice")
+    await confirm_ontology(conn, "other-tenant", actor="alice")
     await create_term(
         conn, tenant_id="other-tenant", standard_name="C", aliases=[],
         term_type="t",
@@ -1039,9 +1039,9 @@ async def _connect_t1_with_product_category_types() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_terms_schema(conn)
     await ensure_ontology_schema(conn)
-    await create_term_type(conn, tenant_id="t1", value="产品")
-    await create_term_type(conn, tenant_id="t1", value="类目")
-    await confirm_ontology(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="产品", actor="alice")
+    await create_term_type(conn, tenant_id="t1", value="类目", actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
     return conn
 
 
@@ -1198,8 +1198,8 @@ async def test_merge_terms_tombstones_merged_and_appends_aliases_onto_keeper():
     4. term_edits 表里有且只有两条编辑：merged 的 __deleted__、keep 的 aliases
     """
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="公司")
-    await confirm_ontology(conn, "default")
+    await create_term_type(conn, tenant_id="default", value="公司", actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
     await create_term(
         conn, tenant_id="default", standard_name="Coca-Cola", aliases=["coke"], term_type="公司",
     )
@@ -1248,8 +1248,8 @@ async def test_merge_terms_tombstones_merged_and_appends_aliases_onto_keeper():
 
 async def test_merge_terms_raises_term_not_found_for_unknown_node_key():
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="公司")
-    await confirm_ontology(conn, "default")
+    await create_term_type(conn, tenant_id="default", value="公司", actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
     await create_term(conn, tenant_id="default", standard_name="Coca-Cola", aliases=[], term_type="公司")
 
     with pytest.raises(TermNotFoundError):
@@ -1264,8 +1264,8 @@ async def test_merge_terms_is_idempotent_when_run_twice():
     合并视图结果不变——这是改到编辑层之后天然获得的性质（ON CONFLICT DO UPDATE），
     旧的墓碑化实现没法保证。"""
     conn = await _connect()
-    await create_term_type(conn, tenant_id="default", value="公司")
-    await confirm_ontology(conn, "default")
+    await create_term_type(conn, tenant_id="default", value="公司", actor="alice")
+    await confirm_ontology(conn, "default", actor="alice")
     await create_term(
         conn, tenant_id="default", standard_name="Coca-Cola", aliases=["coke"], term_type="公司",
     )
@@ -1433,8 +1433,8 @@ async def test_list_etl_node_keys_by_term_type_excludes_manual_and_review_rows()
     # _connect() 只预置了 tenant "default" 下的几个分类字面量；这里用的
     # tenant "t1" + term_type "产品" 是新组合，validate_term_categories 要求
     # 分类必须已注册并确认，先补齐。
-    await create_term_type(conn, tenant_id="t1", value="产品")
-    await confirm_ontology(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="产品", actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
     await upsert_term_with_node_key(
         conn, tenant_id="t1", node_key="产品:A", standard_name="A",
         aliases=[], term_type="产品", extra_properties={}, source="etl",
@@ -1455,11 +1455,11 @@ async def test_list_etl_node_keys_by_term_type_excludes_manual_and_review_rows()
 
 async def test_list_etl_node_keys_by_term_type_is_scoped_to_tenant_and_type():
     conn = await _connect()
-    await create_term_type(conn, tenant_id="t1", value="产品")
-    await create_term_type(conn, tenant_id="t1", value="类目")
-    await confirm_ontology(conn, "t1")
-    await create_term_type(conn, tenant_id="t2", value="产品")
-    await confirm_ontology(conn, "t2")
+    await create_term_type(conn, tenant_id="t1", value="产品", actor="alice")
+    await create_term_type(conn, tenant_id="t1", value="类目", actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
+    await create_term_type(conn, tenant_id="t2", value="产品", actor="alice")
+    await confirm_ontology(conn, "t2", actor="alice")
     await upsert_term_with_node_key(
         conn, tenant_id="t1", node_key="产品:A", standard_name="A",
         aliases=[], term_type="产品", extra_properties={}, source="etl",
@@ -1478,8 +1478,8 @@ async def test_list_etl_node_keys_by_term_type_is_scoped_to_tenant_and_type():
 
 async def test_delete_terms_by_node_keys_removes_only_the_named_rows():
     conn = await _connect()
-    await create_term_type(conn, tenant_id="t1", value="产品")
-    await confirm_ontology(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="产品", actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
     for key in ("产品:A", "产品:B", "产品:C"):
         await upsert_term_with_node_key(
             conn, tenant_id="t1", node_key=key, standard_name=key,
@@ -1496,8 +1496,8 @@ async def test_delete_terms_by_node_keys_on_empty_set_is_a_noop():
     """空集合必须是干净的空操作——绝不能退化成"没有 WHERE 条件"把整张表删了。
     这是本函数最危险的失败形态。"""
     conn = await _connect()
-    await create_term_type(conn, tenant_id="t1", value="产品")
-    await confirm_ontology(conn, "t1")
+    await create_term_type(conn, tenant_id="t1", value="产品", actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
     await upsert_term_with_node_key(
         conn, tenant_id="t1", node_key="产品:A", standard_name="A",
         aliases=[], term_type="产品", extra_properties={}, source="etl",
@@ -1719,8 +1719,8 @@ async def test_edit_layer_created_terms_are_counted():
 async def test_counts_are_scoped_to_the_tenant():
     conn = await _connect()
     # 第二个租户要自己注册并确认分类——_connect() 只预置了 default 的。
-    await create_term_type(conn, tenant_id="other_tenant", value="module")
-    await confirm_ontology(conn, "other_tenant")
+    await create_term_type(conn, tenant_id="other_tenant", value="module", actor="alice")
+    await confirm_ontology(conn, "other_tenant", actor="alice")
     await create_term(conn, tenant_id="default", standard_name="M1", aliases=[], term_type="module")
     await create_term(conn, tenant_id="other_tenant", standard_name="M2", aliases=[], term_type="module")
 
