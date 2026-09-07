@@ -16,6 +16,14 @@ import { ADMIN_ROUTES } from '../adminRoutes'
 import { termDetailPath } from './TermDetailPage'
 import { PAGE_TITLES } from '../adminRoutes'
 import { fieldDisplayName, valueTypeLabel } from './extraFieldDisplay'
+import { BulkDeleteOutcome, BulkSelectionBar } from './BulkSelectionBar'
+import { useBulkSelection } from './useBulkSelection'
+import {
+  buildBulkDeleteConfirmMessage,
+  requestBulkDelete,
+  type BulkDeleteFilters,
+  type BulkDeleteResult,
+} from './bulkDelete'
 
 // 50 而不是 20：20017 条实体在 20/页 下是 1001 页。搜索已经解决了「找特定
 // 一条」（90% 的实际需求），剩下的浏览场景把每页调大就拿到了虚拟滚动八成的
@@ -154,6 +162,14 @@ export function TermsPage() {
   const [savingKey, setSavingKey] = useState<string | null>(null)
   const [deletingKey, setDeletingKey] = useState<string | null>(null)
 
+  // 批量删除。selection 里的两档（本页 / 当前筛选条件下的全部）是两种互斥的
+  // 请求模式，见 useBulkSelection。
+  const bulk = useBulkSelection()
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  // 结果留在页面上，不走 toast：删 100 条其中 3 条被图谱边挡住时，那 3 条的
+  // 明细必须等用户自己看完再关掉——一闪而过的提示等于静默失败。
+  const [bulkResult, setBulkResult] = useState<BulkDeleteResult | null>(null)
+
   useEffect(() => {
     document.title = '实体明细 · 管理后台'
   }, [])
@@ -290,6 +306,44 @@ export function TermsPage() {
     }
   }, [loaded, terms.length, page])
 
+  // 平铺列表当前生效的筛选条件。确认框要把它念出来，请求体里发的也是它——
+  // 「全部」= 当前筛选条件下的全部，不是整个租户。
+  const flatFilters: BulkDeleteFilters = useMemo(
+    () => ({
+      term_type: typeFilter ?? undefined,
+      source: sourceFilter === 'all' ? undefined : sourceFilter,
+      q: search.trim() || undefined,
+    }),
+    [typeFilter, sourceFilter, search],
+  )
+
+  const handleBulkDelete = async (scopeId: string, filters: BulkDeleteFilters) => {
+    if (!sessionToken || bulkDeleting) return
+    const target = bulk.targetFor(scopeId)
+    if (!target) return
+    if (!(await confirm(buildBulkDeleteConfirmMessage(target, '实体')))) return
+    setError(null)
+    setBulkResult(null)
+    setBulkDeleting(true)
+    try {
+      const result = await requestBulkDelete(
+        sessionToken,
+        `/api/admin/${encodeURIComponent(tenantId)}/terms/bulk-delete`,
+        // filters 那一档发的是筛选条件本身，不是 id 列表：条数可能是两万，
+        // 前端手里没有也不该有那份列表。
+        target.mode === 'filters' ? { ...target, filters } : target,
+      )
+      setBulkResult(result)
+      bulk.clear()
+      await refresh()
+      setRefreshVersion((v) => v + 1)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '批量删除失败')
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   const handleStartEdit = (term: TermRecord) => {
     if (editingKey !== null) return
     setEditingKey(termKey(term))
@@ -350,7 +404,7 @@ export function TermsPage() {
 
   // 一行实体（含就地编辑）。分组视图和搜索结果都用它——复制一份的话，
   // 编辑逻辑就会有两处需要同步改。
-  const renderTerm = (term: TermRecord) => {
+  const renderTerm = (term: TermRecord, scopeId: string) => {
           const key = termKey(term)
           const isEditing = editingKey === key
           return (
@@ -362,7 +416,14 @@ export function TermsPage() {
             >
               {!isEditing && (
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-ink">
+                  <input
+                    type="checkbox"
+                    checked={bulk.isSelected(scopeId, term.node_key)}
+                    onChange={() => bulk.toggleKey(scopeId, term.node_key)}
+                    aria-label={`选中「${term.standard_name}」`}
+                    className={`h-4 w-4 shrink-0 cursor-pointer ${focusRing}`}
+                  />
+                  <span className="flex-1 text-ink">
                     {/* 名字是通往详情的链接：关系、来源、完整属性都在那边，
                         列表行里放不下。这也是问答明细反查的落点。 */}
                     <Link
@@ -598,6 +659,14 @@ export function TermsPage() {
         </p>
       )}
 
+      {bulkResult && (
+        <BulkDeleteOutcome
+          result={bulkResult}
+          noun="实体"
+          onDismiss={() => setBulkResult(null)}
+        />
+      )}
+
       {grouping && !summaryLoaded && <Skeleton variant="table-rows" count={5} />}
       {grouping &&
         summaryLoaded &&
@@ -643,13 +712,42 @@ export function TermsPage() {
                   要找具体某一条用上面的搜索。
                 </p>
               )}
-              {isOpen && rows.map(renderTerm)}
+              {isOpen && rows.length > 0 && (
+                // 「全部」在分组视图里就是这个实体类型下的全部——组标题上那个
+                // 数字（group.total）和工具条上写的必须是同一个，不然用户会
+                // 按着"10,000 条"的印象点下一个其实删别的数量的按钮。
+                <BulkSelectionBar
+                  scopeId={group.term_type}
+                  listedKeys={rows.map((t) => t.node_key)}
+                  total={group.total}
+                  filters={{ term_type: group.term_type }}
+                  noun="实体"
+                  selection={bulk}
+                  onDelete={(scopeId) =>
+                    void handleBulkDelete(scopeId, { term_type: group.term_type })
+                  }
+                  deleting={bulkDeleting}
+                />
+              )}
+              {isOpen && rows.map((term) => renderTerm(term, group.term_type))}
             </section>
           )
         })}
       {!grouping && !loaded && <Skeleton variant="table-rows" count={5} />}
       {!grouping && !loaded && <Skeleton variant="table-rows" count={5} />}
-      {!grouping && loaded && terms.map(renderTerm)}
+      {!grouping && loaded && terms.length > 0 && (
+        <BulkSelectionBar
+          scopeId="flat"
+          listedKeys={terms.map((t) => t.node_key)}
+          total={total}
+          filters={flatFilters}
+          noun="实体"
+          selection={bulk}
+          onDelete={(scopeId) => void handleBulkDelete(scopeId, flatFilters)}
+          deleting={bulkDeleting}
+        />
+      )}
+      {!grouping && loaded && terms.map((term) => renderTerm(term, 'flat'))}
       {loaded && !error && terms.length === 0 && (
         // 搜索无结果和"一条实体都没有"是两回事。加搜索之前这里只有后者，
         // 搜索之后如果还只说"还没有任何实体"，用户会以为数据没了——明明有
