@@ -31,9 +31,25 @@ class CategoryNotFoundError(Exception):
 
 
 class CategoryInUseError(Exception):
-    """删除的分类枚举值仍被 terms 表引用，terms.term_type 是硬约束外键，
-    删除在用的值会让已有术语行结构失效，必须阻止（不同于关系类型删除——那只是写入
-    白名单，不是任何表的外键约束对象，见 ontology_relations.py）。
+    """删除的分类枚举值仍被合并视图里看得见的术语（或当前草稿的关系约束）引用，
+    必须阻止。
+
+    拦截的理由**不是**外键：terms 表的 DDL 里一条 FOREIGN KEY 都没有
+    （见 terms_store.py::_SCHEMA_SQL，term_type 只是 TEXT NOT NULL），
+    SQLite 默认 PRAGMA foreign_keys=OFF，就算声明了也不强制。删掉一个仍被
+    引用的分类，坏掉的是语义而不是行结构——已有术语行照样读得出来，只是
+    它的 term_type 指向一个不存在的分类，于是：
+
+    - structured_filter_query 按 term_type 过滤/跳转时直接报错「term_type
+      不在已确认 schema 里」（见 structured_filter_query.py::
+      _resolve_field_value_type）；
+    - extra_fields 的字段类型声明挂在分类上，分类没了，实体
+      extra_properties 里的数据还在，但没人知道那些字段该是什么类型；
+    - 实体列表的分组摘要按 term_type 分组（admin_terms_routes.py::
+      get_terms_summary），会出现一个不在分类列表里的孤儿组。
+
+    这三件事够麻烦，所以拦截保留；但别把它当成结构性约束——它是一道
+    应用层守卫，不是数据库替我们把的关。
 
     除了人话消息，还带一份结构化的"挡路的是谁"：terms_count/allowlist_count
     是总数，blocking_term_node_keys 是前几条挡路术语的 node_key（消息里点名
