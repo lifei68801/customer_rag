@@ -19,7 +19,13 @@ from app.graphrag.term_edits_store import (
     list_term_edits_for_node_key,
     upsert_term_edit,
 )
-from app.graphrag.terms_store import create_term, ensure_terms_schema, list_terms, update_term
+from app.graphrag.terms_store import (
+    create_term,
+    ensure_terms_schema,
+    list_terms,
+    update_term,
+    upsert_term_with_node_key,
+)
 from app.main import app
 from tests.settings_factory import build_settings
 
@@ -1586,6 +1592,73 @@ def test_post_on_a_manually_deleted_node_key_resurrects_it(terms_conn):
     # __deleted__ 编辑已经被撤掉，不是靠别的方式绕过去的。
     edits = asyncio.run(list_term_edits_for_node_key(terms_conn, "t1", "t:删了又建"))
     assert FIELD_DELETED not in edits
+
+
+def test_post_refuses_to_resurrect_a_row_whose_term_type_is_gone(terms_conn):
+    """要复活的那行，它的 term_type 已经不在已确认 schema 里 —— 拒绝。
+
+    风险链条：用户把某个类型的实体删空（编辑层 __deleted__，terms 表那行
+    还在）→ 分类删除的守卫看合并视图，放行 → 之后有人重建同一个 node_key
+    →terms 表那行复活，而它的 term_type 仍指向一个已经不存在的分类，悬空。
+
+    校验口径跟 ETL 写入那道一致（schema_etl.py::_write_entity_mapping：
+    不在 list_term_types(status="confirmed") 里就拒），补的正是同一套逻辑
+    漏掉的这个入口。
+
+    注意 payload 里的 term_type 是合法的 "t2" —— 这次请求本身没问题，出问题
+    的是它会顺带复活的那行（node_key 前缀只反映创建时的类型，跟行上的
+    term_type 可以不一致，见 update_term 的说明）。所以这条拒绝不可能被
+    既有的 validate_term_categories 覆盖掉。
+    """
+    asyncio.run(
+        upsert_term_with_node_key(
+            terms_conn, tenant_id="t1", node_key="t2:悬空实体",
+            standard_name="悬空实体", aliases=[], term_type="t",
+        )
+    )
+    asyncio.run(
+        upsert_term_edit(
+            terms_conn, tenant_id="t1", node_key="t2:悬空实体",
+            field=FIELD_DELETED, value=None, edited_by="admin",
+        )
+    )
+    # 分类 "t" 从已确认 schema 里消失（用户删掉了它）。
+    asyncio.run(
+        terms_conn.execute(
+            "DELETE FROM ontology_term_types WHERE tenant_id = 't1' AND value = 't'"
+        )
+    )
+    asyncio.run(terms_conn.commit())
+
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient(edge_count=0)
+    try:
+        client = TestClient(app)
+        headers = _authed_headers(session_store)
+        resp = client.post(
+            "/api/admin/t1/terms",
+            json={
+                "standard_name": "悬空实体", "aliases": [], "term_type": "t2",
+                "extra_properties": {},
+            },
+            headers=headers,
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    # 说清理由：挡住这次重建的是那行自己的类型 't'，不是提交上来的 't2'。
+    assert "'t'" in detail
+    assert "不在已确认 schema 里" in detail
+
+    # 那行没有被复活：__deleted__ 还在，也没有落下 __created__。
+    edits = asyncio.run(list_term_edits_for_node_key(terms_conn, "t1", "t2:悬空实体"))
+    assert FIELD_DELETED in edits
+    assert FIELD_CREATED not in edits
 
 
 def test_search_matches_standard_name_and_aliases(terms_conn):

@@ -15,11 +15,13 @@ from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.duplicate_detection import find_similar_terms
 from app.graphrag.neo4j_client import GraphWriteProtocol
 from app.graphrag.ontology import Term
+from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.term_edits_store import (
     FIELD_CREATED,
     FIELD_DELETED,
     FIELD_EXTRA_PROPERTIES,
     delete_term_edit,
+    list_term_edits_for_node_key,
     upsert_term_edit,
 )
 from app.graphrag.terms_store import (
@@ -520,12 +522,44 @@ async def create_new_term(
     # 用 get_term_by_node_key（查 terms 表原始行）而不是合并视图，因为
     # 祖父豁免关心的是"这个实体上在 terms 表里实际存在的属性键"。
     existing_extra_property_keys = frozenset()
+    existing_term = None
     try:
         existing_term = await get_term_by_node_key(review_conn, tenant_id=tenant_id, node_key=node_key)
         existing_extra_property_keys = frozenset(existing_term.extra_properties)
     except TermNotFoundError:
         # 查不到原始行 = 纯新建，无需豁免
         pass
+
+    if existing_term is not None:
+        # 这次 POST 会顺带复活一行曾被人工删除的 terms 行（下面撤 __deleted__
+        # 那一步）。复活它之前先看它自己的 term_type 还在不在已确认 schema
+        # 里：分类删除的守卫走的是合并视图，被人工删空的类型可以被删掉——
+        # 于是"实体被删 → 分类被删 → 实体被重建"这条链会让一行 term_type
+        # 指向不存在分类的实体重新可见，悬空。
+        #
+        # 校验口径跟 ETL 写入那道一致（schema_etl.py::_write_entity_mapping
+        # 也是 list_term_types(status="confirmed") 里没有就拒），这里补的是
+        # 同一套逻辑漏掉的那个入口。
+        #
+        # 只在真的要复活时检查：没有 __deleted__ 编辑的行本来就一直可见，
+        # 这次 POST 不改变它的可见性，在这里拦住只会挡掉一次合法的编辑。
+        # 注意校验的是 terms 行自己的 term_type，不是 payload.term_type
+        # （那个由下面的 validate_term_categories 负责）——node_key 的类型
+        # 前缀只反映创建时的类型，两者可以不一致，见 terms_store.update_term。
+        existing_edits = await list_term_edits_for_node_key(
+            review_conn, tenant_id=tenant_id, node_key=node_key
+        )
+        if FIELD_DELETED in existing_edits:
+            confirmed_types = await list_term_types(review_conn, tenant_id, status="confirmed")
+            if existing_term.term_type not in {t.value for t in confirmed_types}:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"无法重建 {node_key!r}：它在 terms 表里的 term_type "
+                        f"{existing_term.term_type!r} 不在已确认 schema 里"
+                        f"（分类已被删除）。要恢复这条实体，先把这个分类加回来。"
+                    ),
+                )
 
     try:
         await validate_term_categories(
