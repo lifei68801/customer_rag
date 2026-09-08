@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from app.api import deps
 from app.auth.admin_users_store import ensure_admin_users_schema
 from app.auth.bootstrap import disable_stale_test_tenants, seed_admin_user
+from app.auth.user_tenants_store import ensure_user_tenants_schema
 from app.api.admin_account_routes import router as admin_account_router
 from app.api.admin_auth_routes import router as admin_auth_router
 from app.api.admin_document_routes import router as admin_document_router
@@ -110,6 +111,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # "暂时不可用、稍后自动恢复"的瞬时故障。处理方式同下面的工具注册表。
     admin_conn = await deps.get_review_conn(settings)
     await ensure_admin_users_schema(admin_conn)
+    await ensure_user_tenants_schema(admin_conn)
     await seed_admin_user(admin_conn, settings.admin_token)
     await disable_stale_test_tenants(admin_conn)
 
