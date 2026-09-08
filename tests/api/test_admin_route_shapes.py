@@ -97,6 +97,10 @@ _NON_TENANT_PREFIXES = (
     "/api/admin/auth/",
     "/api/admin/tenants",
     "/api/admin/accounts",
+    # 「我这个账号能访问哪些数字人」对任何角色都要回答，路径里没有
+    # {tenant_id} 段。挂 require_tenant_access 的话 FastAPI 会把 tenant_id
+    # 当成必填 query 参数，请求直接 422——见 test_non_tenant_routes_do_not_check_tenant_access。
+    "/api/admin/personas",
 )
 
 

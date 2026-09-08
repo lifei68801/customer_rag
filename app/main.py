@@ -16,6 +16,7 @@ from app.api.admin_graph_review_routes import router as admin_graph_review_route
 from app.api.admin_diagnostics_routes import router as admin_diagnostics_router
 from app.api.admin_nav_badges_routes import router as admin_nav_badges_router
 from app.api.admin_ontology_routes import router as admin_ontology_router
+from app.api.admin_personas_routes import router as admin_personas_router
 from app.api.admin_schema_etl_routes import router as admin_schema_etl_router
 from app.api.admin_tenant_routes import router as admin_tenant_router
 from app.api.admin_terms_routes import router as admin_terms_router
@@ -154,6 +155,12 @@ admin_scoped = APIRouter(dependencies=[Depends(deps.require_csrf)])
 admin_scoped.include_router(admin_auth_router)
 admin_scoped.include_router(admin_account_router)
 admin_scoped.include_router(admin_tenant_router)
+# GET /api/admin/personas 也是非租户路径（路径里没有 {tenant_id}）——「我
+# 这个账号能访问哪些数字人」对任何角色都要回答得出来，不能挂
+# require_tenant_access（会让 FastAPI 把 tenant_id 当成必填 query 参数，
+# 请求直接 422），只能挂在这里而不是下面的 tenant_scoped。见
+# tests/api/test_admin_route_shapes.py 的 _NON_TENANT_PREFIXES。
+admin_scoped.include_router(admin_personas_router)
 
 # 租户作用域的路由统一收在这个父 router 下，而不是各挂各的依赖。各挂各的
 # 一定会漏，而漏掉的那条是越权读写，且不会有任何报错——请求照常 200，只是
