@@ -430,15 +430,11 @@ class NeptuneGraphClient:
             "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
         )
 
-    async def count_relation_edges_for_term(self, *, tenant_id: str, node_key: str) -> int:
+    async def summarize_relation_edges_for_terms(
+        self, *, tenant_id: str, node_keys: list[str]
+    ) -> list[dict[str, Any]]:
         raise NotImplementedError(
-            "NeptuneGraphClient 尚未实现 count_relation_edges_for_term——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
-        )
-
-    async def list_node_keys_with_relation_edges(self, *, tenant_id: str) -> set[str]:
-        raise NotImplementedError(
-            "NeptuneGraphClient 尚未实现 list_node_keys_with_relation_edges——见 "
+            "NeptuneGraphClient 尚未实现 summarize_relation_edges_for_terms——见 "
             "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
         )
 

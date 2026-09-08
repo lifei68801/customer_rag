@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest
 
-from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.neo4j_client import UNKNOWN_COUNTERPART_TYPE, Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.structured_filter_query import AttributeConstraint, ExpandSpec, ResolvedAnchor, TypeAnchor
@@ -351,26 +351,6 @@ async def test_query_subgraph_two_hop_branch_scopes_intermediate_nodes_by_tenant
     assert "ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id)" in two_hop
 
 
-async def test_count_relation_edges_for_term_returns_edge_count():
-    session = FakeSession(rows=[{"edge_count": 3}])
-    client = Neo4jGraphClient(driver=FakeDriver(session))
-
-    count = await client.count_relation_edges_for_term(tenant_id="t1", node_key="错误码E502")
-
-    assert count == 3
-    assert session.last_parameters == {"tenant_id": "t1", "node_key": "错误码E502"}
-    assert "type(r) <> 'ALIAS_OF'" in session.last_query
-
-
-async def test_count_relation_edges_for_term_returns_zero_when_no_rows():
-    session = FakeSession(rows=[])
-    client = Neo4jGraphClient(driver=FakeDriver(session))
-
-    count = await client.count_relation_edges_for_term(tenant_id="t1", node_key="孤立术语")
-
-    assert count == 0
-
-
 async def test_rename_term_node_sends_expected_query_and_parameters():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
@@ -558,16 +538,6 @@ async def test_delete_term_node_scopes_by_tenant():
 
     assert session.last_parameters == {"tenant_id": "t1", "node_key": "k1"}
     assert "MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})" in session.last_query
-
-
-async def test_count_relation_edges_for_term_scopes_by_tenant():
-    session = FakeSession(rows=[{"edge_count": 2}])
-    client = Neo4jGraphClient(driver=FakeDriver(session))
-
-    count = await client.count_relation_edges_for_term(tenant_id="t1", node_key="k1")
-
-    assert count == 2
-    assert session.last_parameters == {"tenant_id": "t1", "node_key": "k1"}
 
 
 async def test_ensure_extra_field_indexes_creates_index_per_scalar_field():
@@ -1185,35 +1155,6 @@ async def test_probe_relation_fanout_returns_zero_when_no_edges_match():
     ) == 0
 
 
-async def test_count_relation_edges_for_term_ignores_other_tenant_edges():
-    """守卫查询必须同时按边的 tenant_id 过滤——只按两端节点的 tenant_id
-    匹配的话，别的租户写的边会挡住本租户的术语删除（真实数据里就有一条
-    两端节点 tenant_id=default、边自己 tenant_id=demo 的历史脏边）。
-
-    merge_relation 写边时两端节点和边用的是同一个 $tenant_id
-    （neo4j_client.py::merge_relation 的 MERGE 语句），所以「边的租户」按
-    设计恒等于两端节点的租户，用 r.tenant_id 过滤不会误伤合法数据。
-    """
-    session = FakeSession(rows=[{"edge_count": 0}])
-    client = Neo4jGraphClient(driver=FakeDriver(session))
-
-    await client.count_relation_edges_for_term(tenant_id="t1", node_key="k1")
-
-    assert "r.tenant_id = $tenant_id" in session.last_query
-
-
-async def test_count_relation_edges_for_term_counts_each_edge_once():
-    """同一条边不能被数两次。无向模式 (t)-[r]-() 在自环上会产出两行、
-    绑定的却是同一条边，count(r) 会把 1 条边报成 2 条；count(DISTINCT r)
-    按边去重。"""
-    session = FakeSession(rows=[{"edge_count": 1}])
-    client = Neo4jGraphClient(driver=FakeDriver(session))
-
-    await client.count_relation_edges_for_term(tenant_id="t1", node_key="k1")
-
-    assert "count(DISTINCT r) AS edge_count" in session.last_query
-
-
 async def test_delete_relation_edge_matches_one_direction_and_returns_removed_count():
     """按业务键定位一条边：起点 node_key + 关系类型 + 终点 node_key + 租户。
     Neo4j 内部 id 不稳定（重启/重建后会变），不能拿来当句柄。
@@ -1246,8 +1187,8 @@ async def test_delete_relation_edge_matches_one_direction_and_returns_removed_co
 
 async def test_delete_relation_edge_only_deletes_edges_of_this_tenant():
     """边自己的 tenant_id 也要进过滤条件——两端节点属于本租户、边却标着
-    别的租户的历史脏数据是真实存在的（见 count_relation_edges_for_term 的
-    同款说明），删除路径不能顺手动别的租户的边。"""
+    别的租户的历史脏数据是真实存在的（见 _TERM_RELATIONS_QUERY 的同款
+    说明），删除路径不能顺手动别的租户的边。"""
     session = FakeSession(rows=[{"removed": 0}])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
@@ -1290,9 +1231,10 @@ async def test_delete_relation_edge_returns_zero_when_no_rows():
 
 async def test_ensure_tenant_scoped_schema_backfills_legacy_relation_edges():
     """节点回填只 SET 节点，边上的 tenant_id 一直没人补——旧库里可能仍有
-    tenant_id 为 null 的关系边，它们被守卫（count_relation_edges_for_term）
-    和详情页（_TERM_RELATIONS_QUERY）一致地忽略，同时也删不掉（删边接口
-    按边的 tenant_id 过滤）——只存在于库里、界面上无从查证也无从处置。
+    tenant_id 为 null 的关系边，它们被详情页（_TERM_RELATIONS_QUERY）和删除
+    影响面预演（summarize_relation_edges_for_terms）一致地忽略，同时也删不掉
+    （删边接口按边的 tenant_id 过滤）——只存在于库里、界面上无从查证也无从
+    处置。
 
     只回填"两端节点同租户、边自己没有 tenant_id"这一类（A 类）：这类边的
     归属没有歧义，补的正是 merge_relation 写入时本就该有的那个值。"""
@@ -1660,49 +1602,73 @@ async def test_query_subgraph_requires_chain_relation_types_argument():
         await client.query_subgraph("k1", tenant_id="t1")
 
 
-async def test_list_node_keys_with_relation_edges_returns_one_set_for_the_whole_tenant():
-    """批量删除的守卫要一次拿到"该租户所有还带着关系边的 node_key"。
+async def test_summarize_relation_edges_returns_the_breakdown_by_counterpart_type():
+    """删除前的影响面：会连带删掉多少条边、这些边连向哪几类实体。
 
-    逐条 count_relation_edges_for_term 在两万条实体上就是两万次 Neo4j 往返；
-    这个方法存在的理由就是把那 N 次压成 1 次，调用方在应用层做差集。
+    一次问完整批：两万条实体逐条问就是两万次 Neo4j 往返，而这一步挡在
+    确认框前面——它慢，用户就点不下去删除。
     """
-    session = FakeSession(rows=[{"node_key": "t:甲"}, {"node_key": "t:乙"}])
+    session = FakeSession(
+        rows=[
+            {"counterpart_type": "订单号", "edge_count": 1009},
+            {"counterpart_type": "类目", "edge_count": 4},
+        ]
+    )
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    keys = await client.list_node_keys_with_relation_edges(tenant_id="t1")
+    rows = await client.summarize_relation_edges_for_terms(
+        tenant_id="t1", node_keys=["t:甲", "t:乙"]
+    )
 
-    assert keys == {"t:甲", "t:乙"}
-    # 整个租户一次查完：参数里不该有 node_key，有的话就说明它还是按单条问的。
-    assert session.last_parameters == {"tenant_id": "t1"}
+    assert rows == [
+        {"counterpart_type": "订单号", "edge_count": 1009},
+        {"counterpart_type": "类目", "edge_count": 4},
+    ]
     assert len(session.calls) == 1
+    assert session.last_parameters == {
+        "tenant_id": "t1",
+        "node_keys": ["t:甲", "t:乙"],
+        "unknown_label": UNKNOWN_COUNTERPART_TYPE,
+    }
 
 
-async def test_list_node_keys_with_relation_edges_excludes_alias_edges():
-    """ALIAS_OF 是词表→图谱的结构性同步边，不代表"这个实体已经出现在真实
-    知识图谱数据里"。不排掉它，每个有别名的实体都会被守卫永远挡住——跟
-    单条守卫 _COUNT_TERM_RELATION_EDGES_QUERY 同一个理由，两处口径必须一致。"""
+async def test_summarize_relation_edges_counts_each_edge_once():
+    """按边去重是这条查询的命根子：自环在无向模式下匹配两次，一条边的
+    两端都在待删列表里时也会匹配两次。不去重的话分项之和就不等于“会被
+    删掉的边总数”，而用户会拿它们互相验算。"""
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    await client.list_node_keys_with_relation_edges(tenant_id="t1")
+    await client.summarize_relation_edges_for_terms(tenant_id="t1", node_keys=["t:甲"])
 
+    assert "WITH r, head(collect(other))" in session.last_query
+
+
+async def test_summarize_relation_edges_uses_the_same_filter_as_the_detail_page():
+    """口径必须和详情页列出的边一致：r.tenant_id 过滤 + 排除 ALIAS_OF。
+
+    预演报的数和用户在详情页数得出来的数对不上的话，他会认为其中一个在
+    说谎，而他没有办法判断是哪个。别名边算进去的话，每个有别名的实体都会
+    凭空多报几条。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.summarize_relation_edges_for_terms(tenant_id="t1", node_keys=["t:甲"])
+
+    assert "r.tenant_id = $tenant_id" in session.last_query
     assert "type(r) <> 'ALIAS_OF'" in session.last_query
 
 
-async def test_list_node_keys_with_relation_edges_filters_by_edge_tenant():
-    """边自己的 tenant_id 也要过滤，不只是节点的。
-
-    真实库里存在两端节点 tenant_id=default、边自己 tenant_id=demo 的历史脏边
-    （见 _COUNT_TERM_RELATION_EDGES_QUERY 的说明）。不按 r.tenant_id 过滤的话，
-    别的租户写的边会挡住本租户的批量删除，而用户在自己的界面上根本看不到
-    那条边、无从下手。
-    """
+async def test_summarize_relation_edges_with_empty_batch_does_not_touch_the_graph():
+    """一条都没选中时不该发查询——确认框没有任何东西可说。"""
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
-    await client.list_node_keys_with_relation_edges(tenant_id="t1")
+    rows = await client.summarize_relation_edges_for_terms(tenant_id="t1", node_keys=[])
 
-    assert "r.tenant_id = $tenant_id" in session.last_query
+    assert rows == []
+    assert session.calls == []
 
 
 async def test_delete_term_nodes_deletes_the_whole_batch_in_one_round_trip():
@@ -1719,7 +1685,7 @@ async def test_delete_term_nodes_deletes_the_whole_batch_in_one_round_trip():
 
 
 async def test_delete_term_nodes_with_empty_batch_does_not_touch_the_graph():
-    """一条都没有时不该发查询：批量删除里"全被守卫挡住"是常见结果，
+    """一条都没有时不该发查询：批量删除里"一条都没删成"是常见结果，
     那次请求不该在图谱上留下任何一次无意义的往返。"""
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))

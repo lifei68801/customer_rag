@@ -261,11 +261,11 @@ async def test_delete_term_node_raises_not_implemented():
         await client.delete_term_node(tenant_id="t1", node_key="k1")
 
 
-async def test_count_relation_edges_for_term_raises_not_implemented():
+async def test_summarize_relation_edges_for_terms_raises_not_implemented():
     client = NeptuneGraphClient(client=FakeNeptuneClient())
 
-    with pytest.raises(NotImplementedError, match="count_relation_edges_for_term"):
-        await client.count_relation_edges_for_term(tenant_id="t1", node_key="k1")
+    with pytest.raises(NotImplementedError, match="summarize_relation_edges_for_terms"):
+        await client.summarize_relation_edges_for_terms(tenant_id="t1", node_keys=["k1"])
 
 
 async def test_ensure_extra_field_indexes_raises_not_implemented():

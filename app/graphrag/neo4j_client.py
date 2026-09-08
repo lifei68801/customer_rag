@@ -20,6 +20,10 @@ from app.graphrag.ontology_categories import TermTypeCategory
 
 logger = logging.getLogger(__name__)
 
+#: 关系边的对端节点没有 type 属性时，影响面分项里给它的名字。分项之和必须
+#: 等于总数，所以这一类不能丢掉、只能有个名字。
+UNKNOWN_COUNTERPART_TYPE = "未标类型"
+
 if TYPE_CHECKING:
     from app.graphrag.ontology_categories import ExtraFieldSpec
 
@@ -296,32 +300,6 @@ MERGE (a:Term {alias_name: alias_name})
 MERGE (a)-[:ALIAS_OF]->(t)
 """
 
-_COUNT_TERM_RELATION_EDGES_QUERY = """
-MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-()
-WHERE r.tenant_id = $tenant_id AND type(r) <> 'ALIAS_OF'
-RETURN count(DISTINCT r) AS edge_count
-"""
-# WHERE r.tenant_id = $tenant_id 是租户隔离的一部分，不只是性能过滤：只按
-# 两端节点的 tenant_id 匹配的话，别的租户写的边会挡住本租户的术语删除
-# （真实库里就有一条两端节点 tenant_id=default、边自己 tenant_id=demo 的
-# 历史脏边）。拿 r.tenant_id 做判据是有依据的：merge_relation 写边时两端节点
-# 的 MERGE 匹配属性和边上的 tenant_id 用的是同一个 $tenant_id 参数，“边的
-# 租户”按设计恒等于“两端节点的租户”；这条过滤只会排掉违反这个不变式
-# 的脏数据，不会误伤合法的边。跟 _TERM_RELATIONS_QUERY / _SUBGRAPH_QUERY 已经在
-# 用的过滤口径一致，守卫看到的边和详情页列出的边因此是同一批。
-#
-# count(DISTINCT r) 而不是 count(r)：无向模式 (t)-[r]-() 在自环（一个节点
-# 指向自己）上会从两个方向各匹配一次、产出两行，但绑定的是同一条边，
-# count(r) 会把 1 条边报成 2 条。去重按边身份而不是按行，无论从哪个方向
-# 匹配到都只算一次；保留无向模式是必要的——守卫关心的是“这个术语参与了
-# 任何关系边”，入边和出边都算。
-#
-# ALIAS_OF 是术语表→图谱的结构性同步边（sync_term 写入，见上面
-# _SYNC_TERM_QUERY），不代表"这个术语已经出现在真实知识图谱数据里"；
-# 删除前的守卫检查只关心 LLM 抽取/人工审核产出的关系边（merge_relation
-# 写入的 RELATED_TO/PART_OF/... 这些），排除 ALIAS_OF 避免每个术语只要
-# 有别名就永远无法删除。
-
 _DELETE_RELATION_EDGE_QUERY = """
 MATCH (a:Term {tenant_id: $tenant_id, node_key: $subject_node_key})-[r]->(b:Term {tenant_id: $tenant_id, node_key: $object_node_key})
 WHERE type(r) = $relation_type AND r.tenant_id = $tenant_id
@@ -342,7 +320,7 @@ RETURN count(r) AS removed
 # query / probe_relation_fanout）都以“调用方已跑过白名单校验”为前提，删边
 # 这条路径没有那样一份白名单。
 #
-# r.tenant_id = $tenant_id 同 _COUNT_TERM_RELATION_EDGES_QUERY：两端节点属于
+# r.tenant_id = $tenant_id 同 _TERM_RELATIONS_QUERY：两端节点属于
 # 本租户、边却标着别的租户的历史脏数据是真实存在的，删除路径不能顺手动
 # 别的租户的边。
 #
@@ -434,21 +412,44 @@ DETACH DELETE t, a
 # MATCH 让"没有别名"的术语也能正常匹配到 t（DELETE 一个 null 值是
 # Cypher 里的合法操作，不会报错）。
 
-_LIST_NODE_KEYS_WITH_RELATION_EDGES_QUERY = """
-MATCH (t:Term {tenant_id: $tenant_id})-[r]-()
+_SUMMARIZE_TERM_RELATION_EDGES_QUERY = """
+UNWIND $node_keys AS nk
+MATCH (t:Term {tenant_id: $tenant_id, node_key: nk})-[r]-(other)
 WHERE r.tenant_id = $tenant_id AND type(r) <> 'ALIAS_OF'
-RETURN DISTINCT t.node_key AS node_key
+WITH r, head(collect(other)) AS counterpart
+RETURN coalesce(counterpart.type, $unknown_label) AS counterpart_type,
+       count(r) AS edge_count
+ORDER BY edge_count DESC, counterpart_type
 """
-# 批量删除的守卫：一次问出"这个租户里哪些实体还挂着关系边"，调用方在应用层
-# 做差集。等价于对每个 node_key 各跑一次 _COUNT_TERM_RELATION_EDGES_QUERY 再看
-# 是否 > 0，但只有一次往返——两万条实体逐条问就是两万次网络往返，那是这个
-# 方法存在的全部理由。
+# 删实体之前算影响面：这批实体一旦删掉，会连带删掉多少条关系边、这些边
+# 主要连向哪几类实体。删除本身走 DETACH DELETE，边是一定会跟着节点走的
+# （见 _DELETE_TERM_NODES_QUERY），所以这个数字不是"可能受影响"，是
+# "一定会没"——用户在按下确认之前必须看到它。
 #
-# 过滤口径必须和 _COUNT_TERM_RELATION_EDGES_QUERY 逐字一致（r.tenant_id 过滤 +
-# 排除 ALIAS_OF + 无向匹配）：两处不一致的话，同一个实体单条删得掉、批量删
-# 却被挡住（或反过来），用户看到的是"删除按钮的行为取决于我勾了几条"。
-# 这里不需要 count(DISTINCT r)——只关心"有没有边"，自环多匹配一行不影响
-# DISTINCT node_key 的结果。
+# 过滤口径跟 _TERM_RELATIONS_QUERY（详情页列出的边）一致：r.tenant_id 过滤 +
+# 排除 ALIAS_OF + 无向匹配。预演报的数和用户在详情页数得出来的数对不上的
+# 话，他会认为其中一个在说谎，而他没有办法判断是哪个。
+#
+# 排除 ALIAS_OF：别名边是术语表→图谱的结构性同步边（sync_term 写入，见
+# _SYNC_TERM_QUERY），不是知识图谱数据。把它算进"会连带删掉的关系边"里，
+# 每个有别名的实体都会凭空多报几条。
+#
+# 无向匹配：入边和出边都会被 DETACH DELETE 带走，只数一个方向就是少报。
+#
+# WITH r, head(collect(other)) 是按边去重的关键，它一次解决两个重复：自环
+# (t)-[r]-(t) 在无向模式下匹配两次；一条边的两端都在待删列表里时，它会分别
+# 以两个 nk 各匹配一次。按 r 分组之后每条边只剩一行，各类型的计数加起来
+# 正好等于"会被删掉的边总数"——分项和总数对不上是这里最容易出的错，而
+# 用户会拿它们互相验算。head(collect(...)) 取哪一端在"两端都要删"这种情况
+# 下是任意的，但那时两端都会消失，归给谁都不影响总数。
+#
+# counterpart 可能没有 type 属性（历史数据里写进过别的形状），此时用调用方
+# 传进来的 $unknown_label 兜底——分项里少一块的话总数就对不上了。
+#
+# 这个数仍然可能少于实际消失的边数：DETACH DELETE 不带任何过滤，租户标记
+# 异常的历史脏边（见 _BACKFILL_LEGACY_RELATION_EDGES_QUERY 的说明）也会
+# 跟着走，而这条查询按 r.tenant_id 过滤，看不见它们。宁可少报——那批边在
+# 界面上从来就无从查证，把它们算进用户要确认的代价里只会让这个数字无法核对。
 
 _DELETE_TERM_NODES_QUERY = """
 UNWIND $node_keys AS node_key
@@ -507,12 +508,13 @@ WHERE r.tenant_id IS NULL
 SET r.tenant_id = a.tenant_id
 """
 # 节点回填的对称补丁：上面那条只 SET 节点，边上的 tenant_id 一直没人补。
-# 旧库里因此可能仍有 tenant_id 为 null 的关系边——它们被守卫
-# （_COUNT_TERM_RELATION_EDGES_QUERY）和详情页（_TERM_RELATIONS_QUERY）
-# 一致地忽略，同时又删不掉（_DELETE_RELATION_EDGE_QUERY 也按边的
-# tenant_id 过滤），于是它们成了一批只存在于库里、界面上无从查证也无从
-# 处置的数据。（它们今天不会挡住实体删除——守卫同样按边的 tenant_id
-# 过滤，看不见它们；2026-09-03 之前守卫不带这个过滤时才会。）
+# 旧库里因此可能仍有 tenant_id 为 null 的关系边——它们被详情页
+# （_TERM_RELATIONS_QUERY）和删除影响面预演
+# （_SUMMARIZE_TERM_RELATION_EDGES_QUERY）一致地忽略，同时又删不掉
+# （_DELETE_RELATION_EDGE_QUERY 也按边的 tenant_id 过滤），于是它们成了
+# 一批只存在于库里、界面上无从查证也无从处置的数据。（删实体时它们仍会被
+# DETACH DELETE 连带删掉——那一步不带任何过滤；预演报的数因此可能少于
+# 实际消失的边数，差额正好是这批脏边。）
 #
 # 只回填「两端节点同租户、边自己没有 tenant_id」这一类：这类边的归属
 # 没有歧义，补的正是 merge_relation 写入时本就该有的那个值（写边时两端
@@ -528,10 +530,10 @@ SET r.tenant_id = a.tenant_id
 #
 # type(r) <> 'ALIAS_OF'：别名边是术语表→图谱的结构性同步边（sync_term
 # 写入），从来不带 tenant_id，也不参与租户语义（见
-# _COUNT_TERM_RELATION_EDGES_QUERY 的同款说明）——给它补一个租户属性
+# _TERM_RELATIONS_QUERY 的同款说明）——给它补一个租户属性
 # 等于凭空发明语义。
 
-#: 告警里最多点名几条脏边。同 admin_terms_routes 的 _IN_USE_SAMPLE_SIZE：
+#: 告警里最多点名几条脏边。同 ontology_categories 的 _IN_USE_SAMPLE_SIZE：
 #: 3 条够运维认出是哪批数据，再多没人读，剩下的用总数兜底。
 _INCONSISTENT_EDGE_SAMPLE_SIZE = 3
 
@@ -616,17 +618,13 @@ class GraphWriteProtocol(Protocol):
         to_term_type: str, direction: str,
     ) -> int: ...
 
-    async def count_relation_edges_for_term(
-        self, *, tenant_id: str, node_key: str
-    ) -> int: ...
-
-    async def list_node_keys_with_relation_edges(
-        self, *, tenant_id: str
-    ) -> set[str]: ...
-
     async def delete_term_nodes(
         self, *, tenant_id: str, node_keys: list[str]
     ) -> None: ...
+
+    async def summarize_relation_edges_for_terms(
+        self, *, tenant_id: str, node_keys: list[str]
+    ) -> list[dict[str, Any]]: ...
 
     async def list_term_relations(
         self, *, tenant_id: str, node_key: str
@@ -1014,30 +1012,33 @@ class Neo4jGraphClient:
         for term in terms:
             await self.sync_term(term)
 
-    async def count_relation_edges_for_term(self, *, tenant_id: str, node_key: str) -> int:
-        """统计该术语节点参与的、非结构性同步边（ALIAS_OF）的关系边数量，
-        供管理后台删除术语前的守卫检查用——见 _COUNT_TERM_RELATION_EDGES_QUERY
-        的说明。"""
-        async with self._driver.session() as session:
-            result = await session.run(
-                _COUNT_TERM_RELATION_EDGES_QUERY,
-                {"tenant_id": tenant_id, "node_key": node_key},
-            )
-            rows = await result.data()
-            return rows[0]["edge_count"] if rows else 0
+    async def summarize_relation_edges_for_terms(
+        self, *, tenant_id: str, node_keys: list[str]
+    ) -> list[dict[str, Any]]:
+        """这批实体删掉会连带删掉哪些关系边，按对端实体类型分项。
 
-    async def list_node_keys_with_relation_edges(self, *, tenant_id: str) -> set[str]:
-        """该租户里所有还挂着非 ALIAS_OF 关系边的 node_key，一次查完。
+        返回 [{"counterpart_type": 类型名, "edge_count": 条数}, ...]，按条数
+        倒序。各项之和就是会被删掉的边总数（按边去重，见
+        _SUMMARIZE_TERM_RELATION_EDGES_QUERY）。
 
-        供批量删除的守卫用：调用方拿这个集合跟待删列表做差集，交集里的就是
-        被图谱边挡住的那几条。见 _LIST_NODE_KEYS_WITH_RELATION_EDGES_QUERY。
+        空列表直接返回、不发查询，同 delete_term_nodes。
         """
+        if not node_keys:
+            return []
         async with self._driver.session() as session:
             result = await session.run(
-                _LIST_NODE_KEYS_WITH_RELATION_EDGES_QUERY, {"tenant_id": tenant_id}
+                _SUMMARIZE_TERM_RELATION_EDGES_QUERY,
+                {
+                    "tenant_id": tenant_id,
+                    "node_keys": list(node_keys),
+                    "unknown_label": UNKNOWN_COUNTERPART_TYPE,
+                },
             )
             rows = await result.data()
-            return {row["node_key"] for row in rows}
+            return [
+                {"counterpart_type": row["counterpart_type"], "edge_count": row["edge_count"]}
+                for row in rows
+            ]
 
     async def delete_term_nodes(self, *, tenant_id: str, node_keys: list[str]) -> None:
         """批量删除术语节点及其别名节点，一次往返。
@@ -1107,9 +1108,9 @@ class Neo4jGraphClient:
             )
 
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
-        """删除一个术语节点及其别名节点——只应该在确认过
-        count_relation_edges_for_term() 返回 0 之后调用，见
-        _DELETE_TERM_NODE_QUERY 的说明。"""
+        """删除一个术语节点及其别名节点。节点身上的关系边会被
+        DETACH DELETE 一起删掉（见 _DELETE_TERM_NODE_QUERY），调用方应该先用
+        summarize_relation_edges_for_terms() 把这个代价告诉用户。"""
         async with self._driver.session() as session:
             await session.run(
                 _DELETE_TERM_NODE_QUERY, {"tenant_id": tenant_id, "node_key": node_key}

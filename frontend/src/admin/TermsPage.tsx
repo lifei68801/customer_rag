@@ -8,6 +8,7 @@ import { useAdminDensity } from './DensityContext'
 import { Skeleton } from './Skeleton'
 import { useAdminTenant } from './TenantContext'
 import { deleteTerm, fetchTermsPage, fetchTermsSummary, updateTerm, type TermRecord } from './termsApi'
+import { describeTermDeleteImpact, previewTermDelete } from './termDeleteImpact'
 import { useToast } from './ToastContext'
 import { adminFetch } from './adminApi'
 import { Pager } from './Pager'
@@ -321,17 +322,35 @@ export function TermsPage() {
     if (!sessionToken || bulkDeleting) return
     const target = bulk.targetFor(scopeId)
     if (!target) return
-    if (!(await confirm(buildBulkDeleteConfirmMessage(target, '实体')))) return
+    // 先预演再问：实体身上的关系边会跟着一起没（DETACH DELETE），
+    // 而那可能是几千条。不把这个代价写进确认框的话，用户是在按下删除
+    // 之后才发现自己删了什么。
+    //
+    // 预演失败就不往下走：拿不到数字就弹一个不写代价的确认框，等于把
+    // 「告知 + 确认」静默地退化回「直接删」。
+    const previewTarget = target.mode === 'filters' ? { ...target, filters } : target
     setError(null)
     setBulkResult(null)
+    let impact: string
+    try {
+      impact = describeTermDeleteImpact(
+        await previewTermDelete(sessionToken, tenantId, previewTarget),
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '算不出这次删除会波及多少关系边')
+      return
+    }
+    const message = buildBulkDeleteConfirmMessage(target, '实体')
+    if (!(await confirm(impact ? `${message}\n\n${impact}` : message))) return
     setBulkDeleting(true)
     try {
       const result = await requestBulkDelete(
         sessionToken,
         `/api/admin/${encodeURIComponent(tenantId)}/terms/bulk-delete`,
         // filters 那一档发的是筛选条件本身，不是 id 列表：条数可能是两万，
-        // 前端手里没有也不该有那份列表。
-        target.mode === 'filters' ? { ...target, filters } : target,
+        // 前端手里没有也不该有那份列表。用的是预演时的那一份，不是重新拼一遍
+        // ——重新拼就有拼得不一样的余地，而用户是照着预演的数字点的确认。
+        previewTarget,
       )
       setBulkResult(result)
       bulk.clear()
@@ -386,7 +405,20 @@ export function TermsPage() {
 
   const handleDelete = async (term: TermRecord) => {
     if (!sessionToken || deletingKey !== null) return
-    if (!(await confirm(`确定要删除术语「${term.standard_name}」吗？此操作不可撤销。`))) return
+    // 单条删除走同一份预演（node_keys 只给一个元素）：两条路径各算各的话，
+    // 同一个实体单删和批删会看到两个不一样的数字。
+    setError(null)
+    let impact: string
+    try {
+      impact = describeTermDeleteImpact(
+        await previewTermDelete(sessionToken, tenantId, { mode: 'keys', keys: [term.node_key] }),
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '算不出这次删除会波及多少关系边')
+      return
+    }
+    const message = `确定要删除实体「${term.standard_name}」吗？此操作不可撤销。`
+    if (!(await confirm(impact ? `${message}\n\n${impact}` : message))) return
     setError(null)
     const key = termKey(term)
     setDeletingKey(key)

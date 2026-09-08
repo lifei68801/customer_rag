@@ -136,23 +136,22 @@ class SpyGraphClient:
     def __init__(
         self,
         *,
-        edge_count: int = 0,
         relations: list[dict] | None = None,
         relations_error: Exception | None = None,
         removed_edges: int = 1,
         removed_edges_by_node_key: dict[str, int] | None = None,
         inconsistent: list[dict] | None = None,
-        blocked_node_keys: set[str] | None = None,
+        edge_impact: list[dict] | None = None,
     ) -> None:
         # 按边上任一端的 node_key 指定"这一条删掉了几条边"。批量删除的用例要
         # 在同一个批次里同时造出能删的和一条都没匹配上的——全都一样的批次，
         # 「逐条收集失败」和「一律当成功」两种实现都能变绿。两端都查是因为
         # direction=in 时那个 node_key 落在主语一侧。
         self._removed_edges_by_node_key = removed_edges_by_node_key or {}
-        # 批量删除：被图谱边挡住的 node_key 集合（守卫的答案），以及
-        # 守卫查询/批量删节点各被调了几次。
-        self._blocked_node_keys = blocked_node_keys or set()
-        self.guard_calls: list[str] = []
+        # 删除前的影响面预演：图谱侧按对端类型分项的答案，以及预演/批量删
+        # 节点各被调了几次（预演是 O(1) 次图查询，逐条问的实现会让用例变红）。
+        self._edge_impact = edge_impact or []
+        self.impact_calls: list[list[str]] = []
         self.delete_batches: list[list[str]] = []
         # 租户标记异常的边：列出来的内容，以及收到的删除定位参数。
         self._inconsistent = inconsistent or []
@@ -161,14 +160,13 @@ class SpyGraphClient:
         # 删边接口：记录收到的定位参数，并模拟"实际删掉几条"。
         self.deleted_edges: list[dict] = []
         self._removed_edges = removed_edges
-        # 删除被挡住时，409 里要点名挡路的是哪几条边——路由拿这两个字段
-        # 模拟图客户端返回的关系明细/读取失败。
+        # 详情页列出的关系边——路由拿这两个字段模拟图客户端返回的关系
+        # 明细/读取失败。
         self._relations = relations or []
         self._relations_error = relations_error
         self.synced: list[dict] = []
         self.renamed: list[tuple[str, str]] = []
         self.deleted: list[str] = []
-        self._edge_count = edge_count
         # 记录 rename/sync 两类调用的相对顺序——renamed/synced 是两个独立列表，
         # 光看它们各自的内容看不出谁先谁后；改名场景要求 rename_term_node 必须
         # 在 sync_term 之前调用（sync_term 是按"当前"standard_name MERGE 匹配
@@ -190,9 +188,6 @@ class SpyGraphClient:
     async def rename_term_node(self, *, tenant_id: str, node_key: str, new_standard_name: str) -> None:
         self.call_order.append("rename_term_node")
         self.renamed.append((node_key, new_standard_name))
-
-    async def count_relation_edges_for_term(self, *, tenant_id: str, node_key: str) -> int:
-        return self._edge_count
 
     async def delete_relation_edge(
         self, *, tenant_id: str, subject_node_key: str, relation_type: str,
@@ -243,11 +238,13 @@ class SpyGraphClient:
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
         self.deleted.append(node_key)
 
-    async def list_node_keys_with_relation_edges(self, *, tenant_id: str) -> set[str]:
-        # 批量删除的守卫问的是"这个租户里哪些实体还挂着边"，一次问完。
-        # guard_calls 记录它被调了几次——O(N) 次的实现会让性能用例变红。
-        self.guard_calls.append(tenant_id)
-        return set(self._blocked_node_keys)
+    async def summarize_relation_edges_for_terms(
+        self, *, tenant_id: str, node_keys: list[str]
+    ) -> list[dict]:
+        # 影响面预演问的是"这批实体一共挂着多少条边、连向哪几类"，一次问完。
+        # impact_calls 记录它被调了几次、每次问了哪些 key。
+        self.impact_calls.append(list(node_keys))
+        return list(self._edge_impact)
 
     async def delete_term_nodes(self, *, tenant_id: str, node_keys: list[str]) -> None:
         self.delete_batches.append(list(node_keys))
@@ -580,7 +577,7 @@ def test_delete_term_without_graph_edges_succeeds(terms_conn):
         create_term(terms_conn, tenant_id="t1", standard_name="待删除", aliases=[], term_type="t")
     )
     session_store = AdminSessionStore()
-    graph_client = SpyGraphClient(edge_count=0)
+    graph_client = SpyGraphClient()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
@@ -598,12 +595,13 @@ def test_delete_term_without_graph_edges_succeeds(terms_conn):
 
 
 def test_delete_nonexistent_term_returns_404_even_when_graph_has_edges(terms_conn):
-    """404 优先于 409：一个 SQLite 里根本不存在的名字，即使图谱里凑巧有
-    同名的边（比如迁移前遗留的孤儿数据），也应该报"不存在"而不是"已在
-    图谱中使用"——后者会误导管理员去查一个其实从未在词表里存在过的
-    术语。"""
+    """一个 SQLite 里根本不存在的名字，即使图谱里凑巧有同名的边（比如迁移前
+    遗留的孤儿数据），也应该报"不存在"，而且一条图谱边都不许动——按不存在的
+    名字发来的删除请求，不该顺手清掉一批同名孤儿数据。"""
     session_store = AdminSessionStore()
-    graph_client = SpyGraphClient(edge_count=5)
+    graph_client = SpyGraphClient(
+        edge_impact=[{"counterpart_type": "订单号", "edge_count": 5}]
+    )
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
@@ -617,14 +615,24 @@ def test_delete_nonexistent_term_returns_404_even_when_graph_has_edges(terms_con
         app.dependency_overrides.clear()
 
     assert response.status_code == 404
+    assert graph_client.deleted == []
 
 
-def test_delete_term_with_graph_edges_returns_409(terms_conn):
+def test_delete_term_with_graph_edges_succeeds_and_takes_the_edges_with_it(terms_conn):
+    """挂着关系边**不再**是拒绝的理由。
+
+    旧守卫防的是"词表说不存在了，但图谱边还在用它"，而这个状态根本造不
+    出来：删节点走 DETACH DELETE，边一定跟着走。它的真实效果只是把用户
+    锁死——demo 租户里挂着 1013 条订单边的实体删不掉，实体类型因为还有
+    实体也删不掉，边又只能一条条删。代价改由预演在确认框弹出之前说清楚。
+    """
     asyncio.run(
         create_term(terms_conn, tenant_id="t1", standard_name="使用中", aliases=[], term_type="t")
     )
     session_store = AdminSessionStore()
-    graph_client = SpyGraphClient(edge_count=2)
+    graph_client = SpyGraphClient(
+        edge_impact=[{"counterpart_type": "订单号", "edge_count": 1013}]
+    )
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
@@ -637,11 +645,18 @@ def test_delete_term_with_graph_edges_returns_409(terms_conn):
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 409
-    assert graph_client.deleted == []
-    # SQLite 记录也不该被删掉——409 之后术语表和图谱两边都保持原样
+    assert response.status_code == 200
+    assert graph_client.deleted == ["t:使用中"]
+    # 删除路径不该顺手做一次预演：那是确认框弹出之前的事，在这里做等于白花
+    # 一次图查询，也让"预演报的数就是删除时的数"变成一句没人验证的话。
+    assert graph_client.impact_calls == []
+    # terms 行留着（人工删除写的是 __deleted__ 编辑，ETL 重跑不会让它复活），
+    # 但合并视图里已经看不见它了。
     remaining = asyncio.run(list_terms(terms_conn, "t1"))
     assert [t.standard_name for t in remaining] == ["使用中"]
+    assert FIELD_DELETED in asyncio.run(
+        list_term_edits_for_node_key(terms_conn, "t1", "t:使用中")
+    )
 
 
 def test_create_term_with_empty_standard_name_returns_422(terms_conn):
@@ -1441,7 +1456,7 @@ def test_delete_writes_a_deleted_edit_and_keeps_the_terms_row(terms_conn):
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
-    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient(edge_count=0)
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
     try:
         client = TestClient(app)
         response = client.delete(
@@ -1618,7 +1633,7 @@ def test_post_on_a_manually_deleted_node_key_resurrects_it(terms_conn):
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
-    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient(edge_count=0)
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
     try:
         client = TestClient(app)
         headers = _authed_headers(session_store)
@@ -1688,7 +1703,7 @@ def test_post_refuses_to_resurrect_a_row_whose_term_type_is_gone(terms_conn):
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
-    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient(edge_count=0)
+    app.dependency_overrides[deps.get_graph_client] = lambda: SpyGraphClient()
     try:
         client = TestClient(app)
         headers = _authed_headers(session_store)
@@ -1851,10 +1866,7 @@ def _relation(direction: str, relation_type: str, standard_name: str) -> dict:
     }
 
 
-def _delete_blocked_term(terms_conn, graph_client) -> "object":
-    asyncio.run(
-        create_term(terms_conn, tenant_id="t1", standard_name="使用中", aliases=[], term_type="t")
-    )
+def _preview_bulk_delete(terms_conn, graph_client, payload):
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
@@ -1862,73 +1874,97 @@ def _delete_blocked_term(terms_conn, graph_client) -> "object":
     app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
     try:
         client = TestClient(app)
-        return client.delete(
-            "/api/admin/t1/terms/t:使用中", headers=_authed_headers(session_store)
+        return client.post(
+            "/api/admin/t1/terms/bulk-delete/preview",
+            json=payload,
+            headers=_authed_headers(session_store),
         )
     finally:
         app.dependency_overrides.clear()
 
 
-def test_delete_blocked_term_names_the_edges_in_the_way(terms_conn):
-    """"该术语已在图谱中使用"不告诉用户是哪条边挡路，而后台又没有别的地方
-    能查出来——服务端此刻手里就有这份明细。方向要照实渲染：入边写成
-    「对端 -类型-> 本术语」，反过来写会把关系的角色说反。"""
+def test_delete_preview_reports_the_edges_that_will_go_with_the_terms(terms_conn):
+    """确认框要说的那句话，数据全在这个回包里：删几个实体、连带删几条边、
+    这些边主要连向哪几类。只给一个总数的话，用户没法判断这 1013 条是不是
+    他以为的那批。"""
+    _seed_bulk_terms(terms_conn)
     graph_client = SpyGraphClient(
-        edge_count=2,
-        relations=[
-            _relation("in", "RELATED_TO", "错误码E502"),
-            _relation("out", "PART_OF", "登录域"),
-        ],
+        edge_impact=[
+            {"counterpart_type": "订单号", "edge_count": 1009},
+            {"counterpart_type": "类目", "edge_count": 4},
+        ]
     )
 
-    response = _delete_blocked_term(terms_conn, graph_client)
+    response = _preview_bulk_delete(terms_conn, graph_client, {"node_keys": ["t:甲"]})
 
-    assert response.status_code == 409
+    assert response.status_code == 200
     body = response.json()
-    assert "错误码E502 -RELATED_TO-> 使用中" in body["detail"]
-    assert "使用中 -PART_OF-> 登录域" in body["detail"]
-    assert "2 条" in body["detail"]
-    assert body["blocking_relations"]["total"] == 2
-    assert [
-        (edge["direction"], edge["relation_type"], edge["node_key"])
-        for edge in body["blocking_relations"]["edges"]
-    ] == [("in", "RELATED_TO", "t:错误码E502"), ("out", "PART_OF", "t:登录域")]
-
-
-def test_delete_blocked_term_lists_a_few_edges_and_still_reports_the_total(terms_conn):
-    """点名前几条 + 总数兜底，跟删分类那条（d2f1197）同构。第 4 条之后的
-    对端名字不该出现在消息里，否则消息长到没人读。"""
-    graph_client = SpyGraphClient(
-        edge_count=5,
-        relations=[_relation("out", "RELATED_TO", f"邻居{i}") for i in range(5)],
-    )
-
-    response = _delete_blocked_term(terms_conn, graph_client)
-
-    body = response.json()
-    assert response.status_code == 409
-    assert "等共 5 条" in body["detail"]
-    assert "邻居3" not in body["detail"]
-    assert "邻居4" not in body["detail"]
-    assert [edge["standard_name"] for edge in body["blocking_relations"]["edges"]] == [
-        "邻居0", "邻居1", "邻居2",
+    assert body["term_count"] == 1
+    # 总数是各分项之和，不是某一项——报成 1009 的话用户按下确认后会多没
+    # 掉 4 条，而他以为自己已经看过全部代价了。
+    assert body["edge_total"] == 1013
+    assert body["by_counterpart_type"] == [
+        {"term_type": "订单号", "edge_count": 1009},
+        {"term_type": "类目", "edge_count": 4},
     ]
-    # 结构化字段里的 total 是"总共几条"，不是"列出了几条"——前端拿它显示
-    # 还剩多少没处理，退化成样本条数就等于把总数悄悄说小了。
-    assert body["blocking_relations"]["total"] == 5
+    assert graph_client.impact_calls == [["t:甲"]]
 
 
-def test_delete_blocked_term_still_reports_the_count_when_edge_lookup_fails(terms_conn):
-    """取明细失败不能把 409 变成 500：守卫的结论（有边、有几条）已经拿到了，
-    丢掉它反而让用户连"为什么删不掉"都不知道。"""
-    graph_client = SpyGraphClient(edge_count=2, relations_error=RuntimeError("Neo4j 挂了"))
+def test_delete_preview_writes_nothing(terms_conn):
+    """预演只读。它写了任何东西的话，用户就是在"看一眼代价"这个动作里
+    把数据删了——而这一步之后本该还有一个可以反悔的确认框。"""
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient(
+        edge_impact=[{"counterpart_type": "订单号", "edge_count": 7}]
+    )
 
-    response = _delete_blocked_term(terms_conn, graph_client)
+    _preview_bulk_delete(terms_conn, graph_client, {"filters": {}})
 
-    assert response.status_code == 409
-    body = response.json()
-    assert "2 条" in body["detail"]
-    assert body["blocking_relations"]["edges"] == []
+    assert sorted(_remaining_names(terms_conn)) == sorted(_TYPE_T_NAMES + ["辛", "壬"])
+    assert graph_client.deleted == []
+    assert graph_client.delete_batches == []
+
+
+def test_delete_preview_expands_filters_the_same_way_the_real_delete_does(terms_conn):
+    """「当前筛选条件下的全部」在预演和真删里必须展开成同一批 key。
+
+    两边各展开各的话，预演报的数就不是真删会删的那批——而用户正是拿这个
+    数决定要不要按下确认的。
+    """
+    _seed_bulk_terms(terms_conn)
+    preview_client = SpyGraphClient()
+    delete_client = SpyGraphClient()
+
+    _preview_bulk_delete(terms_conn, preview_client, {"filters": {"term_type": "t2"}})
+    _bulk_delete(terms_conn, delete_client, {"filters": {"term_type": "t2"}})
+
+    assert sorted(preview_client.impact_calls[0]) == sorted(delete_client.delete_batches[0])
+    assert sorted(preview_client.impact_calls[0]) == ["t2:壬", "t2:辛"]
+
+
+def test_delete_preview_asks_the_graph_once_no_matter_how_many_terms(terms_conn):
+    """影响面是 O(1) 次图查询。两万条实体逐条问 Neo4j 就是两万次网络往返，
+    而这一步挡在确认框前面——它慢，用户就点不下去删除。"""
+    _seed_bulk_terms(terms_conn)
+    graph_client = SpyGraphClient()
+
+    response = _preview_bulk_delete(terms_conn, graph_client, {"filters": {}})
+
+    assert response.status_code == 200
+    assert len(graph_client.impact_calls) == 1
+    assert len(graph_client.impact_calls[0]) == 9
+
+
+def test_delete_preview_with_both_modes_returns_400(terms_conn):
+    """预演和真删共用同一份请求体校验：预演能接受的请求，真删必须也接受。
+    预演放宽一档的话，用户会看到一份预演，然后在真删那一步撞上 400。"""
+    _seed_bulk_terms(terms_conn)
+
+    response = _preview_bulk_delete(
+        terms_conn, SpyGraphClient(), {"node_keys": ["t:甲"], "filters": {}}
+    )
+
+    assert response.status_code == 400
 
 
 def _delete_relation(terms_conn, graph_client, query: str):
@@ -2452,26 +2488,28 @@ def test_bulk_delete_with_neither_mode_returns_400(terms_conn):
 
 
 def test_bulk_delete_deletes_what_it_can_and_names_each_failure(terms_conn):
-    """部分失败：能删的删掉，挡住的逐条报出来。
+    """部分失败：能删的删掉，删不掉的逐条报出来。
 
-    两万条里只要有一条被图谱边挡着就整批回滚的话，这次清理永远做不成，
+    两万条里只要有一条出问题就整批回滚的话，这次清理永远做不成，
     而且用户还得先手工找出是哪一条。
     """
     _seed_bulk_terms(terms_conn)
-    graph_client = SpyGraphClient(blocked_node_keys={"t:乙"})
+    graph_client = SpyGraphClient()
 
-    response = _bulk_delete(terms_conn, graph_client, {"node_keys": _PAGE_KEYS})
+    response = _bulk_delete(
+        terms_conn, graph_client, {"node_keys": [*_PAGE_KEYS, "t:根本不存在"]}
+    )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["requested"] == 3
-    assert body["deleted"] == 2
+    assert body["requested"] == 4
+    assert body["deleted"] == 3
     # 失败的那条被点名，并且说清为什么。
-    assert [f["key"] for f in body["failures"]] == ["t:乙"]
-    assert "关系边" in body["failures"][0]["reason"]
-    # 成功的确实删了、失败的确实没删——两边都要钉住。
-    assert _remaining_names(terms_conn) == ["丁", "乙", "壬", "己", "庚", "戊", "辛"]
-    assert sorted(graph_client.deleted) == sorted(["t:甲", "t:丙"])
+    assert [f["key"] for f in body["failures"]] == ["t:根本不存在"]
+    assert "不存在" in body["failures"][0]["reason"]
+    # 成功的确实删了，失败的一条图谱节点都没碰——两边都要钉住。
+    assert _remaining_names(terms_conn) == ["丁", "壬", "己", "庚", "戊", "辛"]
+    assert sorted(graph_client.deleted) == sorted(_PAGE_KEYS)
 
 
 def test_bulk_delete_reports_missing_node_keys_instead_of_counting_them_as_deleted(terms_conn):
@@ -2490,11 +2528,11 @@ def test_bulk_delete_reports_missing_node_keys_instead_of_counting_them_as_delet
     assert [f["key"] for f in body["failures"]] == ["t:根本不存在"]
 
 
-def test_bulk_delete_asks_the_graph_guard_once_no_matter_how_many_terms(terms_conn):
-    """守卫检查是 O(1) 次图查询，不是 O(N) 次。
+def test_bulk_delete_removes_the_graph_nodes_in_one_batch(terms_conn):
+    """删图谱节点是一次批量删，不是 N 次单条删除。
 
-    两万条实体逐条问 Neo4j 就是两万次网络往返——这个功能在 demo 租户上根本
-    跑不完。删图谱节点同理，一次批量删而不是 N 次单条删除。
+    两万条实体逐条问 Neo4j 就是两万次网络往返——这个功能在 demo 租户上
+    根本跑不完。
     """
     _seed_bulk_terms(terms_conn)
     graph_client = SpyGraphClient()
@@ -2503,9 +2541,8 @@ def test_bulk_delete_asks_the_graph_guard_once_no_matter_how_many_terms(terms_co
 
     assert response.status_code == 200
     assert response.json()["deleted"] == 9
-    # 9 条实体，守卫只问了 1 次；单条守卫（count_relation_edges_for_term）
-    # 一次都不该被用上。
-    assert len(graph_client.guard_calls) == 1
+    # 删除路径上一次影响面查询都不该发：预演是确认框弹出之前的事。
+    assert graph_client.impact_calls == []
     assert len(graph_client.delete_batches) == 1
     assert sorted(graph_client.delete_batches[0]) == sorted(
         [f"t:{n}" for n in _TYPE_T_NAMES] + ["t2:辛", "t2:壬"]
@@ -2537,15 +2574,15 @@ def test_bulk_delete_writes_deleted_edits_and_keeps_the_terms_rows(terms_conn):
         assert FIELD_DELETED in edits
 
 
-def test_bulk_delete_blocked_terms_keep_their_graph_nodes(terms_conn):
-    """被守卫挡住的那条，图谱节点也不许删——SQLite 侧没标删除、图上却没了，
+def test_bulk_delete_failed_terms_keep_their_graph_nodes(terms_conn):
+    """没删成的那条，图谱节点也不许删——SQLite 侧没标删除、图上却没了，
     是这个项目最不想造出来的那种不一致。"""
     _seed_bulk_terms(terms_conn)
-    graph_client = SpyGraphClient(blocked_node_keys={"t:乙"})
+    graph_client = SpyGraphClient()
 
-    _bulk_delete(terms_conn, graph_client, {"node_keys": _PAGE_KEYS})
+    _bulk_delete(terms_conn, graph_client, {"node_keys": [*_PAGE_KEYS, "t:根本不存在"]})
 
-    assert "t:乙" not in graph_client.deleted
+    assert "t:根本不存在" not in graph_client.deleted
 
 
 # ---------------------------------------------------------------------------

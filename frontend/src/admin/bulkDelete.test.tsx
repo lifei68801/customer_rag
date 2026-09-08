@@ -40,6 +40,8 @@ function whoamiResponse() {
 }
 
 let bulkRequests: { url: string; body: unknown }[] = []
+let previewRequests: { url: string; body: unknown }[] = []
+let previewResponse = { term_count: 0, edge_total: 0, by_counterpart_type: [] as { term_type: string; edge_count: number }[] }
 let bulkResponse = { requested: 3, deleted: 3, failures: [] as { key: string; reason: string }[] }
 
 const SUMMARY = {
@@ -55,6 +57,12 @@ function stubApi() {
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.includes('/auth/whoami')) return whoamiResponse()
+      // 预演必须排在真删前面：真删那条 includes 也能命中 /preview，顺序
+      // 反过来的话确认框拿到的是一份 BulkDeleteResult，而它没有 edge_total。
+      if (url.includes('/terms/bulk-delete/preview')) {
+        previewRequests.push({ url, body: JSON.parse(String(init?.body ?? '{}')) })
+        return Promise.resolve(new Response(JSON.stringify(previewResponse), { status: 200 }))
+      }
       if (url.includes('/terms/bulk-delete')) {
         bulkRequests.push({ url, body: JSON.parse(String(init?.body ?? '{}')) })
         return Promise.resolve(new Response(JSON.stringify(bulkResponse), { status: 200 }))
@@ -114,6 +122,8 @@ function stubApi() {
 
 beforeEach(() => {
   bulkRequests = []
+  previewRequests = []
+  previewResponse = { term_count: 0, edge_total: 0, by_counterpart_type: [] }
   bulkResponse = { requested: 3, deleted: 3, failures: [] }
   resetAdminSession()
   localStorage.clear()

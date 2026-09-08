@@ -74,7 +74,10 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
             aria-labelledby="confirm-dialog-message"
             className="flex w-full max-w-sm flex-col gap-4 rounded-modal border border-subtle bg-paper p-5"
           >
-            <p id="confirm-dialog-message" className="text-sm text-ink">
+            {/* whitespace-pre-line：文案里的换行要留着。删实体的确认框是
+                「做什么」+ 空行 +「连带代价」两段，挤成一坨的话最该被读到的
+                那句就淹在里面了。不带换行的文案不受影响。 */}
+            <p id="confirm-dialog-message" className="whitespace-pre-line text-sm text-ink">
               {pending.message}
             </p>
             <div className="flex justify-end gap-2">

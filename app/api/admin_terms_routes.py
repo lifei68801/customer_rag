@@ -59,22 +59,6 @@ router = APIRouter(prefix="/api/admin/{tenant_id}/terms", dependencies=[Depends(
 # （见 docs/superpowers/specs/2026-08-30-manual-edits-layer-design.md 非目标）；
 # 这次改的只是"记谁"，不是"记几条"。
 
-#: 删除被挡住时，消息里最多点名几条关系边。跟 ontology_categories 的
-#: _IN_USE_SAMPLE_SIZE 同一个取舍：3 条够用户认出是哪批数据，再多没人读，
-#: 剩下的用总数兜底。两处故意各自定义——它们数的不是同一种东西，
-#: 将来任一边想调都不该被另一边绑住。
-_IN_USE_SAMPLE_SIZE = 3
-
-
-def _format_samples(samples: list[str], total: int) -> str:
-    """把样本拼成“a、b、c 等共 12 条”。样本已经是全部时不加尾巴——
-    “2 条（a、b 等共 2 条）”读起来像还有别的没列出来。"""
-    listed = "、".join(samples)
-    if total > len(samples):
-        return f"{listed} 等共 {total} 条"
-    return listed
-
-
 def _describe_relation(row: dict[str, Any], term_standard_name: str) -> str:
     """一条关系边渲染成“主语 -类型-> 宾语”。方向必须照实还原：
     list_term_relations 的 direction 是相对于当前术语说的（"out" = 这个术语
@@ -989,6 +973,79 @@ class BulkDeleteTermsRequest(BaseModel):
     filters: TermFilters | None = None
 
 
+async def _resolve_bulk_delete_node_keys(
+    conn: aiosqlite.Connection, tenant_id: str, payload: "BulkDeleteTermsRequest"
+) -> list[str]:
+    """把两种请求模式收敛成一份 node_key 列表。
+
+    预演和真删共用这一个函数，不是各展开各的：两边对"全部"的理解一旦有
+    半点出入，预演报的数就不是真删会删的那批，而用户正是拿这个数决定要不
+    要按下确认的。
+    """
+    mode = resolve_bulk_delete_mode(keys=payload.node_keys, filters=payload.filters)
+    if mode == "keys":
+        return list(payload.node_keys or [])
+    matched = await _list_terms_matching_filters(conn, tenant_id, payload.filters or TermFilters())
+    return [term.node_key for term in matched]
+
+
+class CounterpartTypeImpact(BaseModel):
+    """连带删掉的边里，连向某一类实体的有多少条。"""
+
+    term_type: str
+    edge_count: int
+
+
+class TermDeletePreview(BaseModel):
+    """删除前的影响面预演。
+
+    term_count 是会被删掉的实体数，edge_total 是**连带**会被删掉的关系边
+    总数——DETACH DELETE 让这些边必然跟着走，所以这不是"可能受影响"，是
+    "一定会没"。by_counterpart_type 按对端实体类型分项，各项之和恒等于
+    edge_total（图谱侧按边去重，见 _SUMMARIZE_TERM_RELATION_EDGES_QUERY）。
+
+    这一步只读、不写：它存在的唯一理由是让确认框能说出"同时会删掉 1013 条
+    关系边（其中 1009 条来自订单号）"，而不是让用户在按下删除之后才发现。
+    """
+
+    term_count: int
+    edge_total: int
+    by_counterpart_type: list[CounterpartTypeImpact]
+
+
+@router.post("/bulk-delete/preview", response_model=TermDeletePreview)
+async def preview_bulk_delete_terms(
+    tenant_id: str,
+    payload: BulkDeleteTermsRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+) -> TermDeletePreview:
+    """算一算这次删除会波及什么，不做任何写入。
+
+    请求体跟 POST /bulk-delete 逐字相同（node_keys 或 filters 二选一），
+    单条删除也走这里、node_keys 给一个元素——两条路径共用同一份口径，
+    预演说的数和真删删的数才是同一个数。
+
+    项目里既有的预演惯例是同一个端点上的 dry_run 参数（见
+    admin_schema_etl_routes 的源端删除传播）。这里分成两个端点，是因为
+    返回的形状根本不同：预演回的是影响面，真删回的是 BulkDeleteResult，
+    塞进一个 response_model 会让两边都说不清自己是什么。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    node_keys = await _resolve_bulk_delete_node_keys(review_conn, tenant_id, payload)
+    rows = await graph_client.summarize_relation_edges_for_terms(
+        tenant_id=tenant_id, node_keys=node_keys
+    )
+    return TermDeletePreview(
+        term_count=len(node_keys),
+        edge_total=sum(row["edge_count"] for row in rows),
+        by_counterpart_type=[
+            CounterpartTypeImpact(term_type=row["counterpart_type"], edge_count=row["edge_count"])
+            for row in rows
+        ],
+    )
+
+
 @router.post("/bulk-delete", response_model=BulkDeleteResult)
 async def bulk_delete_terms(
     tenant_id: str,
@@ -1001,41 +1058,25 @@ async def bulk_delete_terms(
     __deleted__ 编辑 + 删图谱节点，terms 行留着，ETL 重跑也不会让它复活——
     只是一次做很多条，且**能删的删掉、挡住的逐条报出来**，不整批回滚。
 
-    守卫（"图谱里还有非 ALIAS_OF 的关系边就拒绝"）在这里是一次
-    list_node_keys_with_relation_edges + 应用层差集，不是逐条
-    count_relation_edges_for_term：两万条实体逐条问 Neo4j 就是两万次网络
-    往返，这个功能在 demo 租户上根本跑不完。图谱节点同理，一次批量删。
+    实体身上挂着的关系边**不再**是拒绝的理由：删节点走 DETACH DELETE，
+    边一定跟着走，不会留悬空边（见单条删除路径上的说明）。用户在按下确认
+    之前应该看到会连带删掉多少条边——那是 POST /bulk-delete/preview 的活，
+    不是这里拦一道。留在 failures 里的只剩"实体不存在"这一类。
 
     图谱节点的删除放在所有 __deleted__ 编辑写完之后一次性做：单条路径上是
     "先写编辑、再删节点"，这里保持同一个顺序，只是把 N 次节点删除合并成
     一次。顺序反过来的话，编辑写失败会留下"图上没有、词表里还在"的实体。
     """
     await require_active_tenant_or_404(review_conn, tenant_id)
-    mode = resolve_bulk_delete_mode(keys=payload.node_keys, filters=payload.filters)
-    if mode == "keys":
-        node_keys = list(payload.node_keys or [])
-    else:
-        matched = await _list_terms_matching_filters(
-            review_conn, tenant_id, payload.filters or TermFilters()
-        )
-        node_keys = [term.node_key for term in matched]
+    node_keys = await _resolve_bulk_delete_node_keys(review_conn, tenant_id, payload)
 
-    blocked = await graph_client.list_node_keys_with_relation_edges(tenant_id=tenant_id)
     deleted_keys: list[str] = []
 
     async def _delete_one(node_key: str) -> None:
-        # 存在性先于守卫，跟单条路径的 404 优先于 409 同一个理由：一个根本
-        # 不存在的 key 不该因为图谱里凑巧有同名孤儿边而被报成"已在图谱中
-        # 使用"，那会让用户去查一个从未存在过的实体。
         try:
             term = await get_term_merged_by_node_key(review_conn, tenant_id, node_key)
         except TermNotFoundError:
             raise BulkDeleteBlocked("实体不存在，可能已经被删掉了")
-        if term.node_key in blocked:
-            raise BulkDeleteBlocked(
-                "该实体还被图谱里的关系边使用，无法删除；"
-                "请先在实体详情页删掉这些关系再删它"
-            )
         await upsert_term_edit(
             review_conn, tenant_id=tenant_id, node_key=term.node_key, field=FIELD_DELETED,
             value=None, edited_by=session.username,
@@ -1072,53 +1113,20 @@ async def delete_existing_term(
     读路径隐藏"这种中间状态，图上不该留一个 SQLite 侧已经不可见的节点。
     """
     await require_active_tenant_or_404(review_conn, tenant_id)
-    # 先确认术语本身存在——404 的优先级要在 409 之前：一个根本不存在的
-    # 名字不该因为图谱里凑巧有同名孤儿边就返回"已在图谱中使用"这种
-    # 误导性的错误。走合并视图：已经被人工删除过的实体（__deleted__）
-    # 和只存在于编辑层的实体（纯 __created__，terms 表没有对应行）都要能
-    # 被这一步正确识别。确认存在之后再查图谱：这个术语已经被真实关系边
-    # 使用的话拒绝删除，避免"词表说不存在了，但图谱边还在用它"的不
-    # 一致状态——这一步必须在写 __deleted__ 编辑之前，不能标记完删除
-    # 才发现图谱不允许删。
+    # 走合并视图：已经被人工删除过的实体（__deleted__）和只存在于编辑层的
+    # 实体（纯 __created__，terms 表没有对应行）都要能被这一步正确识别。
+    #
+    # 这里**不再**因为"图谱里还有关系边"而拒绝删除。那道守卫防的是"词表说
+    # 不存在了，但图谱边还在用它"，而这个状态根本不可能出现：删节点走的是
+    # DETACH DELETE（_DELETE_TERM_NODE_QUERY），边一定跟着节点一起走，不会
+    # 留悬空边。守卫的真实效果只是把用户锁死——demo 租户里"产品:Beer"挂着
+    # 1013 条订单边，实体删不掉、实体类型因为还有实体也删不掉，边又只能一条
+    # 条删。现在改成"告知 + 确认"：条数和分布由 POST /bulk-delete/preview
+    # 在确认框弹出之前算给用户看，按下确认就连边一起删。
     try:
         term = await get_term_merged_by_node_key(review_conn, tenant_id, node_key)
     except TermNotFoundError:
         raise HTTPException(status_code=404, detail="术语不存在")
-    edge_count = await graph_client.count_relation_edges_for_term(
-        tenant_id=tenant_id, node_key=term.node_key
-    )
-    if edge_count > 0:
-        # 只说"已在图谱中使用"，用户得自己去猜是哪条边——而后台此刻手里
-        # 就有这份明细（跟删分类那条 d2f1197 同构）。取明细失败不能把 409
-        # 变成 500：守卫的结论已经拿到了，丢掉它反而让用户连"为什么删不掉"
-        # 都不知道。
-        try:
-            rows = await graph_client.list_term_relations(
-                tenant_id=tenant_id, node_key=term.node_key
-            )
-        except Exception:
-            logger.exception(
-                "术语 %r（租户 %r）删除被图谱边挡住，但取回挡路边的明细失败——"
-                "只能报出条数，用户无法据此定位具体是哪几条",
-                term.standard_name, tenant_id,
-            )
-            rows = []
-        samples = rows[:_IN_USE_SAMPLE_SIZE]
-        listed = _format_samples(
-            [_describe_relation(row, term.standard_name) for row in samples], edge_count
-        )
-        detail = (
-            f"该术语被 {edge_count} 条关系边使用（{listed}），无法删除"
-            if listed
-            else f"该术语被 {edge_count} 条关系边使用，无法删除"
-        )
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": f"{detail}；请先在实体详情页删掉这些关系再删术语",
-                "blocking_relations": {"total": edge_count, "edges": samples},
-            },
-        )
     await upsert_term_edit(
         review_conn, tenant_id=tenant_id, node_key=term.node_key, field=FIELD_DELETED,
         value=None, edited_by=session.username,
