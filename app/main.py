@@ -18,6 +18,7 @@ from app.api.admin_nav_badges_routes import router as admin_nav_badges_router
 from app.api.admin_ontology_routes import router as admin_ontology_router
 from app.api.admin_org_routes import router as admin_org_router
 from app.api.admin_personas_routes import router as admin_personas_router
+from app.api.admin_personas_routes import persona_router as admin_persona_detail_router
 from app.api.admin_schema_etl_routes import router as admin_schema_etl_router
 from app.api.admin_tenant_routes import router as admin_tenant_router
 from app.api.admin_terms_routes import router as admin_terms_router
@@ -180,6 +181,11 @@ tenant_scoped.include_router(admin_diagnostics_router)
 tenant_scoped.include_router(admin_ontology_router)
 tenant_scoped.include_router(admin_terms_router)
 tenant_scoped.include_router(admin_schema_etl_router)
+# GET/PUT /api/admin/{tenant_id}/persona + GET .../stale-questions：当前这一个
+# 数字人的完整信息（含引导问题）与保存。跟 GET /api/admin/personas（非租户，
+# 上面 admin_personas_router）分开挂载——那条不带 questions，见
+# admin_personas_routes.py 里 persona_router 的说明。
+tenant_scoped.include_router(admin_persona_detail_router)
 admin_scoped.include_router(tenant_scoped)
 
 app.include_router(admin_scoped)
