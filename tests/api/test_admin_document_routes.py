@@ -1329,3 +1329,351 @@ def test_download_document_file_returns_404_for_file_outside_own_tenant_director
         app.dependency_overrides.clear()
 
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 批量删除
+#
+# 文档列表**有分页、没有筛选**（GET /documents 只认 page/page_size），所以
+# 两档是「本页 20 条」和「整租户的全部」——filters 传空对象就是后者。任务
+# 列表（pending_jobs/dead_jobs）既不分页也不筛选，只有一档。
+#
+# 下面每一组批量用例里的批次都**同时包含能删的和删不掉的**：全能删或全删
+# 不掉的批次，「逐条收集失败」和「一律当成功」两种实现都能变绿。
+# ---------------------------------------------------------------------------
+
+
+class _VectorStoreFailingOnOneSource(InMemoryVectorStore):
+    """指定的那一份文档删向量时炸，其余照常。用来在一个批次里同时造出
+    能删的和删不掉的。"""
+
+    def __init__(self, failing_source: str) -> None:
+        super().__init__()
+        self._failing_source = failing_source
+
+    async def delete_by_source(self, *, source: str, tenant_id: str) -> None:
+        if source == self._failing_source:
+            raise RuntimeError("milvus 连接失败")
+        await super().delete_by_source(source=source, tenant_id=tenant_id)
+
+
+def _bulk_delete_documents(
+    ingestion_conn, review_conn, upload_dir, payload, *, vector_store=None, tenant_id="t1"
+):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_vector_store] = lambda: (
+        vector_store if vector_store is not None else InMemoryVectorStore()
+    )
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        return client.post(
+            f"/api/admin/{tenant_id}/documents/bulk-delete",
+            json=payload,
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _seed_documents(ingestion_conn, paths: list[str], *, tenant_id: str = "t1") -> None:
+    async def _run() -> None:
+        for i, path in enumerate(paths):
+            await record_ingested(
+                ingestion_conn, tenant_id=tenant_id, file_path=path,
+                content_hash=f"h{i}", chunk_count=1,
+            )
+
+    asyncio.run(_run())
+
+
+def test_bulk_delete_documents_by_paths_deletes_only_the_listed_ones(
+    tmp_path, ingestion_conn, review_conn
+):
+    """本页全选：只删传进来的那几条，同一租户下别的文档不受影响。
+
+    批次里故意混进一条不存在的路径——它必须被点名报出来而不是算进成功数，
+    否则用户会以为拼错的那个路径对应的文档已经清掉了。
+    """
+    _seed_documents(ingestion_conn, ["a.md", "b.md", "c.md", "d.md", "e.md"])
+
+    response = _bulk_delete_documents(
+        ingestion_conn, review_conn, tmp_path / "uploads",
+        {"file_paths": ["a.md", "b.md", "不存在.md"]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["requested"] == 3
+    assert body["deleted"] == 2
+    assert [f["key"] for f in body["failures"]] == ["不存在.md"]
+    # 没列进来的三条还在——「删本页」不能变成「删全部」。
+    assert sorted(asyncio.run(_tracked_paths(ingestion_conn, "t1"))) == ["c.md", "d.md", "e.md"]
+
+
+def test_bulk_delete_documents_by_empty_filters_covers_the_whole_tenant_not_one_page(
+    tmp_path, ingestion_conn, review_conn
+):
+    """「全部」= 整租户的全部，不是列表当前那一页。
+
+    这里故意放 23 条（超过界面上那一页的 20 条）：把「全部」实现成"再拉
+    一页"的话，剩下的 3 条会静默留下来，而用户以为清干净了。
+
+    其中一条删向量会失败：能删的删掉、删不掉的逐条报出来，且失败那条的
+    追踪记录必须还在——批次里全能删的话，这条断言钉不住任何东西。
+    """
+    paths = [f"doc{i:02d}.md" for i in range(23)]
+    _seed_documents(ingestion_conn, paths)
+
+    response = _bulk_delete_documents(
+        ingestion_conn, review_conn, tmp_path / "uploads", {"filters": {}},
+        vector_store=_VectorStoreFailingOnOneSource("doc07.md"),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["requested"] == 23
+    assert body["deleted"] == 22
+    assert [f["key"] for f in body["failures"]] == ["doc07.md"]
+    assert "向量" in body["failures"][0]["reason"]
+    # 失败的那条确实还在，成功的确实没了。
+    assert asyncio.run(_tracked_paths(ingestion_conn, "t1")) == ["doc07.md"]
+
+
+def test_bulk_delete_documents_never_reaches_another_tenants_documents(
+    tmp_path, ingestion_conn, review_conn
+):
+    """整租户的「全部」也只是这一个租户的全部。"""
+    _seed_documents(ingestion_conn, ["mine-a.md", "mine-b.md"])
+    _seed_documents(ingestion_conn, ["theirs.md"], tenant_id="t2")
+
+    response = _bulk_delete_documents(
+        ingestion_conn, review_conn, tmp_path / "uploads", {"filters": {}},
+        vector_store=_VectorStoreFailingOnOneSource("mine-b.md"),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted"] == 1
+    assert asyncio.run(_tracked_paths(ingestion_conn, "t2")) == ["theirs.md"]
+
+
+def test_bulk_delete_documents_unlinks_each_file_as_it_goes_and_does_not_roll_back(
+    tmp_path, ingestion_conn, review_conn
+):
+    """删掉的那几条的磁盘文件当场就没了，不因为同批里有一条失败而"回滚"
+    ——文件删了就是删了，假装还能撤销比如实报告更危险。"""
+    upload_dir = tmp_path / "uploads"
+    tenant_dir = upload_dir / "t1"
+    tenant_dir.mkdir(parents=True)
+    files = []
+    for name in ("abc_a.md", "abc_b.md", "abc_c.md"):
+        f = tenant_dir / name
+        f.write_text("内容", encoding="utf-8")
+        files.append(f)
+    _seed_documents(ingestion_conn, [str(f) for f in files])
+
+    response = _bulk_delete_documents(
+        ingestion_conn, review_conn, upload_dir,
+        {"file_paths": [str(f) for f in files]},
+        vector_store=_VectorStoreFailingOnOneSource(str(files[1])),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted"] == 2
+    assert not files[0].exists()
+    assert not files[2].exists()
+    # 删不掉的那条：向量都没清成，磁盘文件更不该动。
+    assert files[1].exists()
+
+
+def test_bulk_delete_documents_with_both_modes_returns_400(tmp_path, ingestion_conn, review_conn):
+    """「删这 1 条」和「删整租户的全部」差两个数量级，接口不猜。"""
+    _seed_documents(ingestion_conn, ["a.md", "b.md"])
+
+    response = _bulk_delete_documents(
+        ingestion_conn, review_conn, tmp_path / "uploads",
+        {"file_paths": ["a.md"], "filters": {}},
+    )
+
+    assert response.status_code == 400
+    assert sorted(asyncio.run(_tracked_paths(ingestion_conn, "t1"))) == ["a.md", "b.md"]
+
+
+def test_bulk_delete_documents_with_neither_mode_returns_400(tmp_path, ingestion_conn, review_conn):
+    _seed_documents(ingestion_conn, ["a.md", "b.md"])
+
+    response = _bulk_delete_documents(ingestion_conn, review_conn, tmp_path / "uploads", {})
+
+    assert response.status_code == 400
+    assert sorted(asyncio.run(_tracked_paths(ingestion_conn, "t1"))) == ["a.md", "b.md"]
+
+
+def _bulk_delete_jobs(
+    ingestion_conn, review_conn, upload_dir, payload, *, vector_store=None, tenant_id="t1"
+):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_ingestion_conn] = lambda: ingestion_conn
+    app.dependency_overrides[deps.get_vector_store] = lambda: (
+        vector_store if vector_store is not None else InMemoryVectorStore()
+    )
+    app.dependency_overrides[deps.get_upload_dir] = lambda: upload_dir
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        return client.post(
+            f"/api/admin/{tenant_id}/documents/jobs/bulk-delete",
+            json=payload,
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _enqueue_job(ingestion_conn, file_path: str, *, dead: bool, tenant_id: str = "t1") -> str:
+    from app.ingestion.ingestion_queue import enqueue_ingestion_job, mark_job_failed
+
+    async def _run() -> str:
+        job_id = await enqueue_ingestion_job(
+            ingestion_conn, tenant_id=tenant_id, file_path=file_path,
+            content_hash="h1", action="ingest",
+        )
+        if dead:
+            await mark_job_failed(ingestion_conn, job_id, error="解析失败", max_attempts=1)
+        return job_id
+
+    return asyncio.run(_run())
+
+
+def _remaining_job_ids(ingestion_conn, tenant_id: str = "t1") -> list[str]:
+    async def _run() -> list[str]:
+        cursor = await ingestion_conn.execute(
+            "SELECT job_id FROM ingestion_jobs WHERE tenant_id = ?", (tenant_id,)
+        )
+        return sorted(row[0] for row in await cursor.fetchall())
+
+    return asyncio.run(_run())
+
+
+def test_bulk_delete_jobs_deletes_the_dead_ones_and_names_the_ones_it_cannot(
+    tmp_path, ingestion_conn, review_conn
+):
+    """批次里混着能删的（失败任务）和删不掉的（还在正常排队的任务）：
+    能删的删掉，删不掉的逐条报出来并说明为什么。
+
+    正在排队的任务当场删掉是危险的——它可能正在被处理。单条路径为此回
+    409，批量路径要把同一条判据保留成逐条的失败明细，而不是为了"批量"
+    把它放宽掉。
+    """
+    dead_a = _enqueue_job(ingestion_conn, "a.md", dead=True)
+    alive = _enqueue_job(ingestion_conn, "b.md", dead=False)
+    dead_c = _enqueue_job(ingestion_conn, "c.md", dead=True)
+
+    response = _bulk_delete_jobs(
+        ingestion_conn, review_conn, tmp_path / "uploads",
+        {"job_ids": [dead_a, alive, dead_c]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["requested"] == 3
+    assert body["deleted"] == 2
+    assert [f["key"] for f in body["failures"]] == [alive]
+    assert "无法删除" in body["failures"][0]["reason"]
+    # 删不掉的那条确实还在，能删的确实没了。
+    assert _remaining_job_ids(ingestion_conn) == [alive]
+
+
+def test_bulk_delete_jobs_reports_unknown_ids_instead_of_counting_them_as_deleted(
+    tmp_path, ingestion_conn, review_conn
+):
+    dead = _enqueue_job(ingestion_conn, "a.md", dead=True)
+
+    response = _bulk_delete_jobs(
+        ingestion_conn, review_conn, tmp_path / "uploads",
+        {"job_ids": [dead, "根本不存在的任务"]},
+    )
+
+    body = response.json()
+    assert body["deleted"] == 1
+    assert [f["key"] for f in body["failures"]] == ["根本不存在的任务"]
+
+
+def test_bulk_delete_jobs_cleans_up_each_files_and_chunks_as_it_goes(
+    tmp_path, ingestion_conn, review_conn
+):
+    """删任务的连带清理（上传文件 + 孤儿 chunk）在批量里要逐条真的发生。
+
+    批次里有一条删不掉（还在排队），它的文件和 chunk 必须原样留着；已经
+    清掉的那条不会因为它而"回滚"。
+    """
+    upload_dir = tmp_path / "uploads"
+    tenant_dir = upload_dir / "t1"
+    tenant_dir.mkdir(parents=True)
+    files = {}
+    for name in ("abc_a.md", "abc_b.md"):
+        f = tenant_dir / name
+        f.write_text("内容", encoding="utf-8")
+        files[name] = f
+    dead = _enqueue_job(ingestion_conn, str(files["abc_a.md"]), dead=True)
+    alive = _enqueue_job(ingestion_conn, str(files["abc_b.md"]), dead=False)
+
+    vector_store = InMemoryVectorStore()
+    asyncio.run(
+        vector_store.upsert(
+            [
+                VectorRecord(
+                    id=f"{files[name]}#0", vector=[0.1, 0.2], text="写了一半的内容",
+                    tenant_id="t1", metadata={"source": str(files[name])},
+                )
+                for name in files
+            ]
+        )
+    )
+
+    response = _bulk_delete_jobs(
+        ingestion_conn, review_conn, upload_dir,
+        {"job_ids": [dead, alive]}, vector_store=vector_store,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted"] == 1
+    assert not files["abc_a.md"].exists()
+    assert files["abc_b.md"].exists()
+    remaining = asyncio.run(
+        vector_store.search(query_vector=[0.1, 0.2], top_k=10, tenant_id="t1")
+    )
+    assert [r.metadata["source"] for r in remaining] == [str(files["abc_b.md"])]
+
+
+def test_bulk_delete_jobs_never_reaches_another_tenants_job(
+    tmp_path, ingestion_conn, review_conn
+):
+    """别的租户的任务 id 就算被猜到也删不掉——它在这个租户里等同于不存在。"""
+    mine = _enqueue_job(ingestion_conn, "a.md", dead=True)
+    theirs = _enqueue_job(ingestion_conn, "b.md", dead=True, tenant_id="t2")
+
+    response = _bulk_delete_jobs(
+        ingestion_conn, review_conn, tmp_path / "uploads", {"job_ids": [mine, theirs]},
+    )
+
+    body = response.json()
+    assert body["deleted"] == 1
+    assert [f["key"] for f in body["failures"]] == [theirs]
+    assert _remaining_job_ids(ingestion_conn, "t2") == [theirs]
+
+
+def test_bulk_delete_jobs_without_ids_returns_400(tmp_path, ingestion_conn, review_conn):
+    """任务列表没有分页也没有筛选，只有「选中的这些」一档——但"一个都没给"
+    仍然是调用方的 bug，不能被当成"那就全删了吧"。"""
+    dead = _enqueue_job(ingestion_conn, "a.md", dead=True)
+
+    response = _bulk_delete_jobs(ingestion_conn, review_conn, tmp_path / "uploads", {})
+
+    assert response.status_code == 400
+    assert _remaining_job_ids(ingestion_conn) == [dead]

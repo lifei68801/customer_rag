@@ -20,6 +20,12 @@ from pydantic import BaseModel
 import aiosqlite
 
 from app.api import deps
+from app.api.bulk_delete import (
+    BulkDeleteBlocked,
+    BulkDeleteResult,
+    resolve_bulk_delete_mode,
+    run_bulk_delete,
+)
 from app.api.tenant_guard import require_active_tenant_or_404
 from app.config.settings import Settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
@@ -308,6 +314,42 @@ def _unlink_uploaded_file(file_path: str, upload_dir: Path, *, tenant_id: str) -
     resolved.unlink(missing_ok=True)
 
 
+class _DocumentDeleteFailed(Exception):
+    """删一份文档中途失败。消息是给用户看的说法：单条路径把它翻成 502 的
+    detail，批量路径把它翻成这一条的失败原因，两处是同一句话。"""
+
+
+async def _delete_one_document(
+    file_path: str,
+    *,
+    tenant_id: str,
+    upload_dir: Path,
+    ingestion_conn: aiosqlite.Connection,
+    vector_store: VectorStore,
+) -> None:
+    """删一份文档的全部三步：向量 → 追踪记录 → 磁盘文件。
+
+    单条删除和批量删除共用这一份，两条路径的顺序和守卫不会各走各的。
+    """
+    try:
+        await vector_store.delete_by_source(source=file_path, tenant_id=tenant_id)
+    except Exception as exc:  # noqa: BLE001 - 转成对前端有意义的错误，不裸抛 500
+        logger.warning("删除文档失败（向量库这一步）：file_path=%s error=%s", file_path, exc)
+        raise _DocumentDeleteFailed(f"删除向量数据失败：{exc}") from exc
+    try:
+        await remove_tracked_file(ingestion_conn, tenant_id=tenant_id, file_path=file_path)
+    except Exception as exc:  # noqa: BLE001
+        # 向量已经删掉了，这里再失败会留下"向量没了但追踪记录还在"的不一致
+        # 状态——不隐藏这个事实，报错文案里说清楚，让管理员知道要手动核实。
+        logger.warning("删除文档失败（追踪记录这一步）：file_path=%s error=%s", file_path, exc)
+        raise _DocumentDeleteFailed(
+            f"向量数据已删除，但清理追踪记录失败，可能需要手动核实：{exc}"
+        ) from exc
+    # 磁盘文件放在最后删：向量/追踪记录任一步失败都会在上面抛出、不会执行
+    # 到这里，保证不会出现"文件已删但索引还在"的不可恢复状态。
+    _unlink_uploaded_file(file_path, upload_dir, tenant_id=tenant_id)
+
+
 @router.delete("")
 async def delete_document(
     tenant_id: str,
@@ -320,24 +362,80 @@ async def delete_document(
     _validate_tenant_id(tenant_id)
     await require_active_tenant_or_404(review_conn, tenant_id)
     try:
-        await vector_store.delete_by_source(source=file_path, tenant_id=tenant_id)
-    except Exception as exc:  # noqa: BLE001 - 转成对前端有意义的错误，不裸抛 500
-        logger.warning("删除文档失败（向量库这一步）：file_path=%s error=%s", file_path, exc)
-        raise HTTPException(status_code=502, detail=f"删除向量数据失败：{exc}") from exc
-    try:
-        await remove_tracked_file(ingestion_conn, tenant_id=tenant_id, file_path=file_path)
-    except Exception as exc:  # noqa: BLE001
-        # 向量已经删掉了，这里再失败会留下"向量没了但追踪记录还在"的不一致
-        # 状态——不隐藏这个事实，报错文案里说清楚，让管理员知道要手动核实。
-        logger.warning("删除文档失败（追踪记录这一步）：file_path=%s error=%s", file_path, exc)
-        raise HTTPException(
-            status_code=502,
-            detail=f"向量数据已删除，但清理追踪记录失败，可能需要手动核实：{exc}",
-        ) from exc
-    # 磁盘文件放在最后删：向量/追踪记录任一步失败都会在上面抛出、不会执行
-    # 到这里，保证不会出现"文件已删但索引还在"的不可恢复状态。
-    _unlink_uploaded_file(file_path, upload_dir, tenant_id=tenant_id)
+        await _delete_one_document(
+            file_path, tenant_id=tenant_id, upload_dir=upload_dir,
+            ingestion_conn=ingestion_conn, vector_store=vector_store,
+        )
+    except _DocumentDeleteFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"deleted": True}
+
+
+class DocumentFilters(BaseModel):
+    """文档列表的筛选条件。
+
+    这个页面目前只有分页，一个筛选条件都没有（GET /documents 只认
+    page/page_size），所以这里没有字段：filters 传一个空对象的语义是"当前
+    没有任何筛选时的全部"，也就是整租户的全部文档。留着这个模型而不是把
+    filters 退化成一个布尔标记，是为了将来这个页面加了筛选之后请求形状不用
+    再改一次。
+    """
+
+
+class BulkDeleteDocumentsRequest(BaseModel):
+    """批量删除文档的请求体。两种模式二选一，语义同实体那边的
+    BulkDeleteTermsRequest：file_paths 是本页全选，filters 是"当前筛选条件
+    下的全部"（在这个页面上就是整租户），由服务端展开。"""
+
+    file_paths: list[str] | None = None
+    filters: DocumentFilters | None = None
+
+
+@router.post("/bulk-delete", response_model=BulkDeleteResult)
+async def bulk_delete_documents(
+    tenant_id: str,
+    payload: BulkDeleteDocumentsRequest,
+    upload_dir: Path = Depends(deps.get_upload_dir),
+    ingestion_conn: aiosqlite.Connection = Depends(deps.get_ingestion_conn),
+    vector_store: VectorStore = Depends(deps.get_vector_store),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> BulkDeleteResult:
+    """批量删除文档。逐条走的是跟单条删除完全相同的三步，只是能删的删掉、
+    删不掉的逐条报出来，不整批回滚——磁盘文件和向量数据删掉之后本来就
+    回滚不了，假装能回滚比如实报告更危险。
+
+    failures[].key 是 file_path：它就是这个列表里定位一行的键，也是单条
+    删除接口的寻址方式。
+    """
+    _validate_tenant_id(tenant_id)
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    mode = resolve_bulk_delete_mode(keys=payload.file_paths, filters=payload.filters)
+    tracked = {
+        row["file_path"]
+        for row in await list_tracked_files(ingestion_conn, tenant_id=tenant_id)
+    }
+    if mode == "keys":
+        file_paths = list(payload.file_paths or [])
+    else:
+        # 不带 limit 地取整租户：这一档的语义就是"全部"，按界面那一页的
+        # 条数去取会把剩下的静默留下来，而用户以为清干净了。
+        file_paths = sorted(tracked)
+
+    async def _delete_one(file_path: str) -> None:
+        # 追踪表里没有的路径直接报出来，不要静默算成功：它多半是拼错的
+        # 路径，用户会以为真正想删的那份已经清掉了。这也顺带把别的租户的
+        # 文档挡在外面——tracked 是按本租户查的。
+        if file_path not in tracked:
+            raise BulkDeleteBlocked("文档不存在，可能已经被删掉了")
+        try:
+            await _delete_one_document(
+                file_path, tenant_id=tenant_id, upload_dir=upload_dir,
+                ingestion_conn=ingestion_conn, vector_store=vector_store,
+            )
+        except _DocumentDeleteFailed as exc:
+            raise BulkDeleteBlocked(str(exc)) from exc
+
+    return await run_bulk_delete(file_paths, _delete_one)
 
 
 class RetryJobResponse(BaseModel):
@@ -395,6 +493,81 @@ async def retry_ingestion_job(
     return RetryJobResponse(retried=True)
 
 
+async def _delete_one_job(
+    job_id: str,
+    *,
+    tenant_id: str,
+    upload_dir: Path,
+    ingestion_conn: aiosqlite.Connection,
+    vector_store: VectorStore,
+) -> None:
+    """删一条任务记录，并清掉它留下的孤儿 chunk 和上传文件。
+
+    单条删除和批量删除共用这一份。JobNotFoundError / JobNotDeadError 原样
+    上抛，由两条路径各自翻成 404/409 或逐条的失败原因。
+    """
+    file_path = await delete_job(ingestion_conn, job_id, tenant_id=tenant_id)
+    # 任务是失败状态或疑似卡死状态才会走到这一步，两种情况都可能发生在
+    # 部分 chunk 已经写进向量库之后（_embed_and_upsert 分批 upsert，中途
+    # 失败/中断不会回滚已经 upsert 的批次）；这些孤儿 chunk 没有对应的
+    # ingested_documents 记录，普通的 delete_document() 流程找不到它们，
+    # 必须在这里主动清理，否则会永久留在向量库里继续参与检索。retry 路径
+    # 不需要这一步，因为 process_pending_jobs 重新处理前总会先调用同一个
+    # delete_by_source()。
+    await vector_store.delete_by_source(source=file_path, tenant_id=tenant_id)
+    _unlink_uploaded_file(file_path, upload_dir, tenant_id=tenant_id)
+
+
+class BulkDeleteJobsRequest(BaseModel):
+    """批量删除任务的请求体。
+
+    只有 job_ids 一档：任务列表既不分页也不筛选（GET /documents 一次把
+    pending_jobs/dead_jobs 全给出来），"这一页"和"全部"是同一批东西，
+    做成两档等于给同一件事摆两个按钮。
+
+    字段缺席仍然是 400 而不是"那就全删了吧"——见 resolve_bulk_delete_mode。
+    """
+
+    job_ids: list[str] | None = None
+
+
+@router.post("/jobs/bulk-delete", response_model=BulkDeleteResult)
+async def bulk_delete_ingestion_jobs(
+    tenant_id: str,
+    payload: BulkDeleteJobsRequest,
+    upload_dir: Path = Depends(deps.get_upload_dir),
+    ingestion_conn: aiosqlite.Connection = Depends(deps.get_ingestion_conn),
+    vector_store: VectorStore = Depends(deps.get_vector_store),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> BulkDeleteResult:
+    """批量删除摄取任务，逐条走跟单条删除相同的守卫和连带清理。
+
+    "不是失败/疑似卡死状态就不能删"这条判据在批量里保留成逐条的失败明细，
+    没有为了"批量"被放宽：正在被处理的任务当场删掉会留下写了一半的向量
+    数据，一次删很多条不改变这一点。
+    """
+    _validate_tenant_id(tenant_id)
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    resolve_bulk_delete_mode(keys=payload.job_ids, filters=None)
+
+    async def _delete_one(job_id: str) -> None:
+        try:
+            await _delete_one_job(
+                job_id, tenant_id=tenant_id, upload_dir=upload_dir,
+                ingestion_conn=ingestion_conn, vector_store=vector_store,
+            )
+        except JobNotFoundError as exc:
+            # 别的租户的任务在这里等同于不存在——delete_job 按 tenant_id
+            # 匹配，猜到 id 也删不到。
+            raise BulkDeleteBlocked("任务不存在，可能已经被删掉了") from exc
+        except JobNotDeadError as exc:
+            raise BulkDeleteBlocked(
+                "该任务当前不是失败状态、也不是疑似卡死的处理中状态，无法删除"
+            ) from exc
+
+    return await run_bulk_delete(list(payload.job_ids or []), _delete_one)
+
+
 @router.delete("/jobs/{job_id}", response_model=DeleteJobResponse)
 async def delete_ingestion_job(
     job_id: str,
@@ -407,20 +580,14 @@ async def delete_ingestion_job(
     _validate_tenant_id(tenant_id)
     await require_active_tenant_or_404(review_conn, tenant_id)
     try:
-        file_path = await delete_job(ingestion_conn, job_id, tenant_id=tenant_id)
+        await _delete_one_job(
+            job_id, tenant_id=tenant_id, upload_dir=upload_dir,
+            ingestion_conn=ingestion_conn, vector_store=vector_store,
+        )
     except JobNotFoundError:
         raise HTTPException(status_code=404, detail="任务不存在")
     except JobNotDeadError:
         raise HTTPException(status_code=409, detail="该任务当前不是失败状态、也不是疑似卡死的处理中状态，无法删除")
-    # 任务是失败状态或疑似卡死状态才会走到这一步，两种情况都可能发生在
-    # 部分 chunk 已经写进向量库之后（_embed_and_upsert 分批 upsert，中途
-    # 失败/中断不会回滚已经 upsert 的批次）；这些孤儿 chunk 没有对应的
-    # ingested_documents 记录，普通的 delete_document() 流程找不到它们，
-    # 必须在这里主动清理，否则会永久留在向量库里继续参与检索。retry 路径
-    # 不需要这一步，因为 process_pending_jobs 重新处理前总会先调用同一个
-    # delete_by_source()。
-    await vector_store.delete_by_source(source=file_path, tenant_id=tenant_id)
-    _unlink_uploaded_file(file_path, upload_dir, tenant_id=tenant_id)
     return DeleteJobResponse(deleted=True)
 
 
