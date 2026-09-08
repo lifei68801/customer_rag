@@ -2,8 +2,7 @@ import aiosqlite
 from fastapi.testclient import TestClient
 
 from app.api import deps
-from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
-from app.auth.user_tenants_store import ensure_user_tenants_schema
+from app.auth.admin_users_store import create_admin_user
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
@@ -14,6 +13,7 @@ from app.providers.registry import ProviderRegistry
 from app.retrieval.bm25 import BM25Index
 from app.retrieval.vector_store import InMemoryVectorStore, VectorRecord
 from tests.api.conftest import login_client
+from tests.schema_fixtures import ensure_admin_auth_schema
 from tests.settings_factory import build_settings as _settings
 
 
@@ -76,12 +76,9 @@ def _review_conn_override():
             # qa_endpoint 现在还要查该租户勾了「支持链式查询」的已确认关系
             # 类型，ontology schema（tenant_relation_types 等表）也得建好。
             await ensure_ontology_schema(conn)
-            await ensure_admin_users_schema(conn)
-            # 授权判据（deps.assert_tenant_accessible）查 user_tenants，前台问答
-            # 的 require_chat_session 现在也走它。生产路径由 app/main.py 的
-            # lifespan 建表；这里是手工搭的测试连接，不建的话每个请求都以
-            # "no such table: user_tenants"（500）而不是 200/403 收场。
-            await ensure_user_tenants_schema(conn)
+            # 前台问答的 require_chat_session 也走授权判据，所以身份与授权
+            # 两张表都要建，见 tests/schema_fixtures.py。
+            await ensure_admin_auth_schema(conn)
             for username, tenant_id in (("member-t1", "t1"), ("member-t2", "t2")):
                 await create_admin_user(
                     conn,

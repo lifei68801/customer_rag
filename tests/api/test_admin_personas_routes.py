@@ -14,14 +14,15 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
-from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
-from app.auth.user_tenants_store import ensure_user_tenants_schema, grant_tenant_access
+from app.auth.admin_users_store import create_admin_user
+from app.auth.user_tenants_store import grant_tenant_access
 from app.graphrag.tenant_personas_store import (
     ensure_tenant_personas_schema,
     upsert_persona,
 )
 from app.graphrag.tenants_store import create_tenant, create_tenants_table, set_tenant_status
 from app.main import app
+from tests.schema_fixtures import ensure_admin_auth_schema
 from tests.settings_factory import build_settings
 
 
@@ -31,8 +32,7 @@ def _settings(**overrides):
 
 async def _open_personas_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
-    await ensure_admin_users_schema(conn)
-    await ensure_user_tenants_schema(conn)
+    await ensure_admin_auth_schema(conn)
     await create_tenants_table(conn)
     await ensure_tenant_personas_schema(conn)
 

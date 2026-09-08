@@ -14,19 +14,18 @@ from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.api.admin_session import AdminSession
-from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
-from app.auth.user_tenants_store import ensure_user_tenants_schema
+from app.auth.admin_users_store import create_admin_user
 from app.graphrag.organizations_store import ensure_organizations_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table, set_tenant_status
 from app.main import app
+from tests.schema_fixtures import ensure_admin_auth_schema
 
 pytestmark = pytest.mark.anyio
 
 
 async def _build_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
-    await ensure_admin_users_schema(conn)
-    await ensure_user_tenants_schema(conn)
+    await ensure_admin_auth_schema(conn)
     await create_tenants_table(conn)
     # 建完 tenants 表才能建 organizations——ensure_organizations_schema 要给
     # tenants 补 org_id 列（app/graphrag/organizations_store.py）。

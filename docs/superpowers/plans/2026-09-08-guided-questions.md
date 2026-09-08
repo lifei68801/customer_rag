@@ -619,9 +619,21 @@ git commit -m "feat(chat): 手写引导问题的存取，保存前挑出一个�
 **Interfaces:**
 - Consumes: Task 1 的 `generate_questions`、Task 2 的 `set_questions` / `get_questions` / `find_unmatched_questions`
 - Produces:
-  - `GET /api/admin/personas` 回包每项加 `questions: list[str]`（手写有就用手写，没有就自动兜底）
-  - `PUT /api/admin/personas/{tenant_id}` `{avatar, tagline, questions}` → 200 / 400
-  - `GET /api/admin/personas/{tenant_id}/stale-questions` → `{stale: [str]}`（看板消费）
+  - `GET /api/admin/{tenant_id}/persona` → 当前这一个数字人的完整信息，含 `questions`
+  - `PUT /api/admin/{tenant_id}/persona` `{avatar, tagline, questions}` → 200 / 400
+  - `GET /api/admin/{tenant_id}/persona/stale-questions` → `{stale: [str]}`（看板消费）
+
+**路径形状是硬要求，不是偏好**（阶段一执行时裁定，已核实）：
+
+`tests/api/test_admin_route_shapes.py` 的 `_TENANT_SCOPED_PREFIXES` 只认两种形状——
+`/api/admin/{tenant_id}/` 和 `/api/admin/ontology/{tenant_id}/`。而那个文件里有三条守卫：
+租户内路径**必须**挂 `require_tenant_access`，其余 `/api/admin/*` **必须不挂**。
+
+所以写端点**不能**放在 `/api/admin/personas/{tenant_id}`：挂了会被反向断言判红，
+不挂就是无鉴权改别人的数字人。写端点必须落在 `/api/admin/{tenant_id}/persona`。
+
+**读端点 `GET /api/admin/personas`（非租户，回答「我能访问哪些」）保持不动**，
+且**不带** `questions`——理由见下面 Step 3 的 N+1 说明。
 
 - [ ] **Step 1: 写失败测试（追加到既有文件）**
 
@@ -688,14 +700,14 @@ def test_a_member_cannot_write_another_tenants_persona(personas_conn):
 右栏本身**不需要** questions——它只显示名字和头像。所以：
 
 - `GET /api/admin/personas` **不带** questions（保持 Task 5 那一版的形状）
-- 新增 `GET /api/admin/personas/{tenant_id}` 只返回当前那一个的完整信息，含 questions
+- 新增 `GET /api/admin/{tenant_id}/persona` 只返回当前那一个的完整信息，含 questions
 
 前台只对当前数字人请求这一个。切换数字人时重新请求。这样图查询永远是 1 次而不是 N 次。
 
 写入端点：
 
 ```python
-@router.put("/{tenant_id}")
+@router.put("/persona")   # router 的 prefix 是 /api/admin/{tenant_id}
 async def write_persona(
     tenant_id: str = Depends(deps.require_tenant_access),
     payload: PersonaWriteRequest = ...,
@@ -783,7 +795,7 @@ git commit -m "feat(api): 引导问题读写端点，保存不通过时点名是
 - Test: `frontend/src/components/guidedQuestions.test.tsx`
 
 **Interfaces:**
-- Consumes: Task 3 的 `GET /api/admin/personas/{tenant_id}` → `{tenant_id, name, avatar, tagline, questions}`
+- Consumes: Task 3 的 `GET /api/admin/{tenant_id}/persona` → `{tenant_id, name, avatar, tagline, questions}`
 - Produces: `export function GuidedQuestions(props: { tagline: string; questions: string[]; onAsk: (q: string) => void }): JSX.Element | null`
 
 - [ ] **Step 1: 写失败测试**
@@ -908,7 +920,7 @@ export async function fetchPersonaDetail(
   tenantId: string,
 ): Promise<PersonaDetail> {
   const response = await adminFetch(
-    `/api/admin/personas/${encodeURIComponent(tenantId)}`,
+    `/api/admin/${encodeURIComponent(tenantId)}/persona`,
     sessionToken,
   )
   if (!response.ok) {
@@ -933,7 +945,7 @@ cd frontend && npx tsc --noEmit
 cd frontend && npx vitest run src
 ```
 
-既有用例可能因多了一个 fetch 而红——给它们的 stub 补 `/api/admin/personas/` 分支，
+既有用例可能因多了一个 fetch 而红——给它们的 stub 补 `/api/admin/<tenant>/persona` 分支，
 **不要**给组件加静默降级。
 
 - [ ] **Step 6: 变异验证**
@@ -965,7 +977,7 @@ git commit -m "feat(chat): 空会话时给出引导问题，切数字人跟着�
 - Test: `frontend/src/admin/personaEditor.test.tsx`
 
 **Interfaces:**
-- Consumes: Task 3 的 `GET /api/admin/personas/{tenant_id}` 与 `PUT /api/admin/personas/{tenant_id}`
+- Consumes: Task 3 的 `GET /api/admin/{tenant_id}/persona` 与 `PUT /api/admin/{tenant_id}/persona`
 - Produces: 路由 `ADMIN_ROUTES.persona = '/admin/model/persona'`（阶段三重排导航时会改成 `/admin/ontology/persona`，届时加垫片）
 
 - [ ] **Step 1: 写失败测试**
@@ -1014,7 +1026,7 @@ it('已经失效的引导问题显示一个警示，不是静默留着', async (
 - 头像用一个 emoji 输入框（`maxLength={2}`），跟 Artifact favicon 同一个形状
 - 人设一行文本
 - 引导问题是一个可增删排序的列表，上限 6 条
-- 挂载时并发拉 `GET /personas/{tenant_id}` 与 `GET /personas/{tenant_id}/stale-questions`
+- 挂载时并发拉 `GET /api/admin/{tenant_id}/persona` 与 `GET /api/admin/{tenant_id}/persona/stale-questions`
 - 失效的那几条在列表里带一个「已失效」标记 + 一句「本体改动之后这条不再命中，点了答不出来」
 
 - [ ] **Step 5: 跑前端全量 + 类型检查 + 变异**

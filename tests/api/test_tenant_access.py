@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from app.api import deps
 from app.api.session_cookie import CSRF_COOKIE_NAME, CSRF_HEADER_NAME
 from app.api.admin_session import AdminSession, AdminSessionStore
-from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
+from app.auth.admin_users_store import create_admin_user
 from app.auth.user_tenants_store import (
     ensure_user_tenants_schema,
     grant_tenant_access,
@@ -28,6 +28,7 @@ from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.main import app
+from tests.schema_fixtures import ensure_admin_auth_schema
 from tests.settings_factory import build_settings
 
 
@@ -39,8 +40,7 @@ async def _open_review_conn() -> aiosqlite.Connection:
     await ensure_term_edits_schema(conn)
     await ensure_ontology_schema(conn)
     await create_tenants_table(conn)
-    await ensure_admin_users_schema(conn)
-    await ensure_user_tenants_schema(conn)
+    await ensure_admin_auth_schema(conn)
     await create_tenant(conn, tenant_id="demo", name="demo")
     await create_tenant(conn, tenant_id="other", name="other")
     await create_admin_user(
