@@ -6,6 +6,8 @@ from app.graphrag.tenant_personas_store import (
     ensure_tenant_personas_schema,
     get_persona,
     get_personas,
+    get_questions,
+    set_questions,
     upsert_persona,
 )
 
@@ -159,6 +161,58 @@ def test_upsert_does_not_touch_questions():
             )
             row = await cursor.fetchone()
             assert row["questions"] == '["先问预算"]'
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_set_questions_does_not_wipe_the_face():
+    """写问题不该把头像和人设清掉——它们是两个独立的编辑动作。"""
+
+    async def run():
+        conn = await _conn()
+        try:
+            await upsert_persona(conn, tenant_id="t1", avatar="🛍️", tagline="我知道商品")
+            await set_questions(conn, tenant_id="t1", questions=["有什么新品？"])
+            persona = await get_persona(conn, "t1")
+            assert persona is not None
+            assert persona["avatar"] == "🛍️"
+            assert persona["tagline"] == "我知道商品"
+            assert await get_questions(conn, "t1") == ["有什么新品？"]
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_questions_keep_their_order():
+    """引导问题是有序的——第一条占的位置最值钱。存成集合或按字典序排
+    的话，管理员精心排的顺序就没了。"""
+
+    async def run():
+        conn = await _conn()
+        try:
+            ordered = ["丙", "甲", "乙"]
+            await set_questions(conn, tenant_id="t1", questions=ordered)
+            assert await get_questions(conn, "t1") == ordered
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_a_corrupt_questions_column_reads_as_empty_not_as_a_crash():
+    async def run():
+        conn = await _conn()
+        try:
+            await upsert_persona(conn, tenant_id="t1", avatar="", tagline="")
+            await conn.execute(
+                "UPDATE tenant_personas SET questions = ? WHERE tenant_id = ?",
+                ("这不是 JSON", "t1"),
+            )
+            await conn.commit()
+            assert await get_questions(conn, "t1") == []
         finally:
             await conn.close()
 

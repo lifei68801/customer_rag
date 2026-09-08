@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS tenant_personas (
@@ -13,11 +17,7 @@ CREATE TABLE IF NOT EXISTS tenant_personas (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
-# 数字人的脸：前台右栏和欢迎语要用的那几样。
-#
-# questions 这一列本计划只建不用——引导问题连同它的校验逻辑在阶段二
-# （见 docs/superpowers/plans/2026-09-08-guided-questions.md）。现在就留出
-# 这一列是为了避免阶段二再做一次 ALTER TABLE，不是为了让它先空着。
+# 数字人的脸：前台右栏和欢迎语要用的那几样，外加引导问题（questions 列）。
 #
 # 一个租户一张脸，所以 tenant_id 直接做主键：数字人就是租户（spec D1），
 # 「一个租户两张脸」在这个模型里没有意义。
@@ -80,3 +80,51 @@ async def get_personas(
         tuple(tenant_ids),
     )
     return {row["tenant_id"]: dict(row) for row in await cursor.fetchall()}
+
+
+async def set_questions(
+    conn: aiosqlite.Connection, *, tenant_id: str, questions: list[str]
+) -> None:
+    """写引导问题。存 JSON 数组而不是另开一张行表：它是一个有序的短列表，
+    整体读整体写，拆成行表只会让「顺序」需要一个额外的列来维护。
+
+    avatar/tagline 不在 DO UPDATE 的列里——跟 upsert_persona 反过来对称：
+    upsert_persona 写脸时不碰 questions，这里写 questions 时也不碰脸，
+    两个编辑动作互不清空对方。
+
+    这里不做校验——校验在路由层（保存时要把「哪几条不通过」告诉用户，
+    而这个函数只能返回成功或抛异常，说不出是哪几条）。
+    """
+    await conn.execute(
+        "INSERT INTO tenant_personas (tenant_id, questions) VALUES (?, ?) "
+        "ON CONFLICT (tenant_id) DO UPDATE SET "
+        "questions = excluded.questions, updated_at = datetime('now')",
+        (tenant_id, json.dumps(questions, ensure_ascii=False)),
+    )
+    await conn.commit()
+
+
+async def get_questions(conn: aiosqlite.Connection, tenant_id: str) -> list[str]:
+    """读引导问题。没配过时返回空列表。
+
+    自己设 row_factory，理由同 get_persona/get_personas：不自设的话，一旦
+    调用顺序被打破（生产路径上依赖 seed_admin_user → get_admin_user 先把
+    进程内单例连接的 row_factory 设成 aiosqlite.Row 这个"碰巧"），
+    `row["questions"]` 会以 TypeError 收场，而不是取到错的数据。
+
+    JSON 解析失败时也返回空列表并告警：这一列是人写进去的，历史上手工改库
+    留下一个坏值是可能的，而它不该让整个前台首屏 500。
+    """
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute(
+        "SELECT questions FROM tenant_personas WHERE tenant_id = ?", (tenant_id,)
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return []
+    try:
+        parsed = json.loads(row["questions"])
+    except (TypeError, ValueError):
+        logger.warning("租户 %r 的 questions 列不是合法 JSON，按「没配」处理", tenant_id)
+        return []
+    return [q for q in parsed if isinstance(q, str)] if isinstance(parsed, list) else []
