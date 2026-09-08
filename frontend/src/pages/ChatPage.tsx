@@ -1,14 +1,16 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Hero } from '../components/Hero'
 import { ChatWindow } from '../components/ChatWindow'
 import { ChatInput } from '../components/ChatInput'
 import { ChatSidebar } from '../components/ChatSidebar'
+import { PersonaRail } from '../components/PersonaRail'
 import { Footer } from '../components/Footer'
 import { useAgentChat } from '../hooks/useAgentChat'
 import { AccountMenu } from '../admin/AccountMenu'
-import { TenantProvider } from '../admin/TenantContext'
+import { TenantProvider, useAdminTenant } from '../admin/TenantContext'
 import { useAdminAuth } from '../admin/useAdminAuth'
+import { fetchPersonas, type Persona } from '../lib/personasApi'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -53,6 +55,36 @@ function NoTenantNotice() {
 }
 
 function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
+  // 数字人（= 租户）的取数与切换状态放在这里，不放进 useAgentChat——那个
+  // hook 管的是一次会话内的消息，数字人是会话之外的作用域（换数字人不是
+  // 换一条消息，是换整个知识库）。
+  const { tenantId, setTenantId } = useAdminTenant()
+  const [personas, setPersonas] = useState<Persona[]>([])
+  const [personasLoading, setPersonasLoading] = useState(true)
+  const [personasError, setPersonasError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchPersonas('')
+      .then((data) => {
+        if (cancelled) return
+        setPersonas(data.personas)
+        setPersonasError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        // 拉取失败要让 PersonaRail 说出来，不能吞掉之后渲染一个和「只有
+        // 一个知识库」长得一模一样的空栏——那两种情况要用户做的事不同。
+        setPersonasError(err instanceof Error ? err.message : '数字人列表加载失败')
+      })
+      .finally(() => {
+        if (!cancelled) setPersonasLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const {
     messages,
     isSending,
@@ -63,7 +95,7 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
     activeSessionId,
     selectSession,
     deleteSession,
-  } = useAgentChat()
+  } = useAgentChat(tenantId)
 
   return (
     <>
@@ -85,6 +117,16 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
           <ChatInput disabled={isSending} onSend={sendQuestion} />
         </main>
       </div>
+      {/* 切换直接复用 TenantContext.setTenantId——它内部已经会 PUT
+          /api/admin/auth/session/tenant。不另写一份切租户请求：两份实现
+          会在「切了但没生效」这个 bug 上分叉。 */}
+      <PersonaRail
+        personas={personas}
+        activeTenantId={tenantId}
+        onSelect={setTenantId}
+        loading={personasLoading}
+        error={personasError}
+      />
     </>
   )
 }

@@ -58,8 +58,14 @@ const EMPTY_SESSION_STATE: SessionChatState = { messages: [], isSending: false }
  * 看到跑完的结果（切换只是换了"当前显示哪个会话"，不影响其它会话的请求
  * 生命周期）。当前会话由 URL 的 ?session= 参数决定，刷新页面/多标签页
  * 打开同一个链接都落在同一个会话上。
+ *
+ * tenantId 只是一个换会话作用域的信号，不会被塞进任何请求体：会话列表/
+ * 历史/发消息这几个接口都不带 tenant_id，服务端从会话 Cookie 里的
+ * current_tenant_id 取（见 lib/sessionsApi.ts 顶部注释）。这里要它，
+ * 单纯是因为 chat_sessions 的主键是 (tenant_id, session_id)——换了租户，
+ * 上一个租户的会话列表和消息都不再对，必须重新拉、重新存。
  */
-export function useAgentChat() {
+export function useAgentChat(tenantId: string) {
   const [searchParams, setSearchParams] = useSearchParams()
   const activeSessionId = searchParams.get(SESSION_QUERY_KEY)
 
@@ -83,11 +89,24 @@ export function useAgentChat() {
     } catch (error) {
       setSessionsError(error instanceof Error ? error.message : '获取会话列表失败')
     }
-  }, [])
+    // tenantId 进依赖数组：换了租户，refreshSessions 的身份跟着变，下面
+    // 那个 effect 才会重跑。空依赖数组的话这个 effect 只在挂载时跑一次，
+    // 切了数字人之后左栏还是上一个数字人的会话列表。
+  }, [tenantId])
 
   useEffect(() => {
     refreshSessions()
   }, [refreshSessions])
+
+  // 换租户时清掉按 session_id 分开存的历史：chat_sessions 主键是
+  // (tenant_id, session_id)，不清的话如果新旧租户凑巧出现同一个
+  // session_id（理论上限），上一个数字人的消息会挂在新数字人的会话下面
+  // 显示出来。loadedSessionIdsRef 一并清空，好让下面那个加载历史的 effect
+  // 对当前 session_id 重新发一次请求，而不是以为"已经加载过"就跳过。
+  useEffect(() => {
+    setSessionsData({})
+    loadedSessionIdsRef.current = new Set()
+  }, [tenantId])
 
   useEffect(() => {
     if (!activeSessionId || loadedSessionIdsRef.current.has(activeSessionId)) return
