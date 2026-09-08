@@ -16,19 +16,22 @@ import type { Persona } from '../lib/personasApi'
  * 的空态原文就是这句话），右栏只是把藏在左下角账号块下拉框里的租户切换器
  * 升级成常驻可见的一栏。
  *
- * whoami 里给 admin：TenantContext.setTenantId 目前对 member 是硬编码的
- * no-op（role !== 'admin' 直接 return，见 admin/roleBasedMenu.test.tsx 里
- * 「setTenantId 不生效」那条用例钉住的行为）。这跟 personas 端点明确把
- * member 也纳入服务范围是矛盾的，但那个矛盾不在本任务改动的文件列表里，
- * 这里用 admin 身份绕开它，不代表这个矛盾不存在——见任务报告里的顾虑。
+ * 默认身份是 admin；「member 身份下点另一个数字人同样会发切租户请求」那条
+ * 用例把 signedInRole 切成 member。此前 TenantContext.setTenantId 对
+ * member 硬编码 no-op，而右栏最主要的使用者恰恰是被授权访问多个数字人的
+ * member 账号——那道闸门已经在这次改动里拆掉（见 admin/TenantContext.tsx
+ * 和 admin/roleBasedMenu.test.tsx 的改动），这里补的这条用例是那个修复的
+ * 回归覆盖。
  */
+let signedInRole: 'admin' | 'member' = 'admin'
+
 function whoamiResponse() {
   return Promise.resolve(
     new Response(
       JSON.stringify({
-        username: 'admin',
-        role: 'admin',
-        tenant_id: null,
+        username: signedInRole === 'admin' ? 'admin' : 'alice',
+        role: signedInRole,
+        tenant_id: signedInRole === 'admin' ? null : 'muji-goods',
         current_tenant_id: 'muji-goods',
       }),
       { status: 200 },
@@ -91,6 +94,7 @@ function stubApi() {
 }
 
 beforeEach(() => {
+  signedInRole = 'admin'
   personasResponse = { personas: TWO_PERSONAS, current_tenant_id: 'muji-goods' }
   personasStatus = 200
   switchRequests = []
@@ -128,6 +132,24 @@ describe('数字人右栏', () => {
   })
 
   it('点另一个数字人会发切租户请求', async () => {
+    const user = userEvent.setup()
+    renderChat()
+    await waitFor(() => expect(screen.getByText('店务老张')).toBeTruthy())
+    await user.click(screen.getByRole('button', { name: /店务老张/ }))
+    await waitFor(() =>
+      expect(
+        switchRequests.some(
+          (r) => r.method === 'PUT' && JSON.parse(String(r.body)).tenant_id === 'muji-store',
+        ),
+      ).toBe(true),
+    )
+  })
+
+  it('member 身份下点另一个数字人同样会发切租户请求', async () => {
+    // 右栏最主要的使用者是被授权访问多个数字人的 member 账号，不是 admin
+    // ——admin 本来就不设限。把 TenantContext.tsx 里 `if (role !== 'admin')
+    // return` 加回去会让这条变红，其它用例不受影响（见变异记录）。
+    signedInRole = 'member'
     const user = userEvent.setup()
     renderChat()
     await waitFor(() => expect(screen.getByText('店务老张')).toBeTruthy())

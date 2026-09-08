@@ -31,7 +31,7 @@ const TenantContext = createContext<TenantContextValue | null>(null)
  * 只认一个。
  */
 export function TenantProvider({ children }: { children: ReactNode }) {
-  const { role, currentTenantId } = useAdminAuth()
+  const { currentTenantId } = useAdminAuth()
   const showToast = useToast()
   const tenantId = currentTenantId ?? FALLBACK_TENANT_ID
 
@@ -39,10 +39,19 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     () => ({
       tenantId,
       setTenantId: (next: string) => {
-        // member 的租户是登录时绑定的，切换这个能力对它不存在——不是把
-        // 按钮藏起来，是这个函数什么也不做。藏起来的按钮还能被别的代码
-        // 路径调用到。真正的门在后端：member 请求别的租户会拿到 403。
-        if (role !== 'admin') return
+        // 此前这里有一道 `if (role !== 'admin') return`：member 的租户
+        // 曾经是登录时绑定的单一一列，切换对它没有意义。user_tenants 表
+        // 上线后（app/graphrag/user_tenants_store.py），member 可以被
+        // 显式授权访问多个租户——这道前端闸门就变成了"挡住一个后端已经
+        // 允许的操作"，member 拿到多个数字人授权后点右栏第二个也没反应，
+        // 而且是静默没反应。
+        //
+        // 去掉它不放宽任何边界：真正的门在后端，assert_tenant_accessible
+        // （app/api/deps.py）按 user_tenants 里的显式授权判断，是这个
+        // PUT 路由和所有租户内路由共用的同一个函数（见
+        // admin_auth_routes.py 里 switch_current_tenant 的 docstring）。
+        // member 切到没被授权的租户会拿到 403，走下面的 catch 分支给出
+        // toast，而不是像现在这样连请求都发不出去。
         void (async () => {
           try {
             const response = await adminFetch('/api/admin/auth/session/tenant', '', {
@@ -68,7 +77,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         })()
       },
     }),
-    [tenantId, role, showToast],
+    [tenantId, showToast],
   )
 
   return <TenantContext.Provider value={value}>{children}</TenantContext.Provider>
