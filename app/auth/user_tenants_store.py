@@ -12,11 +12,13 @@ CREATE TABLE IF NOT EXISTS user_tenants (
 CREATE INDEX IF NOT EXISTS idx_user_tenants_tenant
     ON user_tenants (tenant_id, username);
 """
-# 「这个人能访问哪些租户」的唯一事实来源。
-#
-# admin_users.tenant_id 保留不动，语义从「唯一租户」变成「默认租户」——
-# 登录后 current_tenant_id 的初值仍取它。授权判据不再看那一列，只看这张表
-# （见 deps.list_accessible_tenant_ids）。
+# 这张表将成为「这个人能访问哪些租户」的唯一事实来源——但截至本次提交，
+# 授权判据尚未切换过去。当前 app/api/deps.py 的 require_tenant_access 仍然是
+# `if session.tenant_id != tenant_id: raise HTTPException(403)`，只认
+# admin_users.tenant_id 这一列，完全不查这张表。admin_users.tenant_id 现在依然
+# 是「唯一租户」的语义，不是「默认租户」；它降级为默认值/回退值，以及
+# deps.list_accessible_tenant_ids（目前在 app/ 下还不存在）读这张表作为授权
+# 判据，都是后续任务（多人格基础改造 Task 3）落地时才会发生的事。
 #
 # 复合主键就是幂等的实现：重复授权走 INSERT OR IGNORE 落到主键冲突上，
 # 不需要先查后插那一圈，也就没有两个请求之间的竞态窗口。
