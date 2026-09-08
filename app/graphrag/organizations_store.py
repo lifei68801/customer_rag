@@ -6,6 +6,7 @@ from typing import Any
 import aiosqlite
 
 from app.db_migrations import add_column_if_missing
+from app.graphrag.tenants_store import TenantNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -65,14 +66,25 @@ async def assign_tenant_to_org(
 ) -> None:
     """把租户挂到组织下；org_id 传 None 是移出组织。
 
-    挂到一个不存在的组织下会被拒绝：放行的话这个租户会从组织视图里彻底
-    消失——它有 org_id，但那个 org_id 谁也查不到，界面上表现为「这个租户
-    不见了」而没有任何报错。
+    两侧都要校验存在性，理由不对称但都成立：
+
+    - 挂到一个不存在的组织下会被拒绝：放行的话这个租户会从组织视图里彻底
+      消失——它有 org_id，但那个 org_id 谁也查不到，界面上表现为「这个租户
+      不见了」而没有任何报错。
+    - tenant_id 不存在时同样要拒绝（`org_id=None` 的移出路径也不例外）：
+      `UPDATE ... WHERE tenant_id = ?` 在没有匹配行时不会报错，只是静默
+      影响 0 行，调用方会以为分配/移出成功了——这与姊妹函数
+      `tenants_store.set_tenant_status` 先查后写、不存在就抛
+      `TenantNotFoundError` 是同一种校验，这里补齐，复用同一个异常类型，
+      不新造一个同义的，避免调用方要 catch 两种异常。
     """
     if org_id is not None:
         cursor = await conn.execute("SELECT 1 FROM organizations WHERE org_id = ?", (org_id,))
         if await cursor.fetchone() is None:
             raise OrganizationNotFoundError(f"组织 {org_id!r} 不存在")
+    cursor = await conn.execute("SELECT 1 FROM tenants WHERE tenant_id = ?", (tenant_id,))
+    if await cursor.fetchone() is None:
+        raise TenantNotFoundError(f"租户 {tenant_id!r} 不存在")
     await conn.execute("UPDATE tenants SET org_id = ? WHERE tenant_id = ?", (org_id, tenant_id))
     await conn.commit()
 
