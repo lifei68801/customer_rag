@@ -17,7 +17,7 @@ from app.api.admin_session import AdminSession
 from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
 from app.auth.user_tenants_store import ensure_user_tenants_schema
 from app.graphrag.organizations_store import ensure_organizations_schema
-from app.graphrag.tenants_store import create_tenant, create_tenants_table
+from app.graphrag.tenants_store import create_tenant, create_tenants_table, set_tenant_status
 from app.main import app
 
 pytestmark = pytest.mark.anyio
@@ -186,3 +186,26 @@ def test_getting_tenants_for_a_nonexistent_account_is_refused(org_conn):
     _as("admin")
     resp = _client().get("/api/admin/accounts/拼错了/tenants")
     assert resp.status_code == 404
+
+
+def test_saving_can_keep_an_existing_grant_on_a_now_disabled_tenant(org_conn):
+    """2026-09-08 评审 Important 2：alice 被授权 [a, b]，b 之后停用。管理员
+    打开账号页时前端复选框只列启用中的租户，看不到 b，但保存时如果原样
+    带上 b（前端的职责，这里只测后端），后端不能把它当成"不存在或已停用"
+    拒绝——那会让"保持一条指向已停用租户的授权不动"这个合法操作也做不到，
+    管理员连补救都补不回去。"""
+    _put_account_tenants(org_conn, "alice", ["a", "b"])
+    asyncio.run(set_tenant_status(org_conn, "b", "disabled"))
+    resp = _put_account_tenants_raw(org_conn, "alice", ["a", "b"])
+    assert resp.status_code == 200, resp.text
+    assert _get_account_tenants(org_conn, "alice") == ["a", "b"]
+
+
+def test_granting_a_newly_disabled_tenant_the_account_never_had_is_still_refused(org_conn):
+    """上一条测的是"保留已有授权"合法；这条测的是反面——停用期间的 b 从没
+    授权给 alice 过，新授权它必须继续被拒。只并入 current（已有授权），
+    不能松成"全部租户都算已知"，否则这条防线名存实亡。"""
+    asyncio.run(set_tenant_status(org_conn, "b", "disabled"))
+    resp = _put_account_tenants_raw(org_conn, "alice", ["a", "b"])
+    assert resp.status_code == 400
+    assert _get_account_tenants(org_conn, "alice") == []

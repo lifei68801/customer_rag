@@ -223,6 +223,47 @@ def test_only_login_is_exempt_from_csrf():
     assert _CSRF_EXEMPT_PATHS == frozenset({"/api/admin/auth/login"})
 
 
+#: 非租户 /api/admin/* 路由里，明确不要求 admin 角色的例外——写在这里而
+#: 不是散在各自文件里，理由跟 _NON_TENANT_PREFIXES 一样：新增一条非租户
+#: 路由却忘挂 require_admin_role，不该有任何"悄悄放行"的空子，必须先来
+#: 改这份白名单才能通过测试。
+#:
+#: - "/api/admin/personas"：对任何角色都要回答"我能访问哪些数字人"，见
+#:   app/api/admin_personas_routes.py 的模块级注释——它只挂
+#:   require_admin_session，安全性来自返回内容本身按
+#:   list_accessible_tenant_ids 过滤过，不是靠角色挡人。
+#: - "/api/admin/auth/"：登录、查身份、切当前租户这几个接口，服务对象
+#:   本来就包含 member（甚至登录之前根本没有角色可言），要求 admin 角色
+#:   会把所有 member 直接挡在整个后台门外。
+_ADMIN_ROLE_EXEMPT_PREFIXES = ("/api/admin/personas", "/api/admin/auth/")
+
+
+def test_non_tenant_admin_routes_require_admin_role_except_the_documented_exceptions():
+    """2026-09-08 全分支评审 Minor 7：`/api/admin/personas` 是第一个有意
+    对 member 开放的非租户 `/api/admin/*` 端点，从此"非租户 + 不挂角色
+    校验"成了一种在这个仓库里合法存在的形状——这份守卫之前，将来任何一条
+    新增的非租户路由忘挂 require_admin_role，都不会有任何测试变红，直到
+    有人发现 member 能碰它。
+
+    这个仓库今年出过同类的洞（CSRF 只挂了三个路由，见
+    test_only_login_is_exempt_from_csrf 的姊妹用例）：结构性缺口一旦
+    出现过一次，就该有一条测试钉住"下一次不会再悄悄发生"。
+    """
+    from app.api.deps import require_admin_role
+
+    checked = 0
+    for path, _route, inherited in _walk_routes(app.routes):
+        if not path.startswith("/api/admin") or path.startswith(_TENANT_SCOPED_PREFIXES):
+            continue
+        if path.startswith(_ADMIN_ROLE_EXEMPT_PREFIXES):
+            continue
+        assert require_admin_role in inherited, f"{path} 是非租户路由却没有挂 require_admin_role"
+        checked += 1
+    # 一条都没查到的话，上面的循环体从没执行过，这个断言就是空的——
+    # 遍历器失效了，不是这个仓库真的没有非租户 admin 路由。
+    assert checked > 5, f"只检查了 {checked} 条非租户路由，遍历器多半失效了"
+
+
 def test_non_tenant_routes_do_not_check_tenant_access():
     """反向断言。
 

@@ -55,6 +55,16 @@ async def create_organization(conn: aiosqlite.Connection, *, org_id: str, name: 
 
 
 async def list_organizations(conn: aiosqlite.Connection) -> list[dict[str, Any]]:
+    """自己设 row_factory，跟本仓库其它 store 的做法一致（如
+    app/auth/user_tenants_store.py）。生产路径上 review_conn 是进程内单例
+    （见 app/api/deps.py::get_review_conn），启动阶段 seed_admin_user →
+    get_admin_user 会先把它的 row_factory 设成 aiosqlite.Row，这里目前是
+    "碰巧"能按列名取值；不自设的话，`dict(row)` 在未设 row_factory 的连接
+    上拿到的是普通元组，会以 ValueError（"dictionary update sequence
+    element #0 has length 4; 2 is required"）收场，而不是静默返回错的数据
+    ——已用未设 row_factory 的连接验证过。
+    """
+    conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT org_id, name, status, created_at FROM organizations ORDER BY org_id"
     )
@@ -90,6 +100,12 @@ async def assign_tenant_to_org(
 
 
 async def list_tenants_in_org(conn: aiosqlite.Connection, org_id: str) -> list[str]:
+    """row_factory 的理由同 list_organizations：不自设的话，未设
+    row_factory 的连接上 `row["tenant_id"]` 会以 TypeError（"tuple indices
+    must be integers or slices, not str"）收场，而不是拿到错的键——已用
+    未设 row_factory 的连接验证过。
+    """
+    conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT tenant_id FROM tenants WHERE org_id = ? ORDER BY tenant_id", (org_id,)
     )

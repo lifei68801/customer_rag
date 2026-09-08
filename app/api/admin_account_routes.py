@@ -213,13 +213,20 @@ async def replace_account_tenants(
             detail="不能保存空列表：撤销到零之后这个账号会回退到默认租户，而不是被"
             "彻底挡在门外。要彻底收回访问权限，请使用账号列表里的「停用账号」。",
         )
-    known = {t["tenant_id"] for t in await list_tenants(review_conn)}
+    current = set(await list_granted_tenant_ids(review_conn, username))
+    # 已有的授权即使指向一个当下已停用的租户，也算「已知」——不然管理员
+    # 在停用期间打开这个账号的页面，压根看不见这条授权（前端复选框只会
+    # 列出启用中的租户），保存时全量替换会把它当成「没被勾选」悄悄删掉。
+    # 这是 2026-09-08 全分支评审 Important 2：管理员以为自己只是点了个
+    # 保存，实际撤销了一条他根本不知道存在的授权。只并入 current，不并入
+    # 「全部租户」：新授权一个已停用的租户仍然是非法操作，要继续被下面
+    # 的 unknown 检查挡住。
+    known = {t["tenant_id"] for t in await list_tenants(review_conn)} | current
     unknown = sorted(set(payload.tenant_ids) - known)
     if unknown:
         raise HTTPException(
             status_code=400, detail=f"这些租户不存在或已停用：{'、'.join(unknown)}"
         )
-    current = set(await list_granted_tenant_ids(review_conn, username))
     wanted = set(payload.tenant_ids)
     for tenant_id in sorted(wanted - current):
         await grant_tenant_access(review_conn, username=username, tenant_id=tenant_id)

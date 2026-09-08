@@ -14,9 +14,18 @@ interface PersonaRailProps {
 /**
  * 前台右栏：这个账号能访问的数字人。
  *
- * 只有一个数字人时整栏不渲染——一个选项的选择器不是选择器，是噪音，
- * 而且它会误导用户以为「还有别的，只是我没权限」。这个判断在组件内部而不是
- * 调用方，是为了让「什么时候不显示」只有一处定义。
+ * 只有一个数字人、且那一个恰好就是当前租户时才不渲染——一个选项的选择器
+ * 不是选择器，是噪音，还会误导用户以为「还有别的，只是我没权限」。
+ *
+ * 但当前租户不在这个列表里时，哪怕列表只有一个数字人也必须渲染：那种情况
+ * 只会发生在——账号被显式授权了别的租户、但会话当前挂着的租户（多半是
+ * admin_users.tenant_id 那个回退值）不在授权范围内。此时这一栏是用户唯一
+ * 能自己纠正过去的地方；连这唯一一个都藏起来，人是真的被锁死在一个只能
+ * 看见 403、却无处可点的页面上，见 2026-09-08 全分支评审 Important 1。
+ * 不做「自动切到列表第一个」——那是替用户做决定，本仓库明确不这么干
+ * （理由见 admin/useTenants.ts）。
+ *
+ * 这个判断在组件内部而不是调用方，是为了让「什么时候不显示」只有一处定义。
  *
  * 拉取失败时说出来而不是渲染空栏：空栏和失败在界面上长得一样，
  * 而它们要用户做的事完全不同（一个是「你只有一个知识库」，一个是「重试」）。
@@ -41,7 +50,8 @@ export function PersonaRail({
     )
   }
   if (loading) return null
-  if (personas.length <= 1) return null
+  const currentIsListed = personas.some((persona) => persona.tenant_id === activeTenantId)
+  if (personas.length <= 1 && currentIsListed) return null
   return (
     <aside
       aria-label="数字人"

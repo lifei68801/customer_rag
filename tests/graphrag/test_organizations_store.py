@@ -146,6 +146,49 @@ def test_org_id_can_be_cleared():
     asyncio.run(run())
 
 
+def test_list_organizations_does_not_depend_on_a_row_factory_someone_else_set():
+    """2026-09-08 全分支评审 Important 3：list_organizations 和
+    list_tenants_in_org 此前没有自设 row_factory，靠的是调用方（生产路径上
+    是 get_admin_user）"碰巧"已经设过——跟 user_tenants_store.py /
+    tenant_personas_store.py 已经修过两次的缺陷是同一种。这里的 fixture
+    `_conn()` 自己设了 row_factory，会把这个缺陷遮住，所以必须用一个完全
+    没设过 row_factory 的裸连接来验证。"""
+
+    async def run():
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            await create_tenants_table(conn)
+            await ensure_organizations_schema(conn)
+            await create_organization(conn, org_id="muji", name="无印良品")
+            rows = await list_organizations(conn)
+            assert [r["org_id"] for r in rows] == ["muji"]
+            assert [r["name"] for r in rows] == ["无印良品"]
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_list_tenants_in_org_does_not_depend_on_a_row_factory_someone_else_set():
+    """跟上面那条同源：list_tenants_in_org 也按列名取值，两个查询里只修
+    一个的话，"按列名取值的查询自己设 row_factory"这句在同一个文件里就有
+    反例。"""
+
+    async def run():
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            await create_tenants_table(conn)
+            await ensure_organizations_schema(conn)
+            await create_organization(conn, org_id="muji", name="无印良品")
+            await create_tenant(conn, tenant_id="muji-goods", name="商品")
+            await assign_tenant_to_org(conn, tenant_id="muji-goods", org_id="muji")
+            assert await list_tenants_in_org(conn, "muji") == ["muji-goods"]
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
 def test_ensure_schema_is_idempotent_and_keeps_existing_org_id():
     """启动会重复跑 ensure。第二次把 org_id 清空的话，重启一次所有租户
     就掉出组织了——而没有任何人会注意到，直到打开看板发现全空。"""

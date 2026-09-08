@@ -24,6 +24,10 @@ import type { Persona } from '../lib/personasApi'
  * 回归覆盖。
  */
 let signedInRole: 'admin' | 'member' = 'admin'
+// 大多数用例里当前租户就是 'muji-goods'；Important 1 的回归用例需要模拟
+// 「当前挂着的租户不在这个账号的授权列表里」，靠这个变量单独改写 whoami
+// 返回的 current_tenant_id，不用碰 signedInRole。
+let currentTenantIdOverride = 'muji-goods'
 
 function whoamiResponse() {
   return Promise.resolve(
@@ -32,7 +36,7 @@ function whoamiResponse() {
         username: signedInRole === 'admin' ? 'admin' : 'alice',
         role: signedInRole,
         tenant_id: signedInRole === 'admin' ? null : 'muji-goods',
-        current_tenant_id: 'muji-goods',
+        current_tenant_id: currentTenantIdOverride,
       }),
       { status: 200 },
     ),
@@ -95,6 +99,7 @@ function stubApi() {
 
 beforeEach(() => {
   signedInRole = 'admin'
+  currentTenantIdOverride = 'muji-goods'
   personasResponse = { personas: TWO_PERSONAS, current_tenant_id: 'muji-goods' }
   personasStatus = 200
   switchRequests = []
@@ -210,5 +215,25 @@ describe('数字人右栏', () => {
     }
     renderChat()
     await waitFor(() => expect(screen.getByText('商品')).toBeTruthy())
+    // 断言占位符本身，不能只断言名字——`persona.avatar || '◍'` 改回
+    // `persona.avatar` 之后名字照样渲染，这条不认那个回归就是假绿。
+    expect(screen.getByText('◍')).toBeTruthy()
+  })
+
+  it('当前租户不在授权列表里时，哪怕只有一个数字人也要渲染右栏——那是唯一的自救入口', async () => {
+    // 复现 2026-09-08 评审 Important 1：账号被授权了 muji-store，但会话
+    // 当前挂着的 current_tenant_id 还是回退值 muji-goods（不在授权范围
+    // 内）。personas.length === 1 时旧判断 `personas.length <= 1` 会把
+    // 唯一能纠正的入口也藏起来，人从此看得见 403、纠正不了。
+    currentTenantIdOverride = 'muji-goods'
+    personasResponse = {
+      personas: [{ tenant_id: 'muji-store', name: '店务老张', avatar: '🏪', tagline: '门店的事问我' }],
+      current_tenant_id: 'muji-goods',
+    }
+    renderChat()
+    await waitFor(() => expect(screen.getByText('店务老张')).toBeTruthy())
+    expect(screen.getByRole('complementary', { name: '数字人' })).toBeTruthy()
+    // 正文区要说清楚发生了什么，不能只剩一串看不懂的 403。
+    expect(screen.getByText('当前知识库你没有权限访问')).toBeTruthy()
   })
 })

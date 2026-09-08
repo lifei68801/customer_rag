@@ -54,6 +54,33 @@ function NoTenantNotice() {
   )
 }
 
+/**
+ * 当前挂着的租户不在这个账号能访问的数字人列表里时的落点。
+ *
+ * 会发生在：账号被显式授权了别的租户，但会话当前的 current_tenant_id
+ * （多半是 admin_users.tenant_id 那个回退值）不在授权范围内。不拦这一屏
+ * 的话，问答请求会一路撞到后端 require_chat_session 的 403，正文区只剩
+ * 一串看不懂的错误气泡——用户看得见坏了，却不知道去哪修。
+ *
+ * 不在这里替用户选一个数字人：PersonaRail 已经因为「当前租户不在列表里」
+ * 强制渲染出来（见 PersonaRail.tsx 的判断），这一屏只负责说清楚原因、
+ * 把选择权指过去。
+ */
+function TenantInaccessibleNotice() {
+  return (
+    <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+      <p role="status" className="font-mono text-lg font-semibold text-ink">
+        当前知识库你没有权限访问
+      </p>
+      <p className="text-sm text-ink-soft">
+        这个账号被改过授权，当前挂着的知识库已经不在你能访问的范围里了。
+        在数字人列表中选一个你能访问的——找不到列表就说明一个都没有，
+        请联系管理员重新授权。
+      </p>
+    </main>
+  )
+}
+
 function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
   // 数字人（= 租户）的取数与切换状态放在这里，不放进 useAgentChat——那个
   // hook 管的是一次会话内的消息，数字人是会话之外的作用域（换数字人不是
@@ -97,6 +124,14 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
     deleteSession,
   } = useAgentChat(tenantId)
 
+  // 数字人列表拉回来之后才能判断「当前租户是否在里面」——加载中/拉取失败
+  // 时不下结论，避免在真相还没到手之前就误判成「你没权限」而短暂闪一下
+  // 这条通知（拉取失败已经由 PersonaRail 自己说清楚了）。
+  const currentPersonaAccessible =
+    personasLoading || personasError !== null
+      ? true
+      : personas.some((persona) => persona.tenant_id === tenantId)
+
   return (
     <>
       {/* 侧边栏在窄屏（<768px）下改成顶部横条（ChatSidebar 内部处理），
@@ -112,10 +147,14 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
       />
       <div className="flex flex-1 flex-col">
         <Hero />
-        <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col">
-          <ChatWindow messages={messages} />
-          <ChatInput disabled={isSending} onSend={sendQuestion} />
-        </main>
+        {currentPersonaAccessible ? (
+          <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col">
+            <ChatWindow messages={messages} />
+            <ChatInput disabled={isSending} onSend={sendQuestion} />
+          </main>
+        ) : (
+          <TenantInaccessibleNotice />
+        )}
       </div>
       {/* 切换直接复用 TenantContext.setTenantId——它内部已经会 PUT
           /api/admin/auth/session/tenant。不另写一份切租户请求：两份实现

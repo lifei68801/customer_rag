@@ -528,7 +528,23 @@ export function AccountsPage() {
                           ) : (
                             <>
                               <div className="flex flex-wrap gap-3">
-                                {tenants.map((tenant) => (
+                                {/* 复选框列表不能只来自 useTenants()——那份只列启用中的
+                                    租户。这个账号已有的授权里，只要有一条指向一个当下
+                                    停用的租户，也必须单独渲染一行、勾选、标「已停用」：
+                                    2026-09-08 评审 Important 2 的原始事故就是"那条授权
+                                    从未出现在复选框里，管理员随手一保存就把它删了"——
+                                    要撤销它必须是管理员看得见它之后的有意动作，不能是
+                                    看不见它的意外副作用。 */}
+                                {[
+                                  ...tenants.map((tenant) => ({
+                                    tenant_id: tenant.tenant_id,
+                                    name: tenant.name,
+                                    isDisabledTenant: false,
+                                  })),
+                                  ...Array.from(grantState.selected)
+                                    .filter((id) => !tenants.some((t) => t.tenant_id === id))
+                                    .map((id) => ({ tenant_id: id, name: id, isDisabledTenant: true })),
+                                ].map((tenant) => (
                                   <label
                                     key={tenant.tenant_id}
                                     className="flex items-center gap-1.5 text-sm text-ink"
@@ -539,6 +555,9 @@ export function AccountsPage() {
                                       onChange={() => toggleGrant(account.username, tenant.tenant_id)}
                                     />
                                     {tenant.name}
+                                    {tenant.isDisabledTenant && (
+                                      <span className="text-xs text-ink-soft">（已停用）</span>
+                                    )}
                                   </label>
                                 ))}
                               </div>

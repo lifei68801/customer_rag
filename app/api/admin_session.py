@@ -92,8 +92,11 @@ class AdminSessionStore:
         写回字典。只 replace 不写回的话，下次 get_session 拿到的还是旧值，
         界面上表现为"切了租户但没切"。
 
-        不做权限判断：谁能切到哪个租户由路由层的 require_tenant_access
-        决定，这里只负责存。
+        不做权限判断：谁能切到哪个租户由切租户路由（app/api/admin_auth_routes.py）
+        调用的 deps.assert_tenant_accessible 决定，不经过 require_tenant_access
+        ——那个依赖读的是 URL 路径里的 tenant_id，切租户路由的 tenant_id 在
+        请求体里，两者的判据在这次多租户改造里被收敛成同一个函数，但挂的
+        依赖不是同一个。这里只负责存。
         """
         session = self.get_session(token)
         if session is None:

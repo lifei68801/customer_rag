@@ -16,10 +16,11 @@ from app.graphrag.tenants_store import (
     set_tenant_status,
 )
 
-# 新建/停用租户是 admin 专属。member 建了租户也进不去（它绑死在自己那个
-# 上），只会留下一个没人能用的空租户；而停用租户对 member 更危险——按租户
-# 作用域校验的话，它对自己所属的租户会通过校验，于是能把自己所在的租户
-# 停掉。
+# 新建/停用租户是 admin 专属。member 建了租户也进不去（新建的租户不在
+# 它被授权的那几个里，也不是它 admin_users.tenant_id 的回退值），只会留下
+# 一个没人能用的空租户；而停用租户对 member 更危险——按租户作用域校验的话
+# （即 URL 里的 tenant_id 落在它能访问的范围内就放行），它对自己被授权的
+# 那几个租户之一会通过校验，于是能把自己能访问的某个租户停掉。
 router = APIRouter(prefix="/api/admin/tenants", dependencies=[Depends(deps.require_admin_role)])
 
 
@@ -121,8 +122,8 @@ async def set_tenant_organization(
 
     这个 tenant_id 是**被操作的对象**（要挂到组织下的是哪个租户），不是
     操作发生的租户作用域，跟上面 disable/enable 两个端点同一个道理——
-    按租户作用域校验的话，member 对自己所属的那个租户会顺利通过，那不是
-    这里想要的：组织管理整体是 admin 专属（本 router 的依赖），不看
+    按租户作用域校验的话，member 对自己被授权的那几个租户之一会顺利通过，
+    那不是这里想要的：组织管理整体是 admin 专属（本 router 的依赖），不看
     调用者跟这个租户是什么关系。
 
     两侧存在性都在 assign_tenant_to_org 里校验过（组织不存在、租户不存在

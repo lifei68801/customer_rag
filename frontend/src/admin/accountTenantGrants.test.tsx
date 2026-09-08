@@ -21,6 +21,9 @@ import { resetAdminSession } from './useAdminAuth'
 
 let putCalls: { username: string; tenant_ids: string[] }[] = []
 let putResponse: { status: number; body: unknown } = { status: 200, body: { tenant_ids: ['b'] } }
+// alice 的授权 GET 返回值，默认 ['a', 'b']（两个都在启用列表里）。
+// Important 2 的回归用例把它改成含一个不在启用列表里的租户。
+let grantsResponse: string[] = ['a', 'b']
 
 function whoamiResponse() {
   return Promise.resolve(
@@ -55,8 +58,7 @@ function stubApi() {
           putCalls.push({ username, tenant_ids: body.tenant_ids })
           return json(putResponse.body, putResponse.status)
         }
-        // GET：alice 初始被授权 a 和 b 两个租户。
-        return json({ tenant_ids: ['a', 'b'] })
+        return json({ tenant_ids: grantsResponse })
       }
 
       if (url.includes('/api/admin/accounts')) {
@@ -105,6 +107,7 @@ beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
   putResponse = { status: 200, body: { tenant_ids: ['b'] } }
+  grantsResponse = ['a', 'b']
   stubApi()
 })
 
@@ -176,5 +179,38 @@ describe('账号页 · 可访问的数字人', () => {
     expect(await within(grantsPanel).findByRole('alert')).toHaveTextContent(
       '这些租户不存在或已停用：不存在',
     )
+  })
+
+  it('已停用但仍被授权的租户，也要以勾选状态出现并标注「已停用」', async () => {
+    // 2026-09-08 评审 Important 2：alice 被授权 [a(启用), c(已停用)]。
+    // /api/admin/tenants 只列启用中的租户（a、b），c 从未出现在
+    // useTenants() 的结果里。旧实现的复选框列表直接来自 useTenants()，
+    // c 那条授权全程不可见——管理员随手点保存，PUT 出去的是当前勾选的
+    // 全集，c 不在里面，于是被悄悄撤销，管理员全程不知道自己撤销了什么。
+    grantsResponse = ['a', 'c']
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.accounts)
+
+    const grantsPanel = await screen.findByTestId('tenant-grants-alice')
+    const checkboxA = await within(grantsPanel).findByRole('checkbox', { name: '租户 A' })
+    await waitFor(() => expect((checkboxA as HTMLInputElement).checked).toBe(true))
+    // b 是启用中但没被授权的租户：必须出现、但不勾选——反向确认这不是
+    // "所有复选框全勾上"那种会掩盖问题的实现。
+    expect((within(grantsPanel).getByRole('checkbox', { name: '租户 B' }) as HTMLInputElement).checked).toBe(
+      false,
+    )
+    const checkboxC = within(grantsPanel).getByRole('checkbox', { name: /c/ })
+    expect((checkboxC as HTMLInputElement).checked).toBe(true)
+    // 标注文字必须真的出现在界面上，不能只是"勾选了但看不出为什么这个
+    // 租户不在启用列表里却出现在这里"。
+    expect(within(grantsPanel).getByText('（已停用）')).toBeTruthy()
+
+    // 管理员这次是真的要撤销它：取消勾选、保存，请求体里不该再带 c。
+    await user.click(checkboxC)
+    await user.click(
+      within(grantsPanel).getByRole('button', { name: '保存 alice 可访问的数字人' }),
+    )
+    await waitFor(() => expect(putCalls).toHaveLength(1))
+    expect(putCalls[0]).toEqual({ username: 'alice', tenant_ids: ['a'] })
   })
 })
