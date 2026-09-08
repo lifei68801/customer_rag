@@ -80,7 +80,7 @@ def test_four_route_groups_are_tenant_scoped():
 
 
 #: 租户**作用域**路由的前缀白名单——请求操作的数据属于这个租户。
-#: 这些将来要挂租户访问校验（member 只能碰自己的那个）。
+#: 这些将来要挂租户访问校验（member 只能碰被授权的那几个）。
 _TENANT_SCOPED_PREFIXES = (
     "/api/admin/{tenant_id}/",
     "/api/admin/ontology/{tenant_id}/",

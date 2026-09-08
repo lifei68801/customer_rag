@@ -86,9 +86,18 @@ export function AccountMenu({
           aria-label="账号与租户"
           className="flex max-h-[70vh] flex-col gap-1 overflow-y-auto rounded-card border border-subtle bg-card p-1 shadow-lg"
         >
-          {/* 租户区整块只对 admin 渲染。member 的租户是登录时绑定的，
-              这里没有它可选的东西——不是把按钮藏起来，是这个能力对它
-              不存在（后端会 403）。 */}
+          {/* 租户区整块只对 admin 渲染。真实原因不是"member 只有一个
+              租户"（user_tenants 上线后这句已经不成立）——是这个下拉的
+              数据源 GET /api/admin/tenants 整条路由挂着
+              require_admin_role（见 app/api/admin_tenant_routes.py），
+              member 调它直接 403，拿不到租户列表，isAdmin 这道前端判断
+              只是提前避免一次注定失败的请求。
+              这是一个已知缺口：被授权多个租户/数字人的 member，在后台
+              （文档/图谱审核页）里确实没有任何入口切换当前租户——
+              留给阶段三（导航重排）解决，不在本计划范围内。不算完全
+              断路：从前台右栏切数字人会连带把服务端会话的
+              current_tenant_id 换掉（同一个 Cookie 会话），回到后台
+              时 whoami 会带出新值，只是要绕去前台切一圈。 */}
           {isAdmin && (
             <>
             <p className="px-3 pt-1 text-xs font-bold uppercase tracking-wide text-ink-faint">

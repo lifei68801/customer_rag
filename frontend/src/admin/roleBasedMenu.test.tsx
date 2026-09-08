@@ -40,8 +40,13 @@ function signIn(role: 'admin' | 'member') {
 /**
  * 账号菜单按角色渲染。
  *
- * member 看不到租户切换——不是因为按钮被藏起来了，而是因为这个能力对它
- * 不存在（后端 403）。前端隐藏只是不去误导人。
+ * member 看不到租户切换——不是因为"member 只有一个租户"（user_tenants
+ * 上线后这句已经不成立），是这个下拉的数据源 GET /api/admin/tenants
+ * 整条路由挂着 require_admin_role（见 app/api/admin_tenant_routes.py），
+ * member 调它会 403，拿不到租户列表。这是一个已知缺口：被授权多个
+ * 租户/数字人的 member 在后台没有入口切换当前租户，留给阶段三（导航
+ * 重排）解决，不在本计划范围内——前台右栏切数字人可以绕过去（同一个
+ * 会话，服务端 current_tenant_id 会跟着变）。
  */
 
 let requests: { url: string; method: string }[] = []

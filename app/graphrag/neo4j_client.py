@@ -387,7 +387,7 @@ RETURN count(r) AS removed
 #
 # 谁有权调它由路由层判定（见 admin_terms_routes.py 的删除路由）：起点
 # 节点固定取 URL 里那个已经过 require_tenant_access 校验的租户，所以
-# member 借这条路径也只能碰到自己租户节点身上的边；两端节点分属不同租户
+# member 借这条路径也只能碰到自己有权访问的租户节点身上的边；两端节点分属不同租户
 # 的那一类另外要求平台管理员。
 #
 # 有向模式、关系类型走参数、DELETE 后 count(r) 的语义，理由全同
