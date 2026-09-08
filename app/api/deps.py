@@ -417,12 +417,24 @@ async def require_csrf(request: Request) -> None:
 
 
 async def require_chat_session(
+    review_conn: aiosqlite.Connection = Depends(get_review_conn),
     session: AdminSession = Depends(require_admin_session),
 ) -> tuple[str, str]:
     """前台问答的身份：返回 (tenant_id, user_id)。
 
     租户取 current_tenant_id 而不是 tenant_id——admin 的 tenant_id 恒为
-    None，用它的话 admin 在前台根本问不了任何问题。member 两者恒等。
+    None，用它的话 admin 在前台根本问不了任何问题。member 的这两个值不再
+    恒等：他可以被授权多个租户，current_tenant_id 是他切过去的那一个。
+
+    正因为不再恒等，current_tenant_id 必须过一遍 assert_tenant_accessible：
+    AdminSessionStore.create_session 把它初始化成 admin_users.tenant_id，而
+    那一列现在只是回退值——一个显式授权为 ["other"]、列上却写着 "demo" 的
+    member，一登录 current_tenant_id 就是 demo，也就是一个他无权访问的租户。
+    没有这道校验的话，后台切租户那条路拦得住他，前台问答这条路却让他直接
+    进去了。
+
+    每个请求都校验，不是只在登录时挑一个合法租户：后者覆盖不了「会话还活着
+    的时候授权被撤销」——那时得等会话自然过期（默认 8 小时）才生效。
 
     user_id 取 username：会话历史此后按账号归属，不再是客户端自报的
     随机 UUID。既有的匿名会话因此变成孤儿，这是设计里明确接受的代价
@@ -430,6 +442,7 @@ async def require_chat_session(
     """
     if session.current_tenant_id is None:
         raise HTTPException(status_code=400, detail="请先选择一个租户")
+    await assert_tenant_accessible(review_conn, session, session.current_tenant_id)
     return session.current_tenant_id, session.username
 
 

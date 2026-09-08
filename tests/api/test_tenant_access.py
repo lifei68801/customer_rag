@@ -16,7 +16,11 @@ from app.api import deps
 from app.api.session_cookie import CSRF_COOKIE_NAME, CSRF_HEADER_NAME
 from app.api.admin_session import AdminSession, AdminSessionStore
 from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
-from app.auth.user_tenants_store import ensure_user_tenants_schema, grant_tenant_access
+from app.auth.user_tenants_store import (
+    ensure_user_tenants_schema,
+    grant_tenant_access,
+    list_usernames_with_access,
+)
 from app.graphrag.duplicate_review_queue import ensure_duplicate_review_schema
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.review_queue import ensure_review_schema
@@ -224,7 +228,14 @@ def test_member_is_refused_a_tenant_someone_else_was_granted():
 def test_member_with_no_grants_reaches_nothing_not_everything():
     """一条授权都没有、且 tenant_id 那一列也是空时返回空列表，不是 None。
     返回 None 的话它会被 admin 分支的语义吞掉，变成「不设限」——一个没有
-    任何授权的账号因此能读写所有租户。"""
+    任何授权的账号因此能读写所有租户。
+
+    这条是**防御式**的：admin_users 上有一条 CHECK 约束
+    （role='member' 时 tenant_id 必须非空），所以这种账号今天存不进库，
+    构造它只能像这里一样直接拼 AdminSession。留着它守的不是某个现存账号，
+    而是「member 分支返回了 None」这个形状本身——哪天那条 CHECK 松了、或者
+    多出一条不经过 admin_users 的会话来源，这里就是最后一道拦截。
+    """
 
     async def run():
         conn = await _grants_conn()
@@ -362,3 +373,82 @@ def test_switch_tenant_allows_a_tenant_only_the_grants_confer(review_conn):
     asyncio.run(grant_tenant_access(review_conn, username="alice", tenant_id="other"))
     response = _switch_tenant(review_conn, username="alice", target="other")
     assert response.status_code == 200
+
+
+def test_listing_who_can_reach_a_tenant_sets_its_own_row_factory():
+    """跟上面那条同源：list_usernames_with_access 也按列名取值。
+
+    两个查询里只修一个的话，"按列名取值的查询自己设 row_factory"这句在同
+    一个文件里就有反例，而反例暴露出来时是 500 不是 403。
+    """
+
+    async def run():
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            await ensure_user_tenants_schema(conn)
+            await grant_tenant_access(conn, username="alice", tenant_id="muji-store")
+            await grant_tenant_access(conn, username="bob", tenant_id="muji-store")
+            assert await list_usernames_with_access(conn, "muji-store") == ["alice", "bob"]
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 前台问答走的也是同一道门
+#
+# current_tenant_id 由 AdminSessionStore.create_session 初始化成
+# admin_users.tenant_id，而那一列现在只是回退值。显式授权和它不一致时，
+# 一个 member **一登录** current_tenant_id 就指向一个他无权访问的租户——
+# 后台切租户那条路拦得住他，前台这条路不校验的话直接放他进去。
+# ---------------------------------------------------------------------------
+
+
+def _chat_identity(review_conn, *, username: str, role: str, tenant_id: str | None):
+    """直接调 require_chat_session，绕开具体是哪条前台路由。
+
+    /qa、/agent/chat、三个 /agent/sessions 都消费同一个依赖；钉依赖本身，
+    这五条路由里将来新加的那条也自动被覆盖。
+    """
+    session_store = AdminSessionStore()
+    token = session_store.create_session(username=username, role=role, tenant_id=tenant_id)
+    session = session_store.get_session(token)
+    assert session is not None
+    return asyncio.run(deps.require_chat_session(review_conn, session))
+
+
+def test_chat_refuses_a_current_tenant_the_grants_do_not_include(review_conn):
+    """登录即绕过：alice 的列上写着 demo，显式授权只有 other，于是她
+    create_session 出来的 current_tenant_id 就是 demo——她无权访问的租户。
+
+    只在登录时挑一个合法初值是不够的：这条用例连带钉住「会话还活着时授权
+    被撤销」，因为校验发生在每个请求上而不是发会话那一刻。
+    """
+    asyncio.run(grant_tenant_access(review_conn, username="alice", tenant_id="other"))
+    with pytest.raises(HTTPException) as excinfo:
+        _chat_identity(review_conn, username="alice", role="member", tenant_id="demo")
+    assert excinfo.value.status_code == 403
+
+
+def test_chat_serves_a_current_tenant_the_grants_confer(review_conn):
+    """反面：授权覆盖到的租户照常返回身份。
+
+    没有这一条，把 require_chat_session 写成"一律 403"也能让上面那条绿——
+    而那会让所有 member 完全用不了前台问答。
+    """
+    asyncio.run(grant_tenant_access(review_conn, username="alice", tenant_id="demo"))
+    assert _chat_identity(
+        review_conn, username="alice", role="member", tenant_id="demo"
+    ) == ("demo", "alice")
+
+
+def test_chat_lets_admin_stay_in_whatever_tenant_it_switched_to(review_conn):
+    """admin 的 current_tenant_id 是它自己切过去的任意租户，包括刚新建、
+    从来没人被授权过的那些。新加的这道校验不能把它挡在门外。"""
+    session_store = AdminSessionStore()
+    token = session_store.create_session(username="admin", role="admin", tenant_id=None)
+    assert session_store.set_current_tenant(token, "other")
+    session = session_store.get_session(token)
+    assert session is not None
+    assert asyncio.run(deps.require_chat_session(review_conn, session)) == ("other", "admin")

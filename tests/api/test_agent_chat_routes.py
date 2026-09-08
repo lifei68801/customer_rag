@@ -4,6 +4,7 @@ import aiosqlite
 
 from app.api import deps
 from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
+from app.auth.user_tenants_store import ensure_user_tenants_schema
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
@@ -96,6 +97,11 @@ def _review_conn_override():
             await ensure_term_edits_schema(conn)
             await ensure_ontology_schema(conn)
             await ensure_admin_users_schema(conn)
+            # 授权判据（deps.assert_tenant_accessible）查 user_tenants，前台问答
+            # 的 require_chat_session 现在也走它。生产路径由 app/main.py 的
+            # lifespan 建表；这里是手工搭的测试连接，不建的话每个请求都以
+            # "no such table: user_tenants"（500）而不是 200/403 收场。
+            await ensure_user_tenants_schema(conn)
             await create_admin_user(
                 conn,
                 username="member-t1",

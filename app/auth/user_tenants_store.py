@@ -69,6 +69,12 @@ async def list_granted_tenant_ids(conn: aiosqlite.Connection, username: str) -> 
 
 
 async def list_usernames_with_access(conn: aiosqlite.Connection, tenant_id: str) -> list[str]:
+    """被显式授权访问这个租户的账号，按 username 正序。
+
+    row_factory 的理由同 list_granted_tenant_ids：按列名取值的查询自己负责
+    设它，不靠调用方碰巧在此之前设过。
+    """
+    conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT username FROM user_tenants WHERE tenant_id = ? ORDER BY username", (tenant_id,)
     )
