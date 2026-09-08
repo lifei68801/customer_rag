@@ -140,9 +140,15 @@ class SpyGraphClient:
         relations: list[dict] | None = None,
         relations_error: Exception | None = None,
         removed_edges: int = 1,
+        removed_edges_by_node_key: dict[str, int] | None = None,
         inconsistent: list[dict] | None = None,
         blocked_node_keys: set[str] | None = None,
     ) -> None:
+        # 按边上任一端的 node_key 指定"这一条删掉了几条边"。批量删除的用例要
+        # 在同一个批次里同时造出能删的和一条都没匹配上的——全都一样的批次，
+        # 「逐条收集失败」和「一律当成功」两种实现都能变绿。两端都查是因为
+        # direction=in 时那个 node_key 落在主语一侧。
+        self._removed_edges_by_node_key = removed_edges_by_node_key or {}
         # 批量删除：被图谱边挡住的 node_key 集合（守卫的答案），以及
         # 守卫查询/批量删节点各被调了几次。
         self._blocked_node_keys = blocked_node_keys or set()
@@ -200,6 +206,9 @@ class SpyGraphClient:
                 "object_node_key": object_node_key,
             }
         )
+        for end in (object_node_key, subject_node_key):
+            if end in self._removed_edges_by_node_key:
+                return self._removed_edges_by_node_key[end]
         return self._removed_edges
 
     async def list_inconsistent_relation_edges(
@@ -221,6 +230,9 @@ class SpyGraphClient:
                 "object_node_key": object_node_key,
             }
         )
+        for end in (object_node_key, subject_node_key):
+            if end in self._removed_edges_by_node_key:
+                return self._removed_edges_by_node_key[end]
         return self._removed_edges
 
     async def list_term_relations(self, *, tenant_id: str, node_key: str) -> list[dict]:
@@ -2534,3 +2546,216 @@ def test_bulk_delete_blocked_terms_keep_their_graph_nodes(terms_conn):
     _bulk_delete(terms_conn, graph_client, {"node_keys": _PAGE_KEYS})
 
     assert "t:乙" not in graph_client.deleted
+
+
+# ---------------------------------------------------------------------------
+# 批量删除关系边
+#
+# 一个实体的关系边全量渲染，既没有分页也没有筛选：「本页」和「全部」是同一
+# 批东西，所以这两个接口只有「选中的这些」一档。
+#
+# 每个批次都**同时包含能删的和删不掉的**：全能删或全删不掉的批次，「逐条
+# 收集失败」和「一律当成功」两种实现都能变绿。
+# ---------------------------------------------------------------------------
+
+
+def _bulk_delete_relations(terms_conn, graph_client, payload, *, headers=None, path="relations"):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    try:
+        client = TestClient(app)
+        return client.post(
+            f"/api/admin/t1/terms/t:使用中/{path}/bulk-delete",
+            json=payload,
+            headers=(headers or _authed_headers)(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_bulk_delete_relation_edges_deletes_what_it_can_and_names_each_failure(terms_conn):
+    """批次里混着能删的和一条都没匹配上的：能删的删掉，没匹配上的逐条报
+    出来，而不是一条失败就整批回滚。
+
+    失败明细里的 key 是这条边本身（主语 -类型-> 宾语）。关系边不是一个
+    简单 id，只报一句"有一条没删掉"用户没法知道是哪条。
+    """
+    graph_client = SpyGraphClient(removed_edges_by_node_key={"t:不存在": 0})
+
+    response = _bulk_delete_relations(
+        terms_conn, graph_client,
+        {
+            "edges": [
+                {"direction": "out", "relation_type": "RELATED_TO", "other_node_key": "t:登录域"},
+                {"direction": "out", "relation_type": "PART_OF", "other_node_key": "t:不存在"},
+                {"direction": "in", "relation_type": "RELATED_TO", "other_node_key": "t:错误码E502"},
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["requested"] == 3
+    assert body["deleted"] == 2
+    assert [f["key"] for f in body["failures"]] == ["t:使用中 -PART_OF-> t:不存在"]
+    assert "没有找到" in body["failures"][0]["reason"]
+    # 失败的那条确实一条边都没删掉：图客户端如实返回 0，接口不许把它算成功。
+    assert [
+        (c["subject_node_key"], c["object_node_key"]) for c in graph_client.deleted_edges
+    ] == [
+        ("t:使用中", "t:登录域"),
+        ("t:使用中", "t:不存在"),
+        ("t:错误码E502", "t:使用中"),
+    ]
+
+
+def test_bulk_delete_relation_edges_keeps_each_edges_direction(terms_conn):
+    """direction 是相对当前实体说的：out 时它是主语，in 时对端才是。
+    方向映射反了会删掉双向关系里用户没点的那一条。"""
+    graph_client = SpyGraphClient(removed_edges_by_node_key={"t:不存在": 0})
+
+    response = _bulk_delete_relations(
+        terms_conn, graph_client,
+        {
+            "edges": [
+                {"direction": "out", "relation_type": "PART_OF", "other_node_key": "t:登录域"},
+                {"direction": "in", "relation_type": "RELATED_TO", "other_node_key": "t:错误码E502"},
+                {"direction": "in", "relation_type": "RELATED_TO", "other_node_key": "t:不存在"},
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted"] == 2
+    assert graph_client.deleted_edges[:2] == [
+        {
+            "tenant_id": "t1", "subject_node_key": "t:使用中",
+            "relation_type": "PART_OF", "object_node_key": "t:登录域",
+        },
+        {
+            "tenant_id": "t1", "subject_node_key": "t:错误码E502",
+            "relation_type": "RELATED_TO", "object_node_key": "t:使用中",
+        },
+    ]
+    # 入边的失败明细也按真实方向写：对端是主语。
+    assert [f["key"] for f in response.json()["failures"]] == [
+        "t:不存在 -RELATED_TO-> t:使用中"
+    ]
+
+
+def test_bulk_delete_relation_edges_stay_inside_the_tenant_from_the_url(terms_conn):
+    """租户校验一条都不许松：每条边都带着 URL 里那个租户去删，别的租户的
+    边匹配不上（底层语句把两端节点和边的 tenant_id 都钉在这个租户上），
+    于是它如实变成一条失败明细，而不是被悄悄删掉或被算成成功。"""
+    # 桩模拟真实语句的行为：对端节点属于别的租户时一条都匹配不上。
+    graph_client = SpyGraphClient(removed_edges_by_node_key={"t:别家的实体": 0})
+
+    response = _bulk_delete_relations(
+        terms_conn, graph_client,
+        {
+            "edges": [
+                {"direction": "out", "relation_type": "RELATED_TO", "other_node_key": "t:登录域"},
+                {"direction": "out", "relation_type": "RELATED_TO", "other_node_key": "t:别家的实体"},
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["deleted"] == 1
+    assert [f["key"] for f in body["failures"]] == ["t:使用中 -RELATED_TO-> t:别家的实体"]
+    # 每一条都带着 URL 里的租户走，没有哪条边因为"批量"就不带租户了。
+    assert {c["tenant_id"] for c in graph_client.deleted_edges} == {"t1"}
+
+
+def test_bulk_delete_relation_edges_without_edges_returns_400(terms_conn):
+    """关系边只有「选中的这些」一档，但"一条都没给"仍然是调用方的 bug，
+    不能被当成"那就把这个实体的边全删了吧"。"""
+    graph_client = SpyGraphClient()
+
+    response = _bulk_delete_relations(terms_conn, graph_client, {})
+
+    assert response.status_code == 400
+    assert graph_client.deleted_edges == []
+
+
+def test_member_bulk_delete_cleans_its_own_tenants_dirty_edges_but_not_cross_tenant(terms_conn):
+    """租户标记异常的边这条路径上，授权判据是两端节点各自的租户：两端都在
+    自己租户里的 member 能删，跨租户的只有平台管理员能删。批量版必须保持
+    这个区分——被挡住的那条要如实报出来，而且一条都不许落到图客户端上。"""
+    graph_client = SpyGraphClient(removed_edges=1)
+
+    response = _bulk_delete_relations(
+        terms_conn, graph_client,
+        {
+            "edges": [
+                {
+                    "direction": "out", "relation_type": "RELATED_TO",
+                    "other_node_key": "t:登录模块", "other_tenant_id": "t1",
+                },
+                {
+                    "direction": "in", "relation_type": "PART_OF",
+                    "other_node_key": "t:别家的实体", "other_tenant_id": "tenant_b",
+                },
+            ]
+        },
+        headers=_member_headers,
+        path="relations/inconsistent",
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["deleted"] == 1
+    assert [f["key"] for f in body["failures"]] == ["t:别家的实体 -PART_OF-> t:使用中"]
+    assert "管理员" in body["failures"][0]["reason"]
+    # 挡住的那条一条边都没碰到图客户端。
+    assert [c["object_node_key"] for c in graph_client.deleted_inconsistent_edges] == [
+        "t:登录模块"
+    ]
+
+
+def test_admin_bulk_delete_flips_both_tenants_with_the_direction(terms_conn):
+    """平台管理员能删跨租户的那一类。两端的租户必须跟着方向一起翻——
+    起点侧固定取 URL 里那个已经过校验的租户。"""
+    graph_client = SpyGraphClient(removed_edges_by_node_key={"t:不存在": 0})
+
+    response = _bulk_delete_relations(
+        terms_conn, graph_client,
+        {
+            "edges": [
+                {
+                    "direction": "in", "relation_type": "PART_OF",
+                    "other_node_key": "t:别家的实体", "other_tenant_id": "tenant_b",
+                },
+                {
+                    "direction": "out", "relation_type": "RELATED_TO",
+                    "other_node_key": "t:不存在", "other_tenant_id": "t1",
+                },
+            ]
+        },
+        path="relations/inconsistent",
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["deleted"] == 1
+    assert [f["key"] for f in body["failures"]] == ["t:使用中 -RELATED_TO-> t:不存在"]
+    assert graph_client.deleted_inconsistent_edges[0] == {
+        "subject_tenant_id": "tenant_b", "subject_node_key": "t:别家的实体",
+        "relation_type": "PART_OF",
+        "object_tenant_id": "t1", "object_node_key": "t:使用中",
+    }
+
+
+def test_bulk_delete_inconsistent_relations_without_edges_returns_400(terms_conn):
+    graph_client = SpyGraphClient()
+
+    response = _bulk_delete_relations(
+        terms_conn, graph_client, {}, path="relations/inconsistent"
+    )
+
+    assert response.status_code == 400
+    assert graph_client.deleted_inconsistent_edges == []

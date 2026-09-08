@@ -821,6 +821,158 @@ async def delete_term_relation_edge(
     return {"deleted": removed}
 
 
+class TermRelationEdgeRef(BaseModel):
+    """一条要删的关系边，字段跟单条删除的 query 参数一一对应。
+
+    边按业务键定位（方向 + 关系类型 + 对端 node_key，加上路径里的这个实体
+    和租户），跟单条路径是同一套定位方式：Neo4j 的内部关系 id 不稳定，不能
+    当外部句柄。
+    """
+
+    direction: Literal["out", "in"]
+    relation_type: str
+    other_node_key: str
+
+
+class BulkDeleteTermRelationsRequest(BaseModel):
+    """批量删关系边的请求体。
+
+    只有 edges 一档：一个实体的关系边在详情页上是全量渲染的，既没有分页也
+    没有筛选，「本页」和「全部」是同一批东西，做成两档等于给同一件事摆两个
+    按钮。字段缺席仍然是 400，不当成"那就把这个实体的边全删了吧"。
+    """
+
+    edges: list[TermRelationEdgeRef] | None = None
+
+
+class InconsistentTermRelationEdgeRef(TermRelationEdgeRef):
+    """比正常那条多一个 other_tenant_id：这类边定位靠的是两端节点各自的
+    租户（边自己标的那个值恰恰就是错的那个属性）。"""
+
+    other_tenant_id: str
+
+
+class BulkDeleteInconsistentTermRelationsRequest(BaseModel):
+    edges: list[InconsistentTermRelationEdgeRef] | None = None
+
+
+def _describe_edge_ref(node_key: str, edge: TermRelationEdgeRef) -> str:
+    """一条待删的边在失败明细里的写法：「主语 -类型-> 宾语」。
+
+    关系边不是一个简单 id，只报一句"有一条没删掉"用户没法知道是哪条。这里
+    两端都写 node_key（身份，见 ADR-0003），跟单条删除那条 404 的措辞一致；
+    方向照实还原，写成固定顺序会把关系的角色说反。
+    """
+    return _describe_relation(
+        {
+            "direction": edge.direction,
+            "relation_type": edge.relation_type,
+            "node_key": edge.other_node_key,
+        },
+        node_key,
+    )
+
+
+@router.post("/{node_key}/relations/bulk-delete", response_model=BulkDeleteResult)
+async def bulk_delete_term_relation_edges(
+    tenant_id: str,
+    node_key: str,
+    payload: BulkDeleteTermRelationsRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+) -> BulkDeleteResult:
+    """批量删这个实体参与的关系边。
+
+    逐条走的就是单条删除那一个图客户端方法（delete_relation_edge），定位
+    方式和租户过滤一条都没放宽：删边不可逆，"一次删很多条"不是放松校验的
+    理由。一条都没匹配上的边如实变成一条失败明细，而不是被算成成功——
+    用户刷新后那条边还在却没人告诉他，是这里最不该有的结果。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    edges = payload.edges
+    keys = None if edges is None else [_describe_edge_ref(node_key, e) for e in edges]
+    resolve_bulk_delete_mode(keys=keys, filters=None)
+    assert edges is not None and keys is not None  # resolve_* 已经挡掉了 None
+    by_key = {key: edge for key, edge in zip(keys, edges)}
+
+    async def _delete_one(key: str) -> None:
+        edge = by_key[key]
+        subject, obj = (
+            (node_key, edge.other_node_key)
+            if edge.direction == "out"
+            else (edge.other_node_key, node_key)
+        )
+        removed = await graph_client.delete_relation_edge(
+            tenant_id=tenant_id,
+            subject_node_key=subject,
+            relation_type=edge.relation_type,
+            object_node_key=obj,
+        )
+        if removed == 0:
+            raise BulkDeleteBlocked("没有找到这条关系，它可能已经被删掉了")
+
+    return await run_bulk_delete(keys, _delete_one)
+
+
+@router.post("/{node_key}/relations/inconsistent/bulk-delete", response_model=BulkDeleteResult)
+async def bulk_delete_inconsistent_term_relation_edges(
+    tenant_id: str,
+    node_key: str,
+    payload: BulkDeleteInconsistentTermRelationsRequest,
+    session: AdminSession = Depends(deps.require_admin_session),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+) -> BulkDeleteResult:
+    """批量删租户标记异常的关系边。
+
+    授权判据跟单条路径完全相同，也是逐条判的：两端节点都在这个租户里时
+    member 就能删；两端分属不同租户时只有平台管理员能删——删掉它同时改变
+    了另一个租户的图谱，member 不能单方面替对面做这个决定。
+
+    跨租户那一条在批量里变成这一条的失败明细（而不是整批 403）：一个批次
+    里混着两类边时，为了那一条把 member 能清的也一起挡掉，等于他永远清不
+    干净自己的数据。被挡住的边一条都不会落到图客户端上。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    edges = payload.edges
+    keys = None if edges is None else [_describe_edge_ref(node_key, e) for e in edges]
+    resolve_bulk_delete_mode(keys=keys, filters=None)
+    assert edges is not None and keys is not None
+    by_key = {key: edge for key, edge in zip(keys, edges)}
+
+    async def _delete_one(key: str) -> None:
+        edge = by_key[key]
+        if edge.other_tenant_id != tenant_id and session.role != "admin":
+            logger.warning(
+                "拒绝跨租户删边（批量）：username=%s（租户 %s）想删 %s/%s 与 %s/%s 之间的 %s 边",
+                session.username, session.tenant_id, tenant_id, node_key,
+                edge.other_tenant_id, edge.other_node_key, edge.relation_type,
+            )
+            raise BulkDeleteBlocked(
+                "这条关系边的另一端属于其他租户，删掉它会同时改变那个租户的图谱——"
+                "只有平台管理员能处理这一类边"
+            )
+        subject, obj = (
+            ((tenant_id, node_key), (edge.other_tenant_id, edge.other_node_key))
+            if edge.direction == "out"
+            else ((edge.other_tenant_id, edge.other_node_key), (tenant_id, node_key))
+        )
+        removed = await graph_client.delete_inconsistent_relation_edge(
+            subject_tenant_id=subject[0],
+            subject_node_key=subject[1],
+            relation_type=edge.relation_type,
+            object_tenant_id=obj[0],
+            object_node_key=obj[1],
+        )
+        if removed == 0:
+            raise BulkDeleteBlocked(
+                "没有找到这条租户标记异常的关系，它可能已经被删掉了，"
+                "或者它其实是一条正常的边（正常的边请在上面的关系列表里删）"
+            )
+
+    return await run_bulk_delete(keys, _delete_one)
+
+
 class BulkDeleteTermsRequest(BaseModel):
     """批量删除的请求体。两种模式二选一：
 
