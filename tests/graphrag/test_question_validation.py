@@ -2,15 +2,17 @@ from app.graphrag.ontology import Term
 from app.graphrag.question_validation import find_unmatched_questions
 
 
-def _term(name: str, term_type: str) -> Term:
+def _term(name: str, term_type: str, aliases: list[str] | None = None) -> Term:
     """Term 的字段已核对（app/graphrag/ontology.py:10-17）：
     tenant_id / node_key / standard_name / aliases / term_type /
-    extra_properties（默认空 dict）/ source（默认 'unknown'）。"""
+    extra_properties（默认空 dict）/ source（默认 'unknown'）。
+
+    aliases 默认空列表，跟原先行为一致；传了才用于覆盖判据里「别名」那一支。"""
     return Term(
         tenant_id="t1",
         node_key=f"{term_type}:{name}",
         standard_name=name,
-        aliases=[],
+        aliases=aliases if aliases is not None else [],
         term_type=term_type,
     )
 
@@ -54,3 +56,19 @@ def test_matching_ignores_case_and_surrounding_punctuation():
     大小写敏感的匹配会让审核员反复困惑于为什么保存不了。"""
     terms = [_term("Beer", "产品")]
     assert find_unmatched_questions(["beer 是什么？"], terms) == []
+
+
+def test_a_question_naming_only_an_alias_passes():
+    """判据是「实体名、别名或类型名」三选一——这条只覆盖别名那一支：
+    问题里既不提 standard_name（鳄梨色拉），也不提 term_type（轻食），
+    只提别名（牛油果沙拉）。别名分支不生效的话，这条会被误判成不可答。"""
+    terms = [_term("鳄梨色拉", "轻食", aliases=["牛油果沙拉"])]
+    assert find_unmatched_questions(["牛油果沙拉多少钱？"], terms) == []
+
+
+def test_matching_a_non_chinese_type_name_ignores_case():
+    """现有大小写用例的类型名全是中文，.lower() 对中文是 no-op，测不出
+    类型名这一支的大小写归一。这里用英文类型名 Drink，问题里只提类型名
+    （大小写不同），不提 standard_name（可乐）。"""
+    terms = [_term("可乐", "Drink")]
+    assert find_unmatched_questions(["drink 有什么？"], terms) == []

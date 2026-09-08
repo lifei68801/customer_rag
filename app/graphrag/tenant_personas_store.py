@@ -31,8 +31,11 @@ async def ensure_tenant_personas_schema(conn: aiosqlite.Connection) -> None:
 async def upsert_persona(
     conn: aiosqlite.Connection, *, tenant_id: str, avatar: str, tagline: str
 ) -> None:
-    """写脸。questions 不在 DO UPDATE 的列里——阶段二会有单独的写入口，
-    这里顺手把它清空的话，改一次头像就会把引导问题全删掉。"""
+    """写脸。questions 不在 DO UPDATE 的列里——它有自己的写入口 set_questions，
+    这里顺手把它清空的话，改一次头像就会把引导问题全删掉。
+
+    跟 set_questions 反过来对称：set_questions 写引导问题时不碰 avatar/tagline，
+    这里写脸时也不碰 questions，两个编辑动作互不清空对方。"""
     await conn.execute(
         "INSERT INTO tenant_personas (tenant_id, avatar, tagline) VALUES (?, ?, ?) "
         "ON CONFLICT (tenant_id) DO UPDATE SET "
