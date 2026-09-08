@@ -12,13 +12,16 @@ CREATE TABLE IF NOT EXISTS user_tenants (
 CREATE INDEX IF NOT EXISTS idx_user_tenants_tenant
     ON user_tenants (tenant_id, username);
 """
-# 这张表将成为「这个人能访问哪些租户」的唯一事实来源——但截至本次提交，
-# 授权判据尚未切换过去。当前 app/api/deps.py 的 require_tenant_access 仍然是
-# `if session.tenant_id != tenant_id: raise HTTPException(403)`，只认
-# admin_users.tenant_id 这一列，完全不查这张表。admin_users.tenant_id 现在依然
-# 是「唯一租户」的语义，不是「默认租户」；它降级为默认值/回退值，以及
-# deps.list_accessible_tenant_ids（目前在 app/ 下还不存在）读这张表作为授权
-# 判据，都是后续任务（多人格基础改造 Task 3）落地时才会发生的事。
+# 这张表是「这个人能访问哪些租户」的唯一事实来源。授权判据已经切过来了：
+# app/api/deps.py 的 list_accessible_tenant_ids 读这张表，
+# deps.require_tenant_access（租户作用域路由）和切换当前租户那条路由都经由
+# deps.assert_tenant_accessible 走它，两处不再各写一遍
+# `session.tenant_id != tenant_id`。
+#
+# admin_users.tenant_id 因此降级成默认值/回退值，不再是「唯一租户」：只有当
+# 一个 member 在这张表里一条记录都没有时才顶上（存量账号在这张表刚建时确实
+# 一条都没有）。有显式授权时它被完全取代，不是并集——并集的话「撤销某人对
+# 他默认租户的访问」永远生效不了。
 #
 # 复合主键就是幂等的实现：重复授权走 INSERT OR IGNORE 落到主键冲突上，
 # 不需要先查后插那一圈，也就没有两个请求之间的竞态窗口。
@@ -51,6 +54,14 @@ async def revoke_tenant_access(
 
 
 async def list_granted_tenant_ids(conn: aiosqlite.Connection, username: str) -> list[str]:
+    """这个账号被显式授权的租户，按 tenant_id 正序；没有授权时是空列表。
+
+    自己设 row_factory，跟本仓库其它 store 的做法一致。生产路径上
+    require_admin_session 先调 get_admin_user、那个函数把 row_factory 设成了
+    aiosqlite.Row，于是这里"碰巧"能按列名取值；靠那个顺序的话，任何一条先
+    到达这里的调用路径都会以 TypeError（500）而不是 403 收场。
+    """
+    conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT tenant_id FROM user_tenants WHERE username = ? ORDER BY tenant_id", (username,)
     )

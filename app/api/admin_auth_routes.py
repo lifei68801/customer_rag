@@ -181,12 +181,15 @@ async def switch_current_tenant(
 ) -> dict[str, str]:
     """切换当前租户。
 
-    权限判据复用 require_tenant_access 那一套：admin 可切任意（但仍要确认
-    租户启用着），member 只能切回自己那个。
+    权限判据直接调 deps.assert_tenant_accessible——和租户作用域路由上那个
+    require_tenant_access 是同一个函数，不是"同一套逻辑各写一遍"。admin 可
+    切任意（但仍要确认租户启用着），member 只能切到被授权的那几个。
+
+    这里不能自己再写一遍判据：写歪了的话切租户接口和读写接口会给出互相
+    矛盾的答案——切得过去、进去之后每个请求各自 403，或者更糟的反向。
     """
     await require_active_tenant_or_404(review_conn, payload.tenant_id)
-    if session.role != "admin" and session.tenant_id != payload.tenant_id:
-        raise HTTPException(status_code=403, detail="无权访问该租户")
+    await deps.assert_tenant_accessible(review_conn, session, payload.tenant_id)
     token = request.cookies.get(SESSION_COOKIE_NAME) or ""
     if not session_store.set_current_tenant(token, payload.tenant_id):
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")

@@ -16,6 +16,7 @@ from app.api.session_cookie import (
 )
 from app.auth.admin_users_store import get_admin_user
 from app.auth.login_throttle import LoginThrottle
+from app.auth.user_tenants_store import list_granted_tenant_ids
 from app.config.settings import Settings
 from app.ingestion.ingestion_queue import ensure_ingestion_queue_schema
 from app.ingestion.ocr_factory import build_ocr_from_settings
@@ -78,6 +79,8 @@ __all__ = [
     "require_admin_session",
     "require_chat_session",
     "require_csrf",
+    "assert_tenant_accessible",
+    "list_accessible_tenant_ids",
     "require_tenant_access",
     "resolve_tenant_id",
 ]
@@ -430,31 +433,76 @@ async def require_chat_session(
     return session.current_tenant_id, session.username
 
 
+async def list_accessible_tenant_ids(
+    conn: aiosqlite.Connection, session: AdminSession
+) -> list[str] | None:
+    """这个登录者能碰哪些租户。
+
+    返回 None 表示**不设限**（admin）；返回列表表示只有这些。用 None 而不是
+    "全部租户的列表"是刻意的：admin 得能进入自己刚新建的租户，而那个租户
+    在这次调用发生时可能还不存在。
+
+    member 以 user_tenants 里的显式授权为准。一条显式授权都没有时回退到
+    admin_users.tenant_id 那一列——存量 member 在这张表刚建时确实一条都没有，
+    不回退的话这次升级会把所有现存 member 一次性锁在门外。
+
+    回退是"一条都没有"时才生效，不是并进去：并进去的话，"撤销 alice 对
+    她默认租户的访问"这个操作永远生效不了。
+
+    既没有授权、tenant_id 那一列也是空的 member 得到空列表，不是 None——
+    None 会被上面 admin 那条"不设限"的分支吞掉，于是一个什么都没被授予的
+    账号反而能读写所有租户。
+    """
+    if session.role == "admin":
+        return None
+    granted = await list_granted_tenant_ids(conn, session.username)
+    if granted:
+        return granted
+    return [session.tenant_id] if session.tenant_id is not None else []
+
+
+async def assert_tenant_accessible(
+    conn: aiosqlite.Connection, session: AdminSession, tenant_id: str
+) -> None:
+    """没资格就 403。整个账号体系唯一真正的安全边界，两条调用路径共用它。
+
+    收敛成一个函数不是为了少写几行：此前 require_tenant_access 和切租户
+    路由各写了一遍 `session.tenant_id != tenant_id`，加进 user_tenants 之后
+    两处各改各的就会出现"切得过去但读不到"，或者更糟的反向。
+    """
+    accessible = await list_accessible_tenant_ids(conn, session)
+    if accessible is None or tenant_id in accessible:
+        return
+    logger.warning(
+        "越权访问被拒：username=%s 可访问 %s，试图访问 %s",
+        session.username,
+        accessible,
+        tenant_id,
+    )
+    raise HTTPException(status_code=403, detail="无权访问该租户")
+
+
 async def require_tenant_access(
     tenant_id: str,
+    review_conn: aiosqlite.Connection = Depends(get_review_conn),
     session: AdminSession = Depends(require_admin_session),
 ) -> str:
     """校验登录者有权操作 URL 里的这个租户。
 
     admin（tenant_id 为 None）放行任意租户——它得能进入自己新建的租户，
-    否则建完就管不了。member 只能操作自己那一个。
+    否则建完就管不了。member 只能操作被授权的那几个（判据见
+    list_accessible_tenant_ids）。
 
     这是整个账号体系唯一真正的安全边界。改造之前，任何登录者把请求里的
     tenant_id 换成别的值就能读写另一个租户，返回 200，没有日志也没有报错。
 
+    判据本身不写在这里：切换当前租户那条路由要用同一套判据，而它不经过
+    这个依赖。两处各写一遍的话，加进 user_tenants 之后就会分叉。
+
     注意它和 tenant_guard.require_active_tenant_or_404 是正交的两件事：
     那个管的是"这个租户还启用着吗"，这个管的是"你有没有资格碰它"。
     """
-    if session.role == "admin":
-        return tenant_id
-    if session.tenant_id != tenant_id:
-        logger.warning(
-            "越权访问被拒：username=%s 属于 %s，试图访问 %s",
-            session.username,
-            session.tenant_id,
-            tenant_id,
-        )
-        raise HTTPException(status_code=403, detail="无权访问该租户")
+    await assert_tenant_accessible(review_conn, session, tenant_id)
     return tenant_id
 
 

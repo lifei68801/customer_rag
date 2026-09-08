@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
+from app.auth.user_tenants_store import ensure_user_tenants_schema
 from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.graphrag.ontology_categories import create_term_type
@@ -66,6 +67,10 @@ async def _open_terms_conn() -> aiosqlite.Connection:
     # require_admin_session 现在每个请求都要确认账号仍是 active，
     # 所以本体库里必须有这张表和一个可用的管理员。
     await ensure_admin_users_schema(conn)
+    # 授权判据现在查 user_tenants（生产路径由 app/main.py 的 lifespan 建表）。
+    # 手工搭的测试连接不建这张表的话，member 那几条用例会以 500 而不是
+    # 403/200 收场。
+    await ensure_user_tenants_schema(conn)
     await create_admin_user(
         conn, username="admin", password="password1", role="admin", tenant_id=None
     )

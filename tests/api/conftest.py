@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from app.api import deps
 from app.api.session_cookie import CSRF_COOKIE_NAME, CSRF_HEADER_NAME
 from app.auth.admin_users_store import create_admin_user, ensure_admin_users_schema
+from app.auth.user_tenants_store import ensure_user_tenants_schema
 from app.main import app
 from app.memory.chat_sessions import touch_session
 from app.memory.schema import ensure_schema
@@ -31,6 +32,11 @@ from tests.settings_factory import build_settings
 async def _open_admin_users_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_admin_users_schema(conn)
+    # 授权判据（deps.assert_tenant_accessible）现在查 user_tenants。生产路径上
+    # app/main.py 的 lifespan 已经在同一个本体库上建好了这张表；这里是手工搭的
+    # 测试连接，绕开了那条路径，不建的话每个租户作用域请求都以
+    # "no such table: user_tenants"（500）而不是 403/200 收场。
+    await ensure_user_tenants_schema(conn)
     await create_admin_user(
         conn, username="admin", password="password1", role="admin", tenant_id=None
     )
