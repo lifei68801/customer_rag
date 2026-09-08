@@ -42,9 +42,14 @@ CREATE TABLE IF NOT EXISTS admin_users (
     status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     last_login_at TEXT,
-    -- admin 是全局的，member 必须属于一个租户。放在 CHECK 里而不是只靠
+    -- admin 是全局的，member 必须有一个默认租户。放在 CHECK 里而不是只靠
     -- 应用层校验：绕过应用层直接写库的路径（迁移脚本、手工修数据）同样
     -- 会被挡住。
+    --
+    -- 注意这一列**不再是授权判据**。2026-09-08 起「这个人能访问哪些租户」
+    -- 由 user_tenants 表回答（见 deps.list_accessible_tenant_ids）；这一列
+    -- 退化成「登录后默认落在哪个租户」，以及 user_tenants 里一条显式授权
+    -- 都没有时的回退值（存量 member 就是这种情况）。
     CHECK (
         (role = 'admin'  AND tenant_id IS NULL) OR
         (role = 'member' AND tenant_id IS NOT NULL)

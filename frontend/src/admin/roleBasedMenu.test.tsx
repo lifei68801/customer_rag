@@ -136,7 +136,7 @@ describe('member 的菜单', () => {
   it('setTenantId 会真的发出切租户请求——member 现在可以被授权访问多个数字人', async () => {
     // 这条用例断言的语义跟它以前不一样：以前 member 的租户是登录时绑定
     // 的单一一列，这里断言的是"连 PUT 都不发"。user_tenants 表上线后
-    // （见 app/graphrag/user_tenants_store.py 和 assert_tenant_accessible），
+    // （见 app/auth/user_tenants_store.py 和 assert_tenant_accessible），
     // member 可以被显式授权访问多个租户/数字人——固定成"member 永远只有
     // 一个租户"的前端闸门本身就是需要拆掉的那块石头，不是需要继续守住的
     // 边界。真正的权限判据现在完全在后端：越权的 tenant_id 会拿到 403，

@@ -41,7 +41,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       setTenantId: (next: string) => {
         // 此前这里有一道 `if (role !== 'admin') return`：member 的租户
         // 曾经是登录时绑定的单一一列，切换对它没有意义。user_tenants 表
-        // 上线后（app/graphrag/user_tenants_store.py），member 可以被
+        // 上线后（app/auth/user_tenants_store.py），member 可以被
         // 显式授权访问多个租户——这道前端闸门就变成了"挡住一个后端已经
         // 允许的操作"，member 拿到多个数字人授权后点右栏第二个也没反应，
         // 而且是静默没反应。

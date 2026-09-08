@@ -19,9 +19,12 @@ class AdminSession:
     # 当前正在操作的租户。前台问答与后台页面共用这一个值——前端不再自己
     # 在 sessionStorage 里记，否则它会按标签页隔离、和 Cookie 会话不同步。
     #
-    # 与 tenant_id 的区别：tenant_id 是"你属于哪个租户"（member 固定、
-    # admin 为 None），current_tenant_id 是"你现在在看哪个租户"。member
-    # 两者恒等；admin 的 tenant_id 永远是 None，current_tenant_id 才是
+    # 与 tenant_id 的区别：tenant_id 是"你的默认租户"（member 登录时的
+    # 初值来源、admin 永远是 None），current_tenant_id 是"你现在在看哪个
+    # 租户"。两者不再恒等：member 可以被 user_tenants 授权访问多个租户，
+    # current_tenant_id 是他切换过去的那一个（校验见
+    # deps.require_chat_session 与 deps.assert_tenant_accessible 的
+    # docstring）；admin 的 tenant_id 永远是 None，current_tenant_id 才是
     # 他切到的那个。
     current_tenant_id: str | None = None
 

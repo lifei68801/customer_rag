@@ -337,9 +337,11 @@ def test_chat_on_a_brand_new_session_id_is_allowed(client_nosy):
 def test_chat_uses_the_tenant_the_admin_switched_to(client_admin):
     """admin 的租户取 current_tenant_id，不是 tenant_id。
 
-    这条是设计约束 3 唯一走得到的路径：member 两者恒等，只有 admin 的
-    tenant_id 恒为 None，改用它的话 admin 在前台一句话也问不出来（会掉进
-    "请先选择一个租户"那个 400）。
+    这条必须用 admin 走：它的 tenant_id 恒为 None，改用它的话 admin 在前台
+    一句话也问不出来（会掉进"请先选择一个租户"那个 400）——current_tenant_id
+    才是它切到的那个。member 的这两个值现在也不再恒等（他可以被 user_tenants
+    授权访问多个租户，current_tenant_id 是切过去的那一个），但用 member 测
+    不出这条区别本身，因为它默认没切过、两个值凑巧相等，所以还是要用 admin。
     """
     _switch_tenant(client_admin, "demo")
 
