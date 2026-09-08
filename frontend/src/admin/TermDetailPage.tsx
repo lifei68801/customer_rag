@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { AlertTriangle, ArrowLeft, ArrowRight, Trash2, Unlink } from 'lucide-react'
 import { ADMIN_ROUTES } from '../adminRoutes'
@@ -11,6 +11,9 @@ import {
   fetchInconsistentTermRelations,
   type InconsistentTermRelation,
 } from './termsApi'
+import { BulkDeleteOutcome, BulkSelectionBar } from './BulkSelectionBar'
+import { useBulkSelection, type BulkSelectionApi } from './useBulkSelection'
+import { buildBulkDeleteConfirmMessage, type BulkDeleteResult } from './bulkDelete'
 import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
 import { useAdminAuth } from './useAdminAuth'
@@ -101,6 +104,31 @@ function relationKey(relation: TermRelation): string {
   return `${relation.direction}:${relation.relation_type}:${relation.node_key}`
 }
 
+/**
+ * 发一次批量删关系边的请求。
+ *
+ * 没有走 bulkDelete.ts 的 requestBulkDelete()：那个函数把请求体写死成
+ * node_keys/filters（实体那边的形状），而关系边的键不是一个字符串 id，是
+ * 「方向 + 关系类型 + 对端 node_key」这个三元组。请求体形状本来就是各个
+ * 删除点自己的事；共享的是结果形状、确认框文案和选中状态机。
+ */
+async function postRelationBulkDelete(
+  sessionToken: string,
+  endpoint: string,
+  edges: Record<string, string>[],
+): Promise<BulkDeleteResult> {
+  const response = await adminFetch(endpoint, sessionToken, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ edges }),
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(extractErrorDetail(body, '批量删除关系失败'))
+  }
+  return (await response.json()) as BulkDeleteResult
+}
+
 const card = 'rounded-card border border-subtle bg-card p-4'
 const sectionTitle = 'font-mono text-sm font-bold uppercase tracking-wide text-ink-soft'
 
@@ -132,6 +160,14 @@ export function TermDetailPage() {
   // 挂了不该连带把整页的关系都判成读取失败。
   const [inconsistent, setInconsistent] = useState<InconsistentTermRelation[]>([])
   const [inconsistentError, setInconsistentError] = useState<string | null>(null)
+  // 两段列表各是一档（正常关系边 / 租户标记异常的边）：它们走不同的端点，
+  // 授权判据也不同，混成一档就说不清"删掉选中的"到底走哪条路径。同一时刻
+  // 只有一段能有选中项，这正是 useBulkSelection 的语义。
+  const bulk = useBulkSelection()
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [bulkOutcome, setBulkOutcome] = useState<
+    { result: BulkDeleteResult; noun: string } | null
+  >(null)
 
   const refresh = useCallback(async () => {
     if (!sessionToken || !nodeKey) return
@@ -208,6 +244,91 @@ export function TermDetailPage() {
     }
   }
 
+  // 界面上那一行的 key 换回它代表的那条边。请求体要的是三元组，而选中
+  // 状态机手里只有字符串 key——这张表是两者之间唯一的桥。
+  const relationsByKey = useMemo(() => {
+    const map = new Map<string, TermRelation>()
+    for (const relation of term?.relations ?? []) map.set(relationKey(relation), relation)
+    return map
+  }, [term])
+
+  const deletableInconsistent = useMemo(
+    // 只有 deletable 的那些才有删除入口：跨租户的边对 member 是只读的，
+    // 让它能被勾上等于让他勾一个必定失败的目标。
+    () => inconsistent.filter((r) => r.deletable && r.node_key && r.other_tenant_id),
+    [inconsistent],
+  )
+  const inconsistentByKey = useMemo(() => {
+    const map = new Map<string, InconsistentTermRelation>()
+    for (const relation of deletableInconsistent) {
+      map.set(inconsistentRelationKey(relation), relation)
+    }
+    return map
+  }, [deletableInconsistent])
+
+  const runRelationBulkDelete = async (
+    endpoint: string,
+    edges: Record<string, string>[],
+  ) => {
+    if (!sessionToken) return
+    setRelationError(null)
+    setBulkOutcome(null)
+    setBulkDeleting(true)
+    try {
+      const result = await postRelationBulkDelete(sessionToken, endpoint, edges)
+      setBulkOutcome({ result, noun: '关系边' })
+      bulk.clear()
+      await refresh()
+    } catch (err) {
+      setRelationError(err instanceof Error ? err.message : '批量删除关系失败')
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
+  const handleBulkDeleteRelations = async (scopeId: string) => {
+    const target = bulk.targetFor(scopeId)
+    if (!term || !target || bulkDeleting || target.mode !== 'keys') return
+    if (!(await confirm(buildBulkDeleteConfirmMessage(target, '关系边')))) return
+    const edges = target.keys.flatMap((key) => {
+      const relation = relationsByKey.get(key)
+      return relation
+        ? [{
+            direction: relation.direction,
+            relation_type: relation.relation_type,
+            other_node_key: relation.node_key,
+          }]
+        : []
+    })
+    await runRelationBulkDelete(
+      `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(term.node_key)}/relations/bulk-delete`,
+      edges,
+    )
+  }
+
+  const handleBulkDeleteInconsistent = async (scopeId: string) => {
+    const target = bulk.targetFor(scopeId)
+    if (!term || !target || bulkDeleting || target.mode !== 'keys') return
+    if (!(await confirm(buildBulkDeleteConfirmMessage(target, '关系边')))) return
+    const edges = target.keys.flatMap((key) => {
+      const relation = inconsistentByKey.get(key)
+      // other_tenant_id 一定要带上：这类边定位靠的是两端节点各自的租户，
+      // 边自己标的那个值恰恰就是错的那个属性。
+      return relation && relation.node_key && relation.other_tenant_id
+        ? [{
+            direction: relation.direction,
+            relation_type: relation.relation_type,
+            other_node_key: relation.node_key,
+            other_tenant_id: relation.other_tenant_id,
+          }]
+        : []
+    })
+    await runRelationBulkDelete(
+      `/api/admin/${encodeURIComponent(tenantId)}/terms/${encodeURIComponent(term.node_key)}/relations/inconsistent/bulk-delete`,
+      edges,
+    )
+  }
+
   useEffect(() => {
     refresh().catch((err) => console.error('加载实体失败', err))
   }, [refresh])
@@ -229,6 +350,8 @@ export function TermDetailPage() {
 
   const outgoing = term.relations?.filter((r) => r.direction === 'out') ?? []
   const incoming = term.relations?.filter((r) => r.direction === 'in') ?? []
+  // 按显示顺序（先出边后入边）：表头复选框勾的就是这些，顺序跟用户看到的一致。
+  const relationKeys = [...outgoing, ...incoming].map(relationKey)
   const properties = Object.entries(term.extra_properties)
 
   return (
@@ -298,6 +421,14 @@ export function TermDetailPage() {
         </div>
       </section>
 
+      {bulkOutcome && (
+        <BulkDeleteOutcome
+          result={bulkOutcome.result}
+          noun={bulkOutcome.noun}
+          onDismiss={() => setBulkOutcome(null)}
+        />
+      )}
+
       <section className="flex flex-col gap-2">
         <h2 className={sectionTitle}>图谱关系</h2>
         {term.relations === null ? (
@@ -328,6 +459,22 @@ export function TermDetailPage() {
                 {relationError}
               </p>
             )}
+            {/* 出边和入边归同一档：它们是同一个实体身上的同一批边，工具条
+                因此放在两组之上，而不是每组一个。total 就是列出来的条数——
+                这里既没有分页也没有筛选，「本页」和「全部」是同一批东西，
+                所以不会冒出一个「改为选中全部」的按钮去干同一件事。 */}
+            <div data-testid="relations-bulk">
+              <BulkSelectionBar
+                scopeId="relations"
+                listedKeys={relationKeys}
+                total={relationKeys.length}
+                filters={{}}
+                noun="关系边"
+                selection={bulk}
+                onDelete={(scopeId) => void handleBulkDeleteRelations(scopeId)}
+                deleting={bulkDeleting}
+              />
+            </div>
             <RelationGroup
               title="它指向"
               icon={ArrowRight}
@@ -337,6 +484,7 @@ export function TermDetailPage() {
               termStandardName={term.standard_name}
               onDelete={handleDeleteRelation}
               deletingRelation={deletingRelation}
+              selection={bulk}
             />
             <RelationGroup
               title="指向它"
@@ -347,6 +495,7 @@ export function TermDetailPage() {
               termStandardName={term.standard_name}
               onDelete={handleDeleteRelation}
               deletingRelation={deletingRelation}
+              selection={bulk}
             />
           </div>
         )}
@@ -370,12 +519,44 @@ export function TermDetailPage() {
                 删除。系统不会自动改动它们的租户标记——那会让它们重新参与检索。确认没用
                 之后在这里删掉即可。
               </p>
+              {deletableInconsistent.length > 0 && (
+                // 单独一档：这批边走另一个端点，授权判据也不同（跨租户的
+                // 只有平台管理员能删）。总条数就是列出来的条数——这一段
+                // 同样既不分页也不筛选。
+                <div data-testid="inconsistent-relations-bulk">
+                  <BulkSelectionBar
+                    scopeId="inconsistent-relations"
+                    listedKeys={deletableInconsistent.map(inconsistentRelationKey)}
+                    total={deletableInconsistent.length}
+                    filters={{}}
+                    noun="关系边"
+                    selection={bulk}
+                    onDelete={(scopeId) => void handleBulkDeleteInconsistent(scopeId)}
+                    deleting={bulkDeleting}
+                  />
+                </div>
+              )}
               <ul className="flex flex-col gap-1">
                 {inconsistent.map((relation) => (
                   <li
                     key={inconsistentRelationKey(relation)}
                     className="flex flex-wrap items-center gap-2 rounded-card border border-status-error bg-card px-3 py-2 text-sm"
                   >
+                    {relation.deletable && relation.node_key && relation.other_tenant_id && (
+                      <input
+                        type="checkbox"
+                        checked={bulk.isSelected(
+                          'inconsistent-relations', inconsistentRelationKey(relation),
+                        )}
+                        onChange={() =>
+                          bulk.toggleKey(
+                            'inconsistent-relations', inconsistentRelationKey(relation),
+                          )
+                        }
+                        aria-label={`选中关系 ${inconsistentRelationLabel(relation, term.standard_name)}`}
+                        className="h-4 w-4 shrink-0 cursor-pointer"
+                      />
+                    )}
                     <span className="rounded-chip bg-accent-secondary px-2 py-0.5 text-xs font-bold text-on-accent">
                       {relation.relation_type}
                     </span>
@@ -427,6 +608,7 @@ function RelationGroup({
   termStandardName,
   onDelete,
   deletingRelation,
+  selection,
 }: {
   title: string
   icon: typeof ArrowRight
@@ -438,6 +620,9 @@ function RelationGroup({
   termStandardName: string
   onDelete: (relation: TermRelation) => void
   deletingRelation: string | null
+  // 出边和入边是同一档（scopeId 'relations'）：两组各占一档的话，"删掉
+  // 选中的"到底指哪些会变含糊，而删边不可逆。
+  selection: BulkSelectionApi
 }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -454,6 +639,13 @@ function RelationGroup({
               key={relationKey(relation)}
               className="flex flex-wrap items-center gap-2 rounded-card border border-subtle bg-card px-3 py-2 text-sm"
             >
+              <input
+                type="checkbox"
+                checked={selection.isSelected('relations', relationKey(relation))}
+                onChange={() => selection.toggleKey('relations', relationKey(relation))}
+                aria-label={`选中关系 ${relationLabel(relation, termStandardName)}`}
+                className="h-4 w-4 shrink-0 cursor-pointer"
+              />
               <span className="rounded-chip bg-accent-secondary px-2 py-0.5 text-xs font-bold text-on-accent">
                 {relation.relation_type}
               </span>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { FileText } from 'lucide-react'
 import { EmptyState } from './EmptyState'
 import { Link } from 'react-router-dom'
@@ -11,6 +11,9 @@ import { useAdminTenant } from './TenantContext'
 import { TaskStatusBadge } from './TaskStatusBadge'
 import { useToast } from './ToastContext'
 import { Pager } from './Pager'
+import { BulkDeleteOutcome, BulkSelectionBar } from './BulkSelectionBar'
+import { useBulkSelection } from './useBulkSelection'
+import { buildBulkDeleteConfirmMessage, type BulkDeleteResult } from './bulkDelete'
 import { useLatestRequestGuard } from './useLatestRequestGuard'
 import { ADMIN_ROUTES } from '../adminRoutes'
 import { PAGE_TITLES } from '../adminRoutes'
@@ -54,6 +57,45 @@ type ChunkPreview = { chunks: string[]; total: number }
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
+/**
+ * 发一次批量删除请求。
+ *
+ * 没有走 bulkDelete.ts 的 requestBulkDelete()：那个函数把请求体字段写死成
+ * node_keys/filters（实体那边的键名），文档和任务的键分别叫 file_paths 和
+ * job_ids。请求体形状本来就是各个删除点自己的事；共享的是结果形状
+ * （BulkDeleteResult）、确认框文案和选中状态机。
+ */
+async function postBulkDelete(
+  sessionToken: string,
+  endpoint: string,
+  body: Record<string, unknown>,
+): Promise<BulkDeleteResult> {
+  const response = await adminFetch(endpoint, sessionToken, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({}))
+    throw new Error(extractErrorDetail(errorBody, '批量删除失败'))
+  }
+  return (await response.json()) as BulkDeleteResult
+}
+
+/**
+ * 把失败明细里的 key 换成界面上那一行写的名字。
+ *
+ * 后端的 key 是定位用的身份（完整落盘路径、任务 uuid），它在返回体里是对的
+ * ——但直接摊在用户面前，他没法把它跟上面列表里的哪一行对上，而"是哪几条
+ * 没删掉"正是这个面板存在的理由。
+ */
+function relabelFailures(
+  result: BulkDeleteResult,
+  label: (key: string) => string,
+): BulkDeleteResult {
+  return { ...result, failures: result.failures.map((f) => ({ ...f, key: label(f.key) })) }
+}
+
 export function DocumentsPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
@@ -91,6 +133,15 @@ export function DocumentsPage() {
   // usePaginatedAdminList 那个"单列表"的形状，只复用最底层的请求序号
   // 保护原语（跟 GraphReviewsPage.tsx/TermsPage.tsx 共用）。
   const requestGuard = useLatestRequestGuard()
+  // 三处批量删除（文档、卡死的处理中任务、失败任务）共用一个选中状态机：
+  // 同一时刻只有一段列表能有选中项，切段会清空。跨段一次删在这里没有真实
+  // 用途，却会让"删掉选中的"到底指哪些变得含糊。
+  const bulk = useBulkSelection()
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  // 结果和它的量词一起存：三处共用一个面板，只存结果的话面板会把任务说成文档。
+  const [bulkOutcome, setBulkOutcome] = useState<
+    { result: BulkDeleteResult; noun: string } | null
+  >(null)
 
   useEffect(() => {
     document.title = '文档管理 · 管理后台'
@@ -296,6 +347,75 @@ export function DocumentsPage() {
     }
   }
 
+  // 处理中的任务里只有疑似卡死的那些有删除入口——正在正常处理的任务删掉
+  // 会留下写了一半的向量数据，批量选择也不该把它们捎上。
+  const stuckJobs = pendingJobs.filter((job) => job.is_stuck)
+
+  // 任务的失败明细按界面上那一行写的文件名点名。任务 id 是 uuid，摊给用户
+  // 他对不上是哪一条。
+  const jobFileNames = useMemo(() => {
+    const names = new Map<string, string>()
+    for (const job of [...pendingJobs, ...deadJobs]) {
+      names.set(job.job_id, displayFileName(job.file_path))
+    }
+    return names
+  }, [pendingJobs, deadJobs])
+
+  const runBulkDelete = async (
+    endpoint: string,
+    body: Record<string, unknown>,
+    noun: string,
+    labelFailure: (key: string) => string,
+  ) => {
+    if (!sessionToken) return
+    setDeleteError(null)
+    setJobError(null)
+    setBulkOutcome(null)
+    setBulkDeleting(true)
+    try {
+      const result = await postBulkDelete(sessionToken, endpoint, body)
+      setBulkOutcome({ result: relabelFailures(result, labelFailure), noun })
+      bulk.clear()
+      await pollNowRef.current()
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : '批量删除失败')
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
+  const handleBulkDeleteDocuments = async (scopeId: string) => {
+    const target = bulk.targetFor(scopeId)
+    if (!target || bulkDeleting) return
+    if (!(await confirm(buildBulkDeleteConfirmMessage(target, '文档')))) return
+    await runBulkDelete(
+      `/api/admin/${encodeURIComponent(tenantId)}/documents/bulk-delete`,
+      // 「全部」那一档发的是筛选条件本身（这个页面没有任何筛选，所以是空
+      // 对象＝整租户），不是 id 列表：条数可能上万，前端手里没有也不该有。
+      target.mode === 'keys' ? { file_paths: target.keys } : { filters: {} },
+      '文档',
+      displayFileName,
+    )
+  }
+
+  const handleBulkDeleteJobs = async (scopeId: string) => {
+    const target = bulk.targetFor(scopeId)
+    if (!target || bulkDeleting || target.mode !== 'keys') return
+    // 删任务会顺手清掉关联的上传文件，而且是逐条发生的：中途有一条删不掉
+    // 时，前面已经清掉的文件不会跟着回来。用户在按下确认之前必须知道这件
+    // 事，否则他会以为"没删干净"等于"什么都没变"。
+    const message =
+      `${buildBulkDeleteConfirmMessage(target, '任务')}` +
+      '关联的上传文件会逐条清理；中途有一条删不掉时，前面已经清掉的文件不会回滚。'
+    if (!(await confirm(message))) return
+    await runBulkDelete(
+      `/api/admin/${encodeURIComponent(tenantId)}/documents/jobs/bulk-delete`,
+      { job_ids: target.keys },
+      '任务',
+      (key) => jobFileNames.get(key) ?? key,
+    )
+  }
+
   const handleTogglePreview = async (filePath: string) => {
     if (!sessionToken) return
     const current = expandedChunks[filePath]
@@ -422,16 +542,48 @@ export function DocumentsPage() {
         </p>
       )}
 
+      {bulkOutcome && (
+        <BulkDeleteOutcome
+          result={bulkOutcome.result}
+          noun={bulkOutcome.noun}
+          onDismiss={() => setBulkOutcome(null)}
+        />
+      )}
+
       {pendingJobs.length > 0 && (
         <div className="flex flex-col gap-2">
           <h2 className="font-mono font-semibold text-ink">处理中的任务</h2>
+          {stuckJobs.length > 0 && (
+            // total 就是列出来的条数：这一段既不分页也不筛选，「本页」和
+            // 「全部」是同一批东西，工具条因此退化成一档，不会冒出一个
+            // 「改为选中全部」的按钮去干同一件事。
+            <div data-testid="stuck-jobs-bulk">
+              <BulkSelectionBar
+                scopeId="stuck-jobs"
+                listedKeys={stuckJobs.map((job) => job.job_id)}
+                total={stuckJobs.length}
+                filters={{}}
+                noun="任务"
+                selection={bulk}
+                onDelete={(scopeId) => void handleBulkDeleteJobs(scopeId)}
+                deleting={bulkDeleting}
+              />
+            </div>
+          )}
           {pendingJobs.map((job) =>
             job.is_stuck ? (
               <div
                 key={job.job_id}
                 className="flex items-center justify-between rounded-card border border-status-error bg-card px-4 py-3"
               >
-                <span className="text-ink">
+                <span className="flex items-center gap-2 text-ink">
+                  <input
+                    type="checkbox"
+                    checked={bulk.isSelected('stuck-jobs', job.job_id)}
+                    onChange={() => bulk.toggleKey('stuck-jobs', job.job_id)}
+                    aria-label={`选中任务「${displayFileName(job.file_path)}」`}
+                    className={`h-4 w-4 shrink-0 cursor-pointer ${focusRing}`}
+                  />
                   {displayFileName(job.file_path)}
                   <span className="text-ink-soft">
                     {' '}
@@ -476,12 +628,31 @@ export function DocumentsPage() {
       {deadJobs.length > 0 && (
         <div className="flex flex-col gap-2">
           <h2 className="font-mono font-semibold text-ink">失败任务</h2>
+          <div data-testid="dead-jobs-bulk">
+            <BulkSelectionBar
+              scopeId="dead-jobs"
+              listedKeys={deadJobs.map((job) => job.job_id)}
+              total={deadJobs.length}
+              filters={{}}
+              noun="任务"
+              selection={bulk}
+              onDelete={(scopeId) => void handleBulkDeleteJobs(scopeId)}
+              deleting={bulkDeleting}
+            />
+          </div>
           {deadJobs.map((job) => (
             <div
               key={job.job_id}
               className="flex items-center justify-between rounded-card border border-status-error bg-card px-4 py-3"
             >
-              <span className="text-ink">
+              <span className="flex items-center gap-2 text-ink">
+                <input
+                  type="checkbox"
+                  checked={bulk.isSelected('dead-jobs', job.job_id)}
+                  onChange={() => bulk.toggleKey('dead-jobs', job.job_id)}
+                  aria-label={`选中任务「${displayFileName(job.file_path)}」`}
+                  className={`h-4 w-4 shrink-0 cursor-pointer ${focusRing}`}
+                />
                 {displayFileName(job.file_path)}
                 {job.last_error && `（${job.last_error}）`}
               </span>
@@ -527,6 +698,22 @@ export function DocumentsPage() {
             {previewError}
           </p>
         )}
+        {loaded && documents.length > 0 && (
+          // 文档列表有分页、没有筛选：两档是「本页 20 条」和「整租户的全部
+          // documentsTotal 条」。filters 传空对象＝当前没有任何筛选时的全部。
+          <div data-testid="documents-bulk">
+            <BulkSelectionBar
+              scopeId="documents"
+              listedKeys={documents.map((doc) => doc.file_path)}
+              total={documentsTotal}
+              filters={{}}
+              noun="文档"
+              selection={bulk}
+              onDelete={(scopeId) => void handleBulkDeleteDocuments(scopeId)}
+              deleting={bulkDeleting}
+            />
+          </div>
+        )}
         {loaded &&
           documents.map((doc) => {
             const preview = expandedChunks[doc.file_path]
@@ -539,6 +726,13 @@ export function DocumentsPage() {
               >
                 <div className="flex items-center justify-between">
                   <span className="flex items-center gap-2 text-ink">
+                    <input
+                      type="checkbox"
+                      checked={bulk.isSelected('documents', doc.file_path)}
+                      onChange={() => bulk.toggleKey('documents', doc.file_path)}
+                      aria-label={`选中「${displayFileName(doc.file_path)}」`}
+                      className={`h-4 w-4 shrink-0 cursor-pointer ${focusRing}`}
+                    />
                     <span title={doc.file_path}>
                       {displayFileName(doc.file_path)}（{doc.chunk_count} chunks，最近摄取：
                       {doc.last_ingested_at}）
