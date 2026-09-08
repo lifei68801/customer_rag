@@ -52,6 +52,38 @@ def test_upsert_twice_updates_instead_of_duplicating():
     asyncio.run(run())
 
 
+def test_get_persona_returns_the_requested_tenant_not_another():
+    """租户隔离是二元的：get_persona 必须精确匹配点名的那个租户，不能是
+    「表里随便一行」。库里同时有两个内容能区分的脸，分别问这两个租户，
+    各自的返回值必须对应各自写入的内容——如果实现退化成"忽略 tenant_id、
+    返回任意一行"（比如把 WHERE 换成裸的 LIMIT 1），两次问不同的租户会拿到
+    同一行，这里必然至少有一次对不上。"""
+
+    async def run():
+        conn = await _conn()
+        try:
+            await upsert_persona(conn, tenant_id="tenant-x", avatar="🅰️", tagline="甲的脸")
+            await upsert_persona(conn, tenant_id="tenant-y", avatar="🅱️", tagline="乙的脸")
+
+            persona_x = await get_persona(conn, "tenant-x")
+            persona_y = await get_persona(conn, "tenant-y")
+
+            assert persona_x == {
+                "tenant_id": "tenant-x",
+                "avatar": "🅰️",
+                "tagline": "甲的脸",
+            }
+            assert persona_y == {
+                "tenant_id": "tenant-y",
+                "avatar": "🅱️",
+                "tagline": "乙的脸",
+            }
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
 def test_missing_persona_returns_none_not_a_blank_row():
     """没配过的租户返回 None，前端据此渲染一个「还没配」的占位。
     返回一个空字段的字典的话，界面上会出现一个没有名字、没有头像的
