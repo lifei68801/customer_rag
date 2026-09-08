@@ -22,7 +22,12 @@ from app.auth.admin_users_store import (
     set_admin_user_password,
     set_admin_user_status,
 )
-from app.graphrag.tenants_store import TenantNotFoundError, require_active_tenant
+from app.auth.user_tenants_store import (
+    grant_tenant_access,
+    list_granted_tenant_ids,
+    revoke_tenant_access,
+)
+from app.graphrag.tenants_store import TenantNotFoundError, list_tenants, require_active_tenant
 
 router = APIRouter(
     prefix="/api/admin/accounts", dependencies=[Depends(deps.require_admin_role)]
@@ -57,6 +62,14 @@ class CreateAccountRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     new_password: str
+
+
+class AccountTenantsRequest(BaseModel):
+    tenant_ids: list[str]
+
+
+class AccountTenantsResponse(BaseModel):
+    tenant_ids: list[str]
 
 
 def _public(user: dict) -> AccountResponse:
@@ -146,3 +159,70 @@ async def reset_password(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"changed": True}
+
+
+@router.get("/{username}/tenants", response_model=AccountTenantsResponse)
+async def get_account_tenants(
+    username: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> AccountTenantsResponse:
+    """这个账号被显式授权的租户。admin 账号也能查——查到的多半是空列表，
+    因为它从来不需要显式授权；不特殊拒绝 GET，拒绝的是"给 admin 加限制"
+    这个写操作本身（见下面的 PUT）。"""
+    user = await get_admin_user(review_conn, username)
+    if user is None:
+        raise HTTPException(status_code=404, detail=f"账号 {username!r} 不存在")
+    return AccountTenantsResponse(tenant_ids=await list_granted_tenant_ids(review_conn, username))
+
+
+@router.put("/{username}/tenants", response_model=AccountTenantsResponse)
+async def replace_account_tenants(
+    username: str,
+    payload: AccountTenantsRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> AccountTenantsResponse:
+    """全量替换这个账号的租户授权。
+
+    全量替换而不是追加：界面上是一组复选框，用户取消勾选的那个必须真的被
+    撤销。追加语义下"取消勾选"永远不生效，而界面看起来生效了——这正是
+    本项目最在意的那类静默失败。
+
+    先校验后写：账号不存在、租户不存在、对象是个 admin、列表为空，四种都
+    在写入之前挡住。写一半再失败会留下"一部分授权生效了"的状态，而调用方
+    拿到的是一个错误码，他会以为什么都没发生。
+
+    空列表单独拒绝（400），不当成"合法的零授权"放行：
+    `deps.list_accessible_tenant_ids` 只有在 user_tenants 里一条记录都没有
+    时才回退到 admin_users.tenant_id 那一列。撤销到零和从未授权过在表里
+    长得一样——管理员把全部勾去掉保存，他以为收回了全部访问权，这个账号
+    却仍能进自己的默认租户，是一次看不见的失败。真要彻底收回访问权限，
+    走 `set_admin_user_status` 停用整个账号——那条路已经在账号页上有按钮，
+    是明确的、不会被误当成"部分授权"的动作。
+    """
+    user = await get_admin_user(review_conn, username)
+    if user is None:
+        raise HTTPException(status_code=404, detail=f"账号 {username!r} 不存在")
+    if user["role"] == "admin":
+        raise HTTPException(
+            status_code=400,
+            detail="admin 本来就能访问全部租户，给它单独授权不会产生任何限制效果",
+        )
+    if not payload.tenant_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="不能保存空列表：撤销到零之后这个账号会回退到默认租户，而不是被"
+            "彻底挡在门外。要彻底收回访问权限，请使用账号列表里的「停用账号」。",
+        )
+    known = {t["tenant_id"] for t in await list_tenants(review_conn)}
+    unknown = sorted(set(payload.tenant_ids) - known)
+    if unknown:
+        raise HTTPException(
+            status_code=400, detail=f"这些租户不存在或已停用：{'、'.join(unknown)}"
+        )
+    current = set(await list_granted_tenant_ids(review_conn, username))
+    wanted = set(payload.tenant_ids)
+    for tenant_id in sorted(wanted - current):
+        await grant_tenant_access(review_conn, username=username, tenant_id=tenant_id)
+    for tenant_id in sorted(current - wanted):
+        await revoke_tenant_access(review_conn, username=username, tenant_id=tenant_id)
+    return AccountTenantsResponse(tenant_ids=sorted(wanted))

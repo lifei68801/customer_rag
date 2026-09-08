@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { UserPlus, Users } from 'lucide-react'
 import { PAGE_TITLES } from '../adminRoutes'
 import { adminFetch, extractErrorDetail } from './adminApi'
@@ -16,6 +16,13 @@ interface Account {
   status: 'active' | 'disabled'
   created_at: string
   last_login_at: string | null
+}
+
+interface TenantGrantState {
+  loaded: boolean
+  selected: Set<string>
+  saving: boolean
+  error: string | null
 }
 
 const card = 'rounded-card border border-subtle bg-card p-4'
@@ -46,8 +53,115 @@ export function AccountsPage() {
   // 正在给谁重置密码。null = 没在重置。
   const [resetting, setResetting] = useState<string | null>(null)
   const [resetPassword, setResetPassword] = useState('')
+  // 每个 member 账号「可访问的数字人」勾选状态，按 username 分开存。
+  const [grants, setGrants] = useState<Record<string, TenantGrantState>>({})
+  // 已经发起过一次拉取的 username 集合。用 ref 而不是从 grants 判断"存不
+  // 存在"：那样会把 grants 塞进下面那个 effect 的依赖，而 effect 里又会
+  // setGrants，变成"更新触发自己再跑一次"的循环。
+  const fetchedGrantsRef = useRef<Set<string>>(new Set())
 
   const isAdmin = role === 'admin'
+
+  const loadGrants = useCallback(
+    async (username: string) => {
+      if (!sessionToken) return
+      try {
+        const response = await adminFetch(
+          `/api/admin/accounts/${encodeURIComponent(username)}/tenants`,
+          sessionToken,
+        )
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(extractErrorDetail(body, '加载可访问的数字人失败'))
+        }
+        const data = (await response.json()) as { tenant_ids?: string[] }
+        setGrants((prev) => ({
+          ...prev,
+          [username]: {
+            loaded: true,
+            selected: new Set(data.tenant_ids ?? []),
+            saving: false,
+            error: null,
+          },
+        }))
+      } catch (err) {
+        setGrants((prev) => ({
+          ...prev,
+          [username]: {
+            loaded: true,
+            selected: prev[username]?.selected ?? new Set(),
+            saving: false,
+            error: err instanceof Error ? err.message : '加载可访问的数字人失败',
+          },
+        }))
+      }
+    },
+    [sessionToken],
+  )
+
+  const toggleGrant = useCallback((username: string, tenantId: string) => {
+    setGrants((prev) => {
+      const current = prev[username]
+      if (!current) return prev
+      const nextSelected = new Set(current.selected)
+      if (nextSelected.has(tenantId)) {
+        nextSelected.delete(tenantId)
+      } else {
+        nextSelected.add(tenantId)
+      }
+      return { ...prev, [username]: { ...current, selected: nextSelected, error: null } }
+    })
+  }, [])
+
+  const saveGrants = useCallback(
+    async (username: string) => {
+      if (!sessionToken) return
+      const state = grants[username]
+      // 空列表在前端就挡住，不等后端 400：保存空列表不会撤销全部访问
+      // 权限，只会回退到默认租户——那不是用户想要的"彻底收回"。
+      if (!state || state.saving || state.selected.size === 0) return
+      setGrants((prev) => ({ ...prev, [username]: { ...prev[username], saving: true, error: null } }))
+      const tenantIds = Array.from(state.selected).sort()
+      try {
+        const response = await adminFetch(
+          `/api/admin/accounts/${encodeURIComponent(username)}/tenants`,
+          sessionToken,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tenant_ids: tenantIds }),
+          },
+        )
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          // 后端的 detail（比如「这些租户不存在或已停用：xxx」）里有用户
+          // 需要的全部信息，原样显示——包装成「保存失败」等于把它扔掉。
+          throw new Error(extractErrorDetail(body, '保存失败'))
+        }
+        const data = (await response.json()) as { tenant_ids?: string[] }
+        setGrants((prev) => ({
+          ...prev,
+          [username]: {
+            loaded: true,
+            selected: new Set(data.tenant_ids ?? tenantIds),
+            saving: false,
+            error: null,
+          },
+        }))
+        showToast(`已更新 ${username} 可访问的数字人`)
+      } catch (err) {
+        setGrants((prev) => ({
+          ...prev,
+          [username]: {
+            ...prev[username],
+            saving: false,
+            error: err instanceof Error ? err.message : '保存失败',
+          },
+        }))
+      }
+    },
+    [sessionToken, grants, showToast],
+  )
 
   const refresh = useCallback(async () => {
     if (!sessionToken || !isAdmin) return
@@ -74,6 +188,18 @@ export function AccountsPage() {
   useEffect(() => {
     document.title = `${PAGE_TITLES.accounts} · 管理后台`
   }, [])
+
+  // 每个 member 账号各拉一次「可访问的数字人」。admin 账号不拉——后端对
+  // admin 的 PUT 一律 400，给它一个必然失败的控件没有意义，界面上也不
+  // 展示这组复选框（见下面渲染部分）。
+  useEffect(() => {
+    for (const account of accounts) {
+      if (account.role !== 'member') continue
+      if (fetchedGrantsRef.current.has(account.username)) continue
+      fetchedGrantsRef.current.add(account.username)
+      void loadGrants(account.username)
+    }
+  }, [accounts, loadGrants])
 
   // 权限判断放在取数之后、渲染之前：member 连列表请求都不会发出去（refresh
   // 里就挡住了），那个请求只会拿回 403。
@@ -333,7 +459,8 @@ export function AccountsPage() {
             </thead>
             <tbody>
               {accounts.map((account) => (
-                <tr key={account.username} className="border-b border-subtle">
+                <Fragment key={account.username}>
+                <tr className="border-b border-subtle">
                   <td className="py-2 pr-4 font-bold text-ink">{account.username}</td>
                   <td className="py-2 pr-4 text-ink-soft">
                     {account.role === 'admin' ? '管理员' : '成员'}
@@ -384,6 +511,64 @@ export function AccountsPage() {
                     </button>
                   </td>
                 </tr>
+                {account.role === 'member' && (() => {
+                  const grantState = grants[account.username]
+                  return (
+                    <tr className="border-b border-subtle bg-card/60">
+                      <td colSpan={6} className="py-2 pr-4">
+                        <div
+                          data-testid={`tenant-grants-${account.username}`}
+                          className="flex flex-col gap-2"
+                        >
+                          <span className="text-xs font-bold uppercase tracking-wide text-ink-soft">
+                            可访问的数字人
+                          </span>
+                          {!grantState || !grantState.loaded ? (
+                            <span className="text-xs text-ink-faint">加载中…</span>
+                          ) : (
+                            <>
+                              <div className="flex flex-wrap gap-3">
+                                {tenants.map((tenant) => (
+                                  <label
+                                    key={tenant.tenant_id}
+                                    className="flex items-center gap-1.5 text-sm text-ink"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={grantState.selected.has(tenant.tenant_id)}
+                                      onChange={() => toggleGrant(account.username, tenant.tenant_id)}
+                                    />
+                                    {tenant.name}
+                                  </label>
+                                ))}
+                              </div>
+                              {grantState.selected.size === 0 && (
+                                <p className="text-xs text-ink-soft">
+                                  不能保存空列表：要彻底收回访问权限，请使用上面的「停用账号」。
+                                </p>
+                              )}
+                              {grantState.error && (
+                                <p role="alert" className="text-xs text-status-error">
+                                  {grantState.error}
+                                </p>
+                              )}
+                              <button
+                                type="button"
+                                aria-label={`保存 ${account.username} 可访问的数字人`}
+                                onClick={() => saveGrants(account.username)}
+                                disabled={grantState.saving || grantState.selected.size === 0}
+                                className={`${buttonClass} self-start`}
+                              >
+                                {grantState.saving ? '保存中…' : '保存'}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })()}
+                </Fragment>
               ))}
             </tbody>
           </table>

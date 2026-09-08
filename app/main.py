@@ -16,6 +16,7 @@ from app.api.admin_graph_review_routes import router as admin_graph_review_route
 from app.api.admin_diagnostics_routes import router as admin_diagnostics_router
 from app.api.admin_nav_badges_routes import router as admin_nav_badges_router
 from app.api.admin_ontology_routes import router as admin_ontology_router
+from app.api.admin_org_routes import router as admin_org_router
 from app.api.admin_personas_routes import router as admin_personas_router
 from app.api.admin_schema_etl_routes import router as admin_schema_etl_router
 from app.api.admin_tenant_routes import router as admin_tenant_router
@@ -155,6 +156,10 @@ admin_scoped = APIRouter(dependencies=[Depends(deps.require_csrf)])
 admin_scoped.include_router(admin_auth_router)
 admin_scoped.include_router(admin_account_router)
 admin_scoped.include_router(admin_tenant_router)
+# /api/admin/organizations 同样是非租户路径（路径里没有 {tenant_id}，
+# 组织不参与隔离判据，见 app/graphrag/organizations_store.py 的模块
+# docstring）。见 tests/api/test_admin_route_shapes.py 的 _NON_TENANT_PREFIXES。
+admin_scoped.include_router(admin_org_router)
 # GET /api/admin/personas 也是非租户路径（路径里没有 {tenant_id}）——「我
 # 这个账号能访问哪些数字人」对任何角色都要回答得出来，不能挂
 # require_tenant_access（会让 FastAPI 把 tenant_id 当成必填 query 参数，
