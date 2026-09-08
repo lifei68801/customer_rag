@@ -78,8 +78,12 @@ def _get_orgs(org_conn):
 
 
 def _assign_tenant_to_org(org_conn, tenant_id: str, org_id: str | None):
+    """把租户挂到组织下。这个端点实际实现在 admin_tenant_routes.py（改的
+    是一行 tenants 记录），不在 admin_org_routes.py 里——但用例留在这个
+    文件，因为它跟"建组织、列组织"是同一个业务动作链条的下一步，测的是
+    通过公开 API 路径观察到的行为，不是"这个函数定义在哪个文件"。"""
     _as("admin")
-    return _client().put(f"/api/admin/organizations/tenants/{tenant_id}", json={"org_id": org_id})
+    return _client().put(f"/api/admin/tenants/{tenant_id}/organization", json={"org_id": org_id})
 
 
 def _put_account_tenants_raw(org_conn, username: str, tenant_ids: list[str]):

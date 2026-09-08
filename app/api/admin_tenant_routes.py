@@ -7,6 +7,7 @@ import aiosqlite
 
 from app.api import deps
 from app.tenancy import is_valid_tenant_id
+from app.graphrag.organizations_store import OrganizationNotFoundError, assign_tenant_to_org
 from app.graphrag.tenants_store import (
     TenantAlreadyExistsError,
     TenantNotFoundError,
@@ -50,6 +51,10 @@ class TenantCreateRequest(BaseModel):
         if not stripped:
             raise ValueError("name 不能为空")
         return stripped
+
+
+class TenantOrganizationRequest(BaseModel):
+    org_id: str | None
 
 
 @router.get("", response_model=TenantListResponse)
@@ -104,3 +109,31 @@ async def enable_tenant(
     except TenantNotFoundError:
         raise HTTPException(status_code=404, detail="租户不存在")
     return {"status": "active"}
+
+
+@router.put("/{tenant_id}/organization")
+async def set_tenant_organization(
+    tenant_id: str,
+    payload: TenantOrganizationRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict[str, str | None]:
+    """把这个租户挂到 org_id 下；org_id 传 null 是移出组织。
+
+    这个 tenant_id 是**被操作的对象**（要挂到组织下的是哪个租户），不是
+    操作发生的租户作用域，跟上面 disable/enable 两个端点同一个道理——
+    按租户作用域校验的话，member 对自己所属的那个租户会顺利通过，那不是
+    这里想要的：组织管理整体是 admin 专属（本 router 的依赖），不看
+    调用者跟这个租户是什么关系。
+
+    两侧存在性都在 assign_tenant_to_org 里校验过（组织不存在、租户不存在
+    分别抛不同的异常，见 app/graphrag/organizations_store.py），这里只
+    负责把异常翻译成 4xx——放行任何一侧不存在都会让这个租户从组织视图里
+    静默消失，或者移出操作静默影响 0 行。
+    """
+    try:
+        await assign_tenant_to_org(review_conn, tenant_id=tenant_id, org_id=payload.org_id)
+    except OrganizationNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except TenantNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"tenant_id": tenant_id, "org_id": payload.org_id}

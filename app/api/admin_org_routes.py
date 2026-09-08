@@ -6,10 +6,17 @@ app/graphrag/organizations_store.py 的模块 docstring）——它存在的唯�
 那是 app/api/admin_account_routes.py 的 `/accounts/{username}/tenants`：
 两者是正交的两件事，一个管"租户属于哪个客户"，一个管"账号能碰哪个租户"。
 
-本文件只留组织相关的端点，router 前缀收窄到 `/api/admin/organizations`——
-`/accounts/{username}/tenants` 已经落在既有的 admin_account_routes.py
-里，不在这里重复。三个端点：建组织、列组织（带各自的 tenant_ids）、把
-租户挂到组织下/移出组织。
+本文件只留「组织」自身的端点，router 前缀是 `/api/admin/organizations`：
+建组织、列组织（带各自的 tenant_ids）。`/accounts/{username}/tenants`
+落在既有的 admin_account_routes.py 里，不在这里重复。
+
+把租户挂到组织下/移出组织（`PUT .../organization`）不在这里，在
+app/api/admin_tenant_routes.py：那个端点改的是一行 tenants 记录
+（`UPDATE tenants SET org_id`），跟"停用/启用租户"是同一类操作——按内聚性
+应该跟它们放在一起，而不是因为路径里出现了 "organization" 字样就归进
+这个文件。它的 `{tenant_id}` 是**被操作的对象**，不是租户作用域，跟
+`/api/admin/tenants/{tenant_id}/disable` 同一个道理（见
+tests/api/test_admin_route_shapes.py 的 `_NON_TENANT_PREFIXES` 注释）。
 """
 from __future__ import annotations
 
@@ -20,22 +27,18 @@ from pydantic import BaseModel
 from app.api import deps
 from app.graphrag.organizations_store import (
     OrganizationAlreadyExistsError,
-    OrganizationNotFoundError,
-    assign_tenant_to_org,
     create_organization,
     list_organizations,
     list_tenants_in_org,
 )
-from app.graphrag.tenants_store import TenantNotFoundError
 
 router = APIRouter(
     prefix="/api/admin/organizations", dependencies=[Depends(deps.require_admin_role)]
 )
-# member 能建组织的话，他就能把别人的租户挂到自己建的组织下——那条路本身
-# 挂了 tenant_id 双重存在性校验（assign_tenant_to_org），但组织视图会把
-# 一个 member 本无权碰的租户摆进一个他随手建的组织里，这不是隔离判据被
-# 绕过（隔离仍然是 user_tenants 那张表管），但足以在管理界面上制造混乱，
-# 所以整个组织管理面收在 admin 专属之下。
+# member 能建组织的话，组织视图上就会出现一个他随手起名建出来的组织——
+# 这不是隔离判据被绕过（隔离仍然是 user_tenants 那张表管，组织本身不参与
+# 判据，见上面模块 docstring），但足以在管理界面上制造混乱，所以整个组织
+# 管理面收在 admin 专属之下。
 
 
 class OrganizationCreateRequest(BaseModel):
@@ -52,10 +55,6 @@ class OrganizationResponse(BaseModel):
 
 class OrganizationListResponse(BaseModel):
     organizations: list[OrganizationResponse]
-
-
-class TenantOrganizationRequest(BaseModel):
-    org_id: str | None
 
 
 @router.post("", status_code=201)
@@ -87,24 +86,3 @@ async def list_orgs(
             )
         )
     return OrganizationListResponse(organizations=organizations)
-
-
-@router.put("/tenants/{tenant_id}")
-async def set_tenant_organization(
-    tenant_id: str,
-    payload: TenantOrganizationRequest,
-    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-) -> dict[str, str | None]:
-    """把这个租户挂到 org_id 下；org_id 传 null 是移出组织。
-
-    两侧存在性都在 assign_tenant_to_org 里校验过（组织不存在、租户不存在
-    分别抛不同的异常），这里只负责把异常翻译成 4xx——放行任何一侧不存在
-    都会让这个租户从组织视图里静默消失，或者移出操作静默影响 0 行。
-    """
-    try:
-        await assign_tenant_to_org(review_conn, tenant_id=tenant_id, org_id=payload.org_id)
-    except OrganizationNotFoundError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except TenantNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    return {"tenant_id": tenant_id, "org_id": payload.org_id}

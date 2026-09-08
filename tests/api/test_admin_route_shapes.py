@@ -97,11 +97,12 @@ _NON_TENANT_PREFIXES = (
     "/api/admin/auth/",
     "/api/admin/tenants",
     "/api/admin/accounts",
-    # 组织管理：路径里没有 {tenant_id} 段，组织不参与隔离判据（见
-    # app/graphrag/organizations_store.py 的模块 docstring）。
-    # /api/admin/organizations/tenants/{tenant_id} 也在这个前缀下——那个
-    # {tenant_id} 是**被挂到组织下的对象**，不是操作发生的租户作用域，
-    # 理由跟下面 /api/admin/tenants/{tenant_id}/disable 那条一样。
+    # 组织管理（建组织、列组织）：路径里没有 {tenant_id} 段，组织不参与
+    # 隔离判据（见 app/graphrag/organizations_store.py 的模块 docstring）。
+    # 把租户挂到组织下的那个端点（PUT .../organization）不在这个前缀下，
+    # 它挂在 /api/admin/tenants/{tenant_id}/organization——已经被上面
+    # "/api/admin/tenants" 这条覆盖，跟 .../disable 是同一类：{tenant_id}
+    # 是被操作的对象，不是作用域。
     "/api/admin/organizations",
     # 「我这个账号能访问哪些数字人」对任何角色都要回答，路径里没有
     # {tenant_id} 段。挂 require_tenant_access 的话 FastAPI 会把 tenant_id
