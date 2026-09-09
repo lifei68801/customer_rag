@@ -179,6 +179,10 @@ async def _run_schema_etl_job(
             data_dir=data_dir,
             dry_run=dry_run,
             allow_large_sweep=allow_large_sweep,
+            # 传自己的 run_id，跳过行才能跟 etl_runs 里这一行对上：报错明细页
+            # 上的「第 88 行 价格非数字」要能点回到"是哪一次跑批"。不传的话
+            # run_schema_etl 会自己生成一个，两边永远对不上。
+            run_id=run_id,
         )
         await mark_etl_run_completed(
             conn,

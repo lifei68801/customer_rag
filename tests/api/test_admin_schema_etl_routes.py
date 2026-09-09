@@ -451,10 +451,12 @@ def test_start_run_passes_dry_run_and_allow_large_sweep_through(client, review_c
     captured: dict[str, object] = {}
 
     async def fake_run_schema_etl(
-        *, conn, graph_client, config, data_dir, dry_run=False, allow_large_sweep=False
+        *, conn, graph_client, config, data_dir, dry_run=False, allow_large_sweep=False,
+        run_id=None
     ):
         captured["dry_run"] = dry_run
         captured["allow_large_sweep"] = allow_large_sweep
+        captured["run_id"] = run_id
         return ETLRunReport()
 
     monkeypatch.setattr("app.api.admin_schema_etl_routes.run_schema_etl", fake_run_schema_etl)
@@ -464,7 +466,8 @@ def test_start_run_passes_dry_run_and_allow_large_sweep_through(client, review_c
     response = client.post("/api/admin/muji/schema-etl/runs", files=files, data=data)
 
     assert response.status_code == 200
-    assert captured == {"dry_run": True, "allow_large_sweep": True}
+    assert captured["dry_run"] is True
+    assert captured["allow_large_sweep"] is True
 
 
 def test_promote_dry_run_reuses_stored_inputs(client, review_conn, tmp_path):
@@ -506,7 +509,8 @@ def test_promote_triggers_a_real_run_not_another_dry_run(client, review_conn, mo
     calls: list[dict[str, object]] = []
 
     async def fake_run_schema_etl(
-        *, conn, graph_client, config, data_dir, dry_run=False, allow_large_sweep=False
+        *, conn, graph_client, config, data_dir, dry_run=False, allow_large_sweep=False,
+        run_id=None
     ):
         calls.append({"dry_run": dry_run, "allow_large_sweep": allow_large_sweep})
         return ETLRunReport(dry_run=dry_run)
@@ -580,10 +584,12 @@ def test_start_run_defaults_both_switches_to_false(client, review_conn, monkeypa
     captured: dict[str, object] = {}
 
     async def fake_run_schema_etl(
-        *, conn, graph_client, config, data_dir, dry_run=False, allow_large_sweep=False
+        *, conn, graph_client, config, data_dir, dry_run=False, allow_large_sweep=False,
+        run_id=None
     ):
         captured["dry_run"] = dry_run
         captured["allow_large_sweep"] = allow_large_sweep
+        captured["run_id"] = run_id
         return ETLRunReport()
 
     monkeypatch.setattr("app.api.admin_schema_etl_routes.run_schema_etl", fake_run_schema_etl)
@@ -592,4 +598,9 @@ def test_start_run_defaults_both_switches_to_false(client, review_conn, monkeypa
     response = client.post("/api/admin/muji/schema-etl/runs", files=files)
 
     assert response.status_code == 200
-    assert captured == {"dry_run": False, "allow_large_sweep": False}
+    assert captured["dry_run"] is False
+    assert captured["allow_large_sweep"] is False
+    # run_id 必须是路由自己那个（就是回给前端的那个），跳过行才能跟
+    # etl_runs 里这一行对上。不传的话 run_schema_etl 会自己生成一个，
+    # 报错明细页永远指不回是哪一次跑批。
+    assert captured["run_id"] == response.json()["run_id"]

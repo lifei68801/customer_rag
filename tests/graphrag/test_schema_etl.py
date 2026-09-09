@@ -1711,3 +1711,81 @@ async def test_rerunning_the_same_file_records_no_conflict(tmp_path):
         assert await count_conflicts(conn, tenant_id="muji") == 0
     finally:
         await conn.close()
+
+
+async def test_a_real_run_persists_its_skipped_rows_to_the_table(tmp_path):
+    """**跑批结束时跳过行必须真的落库**，不是只留在报告里。
+
+    这条守的是"核心逻辑写好了但生产路径不调用它"——store 层的用例全都直接
+    调 record_skipped_rows，谁也没问过"真的跑一次 ETL 时它被调用了吗"。
+    """
+    from app.graphrag.etl_skipped_rows import list_skipped_rows
+
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,md_no\n"
+        "1001,圆角收纳盒,A123\n"
+        ",没有ID的商品,B456\n",
+        encoding="utf-8",
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config,
+        data_dir=tmp_path, run_id="run-42",
+    )
+
+    rows = await list_skipped_rows(conn, tenant_id="muji")
+    assert len(rows) == 1
+    # 行号和原因都要留着：「第 3 行 ...」是用户据此去改表格的全部信息。
+    assert rows[0]["row_number"] == 3
+    assert rows[0]["source_file"] == "products.csv"
+    assert rows[0]["reason"]
+    # run_id 要用调用方传进来的那个，报错明细页才能跟 etl_runs 对上。
+    assert rows[0]["run_id"] == "run-42"
+
+
+async def test_rerunning_the_same_run_does_not_double_the_skipped_rows(tmp_path):
+    """同一个 run_id 重跑时替换而不是追加。
+
+    追加的话，重试一次导入就让跳过行数翻倍——用户以为问题变严重了。
+    """
+    from app.graphrag.etl_skipped_rows import count_skipped_rows
+
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,md_no\n"
+        ",没有ID的商品,B456\n",
+        encoding="utf-8",
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    for _ in range(2):
+        await run_schema_etl(
+            conn=conn, graph_client=FakeGraphClient(), config=config,
+            data_dir=tmp_path, run_id="run-42",
+        )
+
+    assert await count_skipped_rows(conn, tenant_id="muji") == 1

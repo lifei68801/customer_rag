@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,11 @@ from app.graphrag.ontology_store import open_ontology_store_conn
 from app.graphrag.schema_etl_config import EntityMapping, RelationMapping, SchemaETLConfig, load_schema_etl_config
 from app.graphrag.schema_etl_row_processing import RowProcessingError
 from app.graphrag.attribute_conflicts import ensure_attribute_conflicts_schema
+from app.graphrag.etl_skipped_rows import (
+    SkippedRowRecord,
+    ensure_etl_skipped_rows_schema,
+    record_skipped_rows,
+)
 from app.graphrag.terms_store import (
     TermNameConflictError,
     TermNotFoundError,
@@ -346,6 +352,7 @@ async def run_schema_etl(
     data_dir: Path,
     dry_run: bool = False,
     allow_large_sweep: bool = False,
+    run_id: str | None = None,
 ) -> ETLRunReport:
     """按已确认 schema + 列映射配置，把 CSV 源数据确定性写入 Term/Neo4j 双存储。
     见 docs/superpowers/specs/2026-08-16-schema-etl-engine-design.md 第 6 节。
@@ -354,6 +361,12 @@ async def run_schema_etl(
     里、关系引用了未声明的实体类型）不会中断整次运行——跳过这一个 mapping、
     记入 skipped_mappings，继续处理其余 mapping，呼应第 6.4 节"一行脏数据不该
     让整批任务失败"的同一原则，只是粒度提升到了整个 mapping。
+
+    `run_id` 用来把跳过行归到某一次跑批名下。管理后台的路由有自己的 run_id
+    （`etl_runs.run_id`），传进来才能让报错明细页和 run 详情页对得上。命令行
+    直接跑时没有那个 id，自己生成一个——**不能因此就不落库**：命令行导入
+    也是真实的导入路径，它跳掉的行同样是数据问题，静默丢掉的话报错明细页
+    会显示一份看起来很干净、实际残缺的清单。
     """
     if not await is_ontology_confirmed(conn, config.tenant_id):
         raise SchemaETLNotConfirmedError(
@@ -365,6 +378,10 @@ async def run_schema_etl(
     # 的话，第一次遇到属性值冲突时整个 ETL 会以 "no such table" 中止——
     # 而那时用户看到的是一次失败的导入，跟"有冲突"这件事毫无关系。
     await ensure_attribute_conflicts_schema(conn)
+    # 同上：跑批结束要往跳过行表里写，而调用方（CLI、后台路由、测试）
+    # 各自建各自的表，不能假设这一张一定在。
+    await ensure_etl_skipped_rows_schema(conn)
+    resolved_run_id = run_id or uuid.uuid4().hex
 
     # 预检最先做的一件事：config.entities 里 term_type 不能重复。下面的
     # scanned_keys_by_term_type 和后面的 entity_mappings_by_term_type 都
@@ -606,6 +623,27 @@ async def run_schema_etl(
         removed = await delete_terms_by_node_keys(conn, config.tenant_id, doomed)
         report.entities_removed += removed
         report.entities_removed_by_type[term_type] = removed
+
+    # 整批一次写完。逐行写库的话两万行的导入会被每行一次事务拖垮，所以
+    # _record_skipped_row 全程只往报告里攒，落库只在这里发生一次。
+    #
+    # dry_run 也写：预演跳掉的行是真实的数据问题（价格非数字就是非数字），
+    # 不写的话用户跑完预演去报错明细页什么也看不到，而他刚刚才看见"跳了
+    # 127 行"。run_id 把两次跑批分得开。
+    await record_skipped_rows(
+        conn,
+        tenant_id=config.tenant_id,
+        run_id=resolved_run_id,
+        rows=[
+            SkippedRowRecord(
+                label=row.label,
+                source_file=row.source_file,
+                row_number=row.row_number,
+                reason=row.reason,
+            )
+            for row in report.skipped_rows
+        ],
+    )
 
     return report
 
