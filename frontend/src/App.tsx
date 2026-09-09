@@ -57,9 +57,9 @@ function App() {
         {/* 本体图和疑似重复此前埋在别人的 tab 里。先给它们自己的 URL，
             页面本体的拆分是下一步的事——先有地址才谈得上被发现。 */}
         <Route path="model/graph" element={<OntologyGraphPage />} />
+        <Route path="model/persona" element={<PersonaEditorPage />} />
         {/* 首次建模的入口。不进 NAV_GROUPS——从本体结构页跳进来，不是
             常驻目的地。 */}
-        <Route path="model/persona" element={<PersonaEditorPage />} />
         <Route path="model/guided" element={<GuidedOntologyPage />} />
         <Route path="review/relations" element={<GraphReviewsPage />} />
         <Route path="review/duplicates" element={<DuplicatesPage />} />

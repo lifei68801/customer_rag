@@ -28,6 +28,8 @@ interface PersonaBody {
 
 let personaBody: PersonaBody
 let staleBody: { stale: string[] }
+let staleStatus = 200
+let detailGetCount = 0
 let putStatus = 200
 let putDetail = ''
 let putBodies: unknown[] = []
@@ -54,7 +56,11 @@ function stubApi() {
       // 失效清单的路径比详情长一段。详情那条正则用的是 `/persona$`，眼下
       // 吃不到它；先分派仍然更稳——正则哪天松成 includes 就出事。
       if (url.includes('/persona/stale-questions')) {
-        return Promise.resolve(new Response(JSON.stringify(staleBody), { status: 200 }))
+        return Promise.resolve(
+          new Response(JSON.stringify(staleStatus === 200 ? staleBody : {}), {
+            status: staleStatus,
+          }),
+        )
       }
       if (/\/api\/admin\/[^/]+\/persona$/.test(url)) {
         if (method === 'PUT') {
@@ -75,6 +81,7 @@ function stubApi() {
           // 500 且没有 detail：服务端挂了这一类。走的是兜底文案那条路。
           return Promise.resolve(new Response(JSON.stringify({}), { status: 500 }))
         }
+        detailGetCount += 1
         return Promise.resolve(new Response(JSON.stringify(personaBody), { status: 200 }))
       }
       if (url.includes('/api/admin/personas')) {
@@ -97,6 +104,8 @@ beforeEach(() => {
     questions_source: 'handwritten',
   }
   staleBody = { stale: [] }
+  staleStatus = 200
+  detailGetCount = 0
   putStatus = 200
   putDetail = ''
   putBodies = []
@@ -235,6 +244,31 @@ describe('数字人编辑页', () => {
     personaBody = { ...personaBody, questions_source: 'generated' }
     await renderPersonaEditor()
     await waitFor(() => expect(screen.getByText(/根据本体自动生成/)).toBeTruthy())
+  })
+
+  it('失效检测没跑成功时就地留一条常驻提示，不是一闪而过', async () => {
+    // 这一页有的是地方摆这句话。用 3 秒自动消失的 toast，等于赌用户那三秒
+    // 正好在看屏幕——没看到的人会以为「一条都没失效」，而真相是根本没查。
+    staleStatus = 500
+    await renderPersonaEditor()
+    await waitFor(() => expect(screen.getByText(/失效检测没跑成功/)).toBeTruthy())
+    // 表单照常能用：那是一条附加提示，不是拦路的错误。
+    expect(screen.getByRole('button', { name: '保存' })).toBeTruthy()
+    // 而且要给得出重试的入口，光说坏了没有出路等于只完成一半。
+    expect(screen.getByRole('button', { name: '重新检测' })).toBeTruthy()
+  })
+
+  it('保存成功之后不回头重拉详情，表单不会被一次网络抖动冲掉', async () => {
+    // 保存成功再拉一次 GET，那次 GET 失败的话，刚存好的表单会被整页
+    // 「加载失败」替掉——用户读到的是「保存失败」，而其实存成功了。
+    const user = userEvent.setup()
+    await renderPersonaEditor()
+    await waitFor(() => expect(questionInputs()).toHaveLength(2))
+    expect(detailGetCount).toBe(1)
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(putBodies).toHaveLength(1))
+    expect(detailGetCount).toBe(1)
+    expect(questionInputs()).toHaveLength(2)
   })
 
   it('详情拉取失败时说出来，不是给一张空表单', async () => {

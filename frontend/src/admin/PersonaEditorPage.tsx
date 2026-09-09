@@ -69,7 +69,8 @@ export function PersonaEditorPage() {
   const [questions, setQuestions] = useState<QuestionRow[]>([])
   const [source, setSource] = useState<'handwritten' | 'generated'>('handwritten')
   const [stale, setStale] = useState<string[]>([])
-  const [loaded, setLoaded] = useState(false)
+  const [staleError, setStaleError] = useState<string | null>(null)
+  const [detailLoaded, setDetailLoaded] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -78,11 +79,10 @@ export function PersonaEditorPage() {
     document.title = `${PAGE_TITLES.persona} · 管理后台`
   }, [])
 
-  const load = useCallback(async () => {
+  const loadDetail = useCallback(async () => {
     if (!sessionToken || !tenantId) return
-    const base = `/api/admin/${encodeURIComponent(tenantId)}/persona`
     try {
-      const response = await adminFetch(base, sessionToken)
+      const response = await adminFetch(`/api/admin/${encodeURIComponent(tenantId)}/persona`, sessionToken)
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '数字人信息加载失败'))
@@ -96,34 +96,40 @@ export function PersonaEditorPage() {
       setLoadError(null)
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : '数字人信息加载失败')
-      setLoaded(true)
-      return
+    } finally {
+      setDetailLoaded(true)
     }
-    // 失效清单单独拉，且它失败不影响编辑：那是一条附加提示，拿不到时表单
-    // 照常能用。但也不能装作"一条都没失效"——那正是这块要修的静默失败，
-    // 所以失败时用一条 toast 说出来，而不是把 stale 留成空数组了事。
+  }, [sessionToken, tenantId])
+
+  const loadStale = useCallback(async () => {
+    if (!sessionToken || !tenantId) return
+    setStaleError(null)
     try {
-      const response = await adminFetch(`${base}/stale-questions`, sessionToken)
+      const response = await adminFetch(
+        `/api/admin/${encodeURIComponent(tenantId)}/persona/stale-questions`,
+        sessionToken,
+      )
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '失效检测没跑成功'))
       }
       const body = (await response.json()) as { stale: string[] }
       setStale(body.stale)
+      setStaleError(null)
     } catch (err) {
-      showToast(
-        err instanceof Error
-          ? `${err.message}——下面这几条里可能有已经答不出来的`
-          : '失效检测没跑成功——下面这几条里可能有已经答不出来的',
-      )
-    } finally {
-      setLoaded(true)
+      // 不能留成空数组了事——那读起来就是「一条都没失效」，而真相是根本
+      // 没查成。就地摆一条常驻提示加一个重试入口：这一页有的是地方放它，
+      // 用会自动消失的 toast 等于赌用户那几秒正好在看屏幕。
+      setStale([])
+      setStaleError(err instanceof Error ? err.message : '失效检测没跑成功')
     }
-  }, [sessionToken, tenantId, showToast])
+  }, [sessionToken, tenantId])
 
+  // 两个请求互不依赖，并发发出去；首屏耗时是两者里慢的那个，不是两者之和。
+  // 失败的处置也不同：详情拉不到就不给表单，失效清单拉不到只是少一条提示。
   useEffect(() => {
-    void load()
-  }, [load])
+    void Promise.all([loadDetail(), loadStale()])
+  }, [loadDetail, loadStale])
 
   const updateQuestion = (index: number, value: string) => {
     setQuestions((prev) => prev.map((q, i) => (i === index ? { ...q, text: value } : q)))
@@ -172,9 +178,10 @@ export function PersonaEditorPage() {
       setSource('handwritten')
       setSaveError(null)
       showToast('已保存')
-      // 失效标记按新内容重算——不重拉的话，刚删掉的那条失效问题的红字
-      // 还挂在界面上。
-      void load()
+      // 只重算失效标记，不回头重拉详情。刚存进去的内容就在手上，再拉一次
+      // 只是多一个失败面——那次 GET 失败会把刚存好的表单整页替换成「加载
+      // 失败」，用户读到的是「保存失败」，而其实存成功了。
+      void loadStale()
     } catch (err) {
       // 表单内容一个字都不动。清空的话，配了六条被拒一条的人要全部重打。
       setSaveError(err instanceof Error ? err.message : '保存失败')
@@ -193,7 +200,7 @@ export function PersonaEditorPage() {
     </div>
   )
 
-  if (!loaded) {
+  if (!detailLoaded) {
     return (
       <div className="flex flex-col gap-6">
         {header}
@@ -208,9 +215,12 @@ export function PersonaEditorPage() {
         {header}
         {/* 不渲染表单：一张空表单会被读成「还没配过」，照着它保存一次就把
             真配过的内容覆盖成空值了。 */}
-        <p role="status" className={`${card} text-sm text-status-error-strong`}>
-          {loadError}
-        </p>
+        <div role="status" className={`${card} flex flex-col items-start gap-3`}>
+          <p className="text-sm text-status-error-strong">{loadError}</p>
+          <button type="button" className={buttonClass} onClick={() => void loadDetail()}>
+            重试
+          </button>
+        </div>
       </div>
     )
   }
@@ -267,6 +277,16 @@ export function PersonaEditorPage() {
             </p>
           )}
         </div>
+
+        {staleError !== null && (
+          <div role="status" className="flex flex-wrap items-center gap-2 text-xs text-status-error-strong">
+            <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{staleError}——下面这几条里可能有已经答不出来的。</span>
+            <button type="button" className={buttonClass} onClick={() => void loadStale()}>
+              重新检测
+            </button>
+          </div>
+        )}
 
         {questions.length === 0 && (
           <p className="text-sm text-ink-soft">还没有引导问题。前台会显示一个空的首屏。</p>
