@@ -19,12 +19,12 @@ import { NotFoundPage } from './admin/NotFoundPage'
 import { GuidedOntologyPage } from './admin/guidedOntology/GuidedOntologyPage'
 import {
   ConflictReviewPage,
-  DashboardPage,
   DataGraphPage,
   DatabaseImportPage,
   DirtyEdgesPage,
   ErrorLogPage,
 } from './admin/ComingSoonPages'
+import { DashboardPage } from './admin/DashboardPage'
 import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'
 import { useAdminAuth } from './admin/useAdminAuth'
 

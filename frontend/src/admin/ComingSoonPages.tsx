@@ -1,4 +1,4 @@
-import { Database, LayoutDashboard, Scale, Share2, TriangleAlert, Unlink } from 'lucide-react'
+import { Database, Scale, Share2, TriangleAlert, Unlink } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
@@ -50,34 +50,6 @@ function ComingSoon({
 
 const linkClass =
   'font-bold text-ink underline underline-offset-2 hover:text-accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
-
-/**
- * 看板的占位。
- *
- * 它跟这个文件里其余五个不同：看板是**登录后的落地页**，Task 5 就会用真
- * 实现替换掉这一份。先建占位是因为导航重排（本任务）已经把 /admin 的落地
- * 重定向指向了它——中间不放个东西，落地页会直接落进 404，每一条渲染
- * /admin 的用例都会红。
- */
-export function DashboardPage() {
-  return (
-    <ComingSoon
-      icon={LayoutDashboard}
-      title={PAGE_TITLES.dashboard}
-      phase="阶段三 Task 5"
-      plan="docs/superpowers/plans/2026-09-08-nav-restructure-and-dashboard.md"
-      alternative={
-        <>
-          在那之前，各领域的数据规模可以在
-          <Link to={ADMIN_ROUTES.terms} className={linkClass}>
-            实体明细
-          </Link>
-          页按类型分组查看。
-        </>
-      }
-    />
-  )
-}
 
 export function DatabaseImportPage() {
   return (

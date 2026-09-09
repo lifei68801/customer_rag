@@ -1,0 +1,263 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
+import App from '../App'
+import { SkinProvider } from './SkinContext'
+import { ConfirmProvider } from './ConfirmContext'
+import { ToastProvider } from './ToastContext'
+import { ADMIN_ROUTES } from '../adminRoutes'
+import { resetAdminSession } from './useAdminAuth'
+
+/**
+ * 看板：登录后的第一屏，一屏列出这个账号能访问的所有领域。
+ *
+ * 这一页的设计核心是 spec D5 裁决二——**每个领域一张卡、各自请求、各自
+ * 落位**。一个端点返回全部统计的话，第一张卡也要等最慢的那个领域算完，
+ * 而每个领域的边计数都是一次图查询。这里最要紧的几条用例全都在钉这件事，
+ * 以及它的反面：一张卡失败不能让整页变成错误页。
+ */
+interface DomainRow {
+  tenant_id: string
+  name: string
+  org_id: string | null
+  org_name: string | null
+}
+
+const FAST: DomainRow = {
+  tenant_id: 'fast',
+  name: '商品',
+  org_id: 'muji',
+  org_name: '无印良品',
+}
+const SLOW: DomainRow = {
+  tenant_id: 'slow',
+  name: '门店',
+  org_id: 'muji',
+  org_name: '无印良品',
+}
+const LONER: DomainRow = { tenant_id: 'loner', name: '独立库', org_id: null, org_name: null }
+
+function stats(tenantId: string, over: Partial<Record<string, number>> = {}) {
+  return {
+    tenant_id: tenantId,
+    term_count: 20017,
+    edge_count: 1204883,
+    document_count: 42,
+    pending_review_count: 7,
+    ...over,
+  }
+}
+
+let domainsBody: { domains: DomainRow[] }
+let domainsStatus = 200
+/** 每个租户各自的 stats 响应。返回 Promise 好让用例控制先后。 */
+let statsResponders: Record<string, () => Promise<Response>>
+let switchRequests: string[] = []
+/** 切租户的 PUT 什么时候完成——竞态那条用例要卡住它。 */
+let resolveSwitch: (() => void) | null = null
+
+function jsonResponse(body: unknown, status = 200) {
+  return Promise.resolve(new Response(JSON.stringify(body), { status }))
+}
+
+function stubApi() {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/auth/whoami')) {
+        return jsonResponse({
+          username: 'alice',
+          role: 'member',
+          tenant_id: 'fast',
+          current_tenant_id: 'fast',
+        })
+      }
+      if (url.includes('/api/admin/auth/session/tenant')) {
+        switchRequests.push(JSON.parse(String(init?.body ?? '{}')).tenant_id as string)
+        const body = JSON.parse(String(init?.body ?? '{}'))
+        if (resolveSwitch === null) return jsonResponse({ tenant_id: body.tenant_id })
+        return new Promise<Response>((resolve) => {
+          resolveSwitch = () => resolve(new Response(JSON.stringify(body), { status: 200 }))
+        })
+      }
+      if (url.includes('/api/admin/dashboard/domains')) {
+        return jsonResponse(domainsBody, domainsStatus)
+      }
+      // 逐领域统计。租户 id 在路径中段：/api/admin/{tenant}/dashboard/stats
+      const m = /\/api\/admin\/([^/]+)\/dashboard\/stats$/.exec(url)
+      if (m) {
+        const responder = statsResponders[decodeURIComponent(m[1])]
+        return responder ? responder() : jsonResponse({}, 404)
+      }
+      if (url.includes('/nav-badges')) return jsonResponse({})
+      return new Promise(() => {})
+    }),
+  )
+}
+
+beforeEach(() => {
+  domainsBody = { domains: [FAST, SLOW, LONER] }
+  domainsStatus = 200
+  statsResponders = {
+    fast: () => jsonResponse(stats('fast')),
+    slow: () => jsonResponse(stats('slow', { term_count: 1 })),
+    loner: () => jsonResponse(stats('loner', { term_count: 3 })),
+  }
+  switchRequests = []
+  resolveSwitch = null
+  resetAdminSession()
+  localStorage.clear()
+  stubApi()
+})
+
+async function renderDashboard() {
+  const result = render(
+    <SkinProvider>
+      <ConfirmProvider>
+        <ToastProvider>
+          <MemoryRouter initialEntries={[ADMIN_ROUTES.dashboard]}>
+            <App />
+          </MemoryRouter>
+        </ToastProvider>
+      </ConfirmProvider>
+    </SkinProvider>,
+  )
+  await screen.findByTestId('admin-topbar')
+  return result
+}
+
+const card = (tenantId: string) => within(screen.getByTestId(`domain-card-${tenantId}`))
+
+describe('看板', () => {
+  it('每张卡各自请求各自落位——快的先出来，不等慢的', async () => {
+    // spec D5 裁决二。一个端点返回全部统计、或者前端等 Promise.all 再一次性
+    // 渲染的话，第一张卡也要等最慢的那个领域算完。
+    let releaseSlow: (() => void) | null = null
+    statsResponders.slow = () =>
+      new Promise<Response>((resolve) => {
+        releaseSlow = () => resolve(new Response(JSON.stringify(stats('slow')), { status: 200 }))
+      })
+
+    await renderDashboard()
+
+    // fast 那张卡已经落了数字，slow 那张还在骨架屏。
+    await waitFor(() => expect(card('fast').getByText('20,017')).toBeTruthy())
+    expect(screen.getByTestId('domain-card-slow-skeleton')).toBeTruthy()
+
+    // 慢的那个回来之后它自己也落位，快的那张不受影响。
+    releaseSlow!()
+    await waitFor(() => expect(card('slow').getByText('20,017')).toBeTruthy())
+    expect(card('fast').getByText('20,017')).toBeTruthy()
+  })
+
+  it('骨架屏先出，不是白屏', async () => {
+    // 清单已经回来了，统计还没有。这一刻领域名和卡片轮廓就该在了——
+    // 一屏空白读起来像页面没加载出来。
+    statsResponders.fast = () => new Promise<Response>(() => {})
+    statsResponders.slow = () => new Promise<Response>(() => {})
+    statsResponders.loner = () => new Promise<Response>(() => {})
+
+    await renderDashboard()
+
+    await waitFor(() => expect(screen.getByText('商品')).toBeTruthy())
+    expect(screen.getByTestId('domain-card-fast-skeleton')).toBeTruthy()
+    expect(screen.getByText('门店')).toBeTruthy()
+  })
+
+  it('一张卡统计失败时只有它显示失败，别的卡照常', async () => {
+    // 一个领域的图谱查不通，不该让整个看板变成一个错误页——别的领域的
+    // 数字是好的，凭什么一起看不到。
+    statsResponders.slow = () => jsonResponse({ detail: '统计没算出来' }, 503)
+
+    await renderDashboard()
+
+    await waitFor(() => expect(card('slow').getByText(/统计没算出来/)).toBeTruthy())
+    expect(card('fast').getByText('20,017')).toBeTruthy()
+    // 失败的那张要给得出重试，只说坏了不给出路等于只做了一半。
+    expect(card('slow').getByRole('button', { name: '重试' })).toBeTruthy()
+  })
+
+  it('数字带千分位', async () => {
+    // 1204883 读不出来是一百二十万还是十二万。
+    await renderDashboard()
+    await waitFor(() => expect(card('fast').getByText('1,204,883')).toBeTruthy())
+  })
+
+  it('按组织分组，没挂组织的单独一组', async () => {
+    // 没挂组织是合法状态（存量租户），不是错误。
+    await renderDashboard()
+    await waitFor(() => expect(screen.getByText('无印良品')).toBeTruthy())
+    const muji = within(screen.getByTestId('org-group-muji'))
+    expect(muji.getByTestId('domain-card-fast')).toBeTruthy()
+    expect(muji.getByTestId('domain-card-slow')).toBeTruthy()
+    // 独立库不能混进那一组里——混进去等于谎报它的归属。
+    expect(muji.queryByTestId('domain-card-loner')).toBeNull()
+    expect(within(screen.getByTestId('org-group-none')).getByTestId('domain-card-loner')).toBeTruthy()
+  })
+
+  it('待办数不为零时能点，点了先切到那个领域再去审核页', async () => {
+    // 看板的价值在于「看到之后能立刻去做」。而看板是跨领域的：当前挂着
+    // fast，点的是 slow 那张卡上的待办。不先把当前租户切过去就跳，用户
+    // 落在审核页上看到的是 fast 的队列——数字是 slow 的、内容是 fast 的。
+    const user = userEvent.setup()
+    await renderDashboard()
+    await waitFor(() => expect(card('slow').getByRole('button', { name: /7/ })).toBeTruthy())
+
+    // 卡住切租户的 PUT。要断言的是"切成功之前**不跳**"——只断言"最后跳
+    // 到了"的话，`void switchTenant(); navigate()` 这个竞态实现照样能绿
+    // （变异 E 验过：第一版就是这么写的，它没被打红）。
+    resolveSwitch = () => {}
+    await user.click(card('slow').getByRole('button', { name: /7/ }))
+    await waitFor(() => expect(switchRequests).toEqual(['slow']))
+    // 还停在看板上：卡片还在。断言看板上的东西还在，而不是断言目标页
+    // 还没出现——后者在目标页没有可查的标识时是一句永真的空话。
+    expect(screen.getByTestId('domain-card-slow')).toBeTruthy()
+
+    resolveSwitch!()
+    await waitFor(() => expect(screen.queryByTestId('domain-card-slow')).toBeNull())
+  })
+
+  it('待办为零的领域不给一个点了没用的入口', async () => {
+    // 0 不是一件等着你做的事。给它一个链接，点进去是一个空队列。
+    statsResponders.fast = () => jsonResponse(stats('fast', { pending_review_count: 0 }))
+    await renderDashboard()
+    await waitFor(() => expect(card('fast').getByText('20,017')).toBeTruthy())
+    expect(card('fast').queryByRole('button', { name: /待审/ })).toBeNull()
+  })
+
+  it('一条数据都没有的领域，指出下一步而不是摆四个零', async () => {
+    // 这条接的是导航重排删掉 AdminLanding 时留下的账：那个落地分流原本
+    // 负责把"还没建本体"的新租户送去本体结构页。现在这条引导归看板——
+    // 四个 0 只说明"这里是空的"，不说明该干什么。
+    statsResponders.loner = () =>
+      jsonResponse(
+        stats('loner', {
+          term_count: 0,
+          edge_count: 0,
+          document_count: 0,
+          pending_review_count: 0,
+        }),
+      )
+    await renderDashboard()
+    await waitFor(() => expect(card('loner').getByText(/还没有数据/)).toBeTruthy())
+    expect(card('loner').getByRole('button', { name: /导入|建本体/ })).toBeTruthy()
+  })
+
+  it('一个领域都没有时说清楚该做什么', async () => {
+    // 新部署的第一屏。「暂无数据」等于什么都没说。
+    domainsBody = { domains: [] }
+    await renderDashboard()
+    await waitFor(() => expect(screen.getByText(/还没有任何领域/)).toBeTruthy())
+  })
+
+  it('清单本身拉不到时说出来，不是显示成「一个领域都没有」', async () => {
+    // 「你没有任何领域」和「清单没拉回来」在界面上长得一样，而前者会让
+    // 用户去找管理员要授权，后者该报修。
+    domainsStatus = 500
+    await renderDashboard()
+    await waitFor(() => expect(screen.getByText(/领域清单加载失败/)).toBeTruthy())
+    expect(screen.queryByText(/还没有任何领域/)).toBeNull()
+  })
+})
