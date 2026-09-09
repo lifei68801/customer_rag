@@ -1880,3 +1880,101 @@ async def test_list_tenant_dirty_edges_looks_at_both_directions():
     # 方向按边自己的 startNode/endNode 报，不按遍历方向——否则同一条边从
     # 哪一端遍历到，主宾就反过来。
     assert "startNode(r)" in query and "endNode(r)" in query
+
+
+async def test_query_neighborhood_returns_both_endpoints_of_every_edge():
+    """每一行是一条边，两端都带 node_key / 标准名 / 类型。
+
+    这是它跟 query_subgraph 的根本区别：那个只返回终点名和最后一跳的关系
+    类型（给 agent 拼文本够用），拿来画图会画出一堆从中心射出去的假边——
+    一张看起来正常、拓扑却是错的图。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.query_neighborhood(
+        "产品:Beer", tenant_id="demo", chain_query_relation_types=set()
+    )
+
+    query = session.last_query
+    for column in (
+        "source_node_key", "source_name", "source_type",
+        "relation_type",
+        "target_node_key", "target_name", "target_type",
+    ):
+        assert f"AS {column}" in query, column
+    assert session.last_parameters == {"node_key": "产品:Beer", "tenant_id": "demo"}
+
+
+async def test_query_neighborhood_unwinds_the_two_hop_path_so_middle_nodes_appear():
+    """两跳要 UNWIND 出路径上的每一条边。
+
+    只返回终点的话中间节点整个丢失——图上会出现从中心直连到两跳外的边，
+    而那条边在图里根本不存在。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.query_neighborhood(
+        "产品:Beer", tenant_id="demo", chain_query_relation_types={"HAS_SKU"}
+    )
+
+    assert "UNWIND r AS edge" in session.last_query
+    # 同一条边会被多条路径命中，不去重的话图上是重边。
+    assert "DISTINCT edge" in session.last_query
+
+
+async def test_query_neighborhood_skips_the_two_hop_leg_when_no_chain_types():
+    """一个合格的链式关系类型都没有时只查一跳。
+
+    `[r:*2..2]` 会匹配所有关系类型，是比"固定几种"更糟的无差别两跳发散
+    ——在预览页上表现为一张糊掉的图。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.query_neighborhood(
+        "产品:Beer", tenant_id="demo", chain_query_relation_types=set()
+    )
+
+    assert "UNION" not in session.last_query
+    assert "*2..2" not in session.last_query
+
+
+async def test_query_neighborhood_and_subgraph_agree_on_which_types_walk_two_hops():
+    """两条查询对"哪些关系能走两跳"必须给出同一个答案。
+
+    各写各的消毒逻辑的话，用户在预览里看到 A 两跳能到 C、回去问却答不出来
+    ——而他会拿这两处互相印证。这里放一个合法的和一个非法的，断言两边留下
+    的是同一个。
+    """
+    types = {"HAS_SKU", "不合法的类型名"}
+    session_a = FakeSession(rows=[])
+    session_b = FakeSession(rows=[])
+
+    await Neo4jGraphClient(driver=FakeDriver(session_a)).query_neighborhood(
+        "产品:Beer", tenant_id="demo", chain_query_relation_types=types
+    )
+    await Neo4jGraphClient(driver=FakeDriver(session_b)).query_subgraph(
+        "产品:Beer", tenant_id="demo", chain_query_relation_types=types
+    )
+
+    assert ("HAS_SKU" in session_a.last_query) == ("HAS_SKU" in session_b.last_query)
+    assert "不合法的类型名" not in session_a.last_query
+    assert "不合法的类型名" not in session_b.last_query
+
+
+async def test_query_neighborhood_excludes_alias_edges():
+    """别名边不画。
+
+    它是词表→图谱的结构性同步边，不是知识图谱数据——画在图上只会让每个
+    实体多出一串没有意义的卫星点。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.query_neighborhood(
+        "产品:Beer", tenant_id="demo", chain_query_relation_types=set()
+    )
+
+    assert "type(r) <> 'ALIAS_OF'" in session.last_query

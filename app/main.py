@@ -19,6 +19,7 @@ from app.api.admin_ontology_routes import router as admin_ontology_router
 from app.api.admin_org_routes import router as admin_org_router
 from app.api.admin_conflicts_routes import router as admin_conflicts_router
 from app.api.admin_dirty_edges_routes import router as admin_dirty_edges_router
+from app.api.admin_graph_preview_routes import router as admin_graph_preview_router
 from app.api.admin_dashboard_routes import router as admin_dashboard_router
 from app.api.admin_dashboard_routes import stats_router as admin_dashboard_stats_router
 from app.api.admin_personas_routes import router as admin_personas_router
@@ -188,6 +189,7 @@ tenant_scoped = APIRouter(dependencies=[Depends(deps.require_tenant_access)])
 tenant_scoped.include_router(admin_dashboard_stats_router)
 tenant_scoped.include_router(admin_conflicts_router)
 tenant_scoped.include_router(admin_dirty_edges_router)
+tenant_scoped.include_router(admin_graph_preview_router)
 tenant_scoped.include_router(admin_document_router)
 tenant_scoped.include_router(admin_graph_review_router)
 tenant_scoped.include_router(admin_duplicate_review_router)

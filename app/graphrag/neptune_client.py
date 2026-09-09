@@ -446,6 +446,14 @@ class NeptuneGraphClient:
             "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
         )
 
+    async def query_neighborhood(
+        self, node_key: str, *, tenant_id: str, chain_query_relation_types: set[str]
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 query_neighborhood——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
     async def count_relation_edges_for_tenant(self, *, tenant_id: str) -> int:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 count_relation_edges_for_tenant——见 "

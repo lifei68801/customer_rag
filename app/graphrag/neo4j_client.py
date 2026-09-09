@@ -112,6 +112,85 @@ RETURN related.standard_name AS related_name,
 # 关联"的结果返回。
 
 
+def _safe_chain_relation_types(chain_query_relation_types: set[str]) -> list[str]:
+    """把链式关系类型过一遍格式校验，返回可以拼进 Cypher 的那些（已排序）。
+
+    关系类型没法参数化绑定，只能拼进查询文本，所以拼之前必须再过一次
+    `ontology_relations._RELATION_TYPE_PATTERN` 那份格式校验——数据是从
+    SQLite 读出来的，写入路径校验过不等于读出来就能免检。不合格的丢掉并
+    记日志，不让它进 Cypher。
+
+    抽成函数是因为**两条查询要用同一份**：子图查询（问答的两跳上下文）和
+    邻域图查询（图谱预览页）。各写各的话，用户在预览里看到 A 两跳能到 C、
+    回去问却答不出来——而他会拿这两处互相印证。
+    """
+    safe_types = sorted(
+        rt for rt in chain_query_relation_types if _RELATION_TYPE_NAME_PATTERN.match(rt)
+    )
+    rejected = sorted(set(chain_query_relation_types) - set(safe_types))
+    if rejected:
+        logger.warning(
+            "查询跳过了 %d 个格式不合法的链式关系类型（不会拼进 Cypher）：%s",
+            len(rejected),
+            "、".join(rejected),
+        )
+    return safe_types
+
+
+_NEIGHBORHOOD_ONE_HOP_QUERY = """
+MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term {tenant_id: $tenant_id})
+WHERE r.tenant_id = $tenant_id AND type(r) <> 'ALIAS_OF'
+WITH DISTINCT r
+WITH r, startNode(r) AS s, endNode(r) AS o
+RETURN s.node_key AS source_node_key, s.standard_name AS source_name, s.type AS source_type,
+       type(r) AS relation_type,
+       o.node_key AS target_node_key, o.standard_name AS target_name, o.type AS target_type
+"""
+
+_NEIGHBORHOOD_TWO_HOP_QUERY_TEMPLATE = """
+MATCH p = (t:Term {{tenant_id: $tenant_id, node_key: $node_key}})-[r:{relation_types}*2..2]-(related:Term {{tenant_id: $tenant_id}})
+WHERE ALL(rel IN r WHERE rel.tenant_id = $tenant_id)
+  AND ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id)
+  AND related <> t
+UNWIND r AS edge
+WITH DISTINCT edge
+WITH edge, startNode(edge) AS s, endNode(edge) AS o
+RETURN s.node_key AS source_node_key, s.standard_name AS source_name, s.type AS source_type,
+       type(edge) AS relation_type,
+       o.node_key AS target_node_key, o.standard_name AS target_name, o.type AS target_type
+"""
+# 邻域图：给「图谱预览」页画图用，跟 _SUBGRAPH_* 那两条是两码事。
+#
+# 那两条 RETURN 的是 related_name / relation_type / hops——给 agent 拼文本
+# 上下文够用，画图不够：没有 node_key（前端点开一个邻居继续展开时没有可用的
+# 标识，而 standard_name 在同一租户里可以重名）、没有 term_type（按类型上色
+# 是这一页最基本的可读性），而且**不知道每条边连的是哪两个点**——两跳那条
+# 只返回终点名和最后一跳的关系类型，中间节点整个丢失，拿它画出来的是一堆从
+# 中心射出去的假边：一张看起来正常、拓扑却是错的图。
+#
+# 两跳这条 UNWIND 出路径上的**每一条边**，所以中间节点会自然出现在结果里。
+# WITH DISTINCT edge 去重：同一条边会被多条路径命中。
+# 方向用边自己的 startNode/endNode 还原，不按遍历方向报。
+#
+# 排除 ALIAS_OF：别名边是词表→图谱的结构性同步边，不是知识图谱数据，
+# 画在图上只会让每个实体多出一串没有意义的卫星点。
+
+
+def _build_neighborhood_query(chain_query_relation_types: set[str]) -> str:
+    """邻域图查询。消毒逻辑跟 _build_subgraph_query 共用同一个函数。
+
+    一个合格的链式关系类型都没有时只查一跳——`[r:*2..2]` 会匹配所有关系
+    类型，是比"固定几种"更糟的无差别两跳发散，在预览页上表现为一张糊掉的图。
+    """
+    safe_types = _safe_chain_relation_types(chain_query_relation_types)
+    if not safe_types:
+        return _NEIGHBORHOOD_ONE_HOP_QUERY
+    two_hop = _NEIGHBORHOOD_TWO_HOP_QUERY_TEMPLATE.format(
+        relation_types="|".join(safe_types)
+    )
+    return f"{_NEIGHBORHOOD_ONE_HOP_QUERY}" + "\nUNION\n" + two_hop
+
+
 def _build_subgraph_query(chain_query_relation_types: set[str]) -> str:
     """按租户放开链式查询的关系类型拼出子图查询。
 
@@ -123,16 +202,7 @@ def _build_subgraph_query(chain_query_relation_types: set[str]) -> str:
     一个合格的链式关系类型都没有时，整段 UNION 不拼：`[r:*2..2]` 会匹配
     所有关系类型，是比"固定三种"更糟的无差别两跳发散。
     """
-    safe_types = sorted(
-        rt for rt in chain_query_relation_types if _RELATION_TYPE_NAME_PATTERN.match(rt)
-    )
-    rejected = sorted(set(chain_query_relation_types) - set(safe_types))
-    if rejected:
-        logger.warning(
-            "子图查询跳过了 %d 个格式不合法的链式关系类型（不会拼进 Cypher）：%s",
-            len(rejected),
-            "、".join(rejected),
-        )
+    safe_types = _safe_chain_relation_types(chain_query_relation_types)
     if not safe_types:
         return _SUBGRAPH_ONE_HOP_QUERY
     two_hop = _SUBGRAPH_TWO_HOP_QUERY_TEMPLATE.format(
@@ -705,6 +775,10 @@ class GraphWriteProtocol(Protocol):
 
     async def count_relation_edges_for_tenant(self, *, tenant_id: str) -> int: ...
 
+    async def query_neighborhood(
+        self, node_key: str, *, tenant_id: str, chain_query_relation_types: set[str]
+    ) -> list[dict[str, Any]]: ...
+
     async def list_tenant_dirty_edges(
         self, *, tenant_id: str, limit: int = 500
     ) -> tuple[list[dict[str, Any]], bool]: ...
@@ -757,6 +831,22 @@ class Neo4jGraphClient:
         async with self._driver.session() as session:
             result = await session.run(
                 _TERM_RELATIONS_QUERY,
+                {"node_key": node_key, "tenant_id": tenant_id},
+            )
+            return await result.data()
+
+    async def query_neighborhood(
+        self, node_key: str, *, tenant_id: str, chain_query_relation_types: set[str]
+    ) -> list[dict[str, Any]]:
+        """以这个实体为中心的邻域，**每一行是一条边**（两端都带 node_key /
+        标准名 / 类型）。图谱预览页用。
+
+        跟 query_subgraph 的区别见 _NEIGHBORHOOD_ONE_HOP_QUERY 上方的说明：
+        那个返回的是给 agent 拼文本用的扁平清单，画不出图。
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                _build_neighborhood_query(chain_query_relation_types),
                 {"node_key": node_key, "tenant_id": tenant_id},
             )
             return await result.data()
