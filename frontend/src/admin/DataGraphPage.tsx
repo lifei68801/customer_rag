@@ -8,6 +8,7 @@ import { Skeleton } from './Skeleton'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { GraphErrorBoundary } from './dataGraph/GraphErrorBoundary'
+import { useLatestRequestGuard } from './useLatestRequestGuard'
 import type { GraphEdge, GraphNode } from './dataGraph/NeighborhoodGraph'
 
 // 图不在主包里：sigma + graphology 有几百 kB，而大部分会话根本不打开它。
@@ -44,10 +45,9 @@ export function DataGraphPage() {
   const fromUrl = searchParams.get(GRAPH_PREVIEW_QUERY_KEY) ?? ''
 
   const [query, setQuery] = useState(fromUrl)
-  // 最后一次发出的请求序号。响应回来时不是它就丢弃——搜 A（邻域大、三秒）
-  // 之后改搜 B（很快回来），A 的响应后到会无条件盖掉 B：搜索框和地址栏写着
-  // B，图和截断提示却是 A 的，而且这个错误不会自我暴露。
-  const latestRequestRef = useRef(0)
+  // 搜 A（邻域大、三秒）之后改搜 B（很快回来），A 的响应后到会无条件盖掉 B：
+  // 搜索框和地址栏写着 B，图和截断提示却是 A 的，而且这个错误不会自我暴露。
+  const requestGuard = useLatestRequestGuard()
   // 已经取过数的 node_key。handleSubmit 直接取数，这里用来让监听 URL 的
   // effect 不要为同一个 key 再发一次。
   const loadedKeyRef = useRef<string | null>(null)
@@ -62,8 +62,7 @@ export function DataGraphPage() {
   const load = useCallback(
     async (nodeKey: string) => {
       if (!sessionToken || !tenantId || !nodeKey) return
-      const requestId = latestRequestRef.current + 1
-      latestRequestRef.current = requestId
+      const requestId = requestGuard.next()
       loadedKeyRef.current = nodeKey
       setLoading(true)
       setError(null)
@@ -77,10 +76,10 @@ export function DataGraphPage() {
           throw new Error(extractErrorDetail(body, '邻域图没查出来'))
         }
         const payload = (await response.json()) as Neighborhood
-        if (latestRequestRef.current !== requestId) return
+        if (!requestGuard.isLatest(requestId)) return
         setData(payload)
       } catch (err) {
-        if (latestRequestRef.current !== requestId) return
+        if (!requestGuard.isLatest(requestId)) return
         // 不画空图：空图看起来像「这个实体一条关系都没有」，而真相可能是
         // 它根本不存在——两句话要用户做的事完全不同（改搜索词 vs 去建它）。
         setData(null)
@@ -88,10 +87,10 @@ export function DataGraphPage() {
       } finally {
         // 过期的那次不许关掉 loading：最新那次还在飞，关掉的话骨架屏消失、
         // 页面看起来像已经加载完了。
-        if (latestRequestRef.current === requestId) setLoading(false)
+        if (requestGuard.isLatest(requestId)) setLoading(false)
       }
     },
-    [sessionToken, tenantId],
+    [sessionToken, tenantId, requestGuard],
   )
 
   // 带着 ?node_key= 进来时直接画。这一页最自然的入口不是搜索框，是「我正在
@@ -138,7 +137,7 @@ export function DataGraphPage() {
           placeholder="产品:Beer"
         />
         {/* 取数途中**不**禁用：大邻域要好几秒，这几秒里不让人改搜别的
-            实体是很难受的。并发靠 latestRequestRef 挡住（只有最后发出的
+            实体是很难受的。并发靠 useLatestRequestGuard 挡住（只有最后发出的
             那次允许写 state），不靠禁用按钮回避。 */}
         <button type="submit" className={buttonClass} disabled={!query}>
           画出来

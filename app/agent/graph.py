@@ -135,26 +135,49 @@ def _looks_temporal(text: str) -> bool:
 def _diagnostic_outcome(state: AgentState) -> str:
     """这一轮怎么收场的：`answered` / `no_match` / `error`。
 
-    两个判据都是管线里**已经存在**的信号，不是为这张表新发明的：新发明一个
+    三个判据都是管线里**已经存在**的信号，不是为这张表新发明的：新发明一个
     判据的话，它跟管线真正的失败路径之间会慢慢漂移，而漂移的方向是"报错明细
     越来越干净"，没人会发现。
 
     - `planner_gave_up`：LLM 调用抛异常、返回空文本、或吐出工具调用格式的
       特殊 token 而不是纯文本（见 `app/agent/planner.py` 的
-      `_run_final_answer_attempt`）——这些是**系统故障**。
+      `_run_final_answer_attempt`）——**系统故障**。
+    - `is_output_safe is False`：答案生成出来了，却被输出安全审查拦下，用户
+      拿到的是 `UNSAFE_OUTPUT_MESSAGE`（见 `output_safety_node`）。也记
+      **故障**——语义审查假阳性把正常回答判成不安全这件事线上真出现过
+      （见 `output_safety_node` 里那条 logger.warning 的注释），而这个功能
+      正是为了让这类事故留下痕迹。用 `is False` 而不是 falsy：输入不安全
+      那条提前短路的路径显式写了 `is_output_safe: True`，falsy 判断会把
+      "这个键还没写"也算进来。
     - `fallback_triggered`：检索结果为空、或最高分低于 min_relevance_score，
-      走静态兜底文案并创建人工工单（见 `fallback_node`）——这是**没命中**。
+      走 `fallback_node`——**没命中**。
 
     **顺序是这个函数的要害。** planner 放弃之后仍然会流转到 `fallback_node`
-    （`route_after_planner` 里 `planner_gave_up` → `"fallback"`），所以两个
+    （`route_after_planner` 里 `planner_gave_up` → `"fallback"`），所以那两个
     标志会同时为真。先判 `fallback_triggered` 的话，每一次 LLM 故障都会被
     记成「没命中」——运营照着报错明细去改本体，而问题在服务端。未命中是
     「本体里没有这个概念，去建模」，报错是「系统坏了，去看日志」。
 
-    澄清追问（`needs_clarification`）记 `answered`：它不是故障，没有任何
-    东西要修，不该出现在报错明细里。
+    澄清追问（`needs_clarification`）记 `answered`：它不是故障，没有任何东西
+    要修，不该出现在报错明细里。`fallback_node` 的未来时间澄清分支同样置
+    `fallback_triggered=True` 但**不**建工单（`route_after_fallback` 直接送
+    去 output_safety），就是靠这个守卫区分开的。
+
+    **已知缺口，不是遗漏：**
+
+    - 开了 `enable_autonomous_planning` 时 `no_match` **不可达**。planner 分支
+      的图里没有 `retrieval` 节点，通往 `fallback_node` 的唯一入口是
+      `planner_gave_up`（那会先被判成 `error`），而 `planner_responder_node`
+      硬写 `fallback_triggered: False`。所以那条路径上工具全查空、LLM 自己说
+      "没查到"的那一轮会记成 `answered`，「问答未命中」页在 planner 模式下
+      恒为空。默认关闭（`settings.py` 的 `enable_autonomous_planning`），
+      翻转默认值之前必须先给 planner 路径找一个等价的既有信号。
+    - 输入安全拦截（`is_input_safe=False`）记 `answered`。那是按设计拦截、
+      不是故障；代价是报错明细里看不到"今天有多少次输入被拦"。
     """
     if state.get("planner_gave_up"):
+        return "error"
+    if state.get("is_output_safe") is False:
         return "error"
     if state.get("fallback_triggered") and not state.get("needs_clarification"):
         return "no_match"

@@ -21,6 +21,10 @@ class DiagnosticSummary(BaseModel):
     session_id: str
     question: str
     answer: str
+    #: 这一轮怎么收场的：answered / no_match / error。报错明细页照它分页签。
+    #: 少了这个字段的话它会被 pydantic 静默丢掉（extra 默认 ignore），
+    #: 库里记着、接口里没有、页面上分不出来，而全程没有任何报错。
+    outcome: str
     created_at: str
 
 
@@ -42,6 +46,8 @@ class DiagnosticDetailResponse(BaseModel):
     answer: str
     used_sources: list[str]
     tool_results: list[dict[str, Any]]
+    #: 同 DiagnosticSummary.outcome。
+    outcome: str
     created_at: str
     #: 本次问答碰到的实体，去重后按出现顺序。空数组是个真实答案——说明这次
     #: 走的是纯向量检索，图谱一点没用上，本身就是重要线索。

@@ -59,6 +59,7 @@ async def _seed(conn, *, tenant_id="demo", tool_results=None, **over):
         "answer": "雪碧、芬达。",
         "used_sources": ["doc-1"],
         "tool_results": tool_results if tool_results is not None else [],
+        "outcome": "answered",
     }
     payload.update(over)
     return await record_diagnostic(conn, **payload)
@@ -163,3 +164,22 @@ def test_other_tenants_diagnostics_are_invisible(memory_conn):
     diag_id = asyncio.run(_seed(memory_conn, tenant_id="other"))
 
     assert _call(memory_conn, f"/api/admin/demo/diagnostics/{diag_id}").status_code == 404
+
+
+def test_the_outcome_reaches_the_http_layer(memory_conn):
+    """`outcome` 必须出现在接口返回里。
+
+    response model 上少这个字段的话，pydantic 会**静默**把它丢掉
+    （extra 默认 ignore）：库里记着、SELECT 出来了、接口里没有、页面上
+    分不出未命中和报错，而全程没有任何报错。报错明细页正是这一列唯一的
+    消费方。
+    """
+    asyncio.run(_seed(memory_conn, outcome="no_match"))
+
+    listed = _call(memory_conn, "/api/admin/demo/diagnostics").json()
+    assert [d["outcome"] for d in listed["diagnostics"]] == ["no_match"]
+
+    detail = _call(
+        memory_conn, f"/api/admin/demo/diagnostics/{listed['diagnostics'][0]['id']}"
+    ).json()
+    assert detail["outcome"] == "no_match"

@@ -10,6 +10,15 @@ import aiosqlite
 #: 前面那部分结果通常已经够定位问题。
 CONTENT_LIMIT = 8192
 
+#: `outcome` 的合法取值。
+#:
+#: - `answered`：答出来了（含按设计的澄清追问、输入安全拦截）。
+#: - `no_match`：检索没命中——「本体里没有这个概念，去建模」。
+#: - `error`：系统故障（LLM 调用失败、输出被安全审查拦下）——「去看日志」。
+#:
+#: 未命中和报错必须分开：两者要用户做的事完全不同。
+OUTCOMES = frozenset({"answered", "no_match", "error"})
+
 #: 每个租户保留的诊断记录条数。无上限增长会撑爆内存库，而诊断的对象是
 #: 「最近答错的那次」——三个月前的问答已经无从对照当时的数据了。
 RETENTION_PER_TENANT = 500
@@ -46,7 +55,7 @@ async def record_diagnostic(
     answer: str,
     used_sources: list[str],
     tool_results: list[dict[str, Any]],
-    outcome: str = "answered",
+    outcome: str,
 ) -> int:
     """存一次问答的诊断快照。
 
@@ -58,12 +67,20 @@ async def record_diagnostic(
     问题在哪」，预先裁剪等于预判了问题在哪。
 
     `outcome` 是这一轮怎么收场的（`answered` / `no_match` / `error`），
-    报错明细页照它分页签。默认 `answered` 而不是必填：调用方漏传时记成
-    "答过了"，最坏是漏报一次；默认成失败的话，每一次正常问答都会出现在
-    报错明细里，那张页面很快就没人看了。判定逻辑在调用方
-    （`app/agent/graph.py` 的 `memory_save_node`），不在这里——它要读的
-    是 LangGraph 的 state。
+    报错明细页照它分页签。**必填、且校验值域**，两条都是刻意的：
+
+    - 给个 `"answered"` 默认值的话，将来新增一条回答路径的作者照着现有调用
+      抄参数、漏了这个词，那条路径上的**每一次**失败都会被静默记成"答过了"
+      ——没有报错、没有告警、没有测试会红。必填的话那是个 TypeError。
+    - 值域校验挡的是拼错：写进一个 `"no-match"` 不会有任何反应，而按值分
+      页签的页面会让这一行**两个页签都不出现**。SQL 层的 CHECK 做不到这件事
+      ——老库那一列是 ALTER TABLE 加的，SQLite 加不上 CHECK，两边行为会不一致。
+
+    判定逻辑在调用方（`app/agent/graph.py` 的 `_diagnostic_outcome`），不在
+    这里——它要读的是 LangGraph 的 state。
     """
+    if outcome not in OUTCOMES:
+        raise ValueError(f"未知的 outcome: {outcome!r}，只能是 {sorted(OUTCOMES)} 之一")
     cursor = await conn.execute(
         "INSERT INTO qa_diagnostics (tenant_id, session_id, question, resolved_question,"
         " answer, used_sources, tool_results, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

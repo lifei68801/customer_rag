@@ -1350,7 +1350,7 @@ async def test_memory_save_node_records_a_qa_diagnostic():
     await memory_conn.close()
 
 
-async def _diagnostic_outcome(memory_conn, *, tenant_id="t1", session_id="s1"):
+async def _recorded_outcome(memory_conn, *, tenant_id="t1", session_id="s1"):
     from app.memory.qa_diagnostics import list_diagnostics
 
     rows = await list_diagnostics(memory_conn, tenant_id=tenant_id, session_id=session_id)
@@ -1391,7 +1391,7 @@ async def test_a_successful_turn_is_recorded_as_answered():
          "session_id": "s1", "user_id": "c1"}
     )
 
-    assert await _diagnostic_outcome(memory_conn) == "answered"
+    assert await _recorded_outcome(memory_conn) == "answered"
     await memory_conn.close()
 
 
@@ -1423,7 +1423,7 @@ async def test_a_turn_with_nothing_relevant_retrieved_is_recorded_as_no_match():
          "session_id": "s1", "user_id": "c1"}
     )
 
-    assert await _diagnostic_outcome(memory_conn) == "no_match"
+    assert await _recorded_outcome(memory_conn) == "no_match"
     await memory_conn.close()
 
 
@@ -1490,5 +1490,41 @@ async def test_a_pipeline_failure_is_recorded_as_error_not_no_match():
     # 至少两次：第一次请求调工具，之后是最后陈述（可能还带一次重试）。
     # 只有一次的话说明没走到放弃路径，这条用例什么也没验到。
     assert provider.calls >= 2, "应该走到最后陈述那一次调用，否则这条用例没测到放弃路径"
-    assert await _diagnostic_outcome(memory_conn) == "error"
+    assert await _recorded_outcome(memory_conn) == "error"
+    await memory_conn.close()
+
+
+async def test_an_answer_blocked_by_output_safety_is_recorded_as_error():
+    """答案生成出来了却被输出安全审查拦下 → error，不是 answered。
+
+    这条路径上 planner_gave_up 和 fallback_triggered 都是假：不显式判
+    is_output_safe 的话，这一行进表时 outcome='answered'、answer='抱歉…'，
+    跟一次成功问答**在表里长得一模一样**。而语义审查假阳性把正常回答判成
+    不安全这件事线上真出现过（见 output_safety_node 里那条 warning 的注释）
+    ——这个功能正是为了让这类事故留下痕迹。
+    """
+    embedding_registry, vector_store, bm25_index, llm_registry, _ = (
+        await _build_dependencies(with_records=True, llm_text="他的手机号是 13800138000。")
+    )
+    memory_conn = await _memory_conn()
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
+        query_rewrite_enabled=False,
+        banned_terms=["手机号"],
+        memory_conn=memory_conn,
+    )
+
+    result = await graph.ainvoke(
+        {"question": "他的联系方式是什么？", "tenant_id": "t1",
+         "session_id": "s1", "user_id": "c1"}
+    )
+
+    assert result["is_output_safe"] is False, "这条用例的前提是输出被拦下了"
+    assert await _recorded_outcome(memory_conn) == "error"
     await memory_conn.close()

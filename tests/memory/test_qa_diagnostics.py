@@ -1,6 +1,7 @@
 import json
 
 import aiosqlite
+import pytest
 
 from app.memory.qa_diagnostics import (
     CONTENT_LIMIT,
@@ -41,6 +42,7 @@ async def _record(conn, **over):
         "answer": "雪碧、芬达。",
         "used_sources": ["doc-1"],
         "tool_results": [_tool_result()],
+        "outcome": "answered",
     }
     payload.update(over)
     return await record_diagnostic(conn, **payload)
@@ -201,4 +203,37 @@ async def test_existing_rows_read_back_as_answered():
 
     rows = await list_diagnostics(conn, tenant_id="t1", session_id="s1")
     assert [row["outcome"] for row in rows] == ["answered"]
+    await conn.close()
+
+
+async def test_a_misspelled_outcome_is_rejected_on_the_spot():
+    """拼错的取值当场报错，不是默默存进去。
+
+    存进去的话，按值分页签的页面会让这一行**两个页签都不出现**——又一次
+    静默消失。SQL 层的 CHECK 做不到这件事：老库那一列是 ALTER TABLE 加的，
+    SQLite 加不上 CHECK。
+    """
+    conn = await _connect()
+
+    with pytest.raises(ValueError, match="no-match"):
+        await _record(conn, outcome="no-match")
+
+    assert await list_diagnostics(conn, tenant_id="t1", session_id="s1") == []
+    await conn.close()
+
+
+async def test_the_outcome_is_required():
+    """漏传 outcome 是 TypeError，不是静默记成"答过了"。
+
+    给默认值的话，将来新增一条回答路径的作者照着现有调用抄参数、漏了这个
+    词，那条路径上的每一次失败都会被记成 answered——没有报错、没有告警、
+    没有测试会红。
+    """
+    conn = await _connect()
+
+    with pytest.raises(TypeError):
+        await record_diagnostic(
+            conn, tenant_id="t1", session_id="s1", question="q",
+            resolved_question=None, answer="a", used_sources=[], tool_results=[],
+        )
     await conn.close()
