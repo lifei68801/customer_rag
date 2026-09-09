@@ -17,7 +17,9 @@ from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema
 from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
+from app.graphrag.attribute_conflicts import record_conflict
 from app.main import app
+from tests.schema_fixtures import ensure_review_queues_schema
 from tests.settings_factory import build_settings
 
 
@@ -27,8 +29,7 @@ def _settings(**overrides):
 
 async def _open_review_conn() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
-    await ensure_review_schema(conn)
-    await ensure_duplicate_review_schema(conn)
+    await ensure_review_queues_schema(conn)
     await ensure_terms_schema(conn)
     await ensure_term_edits_schema(conn)
     await create_tenants_table(conn)
@@ -107,6 +108,7 @@ def test_returns_both_pending_counts_in_one_call(review_conn):
     assert response.json() == {
         "pending_relations": 3,
         "pending_duplicates": 2,
+        "pending_conflicts": 0,
         "total_terms": 0,
     }
 
@@ -119,6 +121,7 @@ def test_counts_are_scoped_to_the_tenant(review_conn):
     assert _get(review_conn, tenant_id="demo").json() == {
         "pending_relations": 1,
         "pending_duplicates": 1,
+        "pending_conflicts": 0,
         "total_terms": 0,
     }
 
@@ -128,6 +131,7 @@ def test_empty_queues_report_zero_not_an_error(review_conn):
     assert _get(review_conn, tenant_id="demo").json() == {
         "pending_relations": 0,
         "pending_duplicates": 0,
+        "pending_conflicts": 0,
         "total_terms": 0,
     }
 
@@ -177,3 +181,30 @@ def test_old_query_param_path_is_gone(review_conn):
         assert response.status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+def test_attribute_conflicts_are_counted_too(review_conn):
+    """属性值冲突也是「有事等你」，跟另外两个队列一起数。
+
+    漏掉它的话，一个「0 条待审关系 + 0 条疑似重复 + 8 条属性冲突」的租户，
+    侧边栏「数据审核」组的角标是 0，而那一组里的属性冲突页有 8 条等着——
+    审核员永远发现不了。看板的口径见 app/graphrag/tenant_stats.py，两处必须
+    一起改，否则同一个人同一屏会看到两个互相矛盾的数字。
+
+    三个数字互不相同（3/2/1）：相同的话，把冲突数接到别的队列那一格的实现
+    也能变绿。
+    """
+    asyncio.run(_seed(review_conn, tenant_id="demo", relations=3, duplicates=2))
+    asyncio.run(
+        record_conflict(
+            review_conn, tenant_id="demo", node_key="产品:洗发水", field="price",
+            kept_value="39", kept_source="a.xlsx",
+            incoming_value="45", incoming_source="b.xlsx",
+        )
+    )
+
+    body = _get(review_conn, tenant_id="demo").json()
+
+    assert (body["pending_relations"], body["pending_duplicates"], body["pending_conflicts"]) == (
+        3, 2, 1,
+    )

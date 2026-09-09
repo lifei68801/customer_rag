@@ -18,12 +18,12 @@ import { SettingsPage } from './admin/SettingsPage'
 import { NotFoundPage } from './admin/NotFoundPage'
 import { GuidedOntologyPage } from './admin/guidedOntology/GuidedOntologyPage'
 import {
-  ConflictReviewPage,
   DataGraphPage,
   DatabaseImportPage,
   DirtyEdgesPage,
   ErrorLogPage,
 } from './admin/ComingSoonPages'
+import { AttributeConflictsPage } from './admin/AttributeConflictsPage'
 import { DashboardPage } from './admin/DashboardPage'
 import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'
 import { useAdminAuth } from './admin/useAdminAuth'
@@ -76,7 +76,7 @@ function App() {
         <Route path="import/database" element={<DatabaseImportPage />} />
 
         <Route path="review/relations" element={<GraphReviewsPage />} />
-        <Route path="review/conflicts" element={<ConflictReviewPage />} />
+        <Route path="review/conflicts" element={<AttributeConflictsPage />} />
         <Route path="review/duplicates" element={<DuplicatesPage />} />
         <Route path="review/dirty-edges" element={<DirtyEdgesPage />} />
 

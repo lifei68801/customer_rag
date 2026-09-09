@@ -27,6 +27,9 @@ import aiosqlite
 
 from app.auth.admin_users_store import ensure_admin_users_schema
 from app.auth.user_tenants_store import ensure_user_tenants_schema
+from app.graphrag.attribute_conflicts import ensure_attribute_conflicts_schema
+from app.graphrag.duplicate_review_queue import ensure_duplicate_review_schema
+from app.graphrag.review_queue import ensure_review_schema
 
 
 async def ensure_admin_auth_schema(conn: aiosqlite.Connection) -> None:
@@ -37,3 +40,24 @@ async def ensure_admin_auth_schema(conn: aiosqlite.Connection) -> None:
     """
     await ensure_admin_users_schema(conn)
     await ensure_user_tenants_schema(conn)
+
+
+async def ensure_review_queues_schema(conn: aiosqlite.Connection) -> None:
+    """建齐**三个审核队列**：关系审核 + 疑似重复 + 属性值冲突。
+
+    跟 `ensure_admin_auth_schema` 同一个道理：这三张表被两处**一起**读——
+    侧边栏徽标（`app/api/admin_nav_badges_routes.py`）和看板的待审计数
+    （`app/graphrag/tenant_stats.py`）。2026-09-08 加属性值冲突那张表时，
+    四个此前只建了前两张的测试文件同时炸掉，报错是
+    `no such table: attribute_conflicts`——指向 aiosqlite 内部，跟真正的原因
+    （又多了一个队列而 fixture 没跟上）毫无关系。
+
+    **这跟模块 docstring 里"不建业务表"那条不矛盾**：那条说的是
+    `tests/api/conftest.py` 的**兜底连接**不该无差别建齐所有表——那会把一句
+    响亮的 `no such table: terms` 变成一张静默的空表。这里是一个具名的、
+    需要显式调用的帮手，且它建的三张表在语义上是一件事（"有多少活等着人"）。
+    少建其中一张，得到的不是"那一类没有待办"，而是一个 500。
+    """
+    await ensure_review_schema(conn)
+    await ensure_duplicate_review_schema(conn)
+    await ensure_attribute_conflicts_schema(conn)

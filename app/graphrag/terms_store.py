@@ -980,6 +980,43 @@ async def migrate_term_type(
     return cursor.rowcount
 
 
+async def set_extra_property(
+    conn: aiosqlite.Connection,
+    *,
+    tenant_id: str,
+    node_key: str,
+    field: str,
+    value: str,
+) -> None:
+    """把一个属性字段的值定下来。属性冲突决议之后写回用。
+
+    只改这一个字段，不碰别的：决议是对**一个字段**的判断，整份 extra_properties
+    覆盖过去会把这次决议之外的字段一起改掉（而它们可能刚被另一次导入更新过）。
+
+    实体不存在时抛 TermNotFoundError——静默 no-op 的话，审核员选完值、系统
+    说成功，而那个值哪儿都没写进去。
+
+    不动 `extra_property_sources`：这个值是人定的，不来自任何一次导入。留着
+    原来那个来源会说谎，写成 "manual" 又跟那一列"哪次导入写的"的语义不符
+    ——留空由读的一侧退回行级 source，是这三者里唯一不撒谎的。
+    """
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute(
+        "SELECT extra_properties FROM terms WHERE tenant_id = ? AND node_key = ?",
+        (tenant_id, node_key),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise TermNotFoundError(f"术语 {node_key!r}（租户 {tenant_id!r}）不存在")
+    extra = json.loads(row["extra_properties"])
+    extra[field] = value
+    await conn.execute(
+        "UPDATE terms SET extra_properties = ? WHERE tenant_id = ? AND node_key = ?",
+        (json.dumps(extra, ensure_ascii=False), tenant_id, node_key),
+    )
+    await conn.commit()
+
+
 async def _keep_old_values_and_record_conflicts(
     conflict_conn: aiosqlite.Connection,
     *,

@@ -5,6 +5,7 @@ from typing import Protocol
 
 import aiosqlite
 
+from app.graphrag.attribute_conflicts import count_conflicts
 from app.graphrag.duplicate_review_queue import count_pending_duplicate_suggestions
 from app.graphrag.review_queue import count_pending_reviews
 from app.graphrag.terms_store import count_terms_merged
@@ -52,13 +53,16 @@ async def collect_tenant_stats(
     term_count = await count_terms_merged(review_conn, tenant_id)
     edge_count = await graph_client.count_relation_edges_for_tenant(tenant_id=tenant_id)
     document_count = await count_tracked_files(ingestion_conn, tenant_id=tenant_id)
-    # 两个审核队列都要数。只数关系队列的话，一个「0 条待审关系 + 12 条疑似
-    # 重复」的领域在看板上显示「待审 0」且不给入口，而侧边栏同时显示
-    # 「数据审核：12」——同一个人同一屏看到两个互相矛盾的数字，他会以为
-    # 其中一个坏了。侧边栏的口径见 app/api/admin_nav_badges_routes.py。
-    pending_review_count = await count_pending_reviews(
-        review_conn, tenant_id=tenant_id
-    ) + await count_pending_duplicate_suggestions(review_conn, tenant_id=tenant_id)
+    # 三个审核队列都要数：关系审核、疑似重复、属性冲突。少数一个的话，一个
+    # 「0 条待审关系 + 0 条疑似重复 + 8 条属性冲突」的领域在看板上显示
+    # 「待审 0」且不给入口，而「数据审核」组里那一页有 8 条等着——用户永远
+    # 发现不了。侧边栏的口径见 app/api/admin_nav_badges_routes.py，两处必须
+    # 一起改，否则同一个人同一屏会看到两个互相矛盾的数字。
+    pending_review_count = (
+        await count_pending_reviews(review_conn, tenant_id=tenant_id)
+        + await count_pending_duplicate_suggestions(review_conn, tenant_id=tenant_id)
+        + await count_conflicts(review_conn, tenant_id=tenant_id)
+    )
     return TenantStats(
         tenant_id=tenant_id,
         term_count=term_count,

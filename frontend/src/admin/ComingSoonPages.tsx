@@ -1,4 +1,4 @@
-import { Database, Scale, Share2, TriangleAlert, Unlink } from 'lucide-react'
+import { Database, Share2, TriangleAlert, Unlink } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
@@ -65,28 +65,6 @@ export function DatabaseImportPage() {
             表格导入
           </Link>
           。
-        </>
-      }
-    />
-  )
-}
-
-export function ConflictReviewPage() {
-  return (
-    <ComingSoon
-      icon={Scale}
-      title={PAGE_TITLES.reviewConflicts}
-      phase="阶段四"
-      plan="docs/superpowers/plans/2026-09-08-review-split-and-conflicts.md"
-      alternative={
-        <>
-          在那之前只能手工比对：在
-          <Link to={ADMIN_ROUTES.terms} className={linkClass}>
-            实体明细
-          </Link>
-          里打开两条，逐个字段自己看。
-          <strong className="font-bold">不要用「疑似重复」页去处理属性冲突</strong>
-          ——那一页只有整条合并，且合并不可撤销，你会连不想合的字段一起丢掉。
         </>
       }
     />

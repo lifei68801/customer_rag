@@ -35,7 +35,7 @@ from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import create_term, ensure_terms_schema
 from app.ingestion.tracking import ensure_tracking_schema, record_ingested
 from app.main import app
-from tests.schema_fixtures import ensure_admin_auth_schema
+from tests.schema_fixtures import ensure_admin_auth_schema, ensure_review_queues_schema
 from tests.settings_factory import build_settings
 
 
@@ -64,8 +64,7 @@ async def _open_review_conn() -> aiosqlite.Connection:
     await ensure_terms_schema(conn)
     await ensure_term_edits_schema(conn)
     await ensure_ontology_schema(conn)
-    await ensure_review_schema(conn)
-    await ensure_duplicate_review_schema(conn)
+    await ensure_review_queues_schema(conn)
 
     await create_admin_user(
         conn, username="root", password="password1", role="admin", tenant_id=None
