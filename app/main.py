@@ -35,6 +35,7 @@ from app.api.voice_routes import router as voice_router
 from app.config.settings import Settings
 from app.graphrag.organizations_store import ensure_organizations_schema
 from app.graphrag.attribute_conflicts import ensure_attribute_conflicts_schema
+from app.graphrag.db_sources_store import ensure_db_sources_schema
 from app.graphrag.etl_skipped_rows import ensure_etl_skipped_rows_schema
 from app.graphrag.tenant_personas_store import ensure_tenant_personas_schema
 from app.graphrag.tenants_store import ensure_tenants_schema
@@ -117,6 +118,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await ensure_tenant_personas_schema(review_conn)
         await ensure_attribute_conflicts_schema(review_conn)
         await ensure_etl_skipped_rows_schema(review_conn)
+        await ensure_db_sources_schema(review_conn)
         logger.info("租户注册表回填完成")
     except Exception:
         logger.warning("启动回填租户注册表失败，租户列表可能不完整", exc_info=True)
