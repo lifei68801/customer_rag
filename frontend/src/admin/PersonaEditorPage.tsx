@@ -17,6 +17,22 @@ const inputClass = `rounded-control border border-subtle bg-paper px-3 py-2 text
 const buttonClass = `min-h-[36px] cursor-pointer rounded-control border border-subtle bg-paper px-3 text-sm font-bold text-ink transition hover:bg-interactive-hover disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`
 const iconButtonClass = `flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-control border border-subtle bg-paper text-ink transition hover:bg-interactive-hover disabled:cursor-not-allowed disabled:opacity-40 ${focusRing}`
 
+/**
+ * 一条引导问题。带一个只活在前端的 `id`。
+ *
+ * 用数组下标当 React key 会在增删和调序时把输入框的身份跟位置绑死：
+ * 上移之后焦点留在原来那个位置上，而那个位置现在是被挤下来的另一条
+ * ——键盘用户连按两下 Enter，第二下动的是别人，两下之后原地不动
+ * （personaEditor.test.tsx 有这条回归用例）。
+ */
+interface QuestionRow {
+  id: string
+  text: string
+}
+
+let rowSeq = 0
+const newRow = (text: string): QuestionRow => ({ id: `q${(rowSeq += 1)}`, text })
+
 interface PersonaDetailBody {
   tenant_id: string
   name: string
@@ -50,7 +66,7 @@ export function PersonaEditorPage() {
   const [name, setName] = useState('')
   const [avatar, setAvatar] = useState('')
   const [tagline, setTagline] = useState('')
-  const [questions, setQuestions] = useState<string[]>([])
+  const [questions, setQuestions] = useState<QuestionRow[]>([])
   const [source, setSource] = useState<'handwritten' | 'generated'>('handwritten')
   const [stale, setStale] = useState<string[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -75,7 +91,7 @@ export function PersonaEditorPage() {
       setName(detail.name)
       setAvatar(detail.avatar)
       setTagline(detail.tagline)
-      setQuestions(detail.questions)
+      setQuestions(detail.questions.map(newRow))
       setSource(detail.questions_source)
       setLoadError(null)
     } catch (err) {
@@ -110,13 +126,18 @@ export function PersonaEditorPage() {
   }, [load])
 
   const updateQuestion = (index: number, value: string) => {
-    setQuestions((prev) => prev.map((q, i) => (i === index ? value : q)))
+    setQuestions((prev) => prev.map((q, i) => (i === index ? { ...q, text: value } : q)))
   }
 
   const removeQuestion = (index: number) => {
     setQuestions((prev) => prev.filter((_, i) => i !== index))
   }
 
+  // 焦点不用手工搬：每一行的 key 是这条问题自己的 id，React 因此把 DOM
+  // 节点跟着它一起挪，焦点自然留在被移动的那一条上。
+  //
+  // 未覆盖的一处：移到头尾时同方向的按钮会禁用，真实浏览器会让焦点脱落，
+  // 而 jsdom 不复现这个行为——这条只能人工在浏览器里看。
   const moveQuestion = (index: number, delta: number) => {
     setQuestions((prev) => {
       const target = index + delta
@@ -139,7 +160,7 @@ export function PersonaEditorPage() {
         body: JSON.stringify({
           avatar,
           tagline,
-          questions: questions.map((q) => q.trim()).filter(Boolean),
+          questions: questions.map((q) => q.text.trim()).filter(Boolean),
         }),
       })
       if (!response.ok) {
@@ -251,15 +272,15 @@ export function PersonaEditorPage() {
           <p className="text-sm text-ink-soft">还没有引导问题。前台会显示一个空的首屏。</p>
         )}
 
-        {questions.map((question, index) => {
-          const isStale = stale.includes(question)
+        {questions.map((row, index) => {
+          const isStale = stale.includes(row.text)
           return (
-            <div key={index} data-testid={`question-row-${index}`} className="flex flex-col gap-1">
+            <div key={row.id} data-testid={`question-row-${index}`} className="flex flex-col gap-1">
               <div className="flex items-center gap-2">
                 <input
                   aria-label={`引导问题第 ${index + 1} 条`}
                   className={`${inputClass} flex-1`}
-                  value={question}
+                  value={row.text}
                   onChange={(e) => updateQuestion(index, e.target.value)}
                 />
                 <button
@@ -306,7 +327,7 @@ export function PersonaEditorPage() {
             type="button"
             className={buttonClass}
             disabled={atLimit}
-            onClick={() => setQuestions((prev) => [...prev, ''])}
+            onClick={() => setQuestions((prev) => [...prev, newRow('')])}
             aria-label="添加一条引导问题"
           >
             <span className="flex items-center gap-1.5">

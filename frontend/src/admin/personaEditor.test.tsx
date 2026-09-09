@@ -184,6 +184,21 @@ describe('数字人编辑页', () => {
     ])
   })
 
+  it('连按两次上移，是同一条一路往上，不是来回跳', async () => {
+    // 鼠标用户每次都重新看一眼再点，位置错乱看不出来。键盘用户不一样：
+    // 焦点停在按钮上连按两下 Enter，如果焦点不跟着被移动的那一条走，
+    // 第二下动的就是刚被挤下来的那一条——两下之后原地不动。
+    personaBody = { ...personaBody, questions: ['一', '二', '三'] }
+    const user = userEvent.setup()
+    await renderPersonaEditor()
+    await waitFor(() => expect(questionInputs()).toHaveLength(3))
+
+    screen.getByRole('button', { name: '上移第 3 条' }).focus()
+    await user.keyboard('{Enter}')
+    await user.keyboard('{Enter}')
+    expect(questionInputs().map((i) => i.value)).toEqual(['三', '一', '二'])
+  })
+
   it('最多六条，加到第七条时按钮禁用并说明为什么', async () => {
     // 「已达上限 6 条」而不是一个点不动的按钮。点不动且不说原因，用户会
     // 以为界面坏了。
