@@ -1,13 +1,20 @@
 import type { LucideIcon } from 'lucide-react'
 import {
-  Bot,
   Boxes,
+  Database,
   FileText,
   GitPullRequestArrow,
+  LayoutDashboard,
   Network,
+  Scale,
   ScanSearch,
+  Share2,
   Stethoscope,
   Table2,
+  TriangleAlert,
+  Unlink,
+  UserRound,
+  Wand2,
   Waypoints,
 } from 'lucide-react'
 
@@ -24,25 +31,31 @@ import {
  * 有了这份表，adminRoutes.test.ts 能断言"七个目的地全部出现在侧边栏"。
  */
 export const ADMIN_ROUTES = {
-  ontology: '/admin/model/ontology',
-  ontologyGraph: '/admin/model/graph',
-  // 数字人的脸和引导问题。归在建模段：它配的是「这个知识库对外是谁、
-  // 能问它什么」，改的依据是本体——引导问题保存时要过实体匹配。
-  persona: '/admin/model/persona',
-  // 首次建模的入口，从本体结构页进入；不常驻导航，见 NAV_GROUPS 上方
-  // 的注释和 adminRoutes.test.ts 里的 NOT_IN_NAV。
-  guidedOntology: '/admin/model/guided',
-  documents: '/admin/ingest/documents',
-  etl: '/admin/ingest/etl',
+  // 登录后的落地页。唯一的**组织级**页面：它跨领域，不需要"当前租户"
+  // （见下面的 NON_TENANT_ROUTE_KEYS）。
+  dashboard: '/admin/dashboard',
+
+  ontology: '/admin/ontology/ontology',
+  ontologyGraph: '/admin/ontology/graph',
+  guidedOntology: '/admin/ontology/guided',
+  persona: '/admin/ontology/persona',
+
+  documents: '/admin/import/documents',
+  etl: '/admin/import/table',
+  dbImport: '/admin/import/database',
+
   reviewRelations: '/admin/review/relations',
+  reviewConflicts: '/admin/review/conflicts',
   reviewDuplicates: '/admin/review/duplicates',
-  // 两段式：实体明细不属于任何阶段，路径里留一个「browse」段就是个孤儿
-  // ——侧边栏没有那个组，URL 里却有。形状本身说清楚它不在流程里。
-  terms: '/admin/terms',
-  // 问答明细：从「这次答错了」反查到「哪个实体不对」。跟实体明细一样是
-  // 流程外的——它不是某一步，是出问题时才来的地方。
-  diagnostics: '/admin/diagnostics',
-  // 账号设置。不在任何导航分组里——它不是流程的一站，是账号级的偏好。
+  reviewDirtyEdges: '/admin/review/dirty-edges',
+
+  terms: '/admin/browse/terms',
+  dataGraph: '/admin/browse/graph',
+
+  diagnostics: '/admin/logs/qa',
+  errors: '/admin/logs/errors',
+
+  // 这三个都不在侧边栏里，入口在左下角的账号菜单。
   accounts: '/admin/accounts',
   tenants: '/admin/tenants',
   settings: '/admin/settings',
@@ -57,18 +70,28 @@ export const ADMIN_ROUTES = {
  * 而且中间那一代哪天删掉就会断。
  */
 export const LEGACY_REDIRECTS: Record<string, string> = {
-  // 第一代。'/admin/terms' 不在这里——它现在就是实体明细的正式路径，旧
-  // 书签直接命中；留一条指向自己的垫片会变成无限重定向。
+  // 第一代
   '/admin/graph-reviews': ADMIN_ROUTES.reviewRelations,
   '/admin/schema-etl': ADMIN_ROUTES.etl,
   // 第二代
   '/admin/data-entry/manual': ADMIN_ROUTES.terms,
   '/admin/data-entry/review': ADMIN_ROUTES.reviewRelations,
   '/admin/data-entry/etl': ADMIN_ROUTES.etl,
-  // 本体页这次单独改名
   '/admin/ontology': ADMIN_ROUTES.ontology,
-  // 只活了一天的第三代：实体明细曾经归在「浏览」组下。
-  '/admin/browse/terms': ADMIN_ROUTES.terms,
+  // 第三代（按工作阶段分的 model/ingest/review + 两个两段式的孤儿）。
+  // 这一代活了一段时间，书签是真的存在的。
+  '/admin/model/ontology': ADMIN_ROUTES.ontology,
+  '/admin/model/graph': ADMIN_ROUTES.ontologyGraph,
+  '/admin/model/guided': ADMIN_ROUTES.guidedOntology,
+  // 数字人页是第三代末尾才加的，写这份重排计划时它还不存在——漏掉的话，
+  // 刚发出去的那个后台链接立刻变死链。
+  '/admin/model/persona': ADMIN_ROUTES.persona,
+  '/admin/ingest/documents': ADMIN_ROUTES.documents,
+  '/admin/ingest/etl': ADMIN_ROUTES.etl,
+  '/admin/terms': ADMIN_ROUTES.terms,
+  '/admin/diagnostics': ADMIN_ROUTES.diagnostics,
+  // '/admin/browse/terms' 不在这里：它这次回来了，就是实体明细的正式路径。
+  // 留一条指向自己的垫片会变成无限重定向。
 }
 
 export interface NavItem {
@@ -79,7 +102,7 @@ export interface NavItem {
 
 export interface NavGroup {
   /** 同时是路径里的阶段段名——测试断言两者一致，防止分组和路径脱节。 */
-  id: 'model' | 'ingest' | 'review'
+  id: 'dashboard' | 'ontology' | 'import' | 'review' | 'browse' | 'logs'
   label: string
   items: NavItem[]
 }
@@ -98,59 +121,57 @@ export interface NavGroup {
  */
 export const NAV_GROUPS: NavGroup[] = [
   {
-    id: 'model',
-    label: '建模',
+    id: 'dashboard',
+    label: '看板',
+    items: [{ path: ADMIN_ROUTES.dashboard, label: '看板', icon: LayoutDashboard }],
+  },
+  {
+    id: 'ontology',
+    label: '本体创建',
     items: [
       { path: ADMIN_ROUTES.ontology, label: '本体结构', icon: Network },
       { path: ADMIN_ROUTES.ontologyGraph, label: '本体图', icon: Waypoints },
-      { path: ADMIN_ROUTES.persona, label: '数字人', icon: Bot },
+      { path: ADMIN_ROUTES.guidedOntology, label: '引导建模', icon: Wand2 },
+      { path: ADMIN_ROUTES.persona, label: '数字人', icon: UserRound },
     ],
   },
   {
-    id: 'ingest',
-    label: '接入数据',
+    id: 'import',
+    label: '数据导入',
     items: [
-      { path: ADMIN_ROUTES.documents, label: '文档上传', icon: FileText },
+      { path: ADMIN_ROUTES.documents, label: '文档导入', icon: FileText },
       { path: ADMIN_ROUTES.etl, label: '表格导入', icon: Table2 },
+      { path: ADMIN_ROUTES.dbImport, label: '数据库导入', icon: Database },
     ],
   },
   {
     id: 'review',
-    label: '审核',
+    label: '数据审核',
     items: [
-      { path: ADMIN_ROUTES.reviewRelations, label: '待审关系', icon: GitPullRequestArrow },
+      { path: ADMIN_ROUTES.reviewRelations, label: '关系审核', icon: GitPullRequestArrow },
+      { path: ADMIN_ROUTES.reviewConflicts, label: '属性冲突', icon: Scale },
       { path: ADMIN_ROUTES.reviewDuplicates, label: '疑似重复', icon: ScanSearch },
+      { path: ADMIN_ROUTES.reviewDirtyEdges, label: '脏边与孤儿', icon: Unlink },
+    ],
+  },
+  {
+    id: 'browse',
+    label: '结果预览',
+    items: [
+      { path: ADMIN_ROUTES.terms, label: '实体明细', icon: Boxes },
+      { path: ADMIN_ROUTES.dataGraph, label: '图谱预览', icon: Share2 },
+    ],
+  },
+  {
+    id: 'logs',
+    label: '日志明细',
+    items: [
+      { path: ADMIN_ROUTES.diagnostics, label: '问答明细', icon: Stethoscope },
+      { path: ADMIN_ROUTES.errors, label: '报错明细', icon: TriangleAlert },
     ],
   },
 ]
 
-/**
- * 不属于任何阶段的目的地。
- *
- * 建模、接入、审核是流程步骤，有先后；实体明细是结果视图，任何一步之后
- * 都可能用到——塞进流程末尾会让人以为它是「最后一步」，而它其实是每一步
- * 的落点。
- *
- * Palantir Foundry 也是这么分的：Ontology Manager 管定义（object types /
- * link types），Object Explorer 查实例，是两个独立应用而不是一个侧边栏
- * 里的两个分组。分界是「定义 vs 实例」，不是流程第几步。
- */
-export const NAV_STANDALONE: NavItem[] = [
-  { path: ADMIN_ROUTES.terms, label: '实体明细', icon: Boxes },
-  { path: ADMIN_ROUTES.diagnostics, label: '问答明细', icon: Stethoscope },
-]
-
-/**
- * 上面那两项的组标题。
- *
- * 没有标题时它们跟流程组的叶子缩在同一个视觉层级，读起来像「第四组漏了
- * 标题」；而它们其实是流程外的目的地。给一个标题，形式上就跟三个流程组
- * 平级了——差别落在行为上：流程组可折叠，这一组常驻（见 AdminLayout）。
- *
- * 名字说的是内容（明细），跟建模/接入/审核一个口径；此前的「实体列表」
- * 说的是形式（一个列表），同一条侧边栏里两套口径。
- */
-export const NAV_STANDALONE_LABEL = '明细查询'
 
 /** 当前 URL 落在哪个分组里——侧边栏用它决定默认展开哪一组。 */
 export function groupIdForPath(pathname: string): NavGroup['id'] | null {
@@ -166,40 +187,50 @@ export function groupIdForPath(pathname: string): NavGroup['id'] | null {
  * 标题里不带租户。它已经在侧边栏顶部常驻，每个页面再说一遍是噪音——
  * 而且原先三个页面带、一个不带，四个页面三种写法。
  */
-const ALL_NAV_ITEMS: NavItem[] = [
-  ...NAV_GROUPS.flatMap((g) => g.items),
-  ...NAV_STANDALONE,
-]
+const ALL_NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items)
 
 /** 导航里没有的页面，标题写在这里。 */
 const EXTRA_TITLES: Partial<Record<keyof typeof ADMIN_ROUTES, string>> = {
-  // 这两个都不在侧边栏里，入口在左下角的账号菜单。账号页对 member 根本
+  // 这三个都不在侧边栏里，入口在左下角的账号菜单。账号页对 member 根本
   // 不存在，放进侧边栏会让两种角色看到不同的侧边栏，破坏"侧边栏是固定
   // 的"这个心智模型。
   accounts: '账号',
   tenants: '租户',
   settings: '设置',
-  // 入口不在侧边栏，也就不在 ALL_NAV_ITEMS 里；标题只能在这里手写一份。
-  guidedOntology: '引导建模',
 }
 
 export const PAGE_TITLES: Record<keyof typeof ADMIN_ROUTES, string> = Object.fromEntries(
-  Object.entries(ADMIN_ROUTES).map(([key, path]) => [
-    key,
-    EXTRA_TITLES[key as keyof typeof ADMIN_ROUTES] ??
-      ALL_NAV_ITEMS.find((i) => i.path === path)!.label,
-  ]),
+  Object.entries(ADMIN_ROUTES).map(([key, path]) => {
+    const explicit = EXTRA_TITLES[key as keyof typeof ADMIN_ROUTES]
+    if (explicit) return [key, explicit]
+    const inNav = ALL_NAV_ITEMS.find((i) => i.path === path)
+    if (!inNav) {
+      // 加载期就炸，且说清楚该干什么。此前这里是一个 `!`，同样会炸，
+      // 但抛的是「Cannot read properties of undefined」——那句话不指向
+      // 任何可执行的动作，读到的人得自己反推是标题表出了问题。
+      throw new Error(
+        `路由 ${key}（${path}）既不在侧边栏里，也没有在 EXTRA_TITLES 里写标题。` +
+          `要么把它挂进 NAV_GROUPS，要么在 EXTRA_TITLES 里给它一个标题——` +
+          `两者都没有的话，这一页会顶着一个空标题出现。`,
+      )
+    }
+    return [key, inNav.label]
+  }),
 ) as Record<keyof typeof ADMIN_ROUTES, string>
 
 /**
  * 不依赖当前租户的路由。
  *
- * 这三个都是账号级的：账号管理、租户管理、偏好设置。它们在「还没选定
- * 租户」时必须照常可用——尤其是租户管理页，把它一起挡住的话 admin 会被
- * 锁死：空态叫他去选一个租户，而唯一能新建或启用租户的页面盖着同一张
- * 空态。
+ * 前三个是账号级的：账号管理、租户管理、偏好设置。它们在「还没选定租户」
+ * 时必须照常可用——尤其是租户管理页，把它一起挡住的话 admin 会被锁死：
+ * 空态叫他去选一个租户，而唯一能新建或启用租户的页面盖着同一张空态。
+ *
+ * 看板是第四个，理由不同：它是**组织级**的，一屏列出这个账号能访问的所有
+ * 领域，本来就不属于其中任何一个。而它又是登录后的落地页——归成租户内的话，
+ * 新登录、还没切过租户的 admin（tenant_id 恒为 None）第一眼看到的是「请先
+ * 选择一个租户」，而不是他的看板。
  */
-export const NON_TENANT_ROUTE_KEYS = ['accounts', 'tenants', 'settings'] as const
+export const NON_TENANT_ROUTE_KEYS = ['accounts', 'tenants', 'settings', 'dashboard'] as const
 
 /**
  * 依赖当前租户的路由：读写的都是某一个租户里的数据。
@@ -211,14 +242,19 @@ export const NON_TENANT_ROUTE_KEYS = ['accounts', 'tenants', 'settings'] as cons
 export const TENANT_SCOPED_ROUTE_KEYS = [
   'ontology',
   'ontologyGraph',
-  'persona',
   'guidedOntology',
+  'persona',
   'documents',
   'etl',
+  'dbImport',
   'reviewRelations',
+  'reviewConflicts',
   'reviewDuplicates',
+  'reviewDirtyEdges',
   'terms',
+  'dataGraph',
   'diagnostics',
+  'errors',
 ] as const
 
 const NON_TENANT_PATHS: string[] = NON_TENANT_ROUTE_KEYS.map((key) => ADMIN_ROUTES[key])

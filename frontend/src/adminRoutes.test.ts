@@ -3,8 +3,6 @@ import {
   ADMIN_ROUTES,
   LEGACY_REDIRECTS,
   NAV_GROUPS,
-  NAV_STANDALONE,
-  NAV_STANDALONE_LABEL,
   groupIdForPath,
   routeRequiresTenant,
   NON_TENANT_ROUTE_KEYS,
@@ -20,55 +18,70 @@ import {
  */
 
 describe('新路由表', () => {
-  it('八个工作流目的地，加上流程外的问答明细页、账号页和设置页', () => {
+  it('六个模块共十六个目的地，加上账号页、租户页和设置页', () => {
     expect(ADMIN_ROUTES).toEqual({
-      ontology: '/admin/model/ontology',
-      ontologyGraph: '/admin/model/graph',
-      persona: '/admin/model/persona',
-      guidedOntology: '/admin/model/guided',
-      documents: '/admin/ingest/documents',
-      etl: '/admin/ingest/etl',
+      dashboard: '/admin/dashboard',
+      ontology: '/admin/ontology/ontology',
+      ontologyGraph: '/admin/ontology/graph',
+      guidedOntology: '/admin/ontology/guided',
+      persona: '/admin/ontology/persona',
+      documents: '/admin/import/documents',
+      etl: '/admin/import/table',
+      dbImport: '/admin/import/database',
       reviewRelations: '/admin/review/relations',
+      reviewConflicts: '/admin/review/conflicts',
       reviewDuplicates: '/admin/review/duplicates',
-      terms: '/admin/terms',
-      diagnostics: '/admin/diagnostics',
-      // 账号页和设置页都不在侧边栏里，入口在左下角的账号菜单。账号页对
-      // member 根本不存在——放进侧边栏会让两种角色看到不同的侧边栏。
+      reviewDirtyEdges: '/admin/review/dirty-edges',
+      terms: '/admin/browse/terms',
+      dataGraph: '/admin/browse/graph',
+      diagnostics: '/admin/logs/qa',
+      errors: '/admin/logs/errors',
+      // 这三个都不在侧边栏里，入口在左下角的账号菜单。账号页对 member
+      // 根本不存在——放进侧边栏会让两种角色看到不同的侧边栏。
       accounts: '/admin/accounts',
       tenants: '/admin/tenants',
       settings: '/admin/settings',
     })
   })
 
-  it('流程内的路径带阶段段，流程外的不带', () => {
-    // 实体明细是两段式的 /admin/terms：它不属于任何阶段，路径里留一个
-    // 「browse」段就是个孤儿——侧边栏没有那个组，URL 里却有。路径形状
-    // 本身要说清楚「这个页面不在流程里」。
-    const inFlow = NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path))
-    for (const path of inFlow) {
-      expect(path).toMatch(/^\/admin\/(model|ingest|review)\/[a-z]+$/)
-    }
-    for (const item of NAV_STANDALONE) {
-      expect(item.path).toMatch(/^\/admin\/[a-z]+$/)
+  it('每个目的地的路径第二段就是它所属模块的 id', () => {
+    // 这不是审美：groupIdForPath 靠前缀匹配决定侧边栏默认展开哪一组，
+    // 分组和路径脱节的话它会返回 null，展开就失灵了。
+    //
+    // 允许连字符：/admin/review/dirty-edges。收在 [a-z-]+ 而不是放开成
+    // 任意字符，是为了挡住大写和下划线——URL 里混进两套命名法之后，
+    // 「这一页的地址长什么样」就没法凭记忆敲了。
+    const ids = NAV_GROUPS.map((g) => g.id).join('|')
+    for (const group of NAV_GROUPS) {
+      for (const item of group.items) {
+        expect(item.path).toMatch(new RegExp(`^/admin/(${ids})(/[a-z-]+)?$`))
+      }
     }
   })
 })
 
 describe('旧路径垫片', () => {
   it('历史路径全部覆盖', () => {
-    // 第一代（data-entry 之前）+ 第二代（data-entry/*）+ 单独改名的
-    // ontology + 短命的 /admin/browse/terms。
+    // 第一代（data-entry 之前）+ 第二代（data-entry/*）+ 第三代
+    // （按工作阶段分的 model/ingest/review 与两个两段式的孤儿）。
     //
-    // '/admin/terms' 不在这里：它现在就是实体明细的正式路径，旧书签直接
-    // 命中，不需要垫片——垫片指向自己会变成无限重定向。
+    // '/admin/browse/terms' 不在这里：它这次回来了，就是实体明细的正式
+    // 路径，旧书签直接命中。留一条指向自己的垫片会变成无限重定向。
     expect(Object.keys(LEGACY_REDIRECTS).sort()).toEqual([
-      '/admin/browse/terms',
       '/admin/data-entry/etl',
       '/admin/data-entry/manual',
       '/admin/data-entry/review',
+      '/admin/diagnostics',
       '/admin/graph-reviews',
+      '/admin/ingest/documents',
+      '/admin/ingest/etl',
+      '/admin/model/graph',
+      '/admin/model/guided',
+      '/admin/model/ontology',
+      '/admin/model/persona',
       '/admin/ontology',
       '/admin/schema-etl',
+      '/admin/terms',
     ])
   })
 
@@ -88,23 +101,39 @@ describe('旧路径垫片', () => {
   })
 
   it('垫片的终点跟它历史上的语义一致', () => {
-    expect(LEGACY_REDIRECTS['/admin/browse/terms']).toBe(ADMIN_ROUTES.terms)
+    expect(LEGACY_REDIRECTS['/admin/terms']).toBe(ADMIN_ROUTES.terms)
     expect(LEGACY_REDIRECTS['/admin/data-entry/manual']).toBe(ADMIN_ROUTES.terms)
     expect(LEGACY_REDIRECTS['/admin/graph-reviews']).toBe(ADMIN_ROUTES.reviewRelations)
     expect(LEGACY_REDIRECTS['/admin/data-entry/review']).toBe(ADMIN_ROUTES.reviewRelations)
     expect(LEGACY_REDIRECTS['/admin/schema-etl']).toBe(ADMIN_ROUTES.etl)
     expect(LEGACY_REDIRECTS['/admin/data-entry/etl']).toBe(ADMIN_ROUTES.etl)
     expect(LEGACY_REDIRECTS['/admin/ontology']).toBe(ADMIN_ROUTES.ontology)
+    expect(LEGACY_REDIRECTS['/admin/model/ontology']).toBe(ADMIN_ROUTES.ontology)
+    expect(LEGACY_REDIRECTS['/admin/model/graph']).toBe(ADMIN_ROUTES.ontologyGraph)
+    expect(LEGACY_REDIRECTS['/admin/model/guided']).toBe(ADMIN_ROUTES.guidedOntology)
+    // 数字人页是上一代末尾才加的（阶段二），写这份重排计划时它还不存在
+    // ——漏掉的话，刚发出去的那个后台链接立刻变死链。
+    expect(LEGACY_REDIRECTS['/admin/model/persona']).toBe(ADMIN_ROUTES.persona)
+    expect(LEGACY_REDIRECTS['/admin/ingest/documents']).toBe(ADMIN_ROUTES.documents)
+    expect(LEGACY_REDIRECTS['/admin/ingest/etl']).toBe(ADMIN_ROUTES.etl)
+    expect(LEGACY_REDIRECTS['/admin/diagnostics']).toBe(ADMIN_ROUTES.diagnostics)
   })
 })
 
 describe('导航分组', () => {
-  it('三个阶段，顺序即依赖顺序', () => {
-    // 建模在最前面不是偏好：ETL 会拒绝未确认本体的租户
-    // （admin_schema_etl_routes.py），文档管线会跳过图谱抽取
-    // （ingestion/pipeline.py）。把接入排在前面等于教用户走一条产品会
-    // 拒绝的路——新用户第一站就撞墙。
-    expect(NAV_GROUPS.map((g) => g.id)).toEqual(['model', 'ingest', 'review'])
+  it('六个模块，顺序即用户的工作顺序', () => {
+    // 看板在最前面：它是落地页。其余五个是依赖顺序——本体没确认，ETL 会
+    // 拒绝（admin_schema_etl_routes.py），文档管线会跳过图谱抽取
+    // （ingestion/pipeline.py）。把导入排在建模前面等于教用户走一条产品
+    // 会拒绝的路。审核→预览→日志是数据进来之后的三步。
+    expect(NAV_GROUPS.map((g) => g.id)).toEqual([
+      'dashboard',
+      'ontology',
+      'import',
+      'review',
+      'browse',
+      'logs',
+    ])
   })
 
   it('每个叶子都指向路由表里的真实路径', () => {
@@ -126,12 +155,8 @@ describe('导航分组', () => {
       settings: '账号级偏好，不是流程的一站；入口在底部账号菜单',
       accounts: '对 member 根本不存在；放进侧边栏会让两种角色看到不同的侧边栏',
       tenants: '同上，admin 专属；入口在账号菜单',
-      guidedOntology: '首次建模的入口，从本体结构页进入；不是常驻目的地',
     }
-    const inNav = [
-      ...NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path)),
-      ...NAV_STANDALONE.map((i) => i.path),
-    ].sort()
+    const inNav = NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path)).sort()
     const shouldBeInNav = Object.entries(ADMIN_ROUTES)
       .filter(([key]) => !(key in NOT_IN_NAV))
       .map(([, path]) => path)
@@ -140,44 +165,14 @@ describe('导航分组', () => {
   })
 
   it('每个叶子的所属分组与它的路径段一致', () => {
+    // "等于或前缀"两种都算：看板那一组只有一个叶子，路径就是
+    // /admin/dashboard，没有第三段。判据钉住的仍是"分组 id 必须是路径的
+    // 第二段"——那才是 groupIdForPath 真正依赖的东西。
     for (const group of NAV_GROUPS) {
       for (const item of group.items) {
-        expect(item.path.startsWith(`/admin/${group.id}/`)).toBe(true)
+        const base = `/admin/${group.id}`
+        expect(item.path === base || item.path.startsWith(`${base}/`)).toBe(true)
       }
-    }
-  })
-})
-
-describe('流程外的独立项', () => {
-  it('实体明细和问答明细', () => {
-    // 建模、接入、审核是流程步骤，有先后；这两个不是——实体明细是结果
-    // 视图，任何一步之后都可能用到；问答明细是出问题时才来的地方。塞进
-    // 流程末尾会让人以为它们是「最后一步」。
-    //
-    // Foundry 也是这么分的：Ontology Manager 管定义，Object Explorer 查
-    // 实例，是两个独立应用。
-    expect(NAV_STANDALONE.map((i) => i.path)).toEqual([
-      ADMIN_ROUTES.terms,
-      ADMIN_ROUTES.diagnostics,
-    ])
-  })
-
-  it('名字的口径跟三个流程组对齐，说的是内容不是形式', () => {
-    // 建模/接入/审核说的是动作，「实体列表」说的却是形式（一个列表）。
-    // 同一条侧边栏里两套口径，读起来像是两个人各写各的。
-    expect(NAV_STANDALONE.map((i) => i.label)).toEqual(['实体明细', '问答明细'])
-  })
-
-  it('这两项也有组标题，不是漏了标题的第四组', () => {
-    // 没有标题时它们跟流程组的叶子处于同一视觉层级，看上去像第四组忘了
-    // 写标题。标题说清它们是一组「明细查询」，只是不属于任何流程阶段。
-    expect(NAV_STANDALONE_LABEL).toBe('明细查询')
-  })
-
-  it('不属于任何分组', () => {
-    // 它高亮的是自己，不该让某个组跟着亮起来。
-    for (const item of NAV_STANDALONE) {
-      expect(groupIdForPath(item.path)).toBeNull()
     }
   })
 })
@@ -194,7 +189,7 @@ describe('当前分组判定（侧边栏自动展开用）', () => {
   it('带子路径也能判对', () => {
     // 页面内部可能还有子路由（比如将来给本体结构加 /term-types 之类），
     // 前缀匹配保证这些也落在正确的组里。
-    expect(groupIdForPath(`${ADMIN_ROUTES.ontology}/term-types`)).toBe('model')
+    expect(groupIdForPath(`${ADMIN_ROUTES.ontology}/term-types`)).toBe('ontology')
   })
 
   it('未知路径返回 null 而不是猜一个组', () => {
@@ -229,10 +224,23 @@ describe('租户依赖分类', () => {
     expect(both).toEqual([])
   })
 
-  it('三个账号级页面不依赖租户——尤其是租户管理页', () => {
+  it('三个账号级页面加看板不依赖租户', () => {
     // 把租户管理页一起挡住的话，admin 会被锁在一个什么都点不动的界面里：
     // 空态叫他去选一个租户，而唯一能新建/启用租户的页面也被空态盖着。
-    expect([...NON_TENANT_ROUTE_KEYS].sort()).toEqual(['accounts', 'settings', 'tenants'])
+    expect([...NON_TENANT_ROUTE_KEYS].sort()).toEqual([
+      'accounts',
+      'dashboard',
+      'settings',
+      'tenants',
+    ])
+  })
+
+  it('看板在没有当前租户时也照常打开，不被空态挡住', () => {
+    // 看板是登录后的落地页，而新登录的 admin（admin_users.tenant_id 恒为
+    // None）那一刻还没有当前租户。归成租户内的话，他第一眼看到的是
+    // 「请先选择一个租户」而不是他的看板——而看板恰恰是**跨领域**的，
+    // 它一屏列出所有领域，本来就不属于其中任何一个。
+    expect(routeRequiresTenant(ADMIN_ROUTES.dashboard)).toBe(false)
   })
 
   it('归为不依赖租户的路径，判定为不需要租户', () => {

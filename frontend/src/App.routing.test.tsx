@@ -5,7 +5,7 @@ import App from './App'
 import { SkinProvider } from './admin/SkinContext'
 import { ConfirmProvider } from './admin/ConfirmContext'
 import { ToastProvider } from './admin/ToastContext'
-import { ADMIN_ROUTES, LEGACY_REDIRECTS, NAV_GROUPS, NAV_STANDALONE } from './adminRoutes'
+import { ADMIN_ROUTES, LEGACY_REDIRECTS, NAV_GROUPS } from './adminRoutes'
 import { resetAdminSession } from './admin/useAdminAuth'
 
 /**
@@ -98,11 +98,11 @@ describe('未匹配路径', () => {
     // 空状态的规矩：必须回答"下一步做什么"。404 尤其如此——用户是迷路了，
     // 只告诉他"没找到"等于把他留在原地。
     //
-    // 断言的是每个叶子而不是分组名：漏掉流程外的实体明细，等于那个页面
-    // 在这里也是藏着的。
+    // 断言的是每个叶子而不是分组名：只列六个组名的话，组里少了一项在
+    // 这里看不出来——那一页在 404 页上也是藏着的。
     await renderAt('/admin/乱敲')
     const page = within(screen.getByTestId('not-found'))
-    for (const item of [...NAV_GROUPS.flatMap((g) => g.items), ...NAV_STANDALONE]) {
+    for (const item of NAV_GROUPS.flatMap((g) => g.items)) {
       expect(page.getByRole('link', { name: item.label })).toBeTruthy()
     }
   })

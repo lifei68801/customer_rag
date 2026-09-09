@@ -127,8 +127,8 @@ describe('跨页保持', () => {
     // 也有版本概念。
     const user = userEvent.setup()
     await renderAt(`${ADMIN_ROUTES.ontology}?version=confirmed`)
-    await user.click(nav().getByRole('button', { name: '审核' }))
-    await user.click(nav().getByRole('link', { name: '待审关系' }))
+    await user.click(nav().getByRole('button', { name: '数据审核' }))
+    await user.click(nav().getByRole('link', { name: '关系审核' }))
     expect(url()).toBe(ADMIN_ROUTES.reviewRelations)
   })
 })

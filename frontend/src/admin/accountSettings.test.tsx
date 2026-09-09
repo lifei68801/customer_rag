@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES, NAV_GROUPS, NAV_STANDALONE } from '../adminRoutes'
+import { ADMIN_ROUTES, NAV_GROUPS } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
@@ -77,10 +77,7 @@ describe('设置页', () => {
   })
 
   it('不出现在工作流导航里——它不是流程的一站', async () => {
-    const inNav = [
-      ...NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path)),
-      ...NAV_STANDALONE.map((i) => i.path),
-    ]
+    const inNav = NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path))
     expect(inNav).not.toContain(ADMIN_ROUTES.settings)
   })
 })

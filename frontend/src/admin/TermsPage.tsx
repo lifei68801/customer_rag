@@ -810,7 +810,7 @@ export function TermsPage() {
                 </Link>
                 」或「
                 <Link to={ADMIN_ROUTES.documents} className="font-bold underline">
-                  文档上传
+                  文档导入
                 </Link>
                 」完成。
               </>

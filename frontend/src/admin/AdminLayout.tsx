@@ -1,7 +1,7 @@
 import { Building2, ChevronDown, Menu, SquareArrowOutUpRight, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
-import { NAV_GROUPS, NAV_STANDALONE, NAV_STANDALONE_LABEL, routeRequiresTenant } from '../adminRoutes'
+import { NAV_GROUPS, routeRequiresTenant } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
 import { DensityProvider } from './DensityContext'
 import { TenantProvider } from './TenantContext'
@@ -38,7 +38,13 @@ function AdminNav() {
             <nav aria-label="后台导航" className="flex flex-col gap-1">
               {NAV_GROUPS.map((group) => {
                 const expanded = isExpanded(group)
-                const groupCount = group.items.reduce((sum, i) => sum + (badges[i.path] ?? 0), 0)
+                // 只把 todo 加进组头合计。规模数（实体总数）混进来的话，
+                // 收起的「结果预览」会显示「20017 项待处理」——而那不是
+                // 任何人要处理的东西，它还会把审核那两个真待办的数字淹掉。
+                const groupCount = group.items.reduce(
+                  (sum, i) => sum + (badges[i.path]?.kind === 'todo' ? badges[i.path].count : 0),
+                  0,
+                )
                 return (
                   <div key={group.id} className="flex flex-col gap-1">
                     <button
@@ -56,41 +62,28 @@ function AdminNav() {
                         className={`ml-2 h-3.5 w-3.5 flex-shrink-0 transition-transform ${expanded ? '' : '-rotate-90'}`}
                       />
                     </button>
-                    {expanded && group.id === 'model' && <VersionSwitcher />}
+                    {expanded && group.id === 'ontology' && <VersionSwitcher />}
                     {expanded &&
                       group.items.map((item) => (
                         <NavLink
                           key={item.path}
-                          // 只有建模组内部带上 version：它对别的组没有意义，
+                          // 只有本体创建组内部带上 version：它对别的组没有意义，
                           // 带着跑只会让 URL 说谎——看起来那些页面也有版本概念。
-                          to={{ pathname: item.path, search: group.id === 'model' ? search : '' }}
+                          to={{ pathname: item.path, search: group.id === 'ontology' ? search : '' }}
                           className={navLinkClass}
                         >
                           <item.icon aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
                           {item.label}
-                          <NavBadge label={item.label} count={badges[item.path]} />
+                          <NavBadge
+                            label={item.label}
+                            count={badges[item.path]?.count}
+                            kind={badges[item.path]?.kind}
+                          />
                         </NavLink>
                       ))}
                   </div>
                 )
               })}
-              {/* 分隔线之下是流程外的目的地：不是「最后一步」，是每一步的
-                  落点。标题跟流程组同一个视觉层级，差别在行为——流程组的
-                  标题是可折叠的按钮，这一组常驻，所以标题就是个静态标签，
-                  没有按钮语义可点。 */}
-              <div className="my-1 border-t border-subtle" />
-              <p className="flex min-h-[36px] items-center rounded-control px-2 text-xs font-bold uppercase tracking-wide text-ink-soft">
-                {NAV_STANDALONE_LABEL}
-              </p>
-              {NAV_STANDALONE.map((item) => (
-                <NavLink key={item.path} to={item.path} className={navLinkClass}>
-                  <item.icon aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
-                  {item.label}
-                  {/* 规模，不是待办——顺带回答了「这个租户到底有多少数据」，
-                      这个问题此前必须点进去才知道。 */}
-                  <NavBadge label={item.label} count={badges[item.path]} kind="scale" />
-                </NavLink>
-              ))}
             </nav>
   )
 }

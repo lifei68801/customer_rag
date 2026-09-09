@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES, NAV_STANDALONE_LABEL } from '../adminRoutes'
+import { ADMIN_ROUTES } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
@@ -68,24 +68,20 @@ async function renderAt(path: string) {
 const nav = () => within(screen.getByRole('navigation', { name: '后台导航' }))
 
 describe('分组', () => {
-  it('三个阶段都在，顺序即依赖顺序', async () => {
+  it('六个模块都在，顺序即用户的工作顺序', async () => {
     await renderAt(ADMIN_ROUTES.documents)
     const headers = nav()
       .getAllByRole('button', { expanded: undefined })
       .map((b) => b.textContent?.trim())
-    expect(headers).toEqual(['建模', '接入数据', '审核'])
-  })
-
-  it('流程外的实体明细在流程组之外，始终可见', async () => {
-    // 它不归任何流程组，所以不该被折叠——每一步之后都可能用到。
-    await renderAt(ADMIN_ROUTES.documents)
-    expect(nav().getByRole('link', { name: '实体明细' })).toBeTruthy()
+    expect(headers).toEqual(['看板', '本体创建', '数据导入', '数据审核', '结果预览', '日志明细'])
   })
 
   it('当前所在的组自动展开，其余收起', async () => {
     await renderAt(ADMIN_ROUTES.reviewDuplicates)
-    expect(nav().getByRole('button', { name: '审核' }).getAttribute('aria-expanded')).toBe('true')
-    expect(nav().getByRole('button', { name: '建模' }).getAttribute('aria-expanded')).toBe('false')
+    expect(nav().getByRole('button', { name: '数据审核' }).getAttribute('aria-expanded')).toBe('true')
+    expect(nav().getByRole('button', { name: '本体创建' }).getAttribute('aria-expanded')).toBe(
+      'false',
+    )
     // 展开的组里能看到叶子，收起的组里看不到。
     expect(nav().getByRole('link', { name: '疑似重复' })).toBeTruthy()
     expect(nav().queryByRole('link', { name: '本体图' })).toBeNull()
@@ -94,45 +90,23 @@ describe('分组', () => {
   it('404 页上不会有任何组被自动展开', async () => {
     // 高亮一个用户并不在的组，比不高亮更糟——他会以为自己在那儿。
     await renderAt('/admin/乱敲')
-    for (const label of ['建模', '接入数据', '审核']) {
+    for (const label of ['看板', '本体创建', '数据导入', '数据审核', '结果预览', '日志明细']) {
       expect(nav().getByRole('button', { name: label }).getAttribute('aria-expanded')).toBe('false')
     }
   })
 })
 
-describe('明细查询组', () => {
-  // 分隔线下那两项此前没有组标题，视觉上跟流程组的叶子同级，读起来像是
-  // 第四组漏了标题。给它一个标题，同时不让它可折叠——它是每一步的落点，
-  // 折起来等于把落点藏了。
-  it('分隔线下的两项有组标题', async () => {
-    await renderAt(ADMIN_ROUTES.documents)
-    expect(nav().getByText(NAV_STANDALONE_LABEL)).toBeTruthy()
-  })
-
-  it('组标题不是按钮：这一组不折叠', async () => {
-    await renderAt(ADMIN_ROUTES.documents)
-    expect(nav().queryByRole('button', { name: NAV_STANDALONE_LABEL })).toBeNull()
-  })
-
-  it('点组标题不会让两项消失——这是它和流程组的区别', async () => {
-    const user = userEvent.setup()
-    await renderAt(ADMIN_ROUTES.documents)
-    await user.click(nav().getByText(NAV_STANDALONE_LABEL))
-    expect(nav().getByRole('link', { name: /实体明细/ })).toBeTruthy()
-    expect(nav().getByRole('link', { name: /问答明细/ })).toBeTruthy()
-  })
-})
 
 describe('折叠状态', () => {
   it('手动展开的组在下次进入时仍然是展开的', async () => {
     const user = userEvent.setup()
     const { unmount } = await renderAt(ADMIN_ROUTES.documents)
-    await user.click(nav().getByRole('button', { name: '建模' }))
-    expect(nav().getByRole('button', { name: '建模' }).getAttribute('aria-expanded')).toBe('true')
+    await user.click(nav().getByRole('button', { name: '本体创建' }))
+    expect(nav().getByRole('button', { name: '本体创建' }).getAttribute('aria-expanded')).toBe('true')
     unmount()
 
     await renderAt(ADMIN_ROUTES.documents)
-    expect(nav().getByRole('button', { name: '建模' }).getAttribute('aria-expanded')).toBe('true')
+    expect(nav().getByRole('button', { name: '本体创建' }).getAttribute('aria-expanded')).toBe('true')
   })
 
   it('当前所在的组即使被记成收起，也仍然展开', async () => {
@@ -140,18 +114,18 @@ describe('折叠状态', () => {
     // 当前页面在导航上无处对应。
     const user = userEvent.setup()
     const { unmount } = await renderAt(ADMIN_ROUTES.documents)
-    await user.click(nav().getByRole('button', { name: '接入数据' }))
-    expect(nav().getByRole('button', { name: '接入数据' }).getAttribute('aria-expanded')).toBe('false')
+    await user.click(nav().getByRole('button', { name: '数据导入' }))
+    expect(nav().getByRole('button', { name: '数据导入' }).getAttribute('aria-expanded')).toBe('false')
     unmount()
 
     await renderAt(ADMIN_ROUTES.etl)
-    expect(nav().getByRole('button', { name: '接入数据' }).getAttribute('aria-expanded')).toBe('true')
+    expect(nav().getByRole('button', { name: '数据导入' }).getAttribute('aria-expanded')).toBe('true')
   })
 
   it('localStorage 读不出来时不报错，退回默认展开规则', async () => {
     localStorage.setItem('admin_nav_collapsed', '不是 JSON')
     await renderAt(ADMIN_ROUTES.etl)
-    expect(nav().getByRole('button', { name: '接入数据' }).getAttribute('aria-expanded')).toBe('true')
+    expect(nav().getByRole('button', { name: '数据导入' }).getAttribute('aria-expanded')).toBe('true')
   })
 })
 

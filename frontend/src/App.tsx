@@ -17,8 +17,15 @@ import { TenantsPage } from './admin/TenantsPage'
 import { SettingsPage } from './admin/SettingsPage'
 import { NotFoundPage } from './admin/NotFoundPage'
 import { GuidedOntologyPage } from './admin/guidedOntology/GuidedOntologyPage'
-import { AdminLanding } from './admin/AdminLanding'
-import { LEGACY_REDIRECTS } from './adminRoutes'
+import {
+  ConflictReviewPage,
+  DashboardPage,
+  DataGraphPage,
+  DatabaseImportPage,
+  DirtyEdgesPage,
+  ErrorLogPage,
+} from './admin/ComingSoonPages'
+import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'
 import { useAdminAuth } from './admin/useAdminAuth'
 
 /**
@@ -49,25 +56,39 @@ function App() {
       <Route path="/" element={<ChatRoute />} />
       <Route path="/admin/login" element={<LoginPage />} />
       <Route path="/admin" element={<AdminLayout />}>
-        <Route index element={<AdminLanding />} />
+        {/* 落地页是看板：它跨领域、不需要"当前租户"，新登录的 admin
+            （tenant_id 恒为 None）第一眼就能看到自己有哪些领域。
+            此前这里是 AdminLanding，按本体确认状态在本体结构页和文档上传
+            之间分流——那个分流需要一个当前租户，而登录那一刻没有。 */}
+        <Route index element={<Navigate to={ADMIN_ROUTES.dashboard} replace />} />
 
-        <Route path="ingest/documents" element={<DocumentsPage />} />
-        <Route path="ingest/etl" element={<SchemaEtlPage />} />
-        <Route path="model/ontology" element={<OntologySchemaPage />} />
+        <Route path="dashboard" element={<DashboardPage />} />
+
+        <Route path="ontology/ontology" element={<OntologySchemaPage />} />
         {/* 本体图和疑似重复此前埋在别人的 tab 里。先给它们自己的 URL，
             页面本体的拆分是下一步的事——先有地址才谈得上被发现。 */}
-        <Route path="model/graph" element={<OntologyGraphPage />} />
-        <Route path="model/persona" element={<PersonaEditorPage />} />
-        {/* 首次建模的入口。不进 NAV_GROUPS——从本体结构页跳进来，不是
-            常驻目的地。 */}
-        <Route path="model/guided" element={<GuidedOntologyPage />} />
+        <Route path="ontology/graph" element={<OntologyGraphPage />} />
+        <Route path="ontology/guided" element={<GuidedOntologyPage />} />
+        <Route path="ontology/persona" element={<PersonaEditorPage />} />
+
+        <Route path="import/documents" element={<DocumentsPage />} />
+        <Route path="import/table" element={<SchemaEtlPage />} />
+        <Route path="import/database" element={<DatabaseImportPage />} />
+
         <Route path="review/relations" element={<GraphReviewsPage />} />
+        <Route path="review/conflicts" element={<ConflictReviewPage />} />
         <Route path="review/duplicates" element={<DuplicatesPage />} />
-        <Route path="terms" element={<TermsPage />} />
+        <Route path="review/dirty-edges" element={<DirtyEdgesPage />} />
+
+        <Route path="browse/terms" element={<TermsPage />} />
+        <Route path="browse/graph" element={<DataGraphPage />} />
         {/* 详情页在列表下一层。node_key 含冒号和中文，靠 encodeURIComponent
             过 URL；它不含斜杠，所以 :nodeKey 够用。 */}
-        <Route path="terms/:nodeKey" element={<TermDetailPage />} />
-        <Route path="diagnostics" element={<DiagnosticsPage />} />
+        <Route path="browse/terms/:nodeKey" element={<TermDetailPage />} />
+
+        <Route path="logs/qa" element={<DiagnosticsPage />} />
+        <Route path="logs/errors" element={<ErrorLogPage />} />
+
         <Route path="accounts" element={<AccountsPage />} />
         <Route path="tenants" element={<TenantsPage />} />
         <Route path="settings" element={<SettingsPage />} />

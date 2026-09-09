@@ -7,6 +7,7 @@ import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { resetAdminSession } from './useAdminAuth'
+import { ADMIN_ROUTES } from '../adminRoutes'
 
 /**
  * 实体详情页的批量删关系边。
@@ -22,7 +23,7 @@ import { resetAdminSession } from './useAdminAuth'
  */
 
 const NODE_KEY = '公司:可口可乐'
-const PATH = `/admin/terms/${encodeURIComponent(NODE_KEY)}`
+const PATH = `${ADMIN_ROUTES.terms}/${encodeURIComponent(NODE_KEY)}`
 
 const term = {
   node_key: NODE_KEY,

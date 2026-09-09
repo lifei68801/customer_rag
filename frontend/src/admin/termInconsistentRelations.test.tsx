@@ -7,6 +7,7 @@ import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { resetAdminSession } from './useAdminAuth'
+import { ADMIN_ROUTES } from '../adminRoutes'
 
 /**
  * 租户标记异常的关系边在详情页上的入口。
@@ -32,7 +33,7 @@ function whoamiResponse() {
 }
 
 const NODE_KEY = '公司:可口可乐'
-const PATH = `/admin/terms/${encodeURIComponent(NODE_KEY)}`
+const PATH = `${ADMIN_ROUTES.terms}/${encodeURIComponent(NODE_KEY)}`
 
 const term = {
   node_key: NODE_KEY,

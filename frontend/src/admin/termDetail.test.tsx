@@ -6,6 +6,7 @@ import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { resetAdminSession } from './useAdminAuth'
+import { ADMIN_ROUTES } from '../adminRoutes'
 
 /**
  * 身份不再存 sessionStorage（token 在 HttpOnly Cookie 里，JS 读不到，也
@@ -35,7 +36,7 @@ function whoamiResponse() {
  */
 
 const NODE_KEY = '公司:可口可乐'
-const PATH = `/admin/terms/${encodeURIComponent(NODE_KEY)}`
+const PATH = `${ADMIN_ROUTES.terms}/${encodeURIComponent(NODE_KEY)}`
 
 function stubDetail(body: unknown, status = 200) {
   vi.stubGlobal(
@@ -187,8 +188,8 @@ describe('从列表进来', () => {
         return new Promise(() => {})
       }),
     )
-    renderAt('/admin/terms')
+    renderAt(ADMIN_ROUTES.terms)
     const link = await screen.findByRole('link', { name: '可口可乐' })
-    expect(link.getAttribute('href')).toBe(`/admin/terms/${encodeURIComponent(NODE_KEY)}`)
+    expect(link.getAttribute('href')).toBe(`${ADMIN_ROUTES.terms}/${encodeURIComponent(NODE_KEY)}`)
   })
 })

@@ -133,7 +133,7 @@ describe('明细详情', () => {
 
     await waitFor(() => expect(page().getByRole('link', { name: /可口可乐/ })).toBeTruthy())
     expect(page().getByRole('link', { name: /可口可乐/ }).getAttribute('href')).toBe(
-      `/admin/terms/${encodeURIComponent('公司:可口可乐')}`,
+      `${ADMIN_ROUTES.terms}/${encodeURIComponent('公司:可口可乐')}`,
     )
     expect(page().getByRole('link', { name: /雪碧/ })).toBeTruthy()
   })

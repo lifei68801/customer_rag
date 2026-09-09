@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import App from '../../App'
@@ -114,12 +114,18 @@ function renderAt(path: string) {
   )
 }
 
+// 「引导建模」现在也是侧边栏「本体创建」组里的一个常驻叶子，页面正文里的
+// 那个入口不再是全页唯一的匹配。断言限定在正文（main）里——这些用例测的是
+// 页面自己的引导入口（它带覆盖提示），不是导航链接。
+// 异步：整个 App 要等 whoami 回来才画得出外壳，同步取 main 会取在空树上。
+const body = async () => within(await screen.findByRole('main'))
+
 describe('引导入口', () => {
   it('本体结构页有引导入口', async () => {
     signIn('admin')
     stubOntology()
     renderAt(ADMIN_ROUTES.ontology)
-    expect(await screen.findByRole('link', { name: /引导|从表格开始/ })).toBeTruthy()
+    expect(await (await body()).findByRole('link', { name: /引导|从表格开始/ })).toBeTruthy()
   })
 
   it('还不知道草稿是否为空时，既不承诺安全也不警告覆盖', async () => {
@@ -129,7 +135,7 @@ describe('引导入口', () => {
     signIn('admin')
     stubOntologyPending()
     renderAt(ADMIN_ROUTES.ontology)
-    const link = await screen.findByRole('link', { name: /引导|从表格开始/ })
+    const link = await (await body()).findByRole('link', { name: /引导|从表格开始/ })
     const title = link.getAttribute('title') ?? ''
     expect(title).not.toMatch(/覆盖|替换/)
     expect(title).not.toMatch(/推荐一套/)
@@ -141,7 +147,7 @@ describe('引导入口', () => {
     signIn('admin')
     stubOntology({ termTypes: [{ value: '已有类型', extra_fields: [], standard_name_value_type: 'string' }] })
     renderAt(ADMIN_ROUTES.ontology)
-    const link = await screen.findByRole('link', { name: /引导|从表格开始/ })
+    const link = await (await body()).findByRole('link', { name: /引导|从表格开始/ })
     // 等 readiness 真的拉取完成、title 定型成"已知非空"那句之后再断言，
     // 否则会和上一条"未知"态断言撞在同一句"不含覆盖"上，测不出区别。
     await screen.findByTitle(/覆盖|替换/)
@@ -152,7 +158,7 @@ describe('引导入口', () => {
     signIn('admin')
     stubOntology({ termTypes: [] })
     renderAt(ADMIN_ROUTES.ontology)
-    const link = await screen.findByRole('link', { name: /引导|从表格开始/ })
+    const link = await (await body()).findByRole('link', { name: /引导|从表格开始/ })
     // "未知"和"已知为空"两态的 title 都不含"覆盖"，容易被同一条断言
     // 误判成一条测试。这里等 title 变成"已知为空"那句具体文案定型后
     // 再断言，确保测的是"已知为空"而不是首帧还没查完的"未知"。

@@ -626,7 +626,7 @@ export function SchemaEtlPage() {
                   </Link>
                   看结果；有待人工确认的关系时去
                   <Link to={ADMIN_ROUTES.reviewRelations} className={`mx-1 font-bold underline ${focusRing}`}>
-                    待审关系
+                    关系审核
                   </Link>
                   。
                 </p>

@@ -4,7 +4,7 @@ import { DuplicateTermSuggestionsTab } from './DuplicateTermSuggestionsTab'
  * 疑似重复的独立页面。
  *
  * 此前它是「数据加工 › 文档抽取 › 疑似重复」的第四层 tab——侧边栏上看不
- * 到，得先知道它在那儿才找得到。它跟「待审关系」是并列的审核任务，不是
+ * 到，得先知道它在那儿才找得到。它跟「关系审核」是并列的审核任务，不是
  * 后者的子项，所以给它自己的地址。
  *
  * 页面本体一行都没搬：DuplicateTermSuggestionsTab 本来就自己拿 auth 和

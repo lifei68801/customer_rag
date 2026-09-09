@@ -119,7 +119,7 @@ describe('抽屉', () => {
     await renderAt('/admin/乱敲')
     await user.click(trigger())
     const notFound = within(screen.getByTestId('not-found'))
-    await user.click(notFound.getByRole('link', { name: '文档上传' }))
+    await user.click(notFound.getByRole('link', { name: '文档导入' }))
     expect(aside().getAttribute('data-open')).toBe('false')
   })
 })

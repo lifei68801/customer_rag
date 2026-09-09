@@ -221,7 +221,7 @@ describe('前向出口', () => {
     const detail = await screen.findByTestId('etl-run-detail')
     const link = await within(detail).findByRole('link', { name: '实体明细' })
     expect(link.getAttribute('href')).toBe(ADMIN_ROUTES.terms)
-    const reviewLink = await within(detail).findByRole('link', { name: '待审关系' })
+    const reviewLink = await within(detail).findByRole('link', { name: '关系审核' })
     expect(reviewLink.getAttribute('href')).toBe(ADMIN_ROUTES.reviewRelations)
   })
 

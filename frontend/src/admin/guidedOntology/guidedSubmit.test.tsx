@@ -208,7 +208,10 @@ describe('提交草稿', () => {
     const user = userEvent.setup()
     renderAtReviewStep()
     await user.click(await screen.findByRole('button', { name: /写入草稿/ }))
-    expect(await screen.findByRole('link', { name: /本体结构|去确认/ })).toBeTruthy()
+    // 限定在正文里：「本体结构」现在也是侧边栏「本体创建」组的一个叶子，
+    // 全页匹配会撞上两个。这条测的是提交成功后页面自己给出的去处。
+    const body = within(await screen.findByRole('main'))
+    expect(await body.findByRole('link', { name: /本体结构|去确认/ })).toBeTruthy()
   })
 
   it('成功后提供 ETL 映射下载，不用重配', async () => {
