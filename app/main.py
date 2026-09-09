@@ -17,6 +17,8 @@ from app.api.admin_diagnostics_routes import router as admin_diagnostics_router
 from app.api.admin_nav_badges_routes import router as admin_nav_badges_router
 from app.api.admin_ontology_routes import router as admin_ontology_router
 from app.api.admin_org_routes import router as admin_org_router
+from app.api.admin_dashboard_routes import router as admin_dashboard_router
+from app.api.admin_dashboard_routes import stats_router as admin_dashboard_stats_router
 from app.api.admin_personas_routes import router as admin_personas_router
 from app.api.admin_personas_routes import persona_router as admin_persona_detail_router
 from app.api.admin_schema_etl_routes import router as admin_schema_etl_router
@@ -168,11 +170,18 @@ admin_scoped.include_router(admin_org_router)
 # tests/api/test_admin_route_shapes.py 的 _NON_TENANT_PREFIXES。
 admin_scoped.include_router(admin_personas_router)
 
+# 看板的领域清单也是非租户路径：看板是登录后的落地页，那时还没有"当前租户"，
+# 而「我能看到哪些领域」对每个角色都要回答得出来。安全性靠内容按
+# list_accessible_tenant_ids 过滤，跟上面那条同一个模式。逐领域的统计端点
+# 是租户内的，挂在下面的 tenant_scoped 里。
+admin_scoped.include_router(admin_dashboard_router)
+
 # 租户作用域的路由统一收在这个父 router 下，而不是各挂各的依赖。各挂各的
 # 一定会漏，而漏掉的那条是越权读写，且不会有任何报错——请求照常 200，只是
 # 返回的是别人租户的数据。tests/api/test_admin_route_shapes.py 里的结构测试
 # 兜住新增路由忘记归类的情况。
 tenant_scoped = APIRouter(dependencies=[Depends(deps.require_tenant_access)])
+tenant_scoped.include_router(admin_dashboard_stats_router)
 tenant_scoped.include_router(admin_document_router)
 tenant_scoped.include_router(admin_graph_review_router)
 tenant_scoped.include_router(admin_duplicate_review_router)

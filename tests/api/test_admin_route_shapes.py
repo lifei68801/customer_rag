@@ -108,6 +108,11 @@ _NON_TENANT_PREFIXES = (
     # {tenant_id} 段。挂 require_tenant_access 的话 FastAPI 会把 tenant_id
     # 当成必填 query 参数，请求直接 422——见 test_non_tenant_routes_do_not_check_tenant_access。
     "/api/admin/personas",
+    # 看板的领域清单：路径里没有 {tenant_id} 段。看板是登录后的落地页，
+    # 那时还没有"当前租户"，而「我能看到哪些领域」对每个角色都要回答得出来。
+    # 内容按 list_accessible_tenant_ids 过滤。逐领域的统计端点是租户内的，
+    # 路径是 /api/admin/{tenant_id}/dashboard/stats，落在上面的租户前缀里。
+    "/api/admin/dashboard",
 )
 
 
@@ -235,7 +240,15 @@ def test_only_login_is_exempt_from_csrf():
 #: - "/api/admin/auth/"：登录、查身份、切当前租户这几个接口，服务对象
 #:   本来就包含 member（甚至登录之前根本没有角色可言），要求 admin 角色
 #:   会把所有 member 直接挡在整个后台门外。
-_ADMIN_ROLE_EXEMPT_PREFIXES = ("/api/admin/personas", "/api/admin/auth/")
+#: - "/api/admin/dashboard"：看板是登录后的落地页，member 也要看得到自己
+#:   那几个领域。同 personas：只挂 require_admin_session，安全性来自返回
+#:   内容按 list_accessible_tenant_ids 过滤，不是靠角色挡人。挂上
+#:   require_admin_role 的话，member 登录后落在一个 403 上。
+_ADMIN_ROLE_EXEMPT_PREFIXES = (
+    "/api/admin/personas",
+    "/api/admin/auth/",
+    "/api/admin/dashboard",
+)
 
 
 def test_non_tenant_admin_routes_require_admin_role_except_the_documented_exceptions():

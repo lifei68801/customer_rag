@@ -71,6 +71,35 @@ async def list_organizations(conn: aiosqlite.Connection) -> list[dict[str, Any]]
     return [dict(row) for row in await cursor.fetchall()]
 
 
+async def list_tenants_with_organization(
+    conn: aiosqlite.Connection, *, include_disabled: bool = False
+) -> list[dict[str, Any]]:
+    """启用中的租户，每条带上它所属组织的 id 和名字。看板的领域清单用。
+
+    这个查询放在 organizations_store 而不是 tenants_store：`tenants.org_id`
+    这一列是本模块加上去的（见 ensure_organizations_schema），"租户属于哪个
+    组织"这件事的知识归本模块。
+
+    LEFT JOIN 而不是 JOIN：没挂组织的租户是**合法状态**（存量租户，见模块
+    docstring），内连接会让它们从看板上整个消失——用户会以为租户被删了。
+    挂了一个不存在的 org_id 时同样走这一支（org_name 为 None）：
+    assign_tenant_to_org 会挡住这种写入，但历史数据里可能有。
+
+    默认只列启用中的，跟 tenants_store.list_tenants 的口径一致：停用的租户
+    读得到、写全是 404，列在看板上只会让人切过去撞墙。
+    """
+    conn.row_factory = aiosqlite.Row
+    sql = (
+        "SELECT t.tenant_id, t.name, t.org_id, o.name AS org_name "
+        "FROM tenants t LEFT JOIN organizations o ON o.org_id = t.org_id "
+    )
+    if not include_disabled:
+        sql += "WHERE t.status = 'active' "
+    sql += "ORDER BY t.tenant_id"
+    cursor = await conn.execute(sql)
+    return [dict(row) for row in await cursor.fetchall()]
+
+
 async def assign_tenant_to_org(
     conn: aiosqlite.Connection, *, tenant_id: str, org_id: str | None
 ) -> None:
