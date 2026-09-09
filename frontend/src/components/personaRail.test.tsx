@@ -72,6 +72,17 @@ function stubApi() {
           new Response(JSON.stringify(personasResponse), { status: personasStatus }),
         )
       }
+      // 数字人详情：ChatWorkspace 现在对当前租户拉一次。这里给个空引导
+      // 问题的回包，不是任由它落进末尾那个永不 resolve 的兜底——挂着的
+      // 请求会让这些用例在「详情加载失败该说话」这类回归上瞎掉。
+      if (/\/api\/admin\/[^/]+\/persona$/.test(url)) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ ...ONE_PERSONA, questions: [] }),
+            { status: 200 },
+          ),
+        )
+      }
       if (url.includes('/api/admin/auth/session/tenant')) {
         switchRequests.push({
           method: (init?.method ?? 'GET').toUpperCase(),

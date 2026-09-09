@@ -31,3 +31,29 @@ export async function fetchPersonas(sessionToken: string): Promise<PersonaListRe
   }
   return (await response.json()) as PersonaListResponse
 }
+
+/**
+ * 单个数字人的详情，比列表多一个 `questions`。
+ *
+ * 引导问题只在详情里给，列表里没有：右栏有 N 个数字人，自动生成的引导
+ * 问题每算一条都要探一次图，放进列表就是 N 次图查询。前台只对**当前**
+ * 这一个数字人拉详情，切换时重拉，图查询恒为 1 次。
+ */
+export interface PersonaDetail extends Persona {
+  questions: string[]
+}
+
+export async function fetchPersonaDetail(
+  sessionToken: string,
+  tenantId: string,
+): Promise<PersonaDetail> {
+  const response = await adminFetch(
+    `/api/admin/${encodeURIComponent(tenantId)}/persona`,
+    sessionToken,
+  )
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(extractErrorDetail(body, '数字人信息加载失败'))
+  }
+  return (await response.json()) as PersonaDetail
+}

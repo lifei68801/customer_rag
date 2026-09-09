@@ -10,7 +10,13 @@ import { useAgentChat } from '../hooks/useAgentChat'
 import { AccountMenu } from '../admin/AccountMenu'
 import { TenantProvider, useAdminTenant } from '../admin/TenantContext'
 import { useAdminAuth } from '../admin/useAdminAuth'
-import { fetchPersonas, type Persona } from '../lib/personasApi'
+import { GuidedQuestions } from '../components/GuidedQuestions'
+import {
+  fetchPersonaDetail,
+  fetchPersonas,
+  type Persona,
+  type PersonaDetail,
+} from '../lib/personasApi'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -112,6 +118,32 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
     }
   }, [])
 
+  // 当前这一个数字人的详情（含引导问题）。只拉当前这个、切换时重拉——
+  // 列表接口刻意不带 questions，那里每条引导问题都要探一次图，N 个数字人
+  // 就是 N 次图查询。
+  const [personaDetail, setPersonaDetail] = useState<PersonaDetail | null>(null)
+  const [personaDetailError, setPersonaDetailError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setPersonaDetail(null)
+    setPersonaDetailError(null)
+    fetchPersonaDetail('', tenantId)
+      .then((detail) => {
+        if (cancelled) return
+        setPersonaDetail(detail)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        // 「这个数字人没配引导问题」和「引导问题没拉回来」在界面上长得
+        // 一样，后者却是该报修的故障——必须说出来。
+        setPersonaDetailError(err instanceof Error ? err.message : '数字人信息加载失败')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [tenantId])
+
   const {
     messages,
     isSending,
@@ -149,6 +181,20 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
         <Hero />
         {currentPersonaAccessible ? (
           <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col">
+            {messages.length === 0 &&
+              (personaDetailError !== null ? (
+                <p role="status" className="mx-auto w-full max-w-2xl p-6 text-sm text-status-error-strong">
+                  {personaDetailError}
+                </p>
+              ) : (
+                personaDetail !== null && (
+                  <GuidedQuestions
+                    tagline={personaDetail.tagline}
+                    questions={personaDetail.questions}
+                    onAsk={sendQuestion}
+                  />
+                )
+              ))}
             <ChatWindow messages={messages} />
             <ChatInput disabled={isSending} onSend={sendQuestion} />
           </main>
