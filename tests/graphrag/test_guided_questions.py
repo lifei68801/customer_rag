@@ -117,6 +117,33 @@ def test_skips_combinations_with_no_edges_in_the_graph():
     asyncio.run(run())
 
 
+def test_a_tenant_with_no_data_gets_no_questions_at_all():
+    """本体建好了、一条数据都还没导的租户，一条问题都不推荐。
+
+    上一条测的是「一批里挑掉没边的那几个」，剩下的仍有问题可推。这一条
+    测的是全军覆没那一档：前台该看到一个干净的空引导区，而不是一屏点了
+    都答不出来的问题。这是新租户的第一印象，也是这个模块存在的理由本身。
+
+    两个组合而不是一个：只有一个的话，「探测抛错就整体放弃」和「逐个过滤」
+    这两种实现产生的结果一样，分不出来。
+    """
+
+    async def run():
+        conn = await _conn()
+        try:
+            await _add_combinations(
+                conn, "t1",
+                [("产品", "RELATED_TO", "口味"), ("产品", "RELATED_TO", "产地")],
+            )
+            graph = FakeGraph({})  # 图是空的：一条边都没有
+            questions = await generate_questions(conn, graph, tenant_id="t1")
+            assert questions == []
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
 def test_only_confirmed_combinations_are_used():
     """草稿态的本体不该出现在前台。草稿是还没定的东西，拿它生成问题
     等于把内部草稿念给终端用户听。"""
