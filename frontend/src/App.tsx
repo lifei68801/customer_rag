@@ -19,9 +19,9 @@ import { NotFoundPage } from './admin/NotFoundPage'
 import { GuidedOntologyPage } from './admin/guidedOntology/GuidedOntologyPage'
 import {
   DatabaseImportPage,
-  ErrorLogPage,
 } from './admin/ComingSoonPages'
 import { DataGraphPage } from './admin/DataGraphPage'
+import { ErrorLogPage } from './admin/ErrorLogPage'
 import { DirtyEdgesPage } from './admin/DirtyEdgesPage'
 import { AttributeConflictsPage } from './admin/AttributeConflictsPage'
 import { DashboardPage } from './admin/DashboardPage'
