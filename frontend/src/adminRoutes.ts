@@ -284,3 +284,11 @@ export function routeRequiresTenant(pathname: string): boolean {
   if (REDIRECT_ONLY_PATHS.includes(pathname)) return false
   return !NON_TENANT_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
 }
+
+/**
+ * 图谱预览页的 URL 参数：带上它进去就直接画那个实体，不用再搜一遍。
+ *
+ * 放在这里而不是 `DataGraphPage.tsx`：术语表要用它拼「看图」链接，
+ * 从那边 import 页面组件会把整个预览页拖进术语表的 chunk。
+ */
+export const GRAPH_PREVIEW_QUERY_KEY = 'node_key'

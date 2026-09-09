@@ -13,7 +13,7 @@ import { useToast } from './ToastContext'
 import { adminFetch } from './adminApi'
 import { Pager } from './Pager'
 import { usePaginatedAdminList } from './usePaginatedAdminList'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { ADMIN_ROUTES, GRAPH_PREVIEW_QUERY_KEY } from '../adminRoutes'
 import { termDetailPath } from './TermDetailPage'
 import { PAGE_TITLES } from '../adminRoutes'
 import { fieldDisplayName, valueTypeLabel } from './extraFieldDisplay'
@@ -480,6 +480,15 @@ export function TermsPage() {
                     </span>
                   </span>
                   <div className="flex gap-2">
+                    {/* 「看图」直接带着 node_key 跳到图谱预览。这一页最常见的
+                        下一个问题就是"它到底连着什么"，而到了预览页还要再把
+                        名字输一遍的话，没人会用。 */}
+                    <Link
+                      to={`${ADMIN_ROUTES.dataGraph}?${GRAPH_PREVIEW_QUERY_KEY}=${encodeURIComponent(term.node_key)}`}
+                      className={`flex min-h-[44px] items-center rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 ${focusRing}`}
+                    >
+                      看图
+                    </Link>
                     <button
                       type="button"
                       onClick={() => handleStartEdit(term)}

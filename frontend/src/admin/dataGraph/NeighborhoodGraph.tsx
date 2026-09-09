@@ -61,8 +61,10 @@ export function NeighborhoodGraph({
         // 中心节点画大一圈：一屏三百个点里，用户第一件事是找到他搜的那个。
         size: node.node_key === center ? 14 : 7,
         color: colorForType(node.term_type),
-        // 初始位置随机撒开。全落在原点的话 forceAtlas2 第一帧会算出一个
-        // 除零，整张图变成一个点。
+        // 初始位置随机撒开。全落在原点的话所有节点间距为 0，而
+        // forceAtlas2 的斥力计算带 `distance > 0` 守卫
+        // （graphology-layout-forceatlas2/iterate.js），整轮被跳过——
+        // 没有斥力，布局展不开，画出来就是一个点。
         x: Math.random(),
         y: Math.random(),
       })
