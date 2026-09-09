@@ -1,4 +1,4 @@
-import { Database, Share2, TriangleAlert } from 'lucide-react'
+import { Database, TriangleAlert } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
@@ -65,26 +65,6 @@ export function DatabaseImportPage() {
             表格导入
           </Link>
           。
-        </>
-      }
-    />
-  )
-}
-
-export function DataGraphPage() {
-  return (
-    <ComingSoon
-      icon={Share2}
-      title={PAGE_TITLES.dataGraph}
-      phase="阶段五"
-      plan="docs/superpowers/plans/2026-09-08-graph-preview-and-error-log.md"
-      alternative={
-        <>
-          在那之前，单个实体的邻域可以在
-          <Link to={ADMIN_ROUTES.terms} className={linkClass}>
-            实体明细
-          </Link>
-          里点开那一条查看，关系列表是全的，只是没有画成图。
         </>
       }
     />
