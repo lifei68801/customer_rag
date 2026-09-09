@@ -53,6 +53,25 @@ interface CreateEntityDraft {
 }
 
 type Tab = 'pending' | 'history'
+
+/**
+ * 待审的四个分页。
+ *
+ * key 直接发给后端，reason 的映射在那边（`admin_graph_review_routes.py`
+ * 的 `TAB_REASONS`）。**这里不许出现任何 reason 字符串**——同一份映射写在
+ * 前后端两处的话，改一个忘一个就是一个永远空着的分页，而它看起来完全正常。
+ *
+ * label 说的是审核员要做的判断，不是 reason 的技术名：他看到「一端对不上」
+ * 就知道这一页要给某一端建实体，看到 subject_unresolved 还得先翻译一遍。
+ */
+const REVIEW_TABS = [
+  { key: 'fuzzy', label: '模糊匹配' },
+  { key: 'unresolved', label: '一端对不上' },
+  { key: 'out_of_ontology', label: '不在本体' },
+  { key: 'bad_type', label: '类型非法' },
+] as const
+
+type ReviewTab = (typeof REVIEW_TABS)[number]['key']
 type HistoryFilter = 'all' | 'approved' | 'rejected'
 
 const focusRing =
@@ -64,6 +83,14 @@ export function GraphReviewsPage() {
   const showToast = useToast()
   const { density } = useAdminDensity()
   const [tab, setTab] = useState<Tab>('pending')
+  const [reviewTab, setReviewTab] = useState<ReviewTab>('fuzzy')
+  // 角标拉不到时留 null，不退回 0：显示 0 是在说"这一页没有待办"，那是一句
+  // 可能不实的断言，审核员会据此跳过一页真有东西的分页。
+  const [tabCounts, setTabCounts] = useState<Record<string, number> | null>(null)
+  // 拉失败要跟"还没拉"和"四页都是 0"分开。三者在界面上会长得一模一样
+  // （0 不渲染角标），而"角标没拉到"时审核员看到四个光秃秃的分页，会读成
+  // "没活干"——那是静默失败。
+  const [tabCountsFailed, setTabCountsFailed] = useState(false)
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [pending, setPending] = useState<PendingReview[]>([])
   const [pendingLoaded, setPendingLoaded] = useState(false)
@@ -174,7 +201,7 @@ export function GraphReviewsPage() {
     const requestId = pendingGuard.next()
     try {
       const response = await adminFetch(
-        `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews?status=pending&page=${pendingPage}&page_size=${PAGE_SIZE}`,
+        `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews?status=pending&tab=${reviewTab}&page=${pendingPage}&page_size=${PAGE_SIZE}`,
         sessionToken,
       )
       if (!response.ok) {
@@ -204,7 +231,34 @@ export function GraphReviewsPage() {
         setPendingLoaded(true)
       }
     }
-  }, [sessionToken, tenantId, pendingPage, pendingGuard])
+  }, [sessionToken, tenantId, pendingPage, reviewTab, pendingGuard])
+
+  // 四个分页的角标。跟列表分开拉：列表按分页只取一页的内容，而角标要
+  // 回答"别的几页有没有活"——合成一个请求的话，切一次分页就要把四个数字
+  // 全部重算一遍。
+  const refreshTabCounts = useCallback(async () => {
+    if (!sessionToken) return
+    try {
+      const response = await adminFetch(
+        `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews/counts`,
+        sessionToken,
+      )
+      if (!response.ok) throw new Error('角标没拉到')
+      setTabCounts((await response.json()) as Record<string, number>)
+      setTabCountsFailed(false)
+    } catch {
+      // 不退回 0：显示 0 是在说"这一页没有待办"，那是一句可能不实的断言，
+      // 审核员会据此跳过一页真有东西的分页。也不静默——四个没有角标的
+      // 分页读起来就是"四页都空"，跟真的空一模一样。说出来，并留一个
+      // 重试入口。分页本身照常能点。
+      setTabCounts(null)
+      setTabCountsFailed(true)
+    }
+  }, [sessionToken, tenantId])
+
+  useEffect(() => {
+    void refreshTabCounts()
+  }, [refreshTabCounts, pending.length])
 
   // 只清选中状态，不清 batchResult——batchResult 要留到用户看到汇总为止。
   // 批量提交结束后会调用 refreshPending()，那会产生一个新的 pending 数组
@@ -662,6 +716,54 @@ export function GraphReviewsPage() {
         </button>
       </div>
 
+      {tab === 'pending' && (
+        <div role="tablist" aria-label="待审理由" className="flex flex-wrap gap-2">
+          {REVIEW_TABS.map((item) => {
+            const selected = reviewTab === item.key
+            const count = tabCounts?.[item.key]
+            return (
+              <button
+                key={item.key}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                onClick={() => {
+                  setReviewTab(item.key)
+                  // 换一页就回到第 1 页：留在第 3 页的话，新分页多半只有
+                  // 一页内容，用户会看到一个空列表并以为这一类没有待审。
+                  setPendingPage(1)
+                }}
+                className={`flex min-h-[36px] cursor-pointer items-center gap-2 rounded-control border border-subtle px-3 text-sm font-bold transition ${focusRing} ${
+                  selected ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink'
+                }`}
+              >
+                {item.label}
+                {/* 0 不渲染：每个分页后面挂个 0 只是噪音，而"这里没事"本来
+                    就是默认预期。拉不到时 count 是 undefined，同样不渲染
+                    ——编一个 0 出来是在说一句可能不实的话。 */}
+                {count ? (
+                  <span className="min-w-[1.25rem] rounded-chip bg-card px-1.5 py-0.5 text-center text-xs font-bold text-ink">
+                    {count > 99 ? '99+' : count}
+                  </span>
+                ) : null}
+              </button>
+            )
+          })}
+          {tabCountsFailed && (
+            <span role="status" className="flex items-center gap-2 text-xs text-ink-soft">
+              角标没拉到，四个分页里各有多少条现在不知道——挨个点开看，或者
+              <button
+                type="button"
+                onClick={() => void refreshTabCounts()}
+                className={`cursor-pointer font-bold underline underline-offset-2 ${focusRing}`}
+              >
+                重试
+              </button>
+            </span>
+          )}
+        </div>
+      )}
+
       {error && (
         <p
           role="alert"
@@ -1048,7 +1150,11 @@ export function GraphReviewsPage() {
         </div>
       )}
       {tab === 'pending' && pendingLoaded && pending.length === 0 && (
-        <p className="text-ink-soft">当前没有待审核的候选关系。</p>
+        // 说清是**这一类**没有，不是整个队列空了。说成后者的话，审核员会
+        // 以为活干完了，而别的分页里还堆着。
+        <p className="text-ink-soft">
+          这一类没有待审的候选关系。别的分页可能还有——上面的角标会告诉你。
+        </p>
       )}
       {tab === 'pending' && pendingLoaded && pending.length > 0 && (
         <Pager
