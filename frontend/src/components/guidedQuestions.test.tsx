@@ -30,7 +30,7 @@ const PERSONA_STORE: Persona = {
   tagline: '门店的事问我',
 }
 
-let personaDetail: PersonaDetail
+let personaDetails: Record<string, PersonaDetail>
 let personaDetailStatus = 200
 let chatRequests: { body: unknown }[] = []
 
@@ -66,9 +66,20 @@ function stubApi() {
           ),
         )
       }
-      if (/\/api\/admin\/[^/]+\/persona$/.test(url)) {
+      // 按 URL 里的租户分发，不是不管问谁都回同一份。用 `[^/]+` 通配的话，
+      // 「拉错了租户」这种实现照样能让「切换之后问题换了」变绿——它实际
+      // 只证明了"又请求了一次"。
+      const detail = /\/api\/admin\/([^/]+)\/persona$/.exec(url)
+      if (detail) {
+        const asked = decodeURIComponent(detail[1])
+        const body = personaDetails[asked]
+        if (body === undefined) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ detail: `没有租户 ${asked}` }), { status: 404 }),
+          )
+        }
         return Promise.resolve(
-          new Response(JSON.stringify(personaDetail), { status: personaDetailStatus }),
+          new Response(JSON.stringify(body), { status: personaDetailStatus }),
         )
       }
       if (url.includes('/api/admin/auth/session/tenant')) {
@@ -100,7 +111,18 @@ function stubApi() {
 }
 
 beforeEach(() => {
-  personaDetail = { ...PERSONA, questions: ['有哪些无香料的洗发水？', '哪些商品产自日本？'] }
+  personaDetails = {
+    'muji-goods': {
+      ...PERSONA,
+      questions: ['有哪些无香料的洗发水？', '哪些商品产自日本？'],
+      questions_source: 'handwritten',
+    },
+    'muji-store': {
+      ...PERSONA_STORE,
+      questions: ['哪家店卖得最好？'],
+      questions_source: 'handwritten',
+    },
+  }
   personaDetailStatus = 200
   chatRequests = []
   resetAdminSession()
@@ -151,7 +173,7 @@ describe('前台引导问题', () => {
   })
 
   it('一条引导问题都没有时整块不渲染，不是渲染一个空标题', async () => {
-    personaDetail = { ...PERSONA, questions: [] }
+    personaDetails['muji-goods'] = { ...PERSONA, questions: [], questions_source: 'handwritten' }
     renderChat()
     await waitFor(() => expect(screen.getByText(PERSONA.tagline)).toBeTruthy())
     expect(screen.queryByTestId('guided-questions')).toBeNull()
@@ -162,7 +184,12 @@ describe('前台引导问题', () => {
     // 的 `(persona or {}).get("tagline", "")`），这是每个新租户的默认状态，
     // 不是极端情况。两边都空还渲染的话，正文顶上会多出一块只有内边距的
     // 空白，看起来像加载卡住了。
-    personaDetail = { ...PERSONA, tagline: '', questions: [] }
+    personaDetails['muji-goods'] = {
+      ...PERSONA,
+      tagline: '',
+      questions: [],
+      questions_source: 'handwritten',
+    }
     renderChat()
     // 引导块不渲染时没有可见文字能当"数据已到手"的信号，改成显式把挂载
     // 后的 effect 和微任务队列跑完再断言——不跑完的话断言跑在第一帧上，
@@ -182,7 +209,6 @@ describe('前台引导问题', () => {
     const user = userEvent.setup()
     renderChat()
     await waitFor(() => expect(screen.getByRole('button', { name: /无香料/ })).toBeTruthy())
-    personaDetail = { ...PERSONA_STORE, questions: ['哪家店卖得最好？'] }
     await user.click(screen.getByRole('button', { name: /店务老张/ }))
     await waitFor(() => expect(screen.getByRole('button', { name: /卖得最好/ })).toBeTruthy())
     // 只断言新的出现是假绿：「两批都渲染」的实现照样能过。

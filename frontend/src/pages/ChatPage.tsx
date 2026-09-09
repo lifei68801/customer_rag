@@ -120,7 +120,14 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
 
   // 当前这一个数字人的详情（含引导问题）。只拉当前这个、切换时重拉——
   // 列表接口刻意不带 questions，那里每条引导问题都要探一次图，N 个数字人
-  // 就是 N 次图查询。
+  // 就是 N 份这样的开销。
+  //
+  // 这个 effect 不受 messages 约束：带 ?session= 接着聊的用户看不到引导区，
+  // 却仍然会付一次这个请求的钱（后端对每个已确认关系组合各探一次图，串行）。
+  // 没有按会话状态去掉它，是因为「现在有没有消息」在挂载那一刻还没定
+  // （历史是异步加载的），按它开关会变成一个竞态；而用户随时可能点「新会话」
+  // 回到需要引导问题的状态。代价记在
+  // .superpowers/sdd/2026-09-08-guided-questions/progress.md。
   const [personaDetail, setPersonaDetail] = useState<PersonaDetail | null>(null)
   const [personaDetailError, setPersonaDetailError] = useState<string | null>(null)
 

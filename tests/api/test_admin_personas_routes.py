@@ -178,7 +178,8 @@ def test_anonymous_request_is_refused(personas_conn):
 
 
 class FakeGraph:
-    """按 (relation_type, from, to) 报告边数的假图客户端，供
+    """按 (relation_type, from, to) 报告扇出度（单个主语最多连到几个宾语，
+    不是边的总条数）的假图客户端，供
     generate_questions 探测扇出度用。没登记的组合返回 0——"图里没有这种边"
     正是它要模拟的状态（同款写法见 tests/graphrag/test_guided_questions.py）。"""
 
@@ -301,6 +302,76 @@ def test_generated_questions_fill_in_when_none_were_written(personas_conn):
     assert resp.status_code == 200, resp.text
     assert resp.json()["questions"] == ["产品有哪些口味？"]
     assert resp.json()["questions_source"] == "generated"
+
+
+def test_deleting_every_question_means_none_not_auto_generated_ones(personas_conn):
+    """把引导问题全删掉再保存，就是「一条都不要」，不是「回到自动兜底」。
+
+    `[] or generate_questions(...)` 会让空列表落进兜底那一档——管理员刚
+    删掉的内容对终端用户又冒出来，而且跟手写的长得一模一样。他唯一的
+    出路会变成「留一条自己不想要的问题」，「能纠正」这半边完全不成立。
+
+    本体这边同时具备"生成得出问题"的条件（组合已确认、图里真有边），
+    否则「兜底也生成不出东西」会让这条用例在错误实现下照样绿。
+    """
+    asyncio.run(_add_relation_combo(personas_conn, "muji-goods", "产品", "RELATED_TO", "口味"))
+    graph = FakeGraph({("RELATED_TO", "产品", "口味"): 9})
+    # 先确认这个租户确实生成得出东西——不确认的话下面的 == [] 说明不了问题。
+    assert _get_persona(personas_conn, graph=graph).json()["questions"] == ["产品有哪些口味？"]
+
+    saved = _put_persona(personas_conn, questions=["Beer 是什么？"])
+    assert saved.status_code == 200, saved.text
+    cleared = _put_persona(personas_conn, questions=[])
+    assert cleared.status_code == 200, cleared.text
+
+    resp = _get_persona(personas_conn, graph=graph)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["questions"] == []
+    assert resp.json()["questions_source"] == "handwritten"
+
+
+def test_setting_only_the_face_still_leaves_generation_on(personas_conn):
+    """只配过头像、从没碰过引导问题的租户，仍然走自动兜底。
+
+    upsert_persona 会为这个租户插一行，questions 列取建表默认值——如果
+    「有行」被当成「配过了」，配一次头像就会把自动兜底永久关掉，而界面
+    上没有任何地方说过这件事。
+    """
+    asyncio.run(_add_relation_combo(personas_conn, "muji-goods", "产品", "RELATED_TO", "口味"))
+
+    async def _face_only():
+        await upsert_persona(
+            personas_conn, tenant_id="muji-goods", avatar="🛍️", tagline="只配了脸"
+        )
+
+    asyncio.run(_face_only())
+
+    graph = FakeGraph({("RELATED_TO", "产品", "口味"): 9})
+    resp = _get_persona(personas_conn, graph=graph)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["questions"] == ["产品有哪些口味？"]
+    assert resp.json()["questions_source"] == "generated"
+
+
+def test_a_broken_graph_is_reported_as_unavailable_not_as_no_questions(personas_conn):
+    """图谱连不上时，回包要说「查不了」，不是装成「本体里没什么可问的」。
+
+    对终端用户两者都是空引导区（那是诚实的）；对管理员完全不同——后者是
+    正常状态，前者是他该去修的故障，而他是唯一修得了的人。
+
+    本体里放着一个本来生成得出问题的组合：不放的话，「图谱坏了」和「本体
+    里本来就没组合」两条路径都返回空列表，用例分不出来。
+    """
+    asyncio.run(_add_relation_combo(personas_conn, "muji-goods", "产品", "RELATED_TO", "口味"))
+
+    class BrokenGraph:
+        async def probe_relation_fanout(self, **_: object) -> int:
+            raise RuntimeError("Neo4j 连不上")
+
+    resp = _get_persona(personas_conn, graph=BrokenGraph())
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["questions"] == []
+    assert resp.json()["questions_source"] == "unavailable"
 
 
 def test_saving_a_question_that_matches_nothing_is_refused_and_names_it(personas_conn):

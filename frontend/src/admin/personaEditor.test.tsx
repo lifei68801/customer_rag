@@ -23,7 +23,7 @@ interface PersonaBody {
   avatar: string
   tagline: string
   questions: string[]
-  questions_source: 'handwritten' | 'generated'
+  questions_source: 'handwritten' | 'generated' | 'unavailable'
 }
 
 let personaBody: PersonaBody
@@ -269,6 +269,32 @@ describe('数字人编辑页', () => {
     await waitFor(() => expect(putBodies).toHaveLength(1))
     expect(detailGetCount).toBe(1)
     expect(questionInputs()).toHaveLength(2)
+  })
+
+  it('删光引导问题时说清保存会发生什么，不说反', async () => {
+    // 「前台会显示一个空的首屏」在还没保存的时候是假话——那会儿前台显示
+    // 的仍是自动生成的那批。说反了比不说更糟：管理员据此以为不用保存。
+    personaBody = { ...personaBody, questions: ['只有一条'], questions_source: 'generated' }
+    const user = userEvent.setup()
+    await renderPersonaEditor()
+    await waitFor(() => expect(questionInputs()).toHaveLength(1))
+    await user.click(screen.getByRole('button', { name: '删除第 1 条' }))
+    expect(screen.getByText(/就这样保存/)).toBeTruthy()
+    expect(screen.getByText(/不保存的话，前台继续显示/)).toBeTruthy()
+  })
+
+  it('图谱查不通时说是故障，不是装成「本体里没什么可问的」', async () => {
+    // 对终端用户两者都是空引导区（诚实）；对管理员完全不同——后者是正常
+    // 状态，前者是他该去修的故障，而他是唯一修得了的人。
+    personaBody = { ...personaBody, questions: [], questions_source: 'unavailable' }
+    await renderPersonaEditor()
+    await waitFor(() => expect(screen.getByText(/图谱查不通/)).toBeTruthy())
+    // 不能同时还说「一条引导问题都没有，就这样保存等于…」——那句话在
+    // 这个状态下是误导：他没删过任何东西。
+    expect(screen.queryByText(/就这样保存/)).toBeNull()
+    // 也不能说成「这个数字人不显示任何引导问题」——那读起来像配置的结果，
+    // 而它是一个故障。
+    expect(screen.queryByText(/这个数字人不显示任何引导问题/)).toBeNull()
   })
 
   it('详情拉取失败时说出来，不是给一张空表单', async () => {

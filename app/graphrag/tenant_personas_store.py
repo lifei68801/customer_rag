@@ -6,6 +6,8 @@ from typing import Any
 
 import aiosqlite
 
+from app.db_migrations import add_column_if_missing
+
 logger = logging.getLogger(__name__)
 
 _SCHEMA_SQL = """
@@ -14,6 +16,10 @@ CREATE TABLE IF NOT EXISTS tenant_personas (
     avatar     TEXT NOT NULL DEFAULT '',
     tagline    TEXT NOT NULL DEFAULT '',
     questions  TEXT NOT NULL DEFAULT '[]',
+    -- 「这个租户显式配过引导问题吗」。跟 questions 列分开存，是因为
+    -- 「配了一个空列表」（我不要引导问题）和「从没碰过」（用自动兜底）
+    -- 在 questions 列里长得一模一样，而这两者前台的行为完全相反。
+    questions_set INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
@@ -26,6 +32,14 @@ CREATE TABLE IF NOT EXISTS tenant_personas (
 async def ensure_tenant_personas_schema(conn: aiosqlite.Connection) -> None:
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
+    # 已经建过表的部署不会被上面的 CREATE TABLE IF NOT EXISTS 改到。
+    # 补这一列时默认 0（从没配过）对老数据是对的：老行里 questions 非空的
+    # 那些仍按"配过"处理（判定见 get_questions_setting），只有 '[]' 那些
+    # 会落回自动兜底——而那正是它们今天的行为。
+    await add_column_if_missing(
+        conn, table="tenant_personas", column="questions_set",
+        ddl="INTEGER NOT NULL DEFAULT 0",
+    )
 
 
 async def upsert_persona(
@@ -99,35 +113,59 @@ async def set_questions(
     而这个函数只能返回成功或抛异常，说不出是哪几条）。
     """
     await conn.execute(
-        "INSERT INTO tenant_personas (tenant_id, questions) VALUES (?, ?) "
+        "INSERT INTO tenant_personas (tenant_id, questions, questions_set) VALUES (?, ?, 1) "
         "ON CONFLICT (tenant_id) DO UPDATE SET "
-        "questions = excluded.questions, updated_at = datetime('now')",
+        "questions = excluded.questions, questions_set = 1, updated_at = datetime('now')",
         (tenant_id, json.dumps(questions, ensure_ascii=False)),
     )
     await conn.commit()
 
 
-async def get_questions(conn: aiosqlite.Connection, tenant_id: str) -> list[str]:
-    """读引导问题。没配过时返回空列表。
+async def get_questions_setting(
+    conn: aiosqlite.Connection, tenant_id: str
+) -> list[str] | None:
+    """读引导问题，并区分「配了个空的」和「从没配过」。
 
-    自己设 row_factory，理由同 get_persona/get_personas：不自设的话，一旦
-    调用顺序被打破（生产路径上依赖 seed_admin_user → get_admin_user 先把
-    进程内单例连接的 row_factory 设成 aiosqlite.Row 这个"碰巧"），
-    `row["questions"]` 会以 TypeError 收场，而不是取到错的数据。
+    返回 `None` 表示从没配过——调用方该走自动兜底。返回 `[]` 表示这个租户
+    显式地说了"我不要引导问题"，兜底必须让路：否则管理员刚删光的内容会
+    原样冒回前台，而他唯一的出路是留一条自己不想要的问题。
 
-    JSON 解析失败时也返回空列表并告警：这一列是人写进去的，历史上手工改库
-    留下一个坏值是可能的，而它不该让整个前台首屏 500。
+    判据是 `questions_set == 0 且列表为空`。不单看 `questions_set`，是为了
+    照顾这一列被加进来之前就存在的行：它们的标志位是补列时的默认 0，但
+    里面确实存着手写的问题，只看标志位会把它们一起冲回自动兜底。
+    非空永远算配过，跟标志位无关。
+
+    自己设 row_factory，理由同 get_persona：不自设的话，一旦调用顺序被打破
+    （生产路径上依赖 seed_admin_user → get_admin_user 先把进程内单例连接的
+    row_factory 设成 aiosqlite.Row 这个"碰巧"），`row["questions"]` 会以
+    TypeError 收场，而不是取到错的数据。
+
+    JSON 解析失败时按「从没配过」处理并告警：这一列是人写进去的，历史上
+    手工改库留下一个坏值是可能的，而它不该让整个前台首屏 500。
     """
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT questions FROM tenant_personas WHERE tenant_id = ?", (tenant_id,)
+        "SELECT questions, questions_set FROM tenant_personas WHERE tenant_id = ?",
+        (tenant_id,),
     )
     row = await cursor.fetchone()
     if row is None:
-        return []
+        return None
     try:
         parsed = json.loads(row["questions"])
     except (TypeError, ValueError):
-        logger.warning("租户 %r 的 questions 列不是合法 JSON，按「没配」处理", tenant_id)
-        return []
-    return [q for q in parsed if isinstance(q, str)] if isinstance(parsed, list) else []
+        logger.warning("租户 %r 的 questions 列不是合法 JSON，按「从没配过」处理", tenant_id)
+        return None
+    questions = [q for q in parsed if isinstance(q, str)] if isinstance(parsed, list) else []
+    if not questions and not row["questions_set"]:
+        return None
+    return questions
+
+
+async def get_questions(conn: aiosqlite.Connection, tenant_id: str) -> list[str]:
+    """读手写的引导问题，「从没配过」和「配了个空的」都返回空列表。
+
+    给不关心这个区别的调用方用（比如失效检测：两种情况下都没有手写问题
+    可查）。要区分的调用方用 get_questions_setting。
+    """
+    return await get_questions_setting(conn, tenant_id) or []

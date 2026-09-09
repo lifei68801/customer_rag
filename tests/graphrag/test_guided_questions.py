@@ -1,15 +1,18 @@
 import asyncio
 
 import aiosqlite
+import pytest
 
-from app.graphrag.guided_questions import generate_questions
+from app.graphrag.guided_questions import GraphUnavailable, generate_questions
 from app.graphrag.ontology_categories import create_term_type
 from app.graphrag.ontology_constraints import add_allowed_combination
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 
 
 class FakeGraph:
-    """按 (relation_type, from, to) 报告边数。没登记的组合返回 0——
+    """按 (relation_type, from, to) 报告扇出度：**单个主语沿这条关系最多能
+    连到几个不同的宾语**（真实实现查的是 max(count(DISTINCT b))，不是边的
+    总条数）。没登记的组合返回 0——
     「图里没有这种边」正是这个类要模拟的那个状态。"""
 
     def __init__(self, fanouts: dict[tuple[str, str, str], int]) -> None:
@@ -180,8 +183,8 @@ def test_other_tenants_combinations_are_not_used():
 def test_result_is_capped_and_the_busiest_combinations_win():
     """上限 4 条。超出时留边最多的那几个——它们最可能真的有内容可答。
 
-    四个组合边数各不相同（1/40/7/3），断言拿到的是边最多的三个且顺序正确。
-    边数相同的话，「按边数排」和「按字典序排」两种实现都能变绿。
+    四个组合扇出各不相同（1/40/7/3），断言拿到的是扇出最大的三个且顺序正确。
+    扇出相同的话，「按扇出排」和「按字典序排」两种实现都能变绿。
     """
 
     async def run():
@@ -204,14 +207,18 @@ def test_result_is_capped_and_the_busiest_combinations_win():
     asyncio.run(run())
 
 
-def test_a_graph_failure_yields_no_questions_rather_than_unverified_ones():
-    """图谱查不通时返回空列表，不是「跳过校验、把本体里的组合都生成出来」。
+def test_a_graph_failure_is_raised_rather_than_yielding_unverified_questions():
+    """图谱查不通时抛 GraphUnavailable，不是「跳过校验、把本体里的组合都生成出来」。
 
     降级成不校验的话，恰恰在最可能出问题的时刻（图谱不可用）给出一屏
     保证答不出来的问题。空的引导区是诚实的，坏的引导区不是。
 
+    抛而不是返回空列表：对终端用户两者一样（都是空引导区），但对管理员
+    不一样——「本体建好了还没导数据」和「图谱连不上」在后台编辑页里
+    长得一模一样，而后者是唯一该看到故障的人。
+
     批次里故意放两个组合：一个探测会抛异常（PART_OF），另一个探测本来
-    能拿到边数（RELATED_TO，fanout=12）。只放一个会抛异常的组合不够——
+    能拿到扇出（RELATED_TO，fanout=12）。只放一个会抛异常的组合不够——
     那样的话「查不通就整体中止、返回 []」和「查不通就跳过这一个、继续
     生成别的」这两种实现在只有一条数据时结果碰巧一样（都是空列表），
     区分不出「中止」和「跳过继续」。批次里必须还有一个「探测本可以成功」
@@ -233,8 +240,8 @@ def test_a_graph_failure_yields_no_questions_rather_than_unverified_ones():
                 conn, "t1",
                 [("产品", "RELATED_TO", "口味"), ("产品", "PART_OF", "产地")],
             )
-            questions = await generate_questions(conn, PartlyBrokenGraph(), tenant_id="t1")
-            assert questions == []
+            with pytest.raises(GraphUnavailable):
+                await generate_questions(conn, PartlyBrokenGraph(), tenant_id="t1")
         finally:
             await conn.close()
 

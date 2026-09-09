@@ -25,9 +25,12 @@ export function GuidedQuestions({ tagline, questions, onAsk }: GuidedQuestionsPr
       {tagline && <p className="text-sm text-ink-soft">{tagline}</p>}
       {questions.length > 0 && (
         <div data-testid="guided-questions" className="flex flex-wrap gap-2">
-          {questions.map((question) => (
+          {questions.map((question, index) => (
             <button
-              key={question}
+              // 用下标而不是问题文本：两端都不去重，两条一模一样的引导问题
+              // 会撞 key。这里的列表是只读的——不增删、不排序，下标因此是
+              // 稳定的身份（跟编辑页不同，那里增删排序都有，用的是稳定 id）。
+              key={index}
               type="button"
               onClick={() => onAsk(question)}
               className={`cursor-pointer rounded-chip border border-subtle bg-card px-3 py-1.5 text-sm text-ink transition hover:bg-interactive-hover active:scale-95 ${focusRing}`}

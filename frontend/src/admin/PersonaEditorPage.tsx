@@ -6,6 +6,9 @@ import { Skeleton } from './Skeleton'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
+// 回包形状只写一份：手抄两份的话，后端加字段时只有一份会跟上，
+// 而两份都是 `as` 断言出来的，编译器不会说话。
+import type { PersonaDetail, PersonaSource } from '../lib/personasApi'
 
 /** 引导问题的条数上限。超过六条前台一屏放不下，读者也不会挨条看完。 */
 const MAX_QUESTIONS = 6
@@ -33,15 +36,6 @@ interface QuestionRow {
 let rowSeq = 0
 const newRow = (text: string): QuestionRow => ({ id: `q${(rowSeq += 1)}`, text })
 
-interface PersonaDetailBody {
-  tenant_id: string
-  name: string
-  avatar: string
-  tagline: string
-  questions: string[]
-  questions_source: 'handwritten' | 'generated'
-}
-
 /**
  * 数字人编辑页：这个知识库对外是谁、可以问它什么。
  *
@@ -67,7 +61,7 @@ export function PersonaEditorPage() {
   const [avatar, setAvatar] = useState('')
   const [tagline, setTagline] = useState('')
   const [questions, setQuestions] = useState<QuestionRow[]>([])
-  const [source, setSource] = useState<'handwritten' | 'generated'>('handwritten')
+  const [source, setSource] = useState<PersonaSource>('handwritten')
   const [stale, setStale] = useState<string[]>([])
   const [staleError, setStaleError] = useState<string | null>(null)
   const [detailLoaded, setDetailLoaded] = useState(false)
@@ -87,7 +81,7 @@ export function PersonaEditorPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '数字人信息加载失败'))
       }
-      const detail = (await response.json()) as PersonaDetailBody
+      const detail = (await response.json()) as PersonaDetail
       setName(detail.name)
       setAvatar(detail.avatar)
       setTagline(detail.tagline)
@@ -276,6 +270,16 @@ export function PersonaEditorPage() {
               之后不再随本体变化。
             </p>
           )}
+          {source === 'unavailable' && (
+            // 这一条对终端用户不存在——前台该看到的就是一个诚实的空引导区。
+            // 但管理员必须看得出这是故障而不是「本体里还没东西可问」，
+            // 他是唯一修得了图谱连接的人。
+            <p role="status" className="flex items-center gap-1 text-xs text-status-error-strong">
+              <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+              自动生成没跑成功：图谱查不通。下面的空不代表本体里没东西——
+              这是一个要修的故障，前台此刻不显示任何引导问题。
+            </p>
+          )}
         </div>
 
         {staleError !== null && (
@@ -288,8 +292,17 @@ export function PersonaEditorPage() {
           </div>
         )}
 
-        {questions.length === 0 && (
-          <p className="text-sm text-ink-soft">还没有引导问题。前台会显示一个空的首屏。</p>
+        {/* 图谱不通那一档不说这句：上面那条红字已经说清楚了，再补一句
+            「这个数字人不显示任何引导问题」会读成"这是配置的结果"，
+            而它其实是一个故障。 */}
+        {questions.length === 0 && source !== 'unavailable' && (
+          // 这句话要分两种情况说，说错就是骗人：还没保存过的时候，前台
+          // 显示的仍是自动生成的那批；保存了空列表之后，前台才真的空着。
+          <p className="text-sm text-ink-soft">
+            {source === 'generated'
+              ? '一条引导问题都没有。就这样保存，等于说「这个数字人不要引导问题」，前台会空着；不保存的话，前台继续显示上面那批自动生成的。'
+              : '这个数字人不显示任何引导问题。'}
+          </p>
         )}
 
         {questions.map((row, index) => {

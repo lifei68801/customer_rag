@@ -36,11 +36,24 @@ export async function fetchPersonas(sessionToken: string): Promise<PersonaListRe
  * 单个数字人的详情，比列表多一个 `questions`。
  *
  * 引导问题只在详情里给，列表里没有：右栏有 N 个数字人，自动生成的引导
- * 问题每算一条都要探一次图，放进列表就是 N 次图查询。前台只对**当前**
- * 这一个数字人拉详情，切换时重拉，图查询恒为 1 次。
+ * 问题每算一条都要探一次图，放进列表就是 N 份这样的开销。前台只对**当前**
+ * 这一个数字人拉详情，切换时重拉，付的是一个数字人的份而不是 N 个的。
+ *
+ * 一个数字人的份本身不是一次图查询：后端对每个已确认的关系组合各探一次，
+ * 串行（见 app/graphrag/guided_questions.py）。这里省掉的是 N 倍，不是全部。
  */
+export type PersonaSource = 'handwritten' | 'generated' | 'unavailable'
+
 export interface PersonaDetail extends Persona {
   questions: string[]
+  /**
+   * 这批问题是手写的、自动兜底的，还是「本该自动兜底但图谱不通」。
+   *
+   * 前台不消费它——终端用户看到的都是同一个空引导区，那是诚实的。
+   * 后台编辑页消费：管理员是唯一分得清也修得了「没数据」和「图谱坏了」
+   * 的人（见 admin/PersonaEditorPage.tsx）。
+   */
+  questions_source: PersonaSource
 }
 
 export async function fetchPersonaDetail(

@@ -9,13 +9,14 @@ from pydantic import BaseModel
 from app.api import deps
 from app.api.admin_session import AdminSession
 from app.api.tenant_guard import require_active_tenant_or_404
-from app.graphrag.guided_questions import generate_questions
+from app.graphrag.guided_questions import GraphUnavailable, generate_questions
 from app.graphrag.neo4j_client import GraphWriteProtocol
 from app.graphrag.question_validation import find_unmatched_questions
 from app.graphrag.tenant_personas_store import (
     get_persona,
     get_personas,
     get_questions,
+    get_questions_setting,
     set_questions,
     upsert_persona,
 )
@@ -87,15 +88,15 @@ async def list_my_personas(
 
 
 # 租户内路径，跟上面 /api/admin/personas（非租户）分开一个 router：prefix 里
-# 带上资源名（persona），照 admin_terms_routes.py 的写法。挂到
-# app/main.py 的 tenant_scoped 之下，那里已经统一挂了 require_tenant_access
-# （见 tests/api/test_admin_route_shapes.py 的 _TENANT_SCOPED_PREFIXES 守卫：
-# 租户内路径必须挂它，其余 /api/admin/* 必须不挂），这里不用再挂一次
-# router 级依赖；下面每个端点仍显式用 Depends(deps.require_tenant_access)
-# 取 tenant_id，理由跟 write_my_persona 的 docstring 一致——写端点必须走它
-# 才能防住 member 越权改别人数字人，跟 tenant_scoped 的挂载是两件独立的事，
-# 缺一个都会在改动这个文件时失去保护（tenant_scoped 挂载被移走的话，这里的
-# Depends 仍然生效）。
+# 带上资源名（persona），照 admin_terms_routes.py 的写法。挂到 app/main.py 的
+# tenant_scoped 之下，那里统一挂了 require_tenant_access（main.py:175）。
+#
+# 下面每个端点用普通路径参数取 tenant_id，跟其余八个租户内 router 一致，
+# **不**再在端点上写一次 Depends(deps.require_tenant_access)。曾经写过，
+# 理由是"两处缺一个都会失去保护"——那句话不成立：
+# tests/api/test_admin_route_shapes.py::test_every_tenant_scoped_route_checks_tenant_access
+# 会在挂载被移走时直接变红。而多写的那一份有实际代价：它让"挂载被移走"
+# 这个变异在本文件的用例里看不出来，守卫因此少了一层可验证性。
 persona_router = APIRouter(
     prefix="/api/admin/{tenant_id}/persona",
     dependencies=[Depends(deps.require_admin_session)],
@@ -108,13 +109,13 @@ class PersonaDetail(BaseModel):
     avatar: str
     tagline: str
     questions: list[str]
-    #: `questions` 这一批是手写的还是自动兜底的。
+    #: `questions` 这一批是手写的、自动兜底的，还是"本该自动兜底但图谱不通"。
     #:
     #: 两者在界面上长得一模一样，行为却不同：手写的固定不变，自动的会随
     #: 本体变化。编辑页分不清的话，它会把自动兜底那批显示成管理员自己配
     #: 的，一按保存就 `set_questions` 落库成手写、从此不再更新——而界面
     #: 全程没说过这件事。
-    questions_source: Literal["handwritten", "generated"]
+    questions_source: Literal["handwritten", "generated", "unavailable"]
 
 
 class PersonaWriteRequest(BaseModel):
@@ -135,7 +136,7 @@ async def _tenant_name(review_conn: aiosqlite.Connection, tenant_id: str) -> str
 
 @persona_router.get("", response_model=PersonaDetail)
 async def get_my_persona(
-    tenant_id: str = Depends(deps.require_tenant_access),
+    tenant_id: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
 ) -> PersonaDetail:
@@ -143,8 +144,14 @@ async def get_my_persona(
 
     只在这里跑一次 generate_questions——右栏那份 GET /api/admin/personas
     绝不能带 questions：右栏一次要列 N 个数字人，逐个跑一遍
-    generate_questions 就是 N 次图查询。前台只对当前这一个数字人请求这份
-    详情，切换数字人时重新请求，图查询因此永远是 1 次而不是 N 次。
+    generate_questions 就是 N 份这样的开销。前台只对当前这一个数字人请求
+    这份详情，切换数字人时重新请求，开销因此是一个数字人的份，不是 N 个的。
+
+    **一个数字人的份不等于一次图查询**：generate_questions 会对每个已确认
+    的关系组合各探一次图，串行、无缓存（见 guided_questions.py）。有 M 个
+    组合就是 M 次往返，`limit` 是在全部探完之后才截断的。手写过引导问题的
+    租户走不到这条路（`handwritten is not None` 就直接返回），所以这笔开销
+    只落在还没配过的租户身上——也就是每一个新租户的首屏。
 
     手写优先，一条都没有时才自动兜底：两档并列显示的话用户分不清哪条是
     人写的，而这两者的可信度差很多（spec D2）。
@@ -155,30 +162,44 @@ async def get_my_persona(
     """
     name = await _tenant_name(review_conn, tenant_id)
     persona = await get_persona(review_conn, tenant_id)
-    handwritten = await get_questions(review_conn, tenant_id)
-    questions = handwritten or await generate_questions(
-        review_conn, graph_client, tenant_id=tenant_id
-    )
+    # `is None` 而不是 `or`：显式存下来的空列表意思是"我不要引导问题"，
+    # 兜底必须让路。用 `or` 的话管理员刚删光的内容会原样冒回前台，而他
+    # 唯一的出路是留一条自己不想要的问题。
+    handwritten = await get_questions_setting(review_conn, tenant_id)
+    if handwritten is None:
+        source: Literal["handwritten", "generated", "unavailable"] = "generated"
+        try:
+            questions = await generate_questions(
+                review_conn, graph_client, tenant_id=tenant_id
+            )
+        except GraphUnavailable:
+            # 前台照样是空引导区（诚实），但后台要能看出这是故障而不是
+            # "本体里还没东西可问"——管理员是唯一能去修图谱连接的人。
+            questions = []
+            source = "unavailable"
+    else:
+        questions = handwritten
+        source = "handwritten"
     return PersonaDetail(
         tenant_id=tenant_id,
         name=name,
         avatar=(persona or {}).get("avatar", ""),
         tagline=(persona or {}).get("tagline", ""),
         questions=questions,
-        questions_source="handwritten" if handwritten else "generated",
+        questions_source=source,
     )
 
 
 @persona_router.put("", response_model=PersonaDetail)
 async def write_my_persona(
     payload: PersonaWriteRequest,
-    tenant_id: str = Depends(deps.require_tenant_access),
+    tenant_id: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> PersonaDetail:
     """写数字人的脸和引导问题。
 
-    走 require_tenant_access：读端点按 accessible 过滤，写端点不校验的话，
-    member 能改别人数字人的脸。
+    租户校验由 app/main.py 的 tenant_scoped 挂载统一提供：读端点按 accessible
+    过滤，写端点不校验的话，member 能改别人数字人的脸。
 
     校验不通过时**一条都不存**，并且**点名是哪几条**。只说「保存失败」的话，
     配了六条的人得自己一条条试出来是哪条有问题。校验必须排在两次写入
@@ -215,7 +236,7 @@ async def write_my_persona(
 
 @persona_router.get("/stale-questions")
 async def list_stale_questions(
-    tenant_id: str = Depends(deps.require_tenant_access),
+    tenant_id: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict[str, list[str]]:
     """当前本体下已经不再命中的手写引导问题。
