@@ -9,6 +9,7 @@ import { SchemaEtlPage } from './admin/SchemaEtlPage'
 import { OntologySchemaPage } from './admin/OntologySchemaPage'
 import { DuplicatesPage } from './admin/DuplicatesPage'
 import { OntologyGraphPage } from './admin/OntologyGraphPage'
+import { PersonaEditorPage } from './admin/PersonaEditorPage'
 import { TermDetailPage } from './admin/TermDetailPage'
 import { DiagnosticsPage } from './admin/DiagnosticsPage'
 import { AccountsPage } from './admin/AccountsPage'
@@ -58,6 +59,7 @@ function App() {
         <Route path="model/graph" element={<OntologyGraphPage />} />
         {/* 首次建模的入口。不进 NAV_GROUPS——从本体结构页跳进来，不是
             常驻目的地。 */}
+        <Route path="model/persona" element={<PersonaEditorPage />} />
         <Route path="model/guided" element={<GuidedOntologyPage />} />
         <Route path="review/relations" element={<GraphReviewsPage />} />
         <Route path="review/duplicates" element={<DuplicatesPage />} />

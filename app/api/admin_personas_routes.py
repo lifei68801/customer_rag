@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -106,6 +108,13 @@ class PersonaDetail(BaseModel):
     avatar: str
     tagline: str
     questions: list[str]
+    #: `questions` 这一批是手写的还是自动兜底的。
+    #:
+    #: 两者在界面上长得一模一样，行为却不同：手写的固定不变，自动的会随
+    #: 本体变化。编辑页分不清的话，它会把自动兜底那批显示成管理员自己配
+    #: 的，一按保存就 `set_questions` 落库成手写、从此不再更新——而界面
+    #: 全程没说过这件事。
+    questions_source: Literal["handwritten", "generated"]
 
 
 class PersonaWriteRequest(BaseModel):
@@ -156,6 +165,7 @@ async def get_my_persona(
         avatar=(persona or {}).get("avatar", ""),
         tagline=(persona or {}).get("tagline", ""),
         questions=questions,
+        questions_source="handwritten" if handwritten else "generated",
     )
 
 
@@ -197,6 +207,9 @@ async def write_my_persona(
         avatar=payload.avatar,
         tagline=payload.tagline,
         questions=payload.questions,
+        # 刚存进去的就是手写的，哪怕存的内容原本是从自动那批复制过来的
+        # ——用户按了保存，这批就归他了。
+        questions_source="handwritten",
     )
 
 

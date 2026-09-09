@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
 import {
+  Bot,
   Boxes,
   FileText,
   GitPullRequestArrow,
@@ -25,6 +26,9 @@ import {
 export const ADMIN_ROUTES = {
   ontology: '/admin/model/ontology',
   ontologyGraph: '/admin/model/graph',
+  // 数字人的脸和引导问题。归在建模段：它配的是「这个知识库对外是谁、
+  // 能问它什么」，改的依据是本体——引导问题保存时要过实体匹配。
+  persona: '/admin/model/persona',
   // 首次建模的入口，从本体结构页进入；不常驻导航，见 NAV_GROUPS 上方
   // 的注释和 adminRoutes.test.ts 里的 NOT_IN_NAV。
   guidedOntology: '/admin/model/guided',
@@ -99,6 +103,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: ADMIN_ROUTES.ontology, label: '本体结构', icon: Network },
       { path: ADMIN_ROUTES.ontologyGraph, label: '本体图', icon: Waypoints },
+      { path: ADMIN_ROUTES.persona, label: '数字人', icon: Bot },
     ],
   },
   {
@@ -206,6 +211,7 @@ export const NON_TENANT_ROUTE_KEYS = ['accounts', 'tenants', 'settings'] as cons
 export const TENANT_SCOPED_ROUTE_KEYS = [
   'ontology',
   'ontologyGraph',
+  'persona',
   'guidedOntology',
   'documents',
   'etl',

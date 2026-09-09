@@ -286,6 +286,10 @@ def test_handwritten_questions_win_over_generated_ones(personas_conn):
     resp = _get_persona(personas_conn, graph=graph)
     assert resp.status_code == 200, resp.text
     assert resp.json()["questions"] == ["Beer 是什么？"]
+    # 回包必须说清这一批是哪一种。编辑页照着渲染，分不清的话它会把自动
+    # 兜底的那批显示成管理员自己配的，一按保存就固化成手写、从此不再随
+    # 本体变化——而界面全程不说话。
+    assert resp.json()["questions_source"] == "handwritten"
 
 
 def test_generated_questions_fill_in_when_none_were_written(personas_conn):
@@ -296,6 +300,7 @@ def test_generated_questions_fill_in_when_none_were_written(personas_conn):
     resp = _get_persona(personas_conn, graph=graph)
     assert resp.status_code == 200, resp.text
     assert resp.json()["questions"] == ["产品有哪些口味？"]
+    assert resp.json()["questions_source"] == "generated"
 
 
 def test_saving_a_question_that_matches_nothing_is_refused_and_names_it(personas_conn):

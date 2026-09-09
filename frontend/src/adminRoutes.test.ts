@@ -20,10 +20,11 @@ import {
  */
 
 describe('新路由表', () => {
-  it('七个工作流目的地，加上流程外的问答明细页、账号页和设置页', () => {
+  it('八个工作流目的地，加上流程外的问答明细页、账号页和设置页', () => {
     expect(ADMIN_ROUTES).toEqual({
       ontology: '/admin/model/ontology',
       ontologyGraph: '/admin/model/graph',
+      persona: '/admin/model/persona',
       guidedOntology: '/admin/model/guided',
       documents: '/admin/ingest/documents',
       etl: '/admin/ingest/etl',
