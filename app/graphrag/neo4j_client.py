@@ -412,6 +412,26 @@ DETACH DELETE t, a
 # MATCH 让"没有别名"的术语也能正常匹配到 t（DELETE 一个 null 值是
 # Cypher 里的合法操作，不会报错）。
 
+_COUNT_TENANT_RELATION_EDGES_QUERY = """
+MATCH (t:Term {tenant_id: $tenant_id})-[r]->()
+WHERE r.tenant_id = $tenant_id AND type(r) <> 'ALIAS_OF'
+RETURN count(r) AS edge_count
+"""
+# 看板上「这个领域有多少关系」。
+#
+# 从节点侧发起而不是 ()-[r]->()：Term(tenant_id, node_key) 上有索引，从
+# (t:Term {tenant_id: $tenant_id}) 起手能走它；反过来以关系起手是全库扫描，
+# 关系属性上没有索引。demo 那张图百万级边，看板又是登录后的第一屏——这个
+# 差别是「秒开」和「以为它坏了」的差别。
+#
+# 只数出边（-[r]->()）：无向匹配会让每条边被两端各数一次，看板上的数字直接
+# 翻倍，而用户拿它跟实体详情页数出来的边核对时会发现对不上。
+#
+# 过滤口径跟 _TERM_RELATIONS_QUERY / _SUMMARIZE_TERM_RELATION_EDGES_QUERY
+# 一致：r.tenant_id 过滤 + 排除 ALIAS_OF。别名边是词表→图谱的结构性同步边，
+# 不是知识图谱数据。
+
+
 _SUMMARIZE_TERM_RELATION_EDGES_QUERY = """
 UNWIND $node_keys AS nk
 MATCH (t:Term {tenant_id: $tenant_id, node_key: nk})-[r]-(other)
@@ -625,6 +645,8 @@ class GraphWriteProtocol(Protocol):
     async def summarize_relation_edges_for_terms(
         self, *, tenant_id: str, node_keys: list[str]
     ) -> list[dict[str, Any]]: ...
+
+    async def count_relation_edges_for_tenant(self, *, tenant_id: str) -> int: ...
 
     async def list_term_relations(
         self, *, tenant_id: str, node_key: str
@@ -1039,6 +1061,20 @@ class Neo4jGraphClient:
                 {"counterpart_type": row["counterpart_type"], "edge_count": row["edge_count"]}
                 for row in rows
             ]
+
+    async def count_relation_edges_for_tenant(self, *, tenant_id: str) -> int:
+        """这个租户图里有多少条关系边。看板用。
+
+        无行时返回 0：空图上 Cypher 的 count 仍会给出一行，所以这一支正常
+        走不到；但返回 None 会让看板显示「null 条关系」，防一手比事后查
+        便宜。
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                _COUNT_TENANT_RELATION_EDGES_QUERY, {"tenant_id": tenant_id}
+            )
+            rows = await result.data()
+            return rows[0]["edge_count"] if rows else 0
 
     async def delete_term_nodes(self, *, tenant_id: str, node_keys: list[str]) -> None:
         """批量删除术语节点及其别名节点，一次往返。

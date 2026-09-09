@@ -1693,3 +1693,60 @@ async def test_delete_term_nodes_with_empty_batch_does_not_touch_the_graph():
     await client.delete_term_nodes(tenant_id="t1", node_keys=[])
 
     assert session.calls == []
+
+
+async def test_count_relation_edges_for_tenant_starts_from_the_indexed_nodes():
+    """从节点侧发起，不是全库扫关系。
+
+    Term(tenant_id, node_key) 上有索引，从 (t:Term {tenant_id: $tenant_id})
+    起手能走它；反过来以 ()-[r]->() 起手则是全库扫描——关系属性上没有索引。
+    demo 那张图百万级边，而看板是登录后的第一屏。
+    """
+    session = FakeSession(rows=[{"edge_count": 1204883}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    count = await client.count_relation_edges_for_tenant(tenant_id="demo")
+
+    assert count == 1204883
+    assert session.last_parameters == {"tenant_id": "demo"}
+    assert "MATCH (t:Term {tenant_id: $tenant_id})" in session.last_query
+
+
+async def test_count_relation_edges_for_tenant_counts_outgoing_only():
+    """只数出边。无向匹配会让每条边被两端各数一次，看板上的关系数直接
+    翻倍——而用户拿它跟实体详情页里数出来的边核对时会发现对不上。"""
+    session = FakeSession(rows=[{"edge_count": 0}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.count_relation_edges_for_tenant(tenant_id="demo")
+
+    assert "-[r]->()" in session.last_query
+    # 去掉出边那一段之后不该还剩一个无向匹配。直接断言 "-[r]-()" 不在
+    # 原文里是不行的：出边写法 "-[r]->()" 本身不含这个子串，但把实现改成
+    # 无向之后原文里就只剩 "-[r]-()"，上面那条断言已经会红——这一条钉的是
+    # "既有出边又有无向"这种改法。
+    assert "-[r]-()" not in session.last_query.replace("-[r]->()", "")
+
+
+async def test_count_relation_edges_for_tenant_filters_edge_tenant_and_skips_alias():
+    """口径跟详情页一致：r.tenant_id 过滤 + 排除 ALIAS_OF。
+
+    别名边是词表→图谱的结构性同步边，不是知识图谱数据。算进去的话，看板上
+    的关系数会比用户在任何别的地方看到的都大一截。
+    """
+    session = FakeSession(rows=[{"edge_count": 0}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.count_relation_edges_for_tenant(tenant_id="demo")
+
+    assert "r.tenant_id = $tenant_id" in session.last_query
+    assert "type(r) <> 'ALIAS_OF'" in session.last_query
+
+
+async def test_count_relation_edges_for_tenant_returns_zero_when_no_rows():
+    """空图时 Cypher 仍会给出一行、count 为 0；但防御性地处理无行的情况
+    ——返回 None 会让看板显示「null 条关系」。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    assert await client.count_relation_edges_for_tenant(tenant_id="demo") == 0

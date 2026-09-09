@@ -438,6 +438,12 @@ class NeptuneGraphClient:
             "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
         )
 
+    async def count_relation_edges_for_tenant(self, *, tenant_id: str) -> int:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 count_relation_edges_for_tenant——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
     async def delete_term_nodes(self, *, tenant_id: str, node_keys: list[str]) -> None:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 delete_term_nodes——见 "
