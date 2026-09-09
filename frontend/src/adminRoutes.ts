@@ -268,6 +268,19 @@ const NON_TENANT_PATHS: string[] = NON_TENANT_ROUTE_KEYS.map((key) => ADMIN_ROUT
  * ——而不是拿 TenantContext 的兜底租户去读写别人的数据。反过来默认放行的
  * 话，漏归类的那一页会静默地在错误的租户里工作。
  */
+/**
+ * 只做跳转、自己不渲染内容的路径。
+ *
+ * `/admin` 是那条 `<Route index>` 的落脚点，它唯一做的事是 `<Navigate>`
+ * 去看板。这是一条**显式归类**，不是"未归类走默认"：给一个跳转站要求当前
+ * 租户没有意义，而代价很实在——AdminLayout 的闸门在 `<Outlet/>` 之外判定，
+ * 拦住 `/admin` 等于那条 `<Navigate>` 根本没机会渲染。admin 的
+ * current_tenant_id 恒为 None，于是每一个新 admin 账号、每一次后端重启后
+ * 重新登录，第一屏都是「请先选择一个租户」，永远到不了看板。
+ */
+const REDIRECT_ONLY_PATHS = ['/admin', '/admin/']
+
 export function routeRequiresTenant(pathname: string): boolean {
+  if (REDIRECT_ONLY_PATHS.includes(pathname)) return false
   return !NON_TENANT_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
 }

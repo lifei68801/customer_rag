@@ -123,8 +123,20 @@ export function DomainCard({ domain }: { domain: Domain }) {
     )
   }
 
-  const isEmpty =
-    stats.term_count === 0 && stats.edge_count === 0 && stats.document_count === 0
+  // 判据是「一个实体都没有」，不是「四个数字全为 0」。
+  //
+  // 「文档 3、实体 0」是一个常见状态而不是边角情况：本体没确认时文档管线
+  // 会跳过图谱抽取（ingestion/pipeline.py），传进去的文档不会变成实体。
+  // 按"全为 0"判的话这一档落进 else 分支，而待审又是 0——那张卡上一个按钮
+  // 都没有，用户看到三个 0 和一个 3，不知道该干嘛。
+  //
+  // 这正是导航重排删掉 AdminLanding 之后要由看板接住的引导：那个落地分流
+  // 原本就是按"本体确认了没有"分的。文档已经传了的话下一步是去建本体
+  // （抽取卡在那儿），一个文档都没有的话下一步才是导入。
+  const hasNoEntities = stats.term_count === 0
+  const nextStep = stats.document_count > 0
+    ? { label: '去确认本体', to: ADMIN_ROUTES.ontology, why: '传进来的文档还没变成实体——本体没确认时抽取会跳过。' }
+    : { label: '去导入数据', to: ADMIN_ROUTES.documents, why: '这个领域还没有数据。' }
 
   return shell(
     <>
@@ -135,19 +147,17 @@ export function DomainCard({ domain }: { domain: Domain }) {
         <Stat label="待审" value={stats.pending_review_count} />
       </dl>
 
-      {isEmpty ? (
-        // 四个 0 只说明"这里是空的"，不说明该干什么。这条引导此前由
-        // /admin 的落地分流承担（AdminLanding，导航重排时删掉了）——它按
-        // 本体确认状态把新租户送去建本体。现在归这里。
+      {hasNoEntities ? (
+        // 0 只说明"这里是空的"，不说明该干什么。
         <div className="flex flex-col items-start gap-2">
-          <p className="text-sm text-ink-soft">这个领域还没有数据。</p>
+          <p className="text-sm text-ink-soft">{nextStep.why}</p>
           <button
             type="button"
             className={buttonClass}
             disabled={going}
-            onClick={() => void goTo(ADMIN_ROUTES.documents)}
+            onClick={() => void goTo(nextStep.to)}
           >
-            去导入数据
+            {nextStep.label}
           </button>
         </div>
       ) : (

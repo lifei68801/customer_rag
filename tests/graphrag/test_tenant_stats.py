@@ -17,6 +17,10 @@ from app.graphrag.ontology_lifecycle import (
     confirm_ontology,
     ensure_ontology_schema,
 )
+from app.graphrag.duplicate_review_queue import (
+    ensure_duplicate_review_schema,
+    enqueue_duplicate_suggestion,
+)
 from app.graphrag.review_queue import ensure_review_schema, enqueue_for_review
 from app.graphrag.tenant_stats import TenantStats, collect_tenant_stats
 from app.graphrag.term_edits_store import (
@@ -55,6 +59,7 @@ async def _review_conn() -> aiosqlite.Connection:
     await ensure_term_edits_schema(conn)
     await ensure_ontology_schema(conn)
     await ensure_review_schema(conn)
+    await ensure_duplicate_review_schema(conn)
     for tenant_id in ("demo", "other"):
         # 分类要**已确认**才能拿来建实体：草稿态的分类 create_term 不认
         # （UnknownCategoryError）。三步一套是本仓库既有的写法。
@@ -92,6 +97,16 @@ async def _seed_pending_reviews(
         await enqueue_for_review(
             conn, subject_candidate=f"S{i}", object_candidate=f"O{i}",
             relation_type="RELATED_TO", reason="测试", source="t.md", tenant_id=tenant_id,
+        )
+
+
+async def _seed_duplicate_suggestions(
+    conn: aiosqlite.Connection, tenant_id: str, count: int
+) -> None:
+    for i in range(count):
+        await enqueue_duplicate_suggestion(
+            conn, tenant_id=tenant_id, candidate_a_node_key=f"产品:A{i}",
+            candidate_b_node_key=f"产品:B{i}", similarity_score=0.9, reason="测试",
         )
 
 
@@ -172,6 +187,31 @@ async def test_term_count_follows_the_merged_view_not_the_raw_table():
         )
 
         assert stats.term_count == 2
+    finally:
+        await review_conn.close()
+        await ingestion_conn.close()
+
+
+async def test_pending_count_covers_both_review_queues():
+    """待审数要把关系审核和疑似重复都算上，跟侧边栏一个口径。
+
+    只数关系队列的话，一个「0 条待审关系 + 12 条疑似重复」的领域在看板上
+    显示「待审 0」、连入口都不给，而侧边栏同时显示「数据审核：12」——
+    同一个人同一屏看到两个互相矛盾的数字，他会以为其中一个坏了。
+
+    关系队列故意留空：两个都非空的话，「只数了其中一个」的实现会因为数字
+    对不上而红，但红的原因说不清是漏了哪一个。
+    """
+    review_conn = await _review_conn()
+    ingestion_conn = await _ingestion_conn()
+    try:
+        await _seed_duplicate_suggestions(review_conn, "demo", 12)
+
+        stats = await collect_tenant_stats(
+            review_conn, ingestion_conn, FakeGraph(), tenant_id="demo"
+        )
+
+        assert stats.pending_review_count == 12
     finally:
         await review_conn.close()
         await ingestion_conn.close()

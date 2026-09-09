@@ -109,10 +109,14 @@ async def get_domain_stats(
             review_conn, ingestion_conn, graph_client, tenant_id=tenant_id
         )
     except Exception:
+        # 不点名原因。这里接的是 collect_tenant_stats 抛出来的任何东西——
+        # 图谱连不上是最常见的一种，但少一张表、SQL 出错、租户不存在同样
+        # 会落到这里。写死"图谱可能连不上"就是在断言一件没验证过的事，
+        # 看到的人会去查一个好好的 Neo4j。真正的原因带 exc_info 进日志。
         logger.warning("租户 %r 的看板统计失败", tenant_id, exc_info=True)
         raise HTTPException(
             status_code=503,
-            detail="统计没算出来——图谱可能连不上。这不代表这个领域是空的，请稍后重试。",
+            detail="统计没算出来。这不代表这个领域是空的——请稍后重试，一直失败请看服务端日志。",
         ) from None
     return DomainStats(
         tenant_id=stats.tenant_id,

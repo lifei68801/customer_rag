@@ -28,6 +28,7 @@ from app.graphrag.organizations_store import (
     create_organization,
     ensure_organizations_schema,
 )
+from app.graphrag.duplicate_review_queue import ensure_duplicate_review_schema
 from app.graphrag.review_queue import ensure_review_schema, enqueue_for_review
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.term_edits_store import ensure_term_edits_schema
@@ -64,6 +65,7 @@ async def _open_review_conn() -> aiosqlite.Connection:
     await ensure_term_edits_schema(conn)
     await ensure_ontology_schema(conn)
     await ensure_review_schema(conn)
+    await ensure_duplicate_review_schema(conn)
 
     await create_admin_user(
         conn, username="root", password="password1", role="admin", tenant_id=None
@@ -223,9 +225,14 @@ def test_a_graph_failure_returns_an_error_not_zeroes(dashboard_conns):
     数字，他会去重跑一遍 ETL 找那些"丢了"的数据。
     """
     resp = _get_stats(dashboard_conns, graph=FakeGraph(broken={"muji-goods"}))
-    assert resp.status_code >= 500
+    # 503 而不是笼统的 >= 500：把整个 try/except 删掉的话异常会穿到
+    # FastAPI 的兜底处理，那也是 5xx，但回给用户的是一句
+    # "Internal Server Error"——它不说这不代表领域是空的，也不说可以重试。
+    assert resp.status_code == 503
     # 数字一个都不能出现在回包里：给了 0 就等于回答了「有多少」。
     assert "term_count" not in resp.text
+    # 那句话本身要在。前端把它原样显示在卡片上，它是用户唯一能读到的解释。
+    assert "这不代表这个领域是空的" in resp.json()["detail"]
 
 
 def test_anonymous_requests_are_refused(dashboard_conns):

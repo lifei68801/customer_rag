@@ -260,7 +260,19 @@ describe('租户依赖分类', () => {
   it('没归类过的路径默认按"需要租户"处理', () => {
     // 默认值选的是安全的那边：新加一个页面忘了归类时，它会被空态挡住
     // （用户看得见、能纠正），而不是拿兜底租户去读写别人的数据。
-    expect(routeRequiresTenant('/admin')).toBe(true)
     expect(routeRequiresTenant('/admin/乱敲')).toBe(true)
+    expect(routeRequiresTenant('/admin/model/ontology')).toBe(true)
+  })
+
+  it('/admin 自己是跳转站，不需要租户', () => {
+    // 它不渲染任何内容，只把人送去看板。此前它落在上面那条默认规则里
+    // 被判成"需要租户"——而 AdminLayout 的闸门在 <Outlet/> 之外判定，
+    // 于是那条 <Navigate> 根本没机会渲染：admin 的 current_tenant_id
+    // 恒为 None，每个新 admin 账号第一屏都是空态，永远到不了看板。
+    //
+    // 这不是放宽默认规则：上面那条仍然成立，/admin 是从"未归类"变成
+    // "显式归类为跳转站"。
+    expect(routeRequiresTenant('/admin')).toBe(false)
+    expect(routeRequiresTenant('/admin/')).toBe(false)
   })
 })

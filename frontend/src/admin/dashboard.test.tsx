@@ -262,6 +262,51 @@ describe('看板', () => {
     expect(screen.queryByText('请先选择一个租户')).toBeNull()
   })
 
+  it('访问 /admin 本身也落到看板，不被「请先选择一个租户」挡住', async () => {
+    // /admin 是落地跳转的一站，它自己不渲染任何内容。而 AdminLayout 的
+    // 租户闸门在 <Outlet/> 之外判定：routeRequiresTenant('/admin') 为 true
+    // 的话，那条 <Route index> 的 <Navigate> 根本没机会渲染，用户卡在空态。
+    // admin 的 current_tenant_id 恒为 None，所以这条路径上每一个新 admin
+    // 账号、每一次后端重启后重新登录，第一屏都是空态。
+    currentTenantId = null
+    render(
+      <SkinProvider>
+        <ConfirmProvider>
+          <ToastProvider>
+            <MemoryRouter initialEntries={['/admin']}>
+              <App />
+            </MemoryRouter>
+          </ToastProvider>
+        </ConfirmProvider>
+      </SkinProvider>,
+    )
+    await screen.findByTestId('admin-topbar')
+    await waitFor(() => expect(screen.getByTestId('domain-card-fast')).toBeTruthy())
+    expect(screen.queryByText('请先选择一个租户')).toBeNull()
+  })
+
+  it('传了文档但一个实体都没抽出来的领域，也给得出下一步', async () => {
+    // 这一档是真会踩的：本体没确认时文档管线会跳过图谱抽取
+    // （ingestion/pipeline.py），所以「文档 3、实体 0、关系 0、待审 0」是
+    // 一个常见状态。它不满足"四个数字全为 0"，落进 else 分支，而待审又是
+    // 0——那张卡上一个按钮都没有，用户只看到三个 0 和一个 3，不知道该干嘛。
+    //
+    // 这正是导航重排删掉 AdminLanding 之后要由看板接住的那条引导：那个
+    // 落地分流原本就是按"本体确认了没有"分的。
+    statsResponders.loner = () =>
+      jsonResponse(
+        stats('loner', {
+          term_count: 0,
+          edge_count: 0,
+          document_count: 3,
+          pending_review_count: 0,
+        }),
+      )
+    await renderDashboard()
+    await waitFor(() => expect(card('loner').getByText('3')).toBeTruthy())
+    expect(card('loner').getByRole('button', { name: /本体|建模/ })).toBeTruthy()
+  })
+
   it('一个领域都没有时说清楚该做什么', async () => {
     // 新部署的第一屏。「暂无数据」等于什么都没说。
     domainsBody = { domains: [] }

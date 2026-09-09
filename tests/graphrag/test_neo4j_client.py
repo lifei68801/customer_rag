@@ -1695,12 +1695,16 @@ async def test_delete_term_nodes_with_empty_batch_does_not_touch_the_graph():
     assert session.calls == []
 
 
-async def test_count_relation_edges_for_tenant_starts_from_the_indexed_nodes():
-    """从节点侧发起，不是全库扫关系。
+async def test_count_relation_edges_for_tenant_starts_from_the_term_nodes():
+    """从节点侧发起，不是以关系起手扫全库。
 
-    Term(tenant_id, node_key) 上有索引，从 (t:Term {tenant_id: $tenant_id})
-    起手能走它；反过来以 ()-[r]->() 起手则是全库扫描——关系属性上没有索引。
-    demo 那张图百万级边，而看板是登录后的第一屏。
+    不是因为"走索引"：库里只有 (tenant_id, node_key) 和 (tenant_id, type)
+    两条复合索引，而 Neo4j 要求查询覆盖索引的全部属性才用得上，只给
+    tenant_id 一条都走不了。理由是扫描量级——节点侧扫的是这一个租户的
+    Term 再展开各自的出边，关系侧扫的是全库所有租户的所有边。
+
+    这条用例只能验查询形状（grep 一个字符串），验不了执行计划：那需要一个
+    真实的 Neo4j 和 EXPLAIN。形状变了至少会红，量级论证仍然靠人。
     """
     session = FakeSession(rows=[{"edge_count": 1204883}])
     client = Neo4jGraphClient(driver=FakeDriver(session))

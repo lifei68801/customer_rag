@@ -11,11 +11,13 @@ from app.graphrag.organizations_store import (
     ensure_organizations_schema,
     list_organizations,
     list_tenants_in_org,
+    list_tenants_with_organization,
 )
 from app.graphrag.tenants_store import (
     TenantNotFoundError,
     create_tenant,
     create_tenants_table,
+    set_tenant_status,
 )
 
 
@@ -201,6 +203,60 @@ def test_ensure_schema_is_idempotent_and_keeps_existing_org_id():
             await assign_tenant_to_org(conn, tenant_id="muji-goods", org_id="muji")
             await ensure_organizations_schema(conn)
             assert await list_tenants_in_org(conn, "muji") == ["muji-goods"]
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_list_tenants_with_organization_keeps_tenants_that_have_no_org():
+    """没挂组织的租户必须照样列出来，org_id/org_name 为 None。
+
+    没挂组织是**合法状态**（存量租户，见模块 docstring）。用内连接的话
+    它们会从看板上整个消失——用户会以为租户被删了，然后去建一个同名的。
+    """
+
+    async def run():
+        conn = await _conn()
+        try:
+            await create_tenant(conn, tenant_id="t-org", name="有组织")
+            await create_tenant(conn, tenant_id="t-loner", name="没组织")
+            await create_organization(conn, org_id="o1", name="组织一")
+            await assign_tenant_to_org(conn, tenant_id="t-org", org_id="o1")
+
+            rows = {r["tenant_id"]: r for r in await list_tenants_with_organization(conn)}
+
+            assert set(rows) == {"t-org", "t-loner"}
+            assert (rows["t-org"]["org_id"], rows["t-org"]["org_name"]) == ("o1", "组织一")
+            assert (rows["t-loner"]["org_id"], rows["t-loner"]["org_name"]) == (None, None)
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_list_tenants_with_organization_hides_disabled_tenants_by_default():
+    """停用的租户默认不列。
+
+    看板列出它的话，用户会切过去——然后发现读得到、写全是 404，那是最难查
+    的一类状态。口径跟 tenants_store.list_tenants 一致：只有租户管理页会
+    显式要 include_disabled。
+    """
+
+    async def run():
+        conn = await _conn()
+        try:
+            await create_tenant(conn, tenant_id="t-live", name="启用中")
+            await create_tenant(conn, tenant_id="t-dead", name="已停用")
+            await set_tenant_status(conn, "t-dead", "disabled")
+
+            default = await list_tenants_with_organization(conn)
+            assert [r["tenant_id"] for r in default] == ["t-live"]
+
+            # include_disabled=True 时两个都在——只断言默认那一档的话，
+            # "把这个参数整个忽略掉"的实现在默认路径上照样绿。
+            both = await list_tenants_with_organization(conn, include_disabled=True)
+            assert [r["tenant_id"] for r in both] == ["t-dead", "t-live"]
         finally:
             await conn.close()
 

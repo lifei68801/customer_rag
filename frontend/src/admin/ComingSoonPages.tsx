@@ -80,11 +80,13 @@ export function ConflictReviewPage() {
       plan="docs/superpowers/plans/2026-09-08-review-split-and-conflicts.md"
       alternative={
         <>
-          在那之前，同名实体的属性冲突会体现为
-          <Link to={ADMIN_ROUTES.reviewDuplicates} className={linkClass}>
-            疑似重复
+          在那之前只能手工比对：在
+          <Link to={ADMIN_ROUTES.terms} className={linkClass}>
+            实体明细
           </Link>
-          里的候选对，合并时可以逐字段挑。
+          里打开两条，逐个字段自己看。
+          <strong className="font-bold">不要用「疑似重复」页去处理属性冲突</strong>
+          ——那一页只有整条合并，且合并不可撤销，你会连不想合的字段一起丢掉。
         </>
       }
     />
@@ -100,11 +102,12 @@ export function DirtyEdgesPage() {
       plan="docs/superpowers/plans/2026-09-08-review-split-and-conflicts.md"
       alternative={
         <>
-          在那之前，指向不存在实体的边可以在
-          <Link to={ADMIN_ROUTES.ontologyGraph} className={linkClass}>
-            本体图
+          在那之前，脏边只能一条一条撞见：在
+          <Link to={ADMIN_ROUTES.terms} className={linkClass}>
+            实体明细
           </Link>
-          里看出来——孤立的类型节点就是没有数据落进去的那些。
+          里打开一个实体，它的关系列表会标出对端有问题的那几条。
+          没有一处能一次列全，这正是这一页要解决的问题。
         </>
       }
     />
@@ -140,11 +143,14 @@ export function ErrorLogPage() {
       plan="docs/superpowers/plans/2026-09-08-graph-preview-and-error-log.md"
       alternative={
         <>
-          在那之前，答错和答不出来的问题可以在
+          在那之前，
           <Link to={ADMIN_ROUTES.diagnostics} className={linkClass}>
             问答明细
           </Link>
-          里逐条回看，那里能追到是哪个实体没匹配上。
+          里能逐条回看问答记录，包括改写后的问题和用到的检索结果。
+          <strong className="font-bold">但它筛不出「哪几次答坏了」</strong>
+          ——那张表只记问题和答案，没有任何一列表示成败，答不出来和答得好
+          长得一模一样。要找出错的只能自己一条条读。
         </>
       }
     />
