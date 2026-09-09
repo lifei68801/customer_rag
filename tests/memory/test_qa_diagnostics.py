@@ -130,3 +130,75 @@ async def test_listing_is_newest_first():
 
     rows = await list_diagnostics(conn, tenant_id="t1", session_id="s1")
     assert [r["question"] for r in rows] == ["第二次", "第一次"]
+
+
+async def test_a_normal_answer_is_recorded_as_answered():
+    """不传 outcome 时默认 answered。
+
+    默认成 no_match 的话，报错明细上线第一天就会显示历史上每一次问答都失败了。
+    """
+    conn = await _connect()
+
+    diagnostic_id = await _record(conn)
+
+    detail = await get_diagnostic(conn, tenant_id="t1", diagnostic_id=diagnostic_id)
+    assert detail["outcome"] == "answered"
+    await conn.close()
+
+
+async def test_the_outcome_is_stored_as_given():
+    """三个取值都能存进去、读得回来。
+
+    只测 answered 的话，一个把参数丢掉、恒写 'answered' 的实现照样绿。
+    """
+    conn = await _connect()
+
+    for outcome in ("answered", "no_match", "error"):
+        diagnostic_id = await _record(conn, outcome=outcome)
+        detail = await get_diagnostic(conn, tenant_id="t1", diagnostic_id=diagnostic_id)
+        assert detail["outcome"] == outcome
+    await conn.close()
+
+
+async def test_the_list_carries_the_outcome():
+    """列表页要按 outcome 分「未命中 / 报错」两个页签，所以列表就得带上它。
+
+    只在详情里带的话，列表得为每一行再查一次详情才知道该放进哪个页签。
+    """
+    conn = await _connect()
+
+    await _record(conn, outcome="no_match")
+
+    rows = await list_diagnostics(conn, tenant_id="t1", session_id="s1")
+    assert [row["outcome"] for row in rows] == ["no_match"]
+    await conn.close()
+
+
+async def test_existing_rows_read_back_as_answered():
+    """加列之前的历史记录没有这一列。
+
+    DEFAULT 'answered' 让它们读回来是「答过」——那是最接近事实的假设
+    （它们当时确实产出了答案）。读成 no_match 的话，报错明细第一屏全是
+    上线前的历史记录，真正的问题被埋在下面。
+    """
+    conn = await aiosqlite.connect(":memory:")
+    # 手工造一张"加列之前"的表，再让 ensure_schema 去迁移它。直接 ensure_schema
+    # 建出来的新表本来就有这一列，测不到迁移这条路径。
+    await conn.execute(
+        "CREATE TABLE qa_diagnostics ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL,"
+        " session_id TEXT NOT NULL, question TEXT NOT NULL, resolved_question TEXT,"
+        " answer TEXT NOT NULL, used_sources TEXT NOT NULL, tool_results TEXT NOT NULL,"
+        " created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+    )
+    await conn.execute(
+        "INSERT INTO qa_diagnostics (tenant_id, session_id, question, answer,"
+        " used_sources, tool_results) VALUES ('t1', 's1', '老问题', '老答案', '[]', '[]')"
+    )
+    await conn.commit()
+
+    await ensure_schema(conn)
+
+    rows = await list_diagnostics(conn, tenant_id="t1", session_id="s1")
+    assert [row["outcome"] for row in rows] == ["answered"]
+    await conn.close()

@@ -1348,3 +1348,147 @@ async def test_memory_save_node_records_a_qa_diagnostic():
     # 用了哪些来源要一起留下：诊断的第一步是看检索到了什么。
     assert detail["used_sources"] == ["faq/network.md"]
     await memory_conn.close()
+
+
+async def _diagnostic_outcome(memory_conn, *, tenant_id="t1", session_id="s1"):
+    from app.memory.qa_diagnostics import list_diagnostics
+
+    rows = await list_diagnostics(memory_conn, tenant_id=tenant_id, session_id=session_id)
+    assert len(rows) == 1, f"应该恰好留下一条诊断，实际 {len(rows)} 条"
+    return rows[0]["outcome"]
+
+
+async def _memory_conn():
+    import aiosqlite
+
+    from app.memory.schema import ensure_schema
+
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_schema(conn)
+    return conn
+
+
+async def test_a_successful_turn_is_recorded_as_answered():
+    """答出来了就记 answered——报错明细里不该出现它。"""
+    embedding_registry, vector_store, bm25_index, llm_registry, _ = (
+        await _build_dependencies(with_records=True, llm_text="重启路由器即可解决。")
+    )
+    memory_conn = await _memory_conn()
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
+        query_rewrite_enabled=False,
+        memory_conn=memory_conn,
+    )
+
+    await graph.ainvoke(
+        {"question": "网络连不上怎么办？", "tenant_id": "t1",
+         "session_id": "s1", "user_id": "c1"}
+    )
+
+    assert await _diagnostic_outcome(memory_conn) == "answered"
+    await memory_conn.close()
+
+
+async def test_a_turn_with_nothing_relevant_retrieved_is_recorded_as_no_match():
+    """检索不到足够相关的资料 → no_match。
+
+    这一条是整个功能的支点，判据来自管线里已有的 fallback_triggered
+    （检索为空、或最高分低于 min_relevance_score，走静态兜底文案），
+    不是新发明的。
+    """
+    embedding_registry, vector_store, bm25_index, llm_registry, _ = (
+        await _build_dependencies(with_records=False, llm_text="不会走到这里")
+    )
+    memory_conn = await _memory_conn()
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="fake-llm",
+        tool_registry=_TOOL_REGISTRY,
+        query_rewrite_enabled=False,
+        memory_conn=memory_conn,
+    )
+
+    await graph.ainvoke(
+        {"question": "网络连不上怎么办？", "tenant_id": "t1",
+         "session_id": "s1", "user_id": "c1"}
+    )
+
+    assert await _diagnostic_outcome(memory_conn) == "no_match"
+    await memory_conn.close()
+
+
+async def test_a_pipeline_failure_is_recorded_as_error_not_no_match():
+    """轮次耗尽后最后一次总结调用炸了 → error，**不是** no_match。
+
+    这条用例守的是判定顺序。planner 放弃之后仍然会流转到 fallback_node
+    （planner.py 的 route_after_planner：planner_gave_up → "fallback"），
+    所以 planner_gave_up 和 fallback_triggered 会**同时**为真。先判
+    fallback_triggered 的实现会把每一次 LLM 故障都记成「没命中」——运营
+    照着报错明细去改本体，而问题在服务端。未命中是「本体里没有这个概念，
+    去建模」，报错是「系统坏了，去看日志」，两种完全不同的修复动作。
+
+    走的是真实的放弃路径：max_tool_call_rounds=0 时 planner 第一轮就请求
+    调工具 → 轮次已达上限 → _run_final_answer_attempt 再调一次 LLM，这次
+    抛异常 → planner_gave_up=True。（第一次 planner 调用本身抛异常的话，
+    run_planner_turn 不接，异常会冲出整个图，根本走不到 memory_save_node，
+    那是另一件事。）
+    """
+    from app.providers.base import ToolCall
+
+    class _FailsOnFinalAnswerProvider:
+        """第一次请求调工具，第二次（最后陈述）抛异常。"""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, request: ProviderRequest) -> ProviderResult:
+            self.calls += 1
+            if self.calls == 1:
+                return ProviderResult(
+                    text="",
+                    tool_calls=[
+                        ToolCall(id="c1", name="structured_filter_query_tool", arguments="{}")
+                    ],
+                )
+            raise RuntimeError("上游 LLM 502")
+
+    embedding_registry, vector_store, bm25_index, llm_registry, _ = (
+        await _build_dependencies(with_records=True, llm_text="不会走到这里")
+    )
+    provider = _FailsOnFinalAnswerProvider()
+    llm_registry.register(ProviderCapability.LLM, "flaky-llm", provider)
+    memory_conn = await _memory_conn()
+    graph = build_agent_graph(
+        embedding_registry=embedding_registry,
+        embedding_provider_name="fake-embedding",
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        llm_registry=llm_registry,
+        llm_provider_name="flaky-llm",
+        tool_registry=_TOOL_REGISTRY,
+        query_rewrite_enabled=False,
+        enable_autonomous_planning=True,
+        max_tool_call_rounds=0,
+        memory_conn=memory_conn,
+    )
+
+    await graph.ainvoke(
+        {"question": "网络连不上怎么办？", "tenant_id": "t1",
+         "session_id": "s1", "user_id": "c1"}
+    )
+
+    # 至少两次：第一次请求调工具，之后是最后陈述（可能还带一次重试）。
+    # 只有一次的话说明没走到放弃路径，这条用例什么也没验到。
+    assert provider.calls >= 2, "应该走到最后陈述那一次调用，否则这条用例没测到放弃路径"
+    assert await _diagnostic_outcome(memory_conn) == "error"
+    await memory_conn.close()

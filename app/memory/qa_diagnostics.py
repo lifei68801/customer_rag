@@ -46,6 +46,7 @@ async def record_diagnostic(
     answer: str,
     used_sources: list[str],
     tool_results: list[dict[str, Any]],
+    outcome: str = "answered",
 ) -> int:
     """存一次问答的诊断快照。
 
@@ -55,10 +56,17 @@ async def record_diagnostic(
 
     存全量（只截超长的 content）而不是预先挑字段：诊断的场景就是「不知道
     问题在哪」，预先裁剪等于预判了问题在哪。
+
+    `outcome` 是这一轮怎么收场的（`answered` / `no_match` / `error`），
+    报错明细页照它分页签。默认 `answered` 而不是必填：调用方漏传时记成
+    "答过了"，最坏是漏报一次；默认成失败的话，每一次正常问答都会出现在
+    报错明细里，那张页面很快就没人看了。判定逻辑在调用方
+    （`app/agent/graph.py` 的 `memory_save_node`），不在这里——它要读的
+    是 LangGraph 的 state。
     """
     cursor = await conn.execute(
         "INSERT INTO qa_diagnostics (tenant_id, session_id, question, resolved_question,"
-        " answer, used_sources, tool_results) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        " answer, used_sources, tool_results, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             tenant_id,
             session_id,
@@ -67,6 +75,7 @@ async def record_diagnostic(
             answer,
             json.dumps(used_sources, ensure_ascii=False),
             json.dumps(_truncate(tool_results), ensure_ascii=False),
+            outcome,
         ),
     )
     diagnostic_id = cursor.lastrowid
@@ -103,7 +112,7 @@ async def list_diagnostics(
     # terms_store.list_terms / tracking.list_tracked_files 一致。
     params.append(limit if limit is not None else -1)
     cursor = await conn.execute(
-        "SELECT id, session_id, question, answer, created_at FROM qa_diagnostics "
+        "SELECT id, session_id, question, answer, outcome, created_at FROM qa_diagnostics "
         f"WHERE {where} ORDER BY id DESC LIMIT ?",
         params,
     )
@@ -118,7 +127,7 @@ async def get_diagnostic(
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT id, session_id, question, resolved_question, answer, used_sources,"
-        " tool_results, created_at FROM qa_diagnostics WHERE tenant_id = ? AND id = ?",
+        " tool_results, outcome, created_at FROM qa_diagnostics WHERE tenant_id = ? AND id = ?",
         (tenant_id, diagnostic_id),
     )
     row = await cursor.fetchone()

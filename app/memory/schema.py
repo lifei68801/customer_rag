@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS qa_diagnostics (
     answer TEXT NOT NULL,
     used_sources TEXT NOT NULL,
     tool_results TEXT NOT NULL,
+    -- 这一轮到底怎么收场的：answered / no_match / error。
+    -- 少了它，「答不出来」和「答得好」在这张表里长得一模一样。
+    -- 默认 answered：加列之前的历史记录没有这个值，而它们当时确实产出了
+    -- 答案，读成 no_match 的话报错明细第一屏全是上线前的旧记录。
+    outcome TEXT NOT NULL DEFAULT 'answered',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_qa_diagnostics_tenant_session
@@ -96,4 +101,10 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
     await conn.commit()
     await add_column_if_missing(
         conn, table="memory_history", column="conflict_type", ddl="TEXT",
+    )
+    # 已经存在的库要补这一列：上面的 CREATE TABLE 是 IF NOT EXISTS，
+    # 对老库不生效。
+    await add_column_if_missing(
+        conn, table="qa_diagnostics", column="outcome",
+        ddl="TEXT NOT NULL DEFAULT 'answered'",
     )

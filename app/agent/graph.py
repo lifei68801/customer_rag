@@ -131,6 +131,36 @@ def _looks_temporal(text: str) -> bool:
     return bool(_TEMPORAL_CUE_PATTERN.search(text))
 
 
+
+def _diagnostic_outcome(state: AgentState) -> str:
+    """这一轮怎么收场的：`answered` / `no_match` / `error`。
+
+    两个判据都是管线里**已经存在**的信号，不是为这张表新发明的：新发明一个
+    判据的话，它跟管线真正的失败路径之间会慢慢漂移，而漂移的方向是"报错明细
+    越来越干净"，没人会发现。
+
+    - `planner_gave_up`：LLM 调用抛异常、返回空文本、或吐出工具调用格式的
+      特殊 token 而不是纯文本（见 `app/agent/planner.py` 的
+      `_run_final_answer_attempt`）——这些是**系统故障**。
+    - `fallback_triggered`：检索结果为空、或最高分低于 min_relevance_score，
+      走静态兜底文案并创建人工工单（见 `fallback_node`）——这是**没命中**。
+
+    **顺序是这个函数的要害。** planner 放弃之后仍然会流转到 `fallback_node`
+    （`route_after_planner` 里 `planner_gave_up` → `"fallback"`），所以两个
+    标志会同时为真。先判 `fallback_triggered` 的话，每一次 LLM 故障都会被
+    记成「没命中」——运营照着报错明细去改本体，而问题在服务端。未命中是
+    「本体里没有这个概念，去建模」，报错是「系统坏了，去看日志」。
+
+    澄清追问（`needs_clarification`）记 `answered`：它不是故障，没有任何
+    东西要修，不该出现在报错明细里。
+    """
+    if state.get("planner_gave_up"):
+        return "error"
+    if state.get("fallback_triggered") and not state.get("needs_clarification"):
+        return "no_match"
+    return "answered"
+
+
 def build_agent_graph(
     *,
     embedding_registry: EmbeddingRegistry,
@@ -697,6 +727,7 @@ def build_agent_graph(
                 answer=final_text,
                 used_sources=state.get("used_sources", []),
                 tool_results=state.get("tool_results", []),
+                outcome=_diagnostic_outcome(state),
             )
         except Exception:
             logger.exception("记录问答诊断失败，跳过（不影响本轮回答）")
