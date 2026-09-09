@@ -1,4 +1,4 @@
-import { Database, Share2, TriangleAlert, Unlink } from 'lucide-react'
+import { Database, Share2, TriangleAlert } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
@@ -65,27 +65,6 @@ export function DatabaseImportPage() {
             表格导入
           </Link>
           。
-        </>
-      }
-    />
-  )
-}
-
-export function DirtyEdgesPage() {
-  return (
-    <ComingSoon
-      icon={Unlink}
-      title={PAGE_TITLES.reviewDirtyEdges}
-      phase="阶段四"
-      plan="docs/superpowers/plans/2026-09-08-review-split-and-conflicts.md"
-      alternative={
-        <>
-          在那之前，脏边只能一条一条撞见：在
-          <Link to={ADMIN_ROUTES.terms} className={linkClass}>
-            实体明细
-          </Link>
-          里打开一个实体，它的关系列表会标出对端有问题的那几条。
-          没有一处能一次列全，这正是这一页要解决的问题。
         </>
       }
     />

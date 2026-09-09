@@ -20,9 +20,9 @@ import { GuidedOntologyPage } from './admin/guidedOntology/GuidedOntologyPage'
 import {
   DataGraphPage,
   DatabaseImportPage,
-  DirtyEdgesPage,
   ErrorLogPage,
 } from './admin/ComingSoonPages'
+import { DirtyEdgesPage } from './admin/DirtyEdgesPage'
 import { AttributeConflictsPage } from './admin/AttributeConflictsPage'
 import { DashboardPage } from './admin/DashboardPage'
 import { ADMIN_ROUTES, LEGACY_REDIRECTS } from './adminRoutes'

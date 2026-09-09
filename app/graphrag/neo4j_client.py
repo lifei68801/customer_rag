@@ -328,6 +328,44 @@ RETURN count(r) AS removed
 # 的边数——这个语义已经在 _DELETE_STALE_RELATIONS_QUERY 上用真实 Neo4j
 # 5.22 验证过（见该查询的说明）。
 
+_LIST_TENANT_DIRTY_EDGES_QUERY = """
+MATCH (t:Term {tenant_id: $tenant_id})-[r]->(related:Term)
+WHERE type(r) <> 'ALIAS_OF'
+  AND (r.tenant_id IS NULL
+       OR related.tenant_id IS NULL
+       OR r.tenant_id <> t.tenant_id
+       OR related.tenant_id <> t.tenant_id)
+RETURN t.node_key AS subject_node_key,
+       t.standard_name AS subject_standard_name,
+       type(r) AS relation_type,
+       related.node_key AS object_node_key,
+       related.standard_name AS object_standard_name,
+       r.tenant_id AS edge_tenant_id,
+       t.tenant_id AS subject_tenant_id,
+       related.tenant_id AS object_tenant_id
+ORDER BY subject_node_key, relation_type, object_node_key
+LIMIT $limit
+"""
+# 整个租户的脏边，不锚在某一个实体上。
+#
+# 这一页存在的理由就是那个"不锚定"：脏边的列举此前只在实体详情页里，你得
+# **先知道是哪个实体**才看得到它的脏边——而脏边的特点恰恰是没人知道它们在
+# 哪。运维只能一个实体一个实体点过去。
+#
+# 判定条件跟 _LIST_INCONSISTENT_RELATION_EDGES_QUERY 逐字一致（边的 tenant_id
+# 为空、或跟两端对不上、或对端节点跨租户），只是去掉 node_key 这个锚点。
+# 口径不一致的话，全局页列出来的和详情页列出来的对不上——运维在全局页删完，
+# 点进那个实体一看还有。
+#
+# 只走出边（-[r]->）：无向会让每条边被两端各列一次。详情页那条是无向的，
+# 因为它锚在一个实体上、要的正是"挂在我身上的所有边"；这里扫的是整个租户，
+# 两端都在扫描范围内，无向就是重复。
+#
+# 从节点侧起手的理由同 _COUNT_TENANT_RELATION_EDGES_QUERY：不是走索引
+# （复合索引只给 tenant_id 用不上），是扫描量级——节点侧扫这一个租户的
+# Term，关系侧扫全库所有租户的所有边。
+
+
 _LIST_INCONSISTENT_RELATION_EDGES_QUERY = """
 MATCH (t:Term {tenant_id: $tenant_id, node_key: $node_key})-[r]-(related:Term)
 WHERE type(r) <> 'ALIAS_OF'
@@ -655,6 +693,10 @@ class GraphWriteProtocol(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     async def count_relation_edges_for_tenant(self, *, tenant_id: str) -> int: ...
+
+    async def list_tenant_dirty_edges(
+        self, *, tenant_id: str, limit: int = 500
+    ) -> tuple[list[dict[str, Any]], bool]: ...
 
     async def list_term_relations(
         self, *, tenant_id: str, node_key: str
@@ -1069,6 +1111,25 @@ class Neo4jGraphClient:
                 {"counterpart_type": row["counterpart_type"], "edge_count": row["edge_count"]}
                 for row in rows
             ]
+
+    async def list_tenant_dirty_edges(
+        self, *, tenant_id: str, limit: int = 500
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """整个租户的脏边，外加"是不是被截断了"。
+
+        **多要一条**（LIMIT limit+1）来判断截断：正好要 limit 条的话，
+        "刚好 500 条"和"超过 500 条"拿到的结果一模一样，而这两种情况要对
+        运维说的话完全不同。默默少列的话他会以为脏边只有 500 条，清完那
+        500 条就以为干净了。
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                _LIST_TENANT_DIRTY_EDGES_QUERY,
+                {"tenant_id": tenant_id, "limit": limit + 1},
+            )
+            rows = await result.data()
+        truncated = len(rows) > limit
+        return [dict(row) for row in rows[:limit]], truncated
 
     async def count_relation_edges_for_tenant(self, *, tenant_id: str) -> int:
         """这个租户图里有多少条关系边。看板用。

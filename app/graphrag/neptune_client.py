@@ -438,6 +438,14 @@ class NeptuneGraphClient:
             "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
         )
 
+    async def list_tenant_dirty_edges(
+        self, *, tenant_id: str, limit: int = 500
+    ) -> tuple[list[dict[str, Any]], bool]:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 list_tenant_dirty_edges——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )
+
     async def count_relation_edges_for_tenant(self, *, tenant_id: str) -> int:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 count_relation_edges_for_tenant——见 "

@@ -1754,3 +1754,102 @@ async def test_count_relation_edges_for_tenant_returns_zero_when_no_rows():
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
     assert await client.count_relation_edges_for_tenant(tenant_id="demo") == 0
+
+
+async def test_list_tenant_dirty_edges_starts_from_this_tenants_terms():
+    """从这个租户的 Term 起手，不是全库扫关系。
+
+    理由跟 count_relation_edges_for_tenant 一样，也不是"走索引"：库里只有
+    (tenant_id, node_key) 和 (tenant_id, type) 两条复合索引，Neo4j 要求查询
+    覆盖索引的全部属性才用得上，只给 tenant_id 一条都走不了。是扫描量级——
+    节点侧扫这一个租户的 Term，关系侧扫全库所有租户的所有边。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.list_tenant_dirty_edges(tenant_id="demo", limit=500)
+
+    assert "MATCH (t:Term {tenant_id: $tenant_id})" in session.last_query
+    assert session.last_parameters == {"tenant_id": "demo", "limit": 501}
+
+
+async def test_list_tenant_dirty_edges_keeps_the_same_criteria_as_the_per_term_query():
+    """判定脏边的三个条件跟详情页那条逐字一致。
+
+    口径不一致的话，全局页列出来的和详情页列出来的对不上——运维在全局页
+    删完，点进那个实体一看还有；或者反过来，全局页说干净的实体点进去有一屏
+    红字。这里逐条断言，而不是"大致相同"。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.list_tenant_dirty_edges(tenant_id="demo", limit=500)
+
+    query = session.last_query
+    assert "r.tenant_id IS NULL" in query
+    assert "related.tenant_id IS NULL" in query
+    assert "r.tenant_id <> t.tenant_id" in query
+    assert "related.tenant_id <> t.tenant_id" in query
+    # 别名边是词表→图谱的结构性同步边，不是知识图谱数据，跟详情页一样排除。
+    assert "type(r) <> 'ALIAS_OF'" in query
+
+
+async def test_list_tenant_dirty_edges_asks_for_one_more_than_the_limit():
+    """多要一条，用来判断有没有被截断。
+
+    正好要 limit 条的话，"刚好 500 条"和"超过 500 条"拿到的结果一模一样
+    ——而这两种情况要对运维说的话完全不同。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.list_tenant_dirty_edges(tenant_id="demo", limit=3)
+
+    assert session.last_parameters["limit"] == 4
+
+
+async def test_list_tenant_dirty_edges_reports_truncation():
+    """超过上限时说出来，并且只返回 limit 条。
+
+    默默少列的话，运维会以为脏边只有 500 条——他清完那 500 条，以为干净了。
+    """
+    rows = [
+        {
+            "subject_node_key": f"产品:P{i}", "subject_standard_name": f"P{i}",
+            "relation_type": "RELATED_TO", "object_node_key": "模块:M",
+            "object_standard_name": "M", "edge_tenant_id": None,
+            "subject_tenant_id": "demo", "object_tenant_id": "demo",
+        }
+        for i in range(4)
+    ]
+    session = FakeSession(rows=rows)
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    edges, truncated = await client.list_tenant_dirty_edges(tenant_id="demo", limit=3)
+
+    assert len(edges) == 3
+    assert truncated is True
+
+
+async def test_list_tenant_dirty_edges_does_not_claim_truncation_when_it_fits():
+    """正好等于上限时不算截断。
+
+    多要的那一条没回来，就说明后面没有了。报成截断的话运维会去找一批
+    根本不存在的脏边。
+    """
+    rows = [
+        {
+            "subject_node_key": f"产品:P{i}", "subject_standard_name": f"P{i}",
+            "relation_type": "RELATED_TO", "object_node_key": "模块:M",
+            "object_standard_name": "M", "edge_tenant_id": None,
+            "subject_tenant_id": "demo", "object_tenant_id": "demo",
+        }
+        for i in range(3)
+    ]
+    session = FakeSession(rows=rows)
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    edges, truncated = await client.list_tenant_dirty_edges(tenant_id="demo", limit=3)
+
+    assert len(edges) == 3
+    assert truncated is False
