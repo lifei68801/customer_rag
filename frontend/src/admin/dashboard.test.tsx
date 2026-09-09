@@ -54,6 +54,8 @@ let domainsStatus = 200
 /** 每个租户各自的 stats 响应。返回 Promise 好让用例控制先后。 */
 let statsResponders: Record<string, () => Promise<Response>>
 let switchRequests: string[] = []
+/** whoami 回的当前租户。第 9 项人工核查（admin 没切过租户）要把它设成 null。 */
+let currentTenantId: string | null = 'fast'
 /** 切租户的 PUT 什么时候完成——竞态那条用例要卡住它。 */
 let resolveSwitch: (() => void) | null = null
 
@@ -71,7 +73,7 @@ function stubApi() {
           username: 'alice',
           role: 'member',
           tenant_id: 'fast',
-          current_tenant_id: 'fast',
+          current_tenant_id: currentTenantId,
         })
       }
       if (url.includes('/api/admin/auth/session/tenant')) {
@@ -106,6 +108,7 @@ beforeEach(() => {
     loner: () => jsonResponse(stats('loner', { term_count: 3 })),
   }
   switchRequests = []
+  currentTenantId = 'fast'
   resolveSwitch = null
   resetAdminSession()
   localStorage.clear()
@@ -243,6 +246,20 @@ describe('看板', () => {
     await renderDashboard()
     await waitFor(() => expect(card('loner').getByText(/还没有数据/)).toBeTruthy())
     expect(card('loner').getByRole('button', { name: /导入|建本体/ })).toBeTruthy()
+  })
+
+  it('还没选过租户的账号打开看板，看到的是看板不是「请先选择一个租户」', async () => {
+    // 看板是登录后的落地页，而 admin 的 admin_users.tenant_id 恒为 None
+    // ——他没切过租户之前 current_tenant_id 就是 null。归成租户内路由的话，
+    // 新登录的 admin 第一眼看到的是一屏空态，而看板恰恰是**跨领域**的，
+    // 它一屏列出所有领域，本来就不属于其中任何一个。
+    //
+    // adminRoutes.test.ts 里那条只测了 routeRequiresTenant 的返回值；
+    // 这一条走整个 App，把 AdminLayout 那道闸门也一起钉住。
+    currentTenantId = null
+    await renderDashboard()
+    await waitFor(() => expect(screen.getByTestId('domain-card-fast')).toBeTruthy())
+    expect(screen.queryByText('请先选择一个租户')).toBeNull()
   })
 
   it('一个领域都没有时说清楚该做什么', async () => {
