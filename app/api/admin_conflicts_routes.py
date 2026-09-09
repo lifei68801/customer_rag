@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.api import deps
@@ -43,8 +43,8 @@ class ResolveRequest(BaseModel):
 @router.get("", response_model=ConflictListResponse)
 async def list_attribute_conflicts(
     tenant_id: str,
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> ConflictListResponse:
     """待处理的属性值冲突。
@@ -84,6 +84,14 @@ async def resolve_attribute_conflict(
     代价是前两步成功、第三步之前进程挂掉时，terms 已改而冲突仍待处理——
     审核员会再看到它一次，再选一次同样的值。重复一次无害（写回是幂等的），
     而反过来（标了但没生效）是不可发现的。
+
+    **并发保护只覆盖冲突表那一行**：`resolve_conflict` 的 UPDATE 带
+    `status='pending'`，所以两个人同时决议时只有一个能把它标成已处理。但前
+    两步没有这道闸——两个人各自选了不同的值时，两次写回和两次图谱同步都会
+    执行，最后落地的是**后完成的那个**，而只有先完成的那个人会看到成功。
+    今天没修：审核是低频人工操作，两个人同时决议同一条属性冲突这件事没有
+    在真实使用里出现过；真要修得给 terms 那一步也加一道版本判据。记在这里，
+    别让它被读成"这里已经并发安全了"。
 
     `value` 不限于那两个值之一：两个来源都错是可能的（比如两张表都漏了
     单位），强制二选一等于逼审核员选一个已知是错的。
