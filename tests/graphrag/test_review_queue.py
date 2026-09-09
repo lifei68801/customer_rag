@@ -10,6 +10,7 @@ from app.graphrag.review_queue import (
     ReviewNotFoundError,
     StandardNameNotInTermsError,
     approve_review,
+    count_pending_by_reason,
     count_pending_reviews,
     count_resolved_reviews,
     enqueue_for_review,
@@ -861,3 +862,145 @@ async def test_approve_review_error_message_distinguishes_same_type_duplicate_fr
             subject_term_type_hint="产品",
         )
     assert "多个类型" not in str(exc_info.value)
+
+
+
+# ---------------------------------------------------------------------------
+# 按 reason 过滤与分理由计数
+#
+# 审核页要按理由拆成四个分页：模糊匹配待确认 / 一端对不上 / 不在已确认本体 /
+# 关系类型非法。四种理由要做的事完全不同（确认一个候选 vs 给一端建实体 vs
+# 改本体 vs 改关系类型），混在一屏里审核员每条都得先判断"这条属于哪一类"。
+#
+# reason 的五个取值来自 app/graphrag/normalization.py（119/186/202/232/279），
+# 已逐字核对。注意 :202 是 `reason = "..."` 赋值形式而不是关键字参数形式——
+# 只 grep 后者会漏掉 subject_unresolved / object_unresolved 这两个，而漏掉
+# 它们就意味着「一端对不上」那一页永远是空的。
+# ---------------------------------------------------------------------------
+
+
+async def _enqueue(conn, *, tenant_id: str, reason: str, subject: str = "a") -> int:
+    return await enqueue_for_review(
+        conn, subject_candidate=subject, object_candidate="b",
+        relation_type="RELATED_TO", reason=reason, source="t.md", tenant_id=tenant_id,
+    )
+
+
+async def test_list_pending_reviews_filters_by_reason():
+    """按 reason 过滤。
+
+    批次里必须同时有命中和不命中的两种——全都命中的话，「根本没过滤」的
+    实现也能变绿。
+    """
+    conn = await _connect()
+    try:
+        await _enqueue(conn, tenant_id="t1", reason="subject_unresolved")
+        await _enqueue(conn, tenant_id="t1", reason="invalid_relation_type", subject="c")
+
+        rows = await list_pending_reviews(conn, tenant_id="t1", reasons=["subject_unresolved"])
+
+        assert [r["reason"] for r in rows] == ["subject_unresolved"]
+    finally:
+        await conn.close()
+
+
+async def test_a_page_can_ask_for_two_reasons_at_once():
+    """「一端对不上」那一页要同时收 subject_unresolved 和 object_unresolved。
+
+    它们是同一个问题的两侧，审核员做的事一模一样（给那一端建个实体或挑个
+    已有的）。拆成两页等于把一件事说成两件。
+    """
+    conn = await _connect()
+    try:
+        await _enqueue(conn, tenant_id="t1", reason="subject_unresolved")
+        await _enqueue(conn, tenant_id="t1", reason="object_unresolved", subject="c")
+        await _enqueue(conn, tenant_id="t1", reason="invalid_relation_type", subject="d")
+
+        rows = await list_pending_reviews(
+            conn, tenant_id="t1", reasons=["subject_unresolved", "object_unresolved"]
+        )
+
+        assert sorted(r["reason"] for r in rows) == ["object_unresolved", "subject_unresolved"]
+    finally:
+        await conn.close()
+
+
+async def test_reasons_none_still_returns_everything():
+    """不传 reasons 时行为不变。
+
+    review_cli.py 等既有调用方不传这个参数，它们的行为一个字都不该变。
+    """
+    conn = await _connect()
+    try:
+        await _enqueue(conn, tenant_id="t1", reason="subject_unresolved")
+        await _enqueue(conn, tenant_id="t1", reason="invalid_relation_type", subject="c")
+
+        assert len(await list_pending_reviews(conn, tenant_id="t1")) == 2
+        assert await count_pending_reviews(conn, tenant_id="t1") == 2
+    finally:
+        await conn.close()
+
+
+async def test_filtering_by_reason_is_still_scoped_to_the_tenant():
+    """加了 reason 过滤不能把租户过滤挤掉。
+
+    两个租户各有一条同样 reason 的记录，断言只拿到自己那条——WHERE 子句拼
+    错时最容易丢掉的就是先写的那个条件。
+    """
+    conn = await _connect()
+    try:
+        await _enqueue(conn, tenant_id="t1", reason="subject_unresolved")
+        await _enqueue(conn, tenant_id="t2", reason="subject_unresolved")
+
+        rows = await list_pending_reviews(conn, tenant_id="t1", reasons=["subject_unresolved"])
+
+        assert len(rows) == 1
+        assert (
+            await count_pending_reviews(conn, tenant_id="t1", reasons=["subject_unresolved"])
+        ) == 1
+    finally:
+        await conn.close()
+
+
+async def test_count_pending_by_reason_covers_every_reason_present():
+    """分页角标要显示每一页各有几条。
+
+    少算一种的话那一页的角标恒为 0，而页里有东西——用户不会去点一个写着 0
+    的分页，那些待审就永远躺在那儿。
+
+    三种理由的数量各不相同（1/2/3）：数量相同的话，把某一种的计数接到另一
+    种上的实现也能变绿。
+    """
+    conn = await _connect()
+    try:
+        await _enqueue(conn, tenant_id="t1", reason="fuzzy_match_needs_confirmation")
+        for i in range(2):
+            await _enqueue(conn, tenant_id="t1", reason="subject_unresolved", subject=f"s{i}")
+        for i in range(3):
+            await _enqueue(conn, tenant_id="t1", reason="invalid_relation_type", subject=f"b{i}")
+
+        assert await count_pending_by_reason(conn, tenant_id="t1") == {
+            "fuzzy_match_needs_confirmation": 1,
+            "subject_unresolved": 2,
+            "invalid_relation_type": 3,
+        }
+    finally:
+        await conn.close()
+
+
+async def test_count_pending_by_reason_is_scoped_and_ignores_resolved():
+    """只数自己租户的、且只数 pending 的。
+
+    已处理的还算进去的话角标降不下去——审核员处理完一整页，那个数字纹丝
+    不动，他会以为自己的操作没生效。
+    """
+    conn = await _connect()
+    try:
+        done = await _enqueue(conn, tenant_id="t1", reason="subject_unresolved")
+        await _enqueue(conn, tenant_id="t1", reason="subject_unresolved", subject="c")
+        await _enqueue(conn, tenant_id="t2", reason="subject_unresolved")
+        await reject_review(conn, review_id=done, tenant_id="t1")
+
+        assert await count_pending_by_reason(conn, tenant_id="t1") == {"subject_unresolved": 1}
+    finally:
+        await conn.close()

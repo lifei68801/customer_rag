@@ -202,26 +202,49 @@ async def enqueue_for_review(
     return cursor.lastrowid
 
 
+def _reason_clause(reasons: list[str] | None) -> tuple[str, list[str]]:
+    """把 reasons 变成一段 SQL 和它的绑定值。
+
+    `reasons=None` 返回空子句——不传时行为跟这个参数出现之前一模一样，
+    `review_cli.py` 等既有调用方一个字不用改。
+
+    `reasons=[]` 也返回空子句，而不是 `IN ()`（那在 SQLite 里是语法错误）。
+    空列表的语义是"没指定要哪几种"，跟 None 同义：真要"一条都不要"的话
+    调用方根本不会发这个查询。
+    """
+    if not reasons:
+        return "", []
+    placeholders = ", ".join("?" for _ in reasons)
+    return f" AND reason IN ({placeholders})", list(reasons)
+
+
 async def list_pending_reviews(
     conn: aiosqlite.Connection,
     *,
     tenant_id: str,
     limit: int | None = None,
     offset: int = 0,
+    reasons: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """limit=None（默认）返回该租户全部待审核记录，保持 review_cli.py 等
     既有调用方不传这两个参数时的行为不变；管理后台分页时显式传入具体的
     limit/offset。SQLite 的 LIMIT 取负数即表示不限制行数，用 -1 承载
     limit=None 这个语义，不需要为"要不要拼 LIMIT 子句"写分支 SQL。
+
+    reasons 用来支撑审核页的四个分页。四种理由要做的事完全不同（确认一个
+    候选 vs 给一端建实体 vs 改本体 vs 改关系类型），混在一屏里审核员每条
+    都得先判断"这条属于哪一类"。
     """
     conn.row_factory = aiosqlite.Row
+    clause, params = _reason_clause(reasons)
     cursor = await conn.execute(
         "SELECT review_id, subject_candidate, object_candidate, relation_type, "
         "reason, suggested_subject_standard_name, suggested_object_standard_name, "
         "source, evidence, created_at, subject_type_candidate, object_type_candidate "
         "FROM graph_review_queue "
-        "WHERE status = 'pending' AND tenant_id = ? ORDER BY review_id LIMIT ? OFFSET ?",
-        (tenant_id, limit if limit is not None else -1, offset),
+        f"WHERE status = 'pending' AND tenant_id = ?{clause} "
+        "ORDER BY review_id LIMIT ? OFFSET ?",
+        (tenant_id, *params, limit if limit is not None else -1, offset),
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
@@ -265,13 +288,38 @@ async def list_resolved_reviews(
     return [dict(row) for row in rows]
 
 
-async def count_pending_reviews(conn: aiosqlite.Connection, *, tenant_id: str) -> int:
+async def count_pending_reviews(
+    conn: aiosqlite.Connection, *, tenant_id: str, reasons: list[str] | None = None
+) -> int:
+    clause, params = _reason_clause(reasons)
     cursor = await conn.execute(
-        "SELECT COUNT(*) FROM graph_review_queue WHERE status = 'pending' AND tenant_id = ?",
-        (tenant_id,),
+        "SELECT COUNT(*) FROM graph_review_queue "
+        f"WHERE status = 'pending' AND tenant_id = ?{clause}",
+        (tenant_id, *params),
     )
     row = await cursor.fetchone()
     return row[0]
+
+
+async def count_pending_by_reason(
+    conn: aiosqlite.Connection, *, tenant_id: str
+) -> dict[str, int]:
+    """每种理由各有几条待审。审核页四个分页的角标用。
+
+    只返回**有记录**的那几种，不把没记录的补成 0：调用方（分页角标）本来
+    就要对"这一页没有"和"这个 key 不存在"做同一件事（不显示角标），补 0
+    只会让"这里到底有没有这一类"多一个可能说谎的来源。
+
+    只数 pending。已处理的还算进去的话角标降不下去——审核员处理完一整页，
+    那个数字纹丝不动，他会以为自己的操作没生效。
+    """
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute(
+        "SELECT reason, COUNT(*) AS n FROM graph_review_queue "
+        "WHERE status = 'pending' AND tenant_id = ? GROUP BY reason",
+        (tenant_id,),
+    )
+    return {row["reason"]: row["n"] for row in await cursor.fetchall()}
 
 
 async def count_resolved_reviews(
