@@ -224,6 +224,10 @@ async def ensure_terms_schema(
         await add_column_if_missing(
             conn, table="terms", column="source", ddl="TEXT NOT NULL DEFAULT 'unknown'"
         )
+        await _migrate_terms_table_to_tenant_scoped_if_needed(conn)
+        await _migrate_terms_drop_product_line_column_if_needed(conn)
+        await _migrate_terms_standard_name_index_to_type_scoped_if_needed(conn)
+        await _migrate_terms_standard_name_index_drop_unique_if_needed(conn)
         # 每个属性字段各自来自哪次导入。JSON 对象 {字段名: 来源}。
         #
         # 为什么逐字段而不是整行记一个"最近导入来源"：属性冲突页要显示
@@ -234,14 +238,18 @@ async def ensure_terms_schema(
         #
         # 只有带 incoming_source 调用 upsert_term_with_node_key 时才写这一列。
         # 这次改动之前的存量行留空，读的时候退回行级的 source 渠道值。
+        #
+        # **必须排在上面那几条重建型迁移之后。**
+        # _migrate_terms_table_to_tenant_scoped_if_needed 会 CREATE terms_new
+        # + 拷数据 + RENAME，而它那份 DDL 里没有这一列——排在它前面的话，
+        # 刚加的列会被那次重建原地丢掉，而下面的 _SCHEMA_SQL 是
+        # CREATE TABLE IF NOT EXISTS，表已经在了，补不回来。结果是本次启动
+        # 之后每一次 upsert 都在 SELECT 那一行抛 no such column，重启才自愈
+        # ——只有最老的那批存量库会踩，而它们恰恰是最没人盯着的。
         await add_column_if_missing(
             conn, table="terms", column="extra_property_sources",
             ddl="TEXT NOT NULL DEFAULT '{}'",
         )
-        await _migrate_terms_table_to_tenant_scoped_if_needed(conn)
-        await _migrate_terms_drop_product_line_column_if_needed(conn)
-        await _migrate_terms_standard_name_index_to_type_scoped_if_needed(conn)
-        await _migrate_terms_standard_name_index_drop_unique_if_needed(conn)
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
     if not table_already_existed and seed_yaml_path is not None and seed_yaml_path.exists():
@@ -980,6 +988,54 @@ async def migrate_term_type(
     return cursor.rowcount
 
 
+async def _coerce_to_declared_type(
+    conn: aiosqlite.Connection,
+    *,
+    tenant_id: str,
+    term_type: str,
+    field: str,
+    value: str,
+) -> object:
+    """把界面上填进来的字符串转成这个字段声明的类型。
+
+    界面上填什么都是字符串。原样存进去的话，一个声明为 number 的字段会得到
+    `"45"`——而 ETL 写的是 `45`，下一次导入 `"45" != 45` 又记一条冲突，
+    页面上两边 str() 之后都显示 45：审核员看到「用 45 / 用 45」，怎么点都
+    消不掉，每天再多一条。
+
+    转不过去时抛 ValueError 而不是硬写：硬写的话这个实体的那一列从此是脏的
+    ——结构化查询按数字比会漏掉它，而界面上看起来完全正常。
+
+    没声明过的字段（或没声明类型的分类）原样返回字符串：这里不承担
+    validate_term_categories 的职责，它在别处已经把"字段没声明"挡住了。
+    """
+    types = await list_term_types(conn, tenant_id, status="confirmed")
+    declared = {
+        f.name: f.value_type
+        for t in types
+        if t.value == term_type
+        for f in t.extra_fields
+    }
+    value_type = declared.get(field)
+    if value_type in (None, "string"):
+        return value
+    try:
+        if value_type == "integer":
+            return int(value)
+        if value_type == "number":
+            parsed = float(value)
+            # 42.0 存成 42：整数值存成浮点的话，下次 ETL 写 42（int）时
+            # 42.0 != 42 又是一条冲突。
+            return int(parsed) if parsed.is_integer() else parsed
+    except ValueError:
+        raise ValueError(
+            f"{field!r} 声明的类型是 {value_type}，而 {value!r} 不是一个{value_type}。"
+        ) from None
+    # number[] 之类的复合类型：界面上还没有填它们的入口，走到这里说明
+    # 调用方在用一个没设计过的路径，明确拒绝而不是猜一个解析方式。
+    raise ValueError(f"{field!r} 声明的类型是 {value_type}，这个类型还不支持在界面上直接改。")
+
+
 async def set_extra_property(
     conn: aiosqlite.Connection,
     *,
@@ -987,6 +1043,7 @@ async def set_extra_property(
     node_key: str,
     field: str,
     value: str,
+    value_source: str,
 ) -> None:
     """把一个属性字段的值定下来。属性冲突决议之后写回用。
 
@@ -996,23 +1053,42 @@ async def set_extra_property(
     实体不存在时抛 TermNotFoundError——静默 no-op 的话，审核员选完值、系统
     说成功，而那个值哪儿都没写进去。
 
-    不动 `extra_property_sources`：这个值是人定的，不来自任何一次导入。留着
-    原来那个来源会说谎，写成 "manual" 又跟那一列"哪次导入写的"的语义不符
-    ——留空由读的一侧退回行级 source，是这三者里唯一不撒谎的。
+    `value_source` 必填、无默认值：这个字段的来源必须跟着值一起更新。
+
+    不更新的话那一列会**留着原来那次导入的来源**——决议成 42 之后，下一次
+    冲突显示的是「用 42（来自 商品表.xlsx）」，而商品表说的是 39，它从没
+    说过 42。这正是引入这一列时要防的那件事（整行只记一个来源会指名一个
+    没说过这个值的文件），只不过换了个入口。
+    （曾经在这里写过"留空由读的一侧退回行级 source"——那是错的：这一列
+    对这个字段已经有值，不动它就是留着旧来源，根本走不到那个兜底。）
+
+    调用方传的是一句人话，比如「人工决议：alice」——冲突页要把它显示出来，
+    而审核员需要看出"这个值是人定的"跟"这个值来自某张表"是两回事。
     """
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT extra_properties FROM terms WHERE tenant_id = ? AND node_key = ?",
+        "SELECT extra_properties, extra_property_sources, term_type FROM terms "
+        "WHERE tenant_id = ? AND node_key = ?",
         (tenant_id, node_key),
     )
     row = await cursor.fetchone()
     if row is None:
         raise TermNotFoundError(f"术语 {node_key!r}（租户 {tenant_id!r}）不存在")
     extra = json.loads(row["extra_properties"])
-    extra[field] = value
+    extra[field] = await _coerce_to_declared_type(
+        conn, tenant_id=tenant_id, term_type=row["term_type"], field=field, value=value,
+    )
+    sources = json.loads(row["extra_property_sources"])
+    sources[field] = value_source
     await conn.execute(
-        "UPDATE terms SET extra_properties = ? WHERE tenant_id = ? AND node_key = ?",
-        (json.dumps(extra, ensure_ascii=False), tenant_id, node_key),
+        "UPDATE terms SET extra_properties = ?, extra_property_sources = ? "
+        "WHERE tenant_id = ? AND node_key = ?",
+        (
+            json.dumps(extra, ensure_ascii=False),
+            json.dumps(sources, ensure_ascii=False),
+            tenant_id,
+            node_key,
+        ),
     )
     await conn.commit()
 
@@ -1053,6 +1129,11 @@ async def _keep_old_values_and_record_conflicts(
         if old_value == incoming_value:
             # 值没变。来源也不动：先写进来的那次才是这个值的出处，改成这次的
             # 会让"39 来自哪"随最后一次重跑漂移。
+            continue
+        if existing_field_sources.get(field) == incoming_source:
+            # 同一个来源给出了新值 → **更新**，不是冲突。上游数据变了正是
+            # 重跑 ETL 的目的。来源不变（还是这一个），值换成新的。
+            sources[field] = incoming_source
             continue
         kept[field] = old_value
         await record_conflict(

@@ -335,10 +335,24 @@ async def create_missing_term(
             aliases=[], term_type=payload.term_type, source="review",
         )
     except TermNameConflictError:
-        # 已经有同名的了。这里不报错：用户这次要做的事跟上次完全一样，而
-        # 上一次多半是"建成功了、批准那步没成"（见 docstring 里的顺序说明）。
-        # 报错会把一个可以直接往下走的状态说成失败。
-        pass
+        # 已经有同名的了。多数情况下这是"上一次建成功了、批准那步没成"
+        # （见 docstring 里的顺序说明），直接往下走就对了。
+        #
+        # 但有一种情况不能往下走：那条同名记录**在合并视图里是被人工删除的**
+        # （term_edits 里的 __deleted__）。_check_name_conflict 查的是 terms
+        # 裸表，看得见它；而下面的 _approve_with_names 查的是合并视图，看不见
+        # ——于是用户会连着收到两句自相矛盾的话（"已经有了" 然后 "不在术语表
+        # 里"），而且从这个界面无论如何都走不出去。说清楚，并给出两条路。
+        merged = await list_terms_merged(review_conn, tenant_id)
+        if payload.standard_name not in {t.standard_name for t in merged}:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{payload.standard_name!r} 这个名字被一条**已人工删除**的实体占着，"
+                    f"新建不了、也批准不了。去实体明细页把那一条恢复，"
+                    f"或者换一个名字。"
+                ),
+            ) from None
     except TermUnknownCategoryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except ValueError as exc:

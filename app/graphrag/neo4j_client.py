@@ -329,20 +329,22 @@ RETURN count(r) AS removed
 # 5.22 验证过（见该查询的说明）。
 
 _LIST_TENANT_DIRTY_EDGES_QUERY = """
-MATCH (t:Term {tenant_id: $tenant_id})-[r]->(related:Term)
+MATCH (t:Term {tenant_id: $tenant_id})-[r]-(related:Term)
 WHERE type(r) <> 'ALIAS_OF'
   AND (r.tenant_id IS NULL
        OR related.tenant_id IS NULL
        OR r.tenant_id <> t.tenant_id
        OR related.tenant_id <> t.tenant_id)
-RETURN t.node_key AS subject_node_key,
-       t.standard_name AS subject_standard_name,
+WITH DISTINCT r
+WITH r, startNode(r) AS subject, endNode(r) AS object
+RETURN subject.node_key AS subject_node_key,
+       subject.standard_name AS subject_standard_name,
        type(r) AS relation_type,
-       related.node_key AS object_node_key,
-       related.standard_name AS object_standard_name,
+       object.node_key AS object_node_key,
+       object.standard_name AS object_standard_name,
        r.tenant_id AS edge_tenant_id,
-       t.tenant_id AS subject_tenant_id,
-       related.tenant_id AS object_tenant_id
+       subject.tenant_id AS subject_tenant_id,
+       object.tenant_id AS object_tenant_id
 ORDER BY subject_node_key, relation_type, object_node_key
 LIMIT $limit
 """
@@ -357,9 +359,18 @@ LIMIT $limit
 # 口径不一致的话，全局页列出来的和详情页列出来的对不上——运维在全局页删完，
 # 点进那个实体一看还有。
 #
-# 只走出边（-[r]->）：无向会让每条边被两端各列一次。详情页那条是无向的，
-# 因为它锚在一个实体上、要的正是"挂在我身上的所有边"；这里扫的是整个租户，
-# 两端都在扫描范围内，无向就是重复。
+# **无向匹配**，跟详情页那条一致。
+#
+# 曾经只走出边，理由写的是"两端都在扫描范围内，无向就是重复"——那个前提对
+# 脏边恰恰不成立：判据本身就是「对端跨租户 / 对端没有租户标记」，那种边的
+# 对端根本不是本租户的 Term，不在 (t:Term {tenant_id: $tenant_id}) 的扫描
+# 范围里。于是"本租户节点作宾语、主语属于别人"的脏边永远列不出来，而实体
+# 详情页那条无向查询看得见它——同一条边一个页面有、一个页面没有，正是这段
+# 注释下面警告过的那个后果。
+#
+# 两端都在本租户时会各命中一次，靠 WITH DISTINCT r 去重；方向用边自己的
+# startNode/endNode 还原，而不是按遍历方向报——否则同一条边从哪一端遍历到，
+# 主宾就反过来。
 #
 # 从节点侧起手的理由同 _COUNT_TENANT_RELATION_EDGES_QUERY：不是走索引
 # （复合索引只给 tenant_id 用不上），是扫描量级——节点侧扫这一个租户的

@@ -36,6 +36,7 @@ export function AttributeConflictsPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const [conflicts, setConflicts] = useState<Conflict[] | null>(null)
+  const [total, setTotal] = useState(0)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [errors, setErrors] = useState<Record<number, string>>({})
   const [customValues, setCustomValues] = useState<Record<number, string>>({})
@@ -57,7 +58,9 @@ export function AttributeConflictsPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '冲突列表加载失败'))
       }
-      setConflicts(((await response.json()) as { conflicts: Conflict[] }).conflicts)
+      const payload = (await response.json()) as { conflicts: Conflict[]; total: number }
+      setConflicts(payload.conflicts)
+      setTotal(payload.total)
     } catch (err) {
       // 不退回空数组：「一条冲突都没有」和「列表没拉回来」在界面上长得一样，
       // 而前者会让审核员安心走开，后者该报修。
@@ -106,7 +109,7 @@ export function AttributeConflictsPage() {
     <div className="flex flex-col gap-1">
       <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.reviewConflicts}</h1>
       <p className="text-sm text-ink-soft">
-        两次导入对同一个属性给出了不同的值。库里保留的是**先写进去**的那个，
+        两次导入对同一个属性给出了不同的值。库里保留的是<strong className="font-bold">先写进去</strong>的那个，
         这里定下最终用哪个。
       </p>
     </div>
@@ -151,6 +154,13 @@ export function AttributeConflictsPage() {
   return (
     <div className="flex flex-col gap-6">
       {header}
+      {total > conflicts.length && (
+        // 只列了第一页。不说的话，处理完这 20 条页面会变成「没有待处理的
+        // 属性冲突」——而队列里还有几百条，审核员就此收工。
+        <p role="status" className="rounded-card border border-subtle bg-card p-3 text-sm text-ink">
+          共 {total} 条，这里列了前 {conflicts.length} 条。处理完这一批刷新一下看下一批。
+        </p>
+      )}
       <ul className="flex flex-col gap-3">
         {conflicts.map((conflict) => (
           <li

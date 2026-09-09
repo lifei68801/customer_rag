@@ -122,7 +122,20 @@ describe('脏边与孤儿数据页', () => {
     await renderPage()
 
     await waitFor(() => expect(screen.getByTestId('dirty-edge')).toBeTruthy())
-    expect(screen.getByText(/对端实体属于别的租户（别人的租户）/)).toBeTruthy()
+    expect(screen.getByText(/宾语实体属于别的租户（别人的租户）/)).toBeTruthy()
+  })
+
+  it('主语属于别的租户时说的是主语，不是笼统一句', async () => {
+    // 查询是无向的，本租户的节点可能在任意一端。只查宾语的话，这一类会
+    // 落到最后那句笼统的兜底上——而那句话不告诉运维该看哪一边。
+    body = {
+      edges: [edge({ edge_tenant_id: 'demo', subject_tenant_id: '别人的租户' })],
+      truncated: false,
+      limit: 500,
+    }
+    await renderPage()
+
+    await waitFor(() => expect(screen.getByText(/主语实体属于别的租户（别人的租户）/)).toBeTruthy())
   })
 
   it('被截断时说出来', async () => {

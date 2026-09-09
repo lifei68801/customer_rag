@@ -33,10 +33,12 @@ from app.graphrag.term_edits_store import (
     ensure_term_edits_schema,
     upsert_term_edit,
 )
+from app.graphrag.attribute_conflicts import count_conflicts, list_conflicts
 from app.graphrag.terms_store import (
     TermNotFoundError,
     ensure_terms_schema,
     get_term,
+    get_term_by_node_key,
     get_term_merged_by_node_key,
     list_terms,
     upsert_term_with_node_key,
@@ -1621,3 +1623,91 @@ async def test_relation_sweep_safety_valve_can_be_overridden(tmp_path):
 
     # 放行之后照常执行删除。
     assert [s for s, _ in graph_client.stale_sweeps] == ["products.csv"]
+
+
+async def test_two_imports_disagreeing_on_a_value_record_a_conflict_and_keep_the_first(tmp_path):
+    """**走真实 ETL 路径**验证属性值冲突。
+
+    这是整个阶段四面向用户的承诺：表格 A 说 md_no 是 A123、表格 B 说 B456，
+    库里保留先写的 A123，冲突表里多一条。
+
+    此前所有冲突用例都直接调 `upsert_term_with_node_key(..., conflict_conn=...)`
+    ——"生产路径会不会传这两个参数"从来没被问过。而 schema_etl.py 那个唯一的
+    生产调用点当时一个都没传，于是整条链（冲突表、比对、冲突页、两处角标）
+    在真实系统里恒为空：A 表 39、B 表 45 仍旧后跑的赢，而界面上还多了一页
+    专门告诉运维「眼下每个属性都只有一个说法」。
+    """
+    conn = await _confirmed_conn()
+    try:
+        (tmp_path / "a.csv").write_text(
+            "product_group_id,product_group_name,md_no\n1001,圆角收纳盒,A123\n", encoding="utf-8"
+        )
+        (tmp_path / "b.csv").write_text(
+            "product_group_id,product_group_name,md_no\n1001,圆角收纳盒,B456\n", encoding="utf-8"
+        )
+
+        def config_for(source_file: str) -> SchemaETLConfig:
+            return SchemaETLConfig(
+                tenant_id="muji",
+                entities=[
+                    EntityMapping(
+                        term_type="Product", source_file=source_file,
+                        standard_name_parts=["product_group_name"],
+                        node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                        field_mappings={"md_no": "md_no"},
+                    ),
+                ],
+                relations=[],
+            )
+
+        await run_schema_etl(
+            conn=conn, graph_client=FakeGraphClient(), config=config_for("a.csv"), data_dir=tmp_path
+        )
+        await run_schema_etl(
+            conn=conn, graph_client=FakeGraphClient(), config=config_for("b.csv"), data_dir=tmp_path
+        )
+
+        term = await get_term_by_node_key(conn, tenant_id="muji", node_key="Product:1001")
+        assert term.extra_properties["md_no"] == "A123", "保留先写的值"
+
+        conflicts = await list_conflicts(conn, tenant_id="muji")
+        assert len(conflicts) == 1
+        row = conflicts[0]
+        assert (row["field"], row["kept_value"], row["incoming_value"]) == ("md_no", "A123", "B456")
+        # 来源必须是**两张表各自的文件名**，不是渠道（etl）。审核员判断该信
+        # 哪个的全部依据就是"哪张表更权威"。
+        assert (row["kept_source"], row["incoming_source"]) == ("a.csv", "b.csv")
+    finally:
+        await conn.close()
+
+
+async def test_rerunning_the_same_file_records_no_conflict(tmp_path):
+    """同一张表重跑不产生冲突。
+
+    ETL 每天跑一次，记的话会积出一屏「A123 和 A123 冲突了」——审核页变成
+    噪音，真正的冲突淹在里面。
+    """
+    conn = await _confirmed_conn()
+    try:
+        (tmp_path / "a.csv").write_text(
+            "product_group_id,product_group_name,md_no\n1001,圆角收纳盒,A123\n", encoding="utf-8"
+        )
+        config = SchemaETLConfig(
+            tenant_id="muji",
+            entities=[
+                EntityMapping(
+                    term_type="Product", source_file="a.csv",
+                    standard_name_parts=["product_group_name"],
+                    node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                    field_mappings={"md_no": "md_no"},
+                ),
+            ],
+            relations=[],
+        )
+
+        await run_schema_etl(conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path)
+        await run_schema_etl(conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path)
+
+        assert await count_conflicts(conn, tenant_id="muji") == 0
+    finally:
+        await conn.close()

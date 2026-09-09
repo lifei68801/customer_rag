@@ -28,9 +28,15 @@ interface DirtyEdge {
 function whatIsWrong(edge: DirtyEdge, tenantId: string): string {
   if (edge.edge_tenant_id === null) return '这条边没有租户标记'
   if (edge.edge_tenant_id !== tenantId) return `这条边标着别的租户（${edge.edge_tenant_id}）`
-  if (edge.object_tenant_id === null) return '对端实体没有租户标记'
+  // 主语和宾语都要查：查询是无向的，本租户的节点可能在任意一端，另一端
+  // 才是有问题的那个。只查宾语的话，"主语属于别人"那一类会落到最后那句
+  // 笼统的兜底上——而那句话不告诉运维该看哪一边。
+  if (edge.subject_tenant_id === null) return '主语实体没有租户标记'
+  if (edge.subject_tenant_id !== tenantId)
+    return `主语实体属于别的租户（${edge.subject_tenant_id}）`
+  if (edge.object_tenant_id === null) return '宾语实体没有租户标记'
   if (edge.object_tenant_id !== tenantId)
-    return `对端实体属于别的租户（${edge.object_tenant_id}）`
+    return `宾语实体属于别的租户（${edge.object_tenant_id}）`
   return '两端与边的租户标记对不上'
 }
 

@@ -30,6 +30,7 @@ from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.ontology_store import open_ontology_store_conn
 from app.graphrag.schema_etl_config import EntityMapping, RelationMapping, SchemaETLConfig, load_schema_etl_config
 from app.graphrag.schema_etl_row_processing import RowProcessingError
+from app.graphrag.attribute_conflicts import ensure_attribute_conflicts_schema
 from app.graphrag.terms_store import (
     TermNameConflictError,
     TermNotFoundError,
@@ -188,6 +189,18 @@ async def _write_entity_mapping(
                 conn, tenant_id=tenant_id, node_key=projected.node_key,
                 standard_name=projected.standard_name, aliases=[],
                 term_type=mapping.term_type, extra_properties=projected.extra_properties,
+                # 覆盖前逐字段比对：值不同就保留先写的那个并记一条冲突
+                # （spec §1 点名的「今天最大的静默失败」——表格 A 说 39、
+                # 表格 B 说 45，此前后跑的赢且无人知晓）。
+                #
+                # 冲突表跟 terms 在同一个库，所以 conflict_conn 就是 conn。
+                # 参数分开留着是为了让"要不要记冲突"成为调用方的显式选择，
+                # 而这里的选择是"要"——ETL 正是冲突唯一的来源。
+                conflict_conn=conn,
+                # 来源是**这张表的文件名**，不是渠道（terms.source 那一列恒为
+                # "etl"）。冲突页要显示「39 来自 商品表.xlsx」，审核员判断
+                # 该信哪个的全部依据就是"哪张表更权威"。
+                incoming_source=mapping.source_file,
             )
             # 写完 upsert_term_with_node_key 后用 get_term_merged_by_node_key
             # 取回合并结果——图谱应当是合并视图的投影，而非 terms 表原始值的投影。
@@ -347,6 +360,11 @@ async def run_schema_etl(
             f"租户 {config.tenant_id!r} 的本体 schema 还没有确认，拒绝运行 ETL"
         )
     await ensure_stable_code_registry_schema(conn)
+    # 防御性建表，跟上面那句同一个道理：ETL 现在会往冲突表写，而调用方
+    # （CLI、后台路由、测试）各自建各自的表，不能假设这一张一定在。少了它
+    # 的话，第一次遇到属性值冲突时整个 ETL 会以 "no such table" 中止——
+    # 而那时用户看到的是一次失败的导入，跟"有冲突"这件事毫无关系。
+    await ensure_attribute_conflicts_schema(conn)
 
     # 预检最先做的一件事：config.entities 里 term_type 不能重复。下面的
     # scanned_keys_by_term_type 和后面的 entity_mappings_by_term_type 都

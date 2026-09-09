@@ -1853,3 +1853,30 @@ async def test_list_tenant_dirty_edges_does_not_claim_truncation_when_it_fits():
 
     assert len(edges) == 3
     assert truncated is False
+
+
+async def test_list_tenant_dirty_edges_looks_at_both_directions():
+    """无向匹配，而不是只走出边。
+
+    只走出边的理由曾经写成"两端都在扫描范围内，无向就是重复"——那个前提
+    对脏边恰恰不成立：判据本身就是「对端跨租户 / 对端没有租户标记」，那种
+    边的对端根本不是本租户的 Term，不在 `(t:Term {tenant_id: $tenant_id})`
+    的扫描范围里。于是"本租户节点作宾语、主语属于别人"的脏边永远列不出来
+    ——而实体详情页那条无向查询看得见它。同一条边一个页面有、一个页面没有。
+
+    两端都在本租户时会各命中一次，靠 `WITH DISTINCT r` 去重，并用
+    startNode/endNode 还原真实方向（而不是按遍历方向报）。
+    """
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.list_tenant_dirty_edges(tenant_id="demo", limit=500)
+
+    query = session.last_query
+    assert "-[r]-(related:Term)" in query
+    assert "-[r]->(related:Term)" not in query
+    # 去重：不去的话，两端都在本租户的那条脏边会列两遍，运维以为有两条。
+    assert "DISTINCT r" in query
+    # 方向按边自己的 startNode/endNode 报，不按遍历方向——否则同一条边从
+    # 哪一端遍历到，主宾就反过来。
+    assert "startNode(r)" in query and "endNode(r)" in query

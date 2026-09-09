@@ -18,7 +18,11 @@ from app.graphrag.review_queue import (
     ensure_review_schema,
 )
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
-from app.graphrag.term_edits_store import ensure_term_edits_schema
+from app.graphrag.term_edits_store import (
+    FIELD_DELETED,
+    ensure_term_edits_schema,
+    upsert_term_edit,
+)
 from app.graphrag.terms_store import ensure_terms_schema, list_terms_merged
 from app.main import app
 from tests.settings_factory import build_settings
@@ -1244,3 +1248,46 @@ def test_allow_combination_refuses_when_the_types_are_unknown(review_conn):
 
     assert response.status_code == 400
     assert "类型" in response.json()["detail"]
+
+
+def test_create_missing_term_says_so_when_the_name_is_held_by_a_deleted_entity(review_conn):
+    """名字被一条**已人工删除**的实体占着时，说清楚并给出路。
+
+    `_check_name_conflict` 查 terms 裸表（看得见那条），而 `_approve_with_names`
+    查合并视图（看不见）。吞掉冲突直接往下走的话，用户会连着收到两句自相
+    矛盾的话——"已经有了"然后"不在术语表里"——而且从这个界面无论如何都
+    走不出去。
+    """
+    asyncio.run(
+        _seed_confirmed_ontology(
+            review_conn, tenant_id="t1", relation_type="RELATED_TO",
+            subject_term_type="产品", object_term_type="模块",
+        )
+    )
+    asyncio.run(_seed_terms(review_conn, [
+        Term(tenant_id="t1", node_key="产品:新面孔", standard_name="新面孔",
+             aliases=[], term_type="产品", extra_properties={}),
+        Term(tenant_id="t1", node_key="模块:认证模块", standard_name="认证模块",
+             aliases=[], term_type="模块", extra_properties={}),
+    ]))
+
+    async def soft_delete():
+        await upsert_term_edit(
+            review_conn, tenant_id="t1", node_key="产品:新面孔",
+            field=FIELD_DELETED, value="1", edited_by="alice",
+        )
+
+    asyncio.run(soft_delete())
+    review_id = _enqueue_unresolved(review_conn)
+
+    response = _post(
+        review_conn, f"/{review_id}/create-missing-term",
+        {"standard_name": "新面孔", "term_type": "产品", "side": "subject"},
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "已人工删除" in detail
+    # 两条路都要给：只说"被占着"的话用户仍然不知道该干什么。
+    assert "恢复" in detail and "换一个名字" in detail
+    assert asyncio.run(count_pending_reviews(review_conn, tenant_id="t1")) == 1

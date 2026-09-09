@@ -341,6 +341,31 @@ describe('就地修复', () => {
     expect(fixRequests[0].path).toContain('/allow-combination')
   })
 
+  it('超出本体那页的批准按钮不按入队时的 reason 写死禁用', async () => {
+    // reason 是**入队时**的列，用户按 next_step 去确认了本体草稿之后它
+    // 不会变。按它写死禁用的话，用户走完一圈回来按钮还是灰的——而这一页
+    // 恰恰刚引导他做了一次影响整租户的本体确认，然后死路。
+    //
+    // 判据交给后端：approve 端点按**当前**已确认本体校验，不通过时返回的
+    // 400 里点名了是哪个组合不在本体里。前端预判一个会过期的状态，只会
+    // 在这个状态变化之后说谎。
+    byTab.out_of_ontology = [
+      {
+        ...row(3, 'not_in_confirmed_ontology', '越界的主语'),
+        subject_type_candidate: '产品',
+        object_type_candidate: '模块',
+        suggested_subject_standard_name: '越界的主语',
+        suggested_object_standard_name: '认证模块',
+      },
+    ]
+    const user = userEvent.setup()
+    await renderReviews()
+    await user.click(tabBar().getByRole('tab', { name: /不在本体/ }))
+
+    const approve = await screen.findByRole('button', { name: '批准' })
+    expect((approve as HTMLButtonElement).disabled).toBe(false)
+  })
+
   it('加进草稿之后把「还没批准」这件事说出来', async () => {
     // 只弹一句「已加白名单」的话，审核员会以为这条处理完了，而它还挂在
     // 队列里——他下次看到会以为自己上次点了没生效。

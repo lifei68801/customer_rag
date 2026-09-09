@@ -36,6 +36,7 @@ const CONFLICT: ConflictRow = {
 }
 
 let conflicts: ConflictRow[]
+let total = 1
 let listStatus = 200
 let resolveStatus = 200
 let resolveDetail = ''
@@ -71,7 +72,7 @@ function stubApi() {
       if (url.includes('/conflicts')) {
         return Promise.resolve(
           new Response(
-            JSON.stringify(listStatus === 200 ? { conflicts, total: conflicts.length } : {}),
+            JSON.stringify(listStatus === 200 ? { conflicts, total } : {}),
             { status: listStatus },
           ),
         )
@@ -86,6 +87,7 @@ function stubApi() {
 
 beforeEach(() => {
   conflicts = [CONFLICT]
+  total = 1
   listStatus = 200
   resolveStatus = 200
   resolveDetail = ''
@@ -189,5 +191,22 @@ describe('属性冲突审核页', () => {
     await renderPage()
     await waitFor(() => expect(screen.getByText(/冲突列表加载失败/)).toBeTruthy())
     expect(screen.queryByText(/没有待处理的属性冲突/)).toBeNull()
+  })
+
+  it('只列了第一页时说清还有多少条，不让人以为处理完了', async () => {
+    // 不说的话，处理完这 20 条页面会变成「没有待处理的属性冲突」——而队列
+    // 里还有几百条，审核员就此收工。
+    total = 137
+    await renderPage()
+
+    await waitFor(() => expect(screen.getByText(/共 137 条，这里列了前 1 条/)).toBeTruthy())
+  })
+
+  it('一页装得下时不提这一句', async () => {
+    // 每次都提的话那句话就没意义了。
+    await renderPage()
+
+    await waitFor(() => expect(screen.getByTestId('conflict-7')).toBeTruthy())
+    expect(screen.queryByText(/共 .* 条，这里列了前/)).toBeNull()
   })
 })

@@ -1898,6 +1898,33 @@ async def test_the_conflict_carries_both_sources():
         await conflicts.close()
 
 
+async def test_the_same_source_giving_a_new_value_is_an_update_not_a_conflict():
+    """同一张表重跑给出新值 → 更新，不是冲突。
+
+    上游数据变了正是重跑 ETL 的目的。记成冲突并保留旧值的话，
+    `products.csv` 改了一个字段之后再也导不进来了——而人工编辑层明写的保证
+    是"重跑保留人工修正、**未编辑字段仍接收更新**"，一刀切成"所有不同的值
+    都保留旧的"会把那条保证一起废掉
+    （tests/graphrag/test_manual_edits_integration.py 那两条端到端用例正是
+    这么红的）。
+
+    区分点是**来源**：同源即更新，异源才是冲突。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        await _upsert(conn, extra_properties={"price": "39"},
+                      conflict_conn=conflicts, incoming_source="商品表.xlsx")
+        await _upsert(conn, extra_properties={"price": "45"},
+                      conflict_conn=conflicts, incoming_source="商品表.xlsx")
+
+        assert (await _extra(conn))["price"] == "45", "同源新值要写进去"
+        assert await count_conflicts(conflicts, tenant_id="default") == 0
+    finally:
+        await conn.close()
+        await conflicts.close()
+
+
 async def test_an_identical_value_records_no_conflict():
     """同一个值反复导入不是冲突。
 
@@ -1946,9 +1973,12 @@ async def test_conflicts_are_recorded_per_field_not_per_row():
     conflicts = await _conflict_conn()
     try:
         await _upsert(conn, extra_properties={"price": "39", "origin": "日本"},
-                      conflict_conn=conflicts)
+                      conflict_conn=conflicts, incoming_source="商品表.xlsx")
+        # 换一张表：同源给出新值是更新不是冲突（见
+        # test_the_same_source_giving_a_new_value_is_an_update_not_a_conflict），
+        # 两次都用同一个来源的话这条用例测不到它要测的东西。
         await _upsert(conn, extra_properties={"price": "45", "origin": "中国"},
-                      conflict_conn=conflicts)
+                      conflict_conn=conflicts, incoming_source="促销表.xlsx")
 
         rows = await list_conflicts(conflicts, tenant_id="default")
         assert sorted(r["field"] for r in rows) == ["origin", "price"]
@@ -1970,9 +2000,9 @@ async def test_a_field_that_did_not_change_is_not_recorded_alongside_one_that_di
     conflicts = await _conflict_conn()
     try:
         await _upsert(conn, extra_properties={"price": "39", "origin": "日本"},
-                      conflict_conn=conflicts)
+                      conflict_conn=conflicts, incoming_source="商品表.xlsx")
         await _upsert(conn, extra_properties={"price": "45", "origin": "日本"},
-                      conflict_conn=conflicts)
+                      conflict_conn=conflicts, incoming_source="促销表.xlsx")
 
         rows = await list_conflicts(conflicts, tenant_id="default")
         assert [r["field"] for r in rows] == ["price"]
@@ -2015,5 +2045,112 @@ async def test_without_conflict_conn_the_behaviour_is_the_old_one():
 
         # 老行为：后写的赢。
         assert (await _extra(conn))["price"] == "45"
+    finally:
+        await conn.close()
+
+
+async def test_a_human_decision_does_not_keep_claiming_the_old_import_as_the_source():
+    """人工决议之后，这个值的来源不能还指着原来那张表。
+
+    决议成 42 之后，下次冲突会显示「用 42（来自 商品表.xlsx）」——而商品表
+    说的是 39。那张表从没说过 42。这正是引入 extra_property_sources 这一列
+    时要防的那件事（整行只记一个来源会指名一个没说过这个值的文件），只不过
+    换了个入口。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        await _upsert(conn, extra_properties={"price": "39"},
+                      conflict_conn=conflicts, incoming_source="商品表.xlsx")
+
+        await terms_store.set_extra_property(
+            conn, tenant_id="default", node_key="error_code:洗发水",
+            field="price", value="42", value_source="人工决议：alice",
+        )
+
+        # 再来一次导入，跟人定的值不一样 → 记一条冲突
+        await _upsert(conn, extra_properties={"price": "45"},
+                      conflict_conn=conflicts, incoming_source="促销表.xlsx")
+
+        row = (await list_conflicts(conflicts, tenant_id="default"))[0]
+        assert row["kept_value"] == "42"
+        # 关键：来源说的是"这是人定的"，不是那张从没说过 42 的表。
+        assert row["kept_source"] == "人工决议：alice"
+        assert "商品表" not in row["kept_source"]
+    finally:
+        await conn.close()
+        await conflicts.close()
+
+
+async def test_resolving_a_numeric_field_stores_a_number_not_a_string():
+    """决议一个 number 字段要存成数字，不是字符串。
+
+    存成 "45" 的话，下一次 ETL 写 45（数字）时 `"45" != 45` 又记一条冲突，
+    而页面两边 str() 之后都显示 45——审核员看到「用 45 / 用 45」，怎么点都
+    消不掉，每天再多一条。
+
+    这条走真实的类型声明（number），不是随手挑一个字段。
+    """
+    from app.graphrag.ontology_categories import ExtraFieldSpec
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await ensure_terms_schema(conn)
+        await ensure_term_edits_schema(conn)
+        await ensure_ontology_schema(conn)
+        await create_term_type(
+            conn, tenant_id="default", value="error_code",
+            extra_fields=[ExtraFieldSpec(name="price", value_type="number")],
+            actor="alice",
+        )
+        await confirm_ontology(conn, "default", actor="alice")
+        await upsert_term_with_node_key(
+            conn, tenant_id="default", node_key="error_code:洗发水",
+            standard_name="洗发水", aliases=[], term_type="error_code",
+            extra_properties={"price": 39},
+        )
+
+        await terms_store.set_extra_property(
+            conn, tenant_id="default", node_key="error_code:洗发水",
+            field="price", value="45", value_source="人工决议：alice",
+        )
+
+        term = await get_term_by_node_key(conn, tenant_id="default", node_key="error_code:洗发水")
+        assert term.extra_properties["price"] == 45
+        assert not isinstance(term.extra_properties["price"], str)
+    finally:
+        await conn.close()
+
+
+async def test_resolving_a_numeric_field_with_a_non_number_is_refused():
+    """填了个数字字段不认的值时要拒绝，不是硬写进去。
+
+    硬写的话这个实体的那一列从此是脏的：结构化查询按数字比会漏掉它，而
+    界面上看起来完全正常。
+    """
+    from app.graphrag.ontology_categories import ExtraFieldSpec
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await ensure_terms_schema(conn)
+        await ensure_term_edits_schema(conn)
+        await ensure_ontology_schema(conn)
+        await create_term_type(
+            conn, tenant_id="default", value="error_code",
+            extra_fields=[ExtraFieldSpec(name="price", value_type="number")],
+            actor="alice",
+        )
+        await confirm_ontology(conn, "default", actor="alice")
+        await upsert_term_with_node_key(
+            conn, tenant_id="default", node_key="error_code:洗发水",
+            standard_name="洗发水", aliases=[], term_type="error_code",
+            extra_properties={"price": 39},
+        )
+
+        with pytest.raises(ValueError, match="price"):
+            await terms_store.set_extra_property(
+                conn, tenant_id="default", node_key="error_code:洗发水",
+                field="price", value="四十五", value_source="人工决议：alice",
+            )
     finally:
         await conn.close()

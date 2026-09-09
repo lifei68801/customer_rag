@@ -400,8 +400,9 @@ export function GraphReviewsPage() {
     selectedReviews.length > 0 &&
     selectedReviews.every(
       (review) =>
+        // 同上：不按入队时的 reason 排除 not_in_confirmed_ontology。
+        // 批量批准里后端逐条校验，不通过的那几条会各自带回自己的报错。
         review.reason !== 'invalid_relation_type' &&
-        review.reason !== 'not_in_confirmed_ontology' &&
         drafts[review.review_id]?.subject &&
         drafts[review.review_id]?.object &&
         !(
@@ -1168,7 +1169,14 @@ export function GraphReviewsPage() {
                   !drafts[review.review_id]?.subject ||
                   !drafts[review.review_id]?.object ||
                   review.reason === 'invalid_relation_type' ||
-                  review.reason === 'not_in_confirmed_ontology' ||
+                  // **不按 not_in_confirmed_ontology 写死禁用。** reason 是
+                  // 入队时的列，用户按上面那条 next_step 去确认了本体草稿
+                  // 之后它不会变——写死禁用的话他走完一圈回来按钮还是灰的，
+                  // 而这一页恰恰刚引导他做了一次影响整租户的本体确认。
+                  //
+                  // 判据交给后端：approve 按**当前**已确认本体校验，不通过
+                  // 时的 400 里点名是哪个组合不在本体里。前端预判一个会过期
+                  // 的状态，只会在这个状态变化之后说谎。
                   subjectAmbiguous ||
                   objectAmbiguous ||
                   processingId !== null ||

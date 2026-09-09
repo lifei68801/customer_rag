@@ -36,6 +36,7 @@ function whoamiResponse() {
 interface Badges {
   pending_relations: number
   pending_duplicates: number
+  pending_conflicts: number
   total_terms: number
 }
 
@@ -79,7 +80,7 @@ const nav = () => within(screen.getByRole('navigation', { name: '后台导航' }
 
 describe('徽标', () => {
   it('待办数显示在对应的链接上', async () => {
-    stubFetch({ pending_relations: 7, pending_duplicates: 3, total_terms: 20017 })
+    stubFetch({ pending_relations: 7, pending_duplicates: 3, pending_conflicts: 0, total_terms: 20017 })
     await renderAt(ADMIN_ROUTES.reviewRelations)
     await waitFor(() => {
       expect(nav().getByLabelText('关系审核：7 项待处理')).toBeTruthy()
@@ -88,7 +89,7 @@ describe('徽标', () => {
   })
 
   it('收起的组也带着数字——不展开就看不到待办，等于没提醒', async () => {
-    stubFetch({ pending_relations: 7, pending_duplicates: 3, total_terms: 20017 })
+    stubFetch({ pending_relations: 7, pending_duplicates: 3, pending_conflicts: 0, total_terms: 20017 })
     await renderAt(ADMIN_ROUTES.documents)
     // 审核组此时是收起的。
     expect(nav().getByRole('button', { name: /审核/ }).getAttribute('aria-expanded')).toBe('false')
@@ -98,7 +99,7 @@ describe('徽标', () => {
   })
 
   it('零不显示——每个链接后面挂个 0 只是噪音', async () => {
-    stubFetch({ pending_relations: 0, pending_duplicates: 4, total_terms: 20017 })
+    stubFetch({ pending_relations: 0, pending_duplicates: 4, pending_conflicts: 0, total_terms: 20017 })
     await renderAt(ADMIN_ROUTES.reviewRelations)
     await waitFor(() => {
       expect(nav().getByLabelText('疑似重复：4 项待处理')).toBeTruthy()
@@ -124,7 +125,7 @@ describe('实体总数', () => {
     // 落在结果预览页而不是文档导入页：实体明细现在归在「结果预览」组里，
     // 只有那一组展开时叶子才渲染得出来。此前它是常驻独立项，从哪一页看
     // 都在——这条用例跟着改，是因为那个位置变了，不是因为断言放宽了。
-    stubFetch({ pending_relations: 7, pending_duplicates: 3, total_terms: 20017 })
+    stubFetch({ pending_relations: 7, pending_duplicates: 3, pending_conflicts: 0, total_terms: 20017 })
     await renderAt(ADMIN_ROUTES.terms)
     await waitFor(() => expect(nav().getByLabelText('实体明细：共 20,017 条')).toBeTruthy())
     expect(nav().queryByLabelText(/实体明细：.*待处理/)).toBeNull()
@@ -133,7 +134,7 @@ describe('实体总数', () => {
   it('不算进任何组的待办合计里', async () => {
     // 它不在任何组里，本来就不该被算进去；这条防的是以后有人把独立项
     // 也塞进某个组时顺手把计数一起并了。
-    stubFetch({ pending_relations: 7, pending_duplicates: 3, total_terms: 20017 })
+    stubFetch({ pending_relations: 7, pending_duplicates: 3, pending_conflicts: 0, total_terms: 20017 })
     await renderAt(ADMIN_ROUTES.documents)
     await waitFor(() => expect(nav().getByLabelText('数据审核：10 项待处理')).toBeTruthy())
     // 而且实体总数不能变成「结果预览」组的待办合计——它是规模不是待办。
@@ -141,9 +142,30 @@ describe('实体总数', () => {
   })
 
   it('零条实体不显示——空租户不需要被提醒它是空的', async () => {
-    stubFetch({ pending_relations: 0, pending_duplicates: 0, total_terms: 0 })
+    stubFetch({ pending_relations: 0, pending_duplicates: 0, pending_conflicts: 0, total_terms: 0 })
     await renderAt(ADMIN_ROUTES.terms)
     await waitFor(() => expect(nav().getByRole('link', { name: /实体明细/ })).toBeTruthy())
     expect(nav().queryByLabelText(/共 .* 条/)).toBeNull()
+  })
+})
+
+describe('属性冲突角标', () => {
+  it('冲突数显示在属性冲突那一项上，并算进组头合计', async () => {
+    // 看板的待审合计已经把三个队列都算进去了（tenant_stats.py）。这里漏掉
+    // 的话，同一个人同一屏会看到两个互相矛盾的数字：看板说「待审 12」、
+    // 侧边栏「数据审核」组说 10。
+    //
+    // 三个数各不相同（7/3/2）：相同的话，把冲突数接到别的项上的实现也能
+    // 变绿。
+    stubFetch({
+      pending_relations: 7,
+      pending_duplicates: 3,
+      pending_conflicts: 2,
+      total_terms: 0,
+    })
+    await renderAt(ADMIN_ROUTES.reviewConflicts)
+
+    await waitFor(() => expect(nav().getByLabelText('属性冲突：2 项待处理')).toBeTruthy())
+    expect(nav().getByLabelText('关系审核：7 项待处理')).toBeTruthy()
   })
 })

@@ -100,7 +100,16 @@ async def resolve_attribute_conflict(
         await set_extra_property(
             review_conn, tenant_id=tenant_id, node_key=node_key,
             field=conflict["field"], value=payload.value,
+            # 来源写成一句人话。不写的话那一列会留着原来那次导入的来源，
+            # 下一次冲突会显示「用 42（来自 商品表.xlsx）」——而商品表说的
+            # 是 39，它从没说过 42。
+            value_source=f"人工决议：{session.username}",
         )
+    except ValueError as exc:
+        # 填了个这个字段的声明类型不认的值（比如 number 字段填了"四十五"）。
+        # 400 而不是 500：这是"改输入才行"，报错原文里点名了是哪个字段、
+        # 声明的是什么类型、填的是什么。
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     except TermNotFoundError:
         # 实体在这条冲突记下来之后被删了。冲突留在队列里没意义——它指向一个
         # 不存在的东西，审核员选什么都写不进去。说清楚，让他去驳回或忽略。

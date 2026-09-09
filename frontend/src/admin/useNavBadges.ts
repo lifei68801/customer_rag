@@ -42,12 +42,17 @@ export function useNavBadges(): Record<string, NavBadgeCount> {
         const body = (await res.json()) as {
           pending_relations: number
           pending_duplicates: number
+          pending_conflicts: number
           total_terms: number
         }
         if (cancelled) return
         setCounts({
           [ADMIN_ROUTES.reviewRelations]: { count: body.pending_relations, kind: 'todo' },
           [ADMIN_ROUTES.reviewDuplicates]: { count: body.pending_duplicates, kind: 'todo' },
+          // 属性值冲突。漏掉它的话，看板的待审合计（tenant_stats.py 已经把
+          // 三个队列都算进去了）会跟侧边栏「数据审核」组的合计对不上——
+          // 同一个人同一屏看到两个互相矛盾的数字。
+          [ADMIN_ROUTES.reviewConflicts]: { count: body.pending_conflicts, kind: 'todo' },
           // 「有 20017 条实体」不是一件等着你处理的事。
           [ADMIN_ROUTES.terms]: { count: body.total_terms, kind: 'scale' },
         })
