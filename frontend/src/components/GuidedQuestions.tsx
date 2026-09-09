@@ -21,7 +21,7 @@ interface GuidedQuestionsProps {
 export function GuidedQuestions({ tagline, questions, onAsk }: GuidedQuestionsProps) {
   if (!tagline && questions.length === 0) return null
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-3 p-6">
+    <div data-testid="guided-block" className="mx-auto flex w-full max-w-2xl flex-col gap-3 p-6">
       {tagline && <p className="text-sm text-ink-soft">{tagline}</p>}
       {questions.length > 0 && (
         <div data-testid="guided-questions" className="flex flex-wrap gap-2">

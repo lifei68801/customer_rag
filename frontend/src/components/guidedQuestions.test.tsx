@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import App from '../App'
@@ -154,6 +154,25 @@ describe('前台引导问题', () => {
     personaDetail = { ...PERSONA, questions: [] }
     renderChat()
     await waitFor(() => expect(screen.getByText(PERSONA.tagline)).toBeTruthy())
+    expect(screen.queryByTestId('guided-questions')).toBeNull()
+  })
+
+  it('从没配过数字人的租户：人设和问题都空，整块一点位置都不占', async () => {
+    // 后端对没配过 persona 的租户返回 tagline: ''（admin_personas_routes.py
+    // 的 `(persona or {}).get("tagline", "")`），这是每个新租户的默认状态，
+    // 不是极端情况。两边都空还渲染的话，正文顶上会多出一块只有内边距的
+    // 空白，看起来像加载卡住了。
+    personaDetail = { ...PERSONA, tagline: '', questions: [] }
+    renderChat()
+    // 引导块不渲染时没有可见文字能当"数据已到手"的信号，改成显式把挂载
+    // 后的 effect 和微任务队列跑完再断言——不跑完的话断言跑在第一帧上，
+    // 那时本来就什么都没有，判断条件改坏了照样绿。
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    // 断言外层容器本身不在，不能只断言里面没文字：去掉 `return null`
+    // 之后剩下的是一个带内边距的空 div，文字断言照样绿（变异 E 验过）。
+    expect(screen.queryByTestId('guided-block')).toBeNull()
     expect(screen.queryByTestId('guided-questions')).toBeNull()
   })
 
