@@ -17,9 +17,7 @@ import { TenantsPage } from './admin/TenantsPage'
 import { SettingsPage } from './admin/SettingsPage'
 import { NotFoundPage } from './admin/NotFoundPage'
 import { GuidedOntologyPage } from './admin/guidedOntology/GuidedOntologyPage'
-import {
-  DatabaseImportPage,
-} from './admin/ComingSoonPages'
+import { DatabaseImportPage } from './admin/DatabaseImportPage'
 import { DataGraphPage } from './admin/DataGraphPage'
 import { ErrorLogPage } from './admin/ErrorLogPage'
 import { DirtyEdgesPage } from './admin/DirtyEdgesPage'
