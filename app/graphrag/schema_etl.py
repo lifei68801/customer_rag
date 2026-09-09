@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -105,6 +106,8 @@ class SweepSafetyValveError(Exception):
 # 次真实运行后应当回头调整。
 _SWEEP_SAFETY_THRESHOLD = 0.5
 
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class SkippedRow:
@@ -368,9 +371,14 @@ async def run_schema_etl(
     也是真实的导入路径，它跳掉的行同样是数据问题，静默丢掉的话报错明细页
     会显示一份看起来很干净、实际残缺的清单。
 
-    **`dry_run` 不产生任何跳过行**，因为它在逐行处理之前就带着一份空报告
-    返回了（见下面那个 `if dry_run` 分支）。预演只回答"会删掉多少实体"这
-    一个问题，不读任何一行源数据。
+    **`dry_run` 不产生任何跳过行**：它在逐行写入循环之前就带着一份**新建的
+    空报告**返回了（见下面那个 `if dry_run` 分支），而跳过行只在那个循环里
+    才会被记进报告。
+
+    注意这不等于"预演不读源数据"——预检里的 `scan_entity_node_keys` 会流式
+    读完每个实体源文件的每一行来算 sweep 候选集（源文件不存在时 dry_run
+    照样抛 FileNotFoundError）。它只是不把逐行的失败原因攒进报告，也不写
+    terms / Neo4j。
     """
     if not await is_ontology_confirmed(conn, config.tenant_id):
         raise SchemaETLNotConfirmedError(
@@ -639,20 +647,30 @@ async def run_schema_etl(
         #
         # 整批一次写完：逐行写库的话两万行的导入会被每行一次事务拖垮，
         # 所以 _record_skipped_row 全程只往报告里攒，落库只在这里发生一次。
-        await record_skipped_rows(
-            conn,
-            tenant_id=config.tenant_id,
-            run_id=resolved_run_id,
-            rows=[
-                SkippedRowRecord(
-                    label=row.label,
-                    source_file=row.source_file,
-                    row_number=row.row_number,
-                    reason=row.reason,
-                )
-                for row in report.skipped_rows
-            ],
-        )
+        try:
+            await record_skipped_rows(
+                conn,
+                tenant_id=config.tenant_id,
+                run_id=resolved_run_id,
+                rows=[
+                    SkippedRowRecord(
+                        label=row.label,
+                        source_file=row.source_file,
+                        row_number=row.row_number,
+                        reason=row.reason,
+                    )
+                    for row in report.skipped_rows
+                ],
+            )
+        except Exception:
+            # **不许让落库失败盖掉正在传播的那个异常。** finally 里抛出的
+            # 异常会替换掉原始异常，于是调用方看到的是"数据库锁住了"，而
+            # 真正该修的 SweepSafetyValveError（信息量大得多）消失了。
+            # 少一份跳过行记录远好过丢掉故障原因。
+            logger.warning(
+                "跑批 %r（租户 %r）的跳过行落库失败，本次跳过行不可查",
+                resolved_run_id, config.tenant_id, exc_info=True,
+            )
 
     return report
 

@@ -48,8 +48,18 @@ interface Counts {
   qa: number
 }
 
-/** 一次取多少条。点「显示更多」时翻倍。 */
+/** 一次取多少条。点「显示更多」时加一页。 */
 const PAGE_SIZE = 50
+
+/**
+ * 一次最多取多少条——**必须跟后端的 MAX_LIMIT 一致**
+ * （`app/api/admin_error_log_routes.py`）。
+ *
+ * 不钳住的话，点第五次「显示更多」会发出 limit=250，后端 422，而 422 会走进
+ * 取数的 catch 分支把三个页签**已经加载出来的数据全部清空**——用户点一下
+ * "看更多"，看到的东西反而没了。
+ */
+const MAX_LIMIT = 200
 
 const TABS: { key: TabKey; label: string; path: string; countKey: keyof Counts }[] = [
   { key: 'documents', label: '文档失败', path: 'documents', countKey: 'documents' },
@@ -273,9 +283,20 @@ export function ErrorLogPage() {
           className="flex flex-wrap items-center gap-3 rounded-card border border-subtle bg-card p-3 text-sm text-ink"
         >
           <span>{`只列出了前 ${shownCount.toLocaleString()} / 共 ${(totals[tab] ?? 0).toLocaleString()} 条。`}</span>
-          <button type="button" className={actionClass} onClick={() => setLimit((n) => n + PAGE_SIZE)}>
-            显示更多
-          </button>
+          {limit < MAX_LIMIT ? (
+            <button
+              type="button"
+              className={actionClass}
+              onClick={() => setLimit((n) => Math.min(n + PAGE_SIZE, MAX_LIMIT))}
+            >
+              显示更多
+            </button>
+          ) : (
+            // 到顶了就说清楚下一步在哪，而不是留一个点了没反应的按钮。
+            <span className="text-ink-soft">
+              这一页最多显示 {MAX_LIMIT} 条。剩下的用「下载这批」或者先处理完这些再回来看。
+            </span>
+          )}
         </div>
       )}
 

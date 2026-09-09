@@ -191,6 +191,15 @@ describe('报错明细页', () => {
     expect(link.getAttribute('href')).toContain(ADMIN_ROUTES.ontology)
     // 带上那个问题：到了本体页还要自己回忆刚才问的是什么，这个入口就白给了。
     expect(decodeURIComponent(link.getAttribute('href') ?? '')).toContain('库存多少')
+
+    // **真的点过去，断言落地页接住了它。** 只断言 href 的话，一个生成了
+    // 链接、而落地页根本不读这个参数的实现照样绿——那时代码注释在解释
+    // 一件不成立的事。
+    const user = userEvent.setup()
+    await user.click(link)
+    await waitFor(() =>
+      expect(screen.getByTestId('from-question').textContent).toContain('库存多少'),
+    )
   })
 
   it('某一类为 0 时那一页说清楚，不是空白', async () => {
@@ -217,6 +226,29 @@ describe('报错明细页', () => {
     await waitFor(() =>
       expect(requestedUrls.some((u) => u.includes('/errors/documents?limit=100'))).toBe(true),
     )
+  })
+
+  it('「显示更多」不会把 limit 加到后端拒收的地步', async () => {
+    // 后端 limit 的上限是 200，超了直接 422——而 422 会让取数走进 catch，
+    // 把三个页签已经加载出来的数据整体清空。用户点一下"看更多"，看到的
+    // 东西反而没了。
+    fixture.totals = { documents: 1000, etlRows: 1, qa: 1 }
+    const user = userEvent.setup()
+    await renderPage()
+
+    for (let i = 0; i < 6; i += 1) {
+      const more = screen.queryByRole('button', { name: '显示更多' })
+      if (!more) break
+      await user.click(more)
+      await waitFor(() => expect(requestedUrls.length).toBeGreaterThan(0))
+    }
+
+    const limits = requestedUrls
+      .filter((u) => u.includes('/errors/documents?limit='))
+      .map((u) => Number(new URL(u, 'http://x').searchParams.get('limit')))
+    expect(Math.max(...limits)).toBeLessThanOrEqual(200)
+    // 到顶之后要说清楚，不是留一个点了没反应的按钮。
+    await waitFor(() => expect(screen.getByText(/这一页最多显示 200 条/)).toBeTruthy())
   })
 
   it('表格跳行那一页能把整批下下来', async () => {
