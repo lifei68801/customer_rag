@@ -70,9 +70,14 @@ def test_the_walker_actually_finds_routes():
 
 
 def test_four_route_groups_are_tenant_scoped():
-    """这四组必须带上租户段。少一组就是少一块将来校验不到的地方。"""
+    """这几组必须带上租户段。少一组就是少一块将来校验不到的地方。
+
+    「报错明细」（errors/）也在里面：它一次列出三个来源的失败，漏挂的话
+    一个租户会看到另一个租户的失败文档名、被跳过的表格行、以及答不出来的
+    问题原文——那是这个后台里最不该串的三样东西。
+    """
     paths = _admin_paths()
-    for suffix in ("nav-badges", "duplicate-reviews", "graph-reviews", "documents"):
+    for suffix in ("nav-badges", "duplicate-reviews", "graph-reviews", "documents", "errors/"):
         matching = [p for p in paths if suffix in p]
         assert matching, f"没有找到 {suffix} 的任何路由"
         for path in matching:

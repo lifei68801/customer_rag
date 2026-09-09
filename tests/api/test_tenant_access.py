@@ -26,6 +26,7 @@ from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.review_queue import ensure_review_schema
 from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
+from app.graphrag.etl_skipped_rows import ensure_etl_skipped_rows_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.main import app
 from tests.schema_fixtures import ensure_admin_auth_schema, ensure_review_queues_schema
@@ -40,6 +41,8 @@ async def _open_review_conn() -> aiosqlite.Connection:
     await ensure_ontology_schema(conn)
     await create_tenants_table(conn)
     await ensure_admin_auth_schema(conn)
+    # 报错明细的「表格跳行」页读这张表。
+    await ensure_etl_skipped_rows_schema(conn)
     await create_tenant(conn, tenant_id="demo", name="demo")
     await create_tenant(conn, tenant_id="other", name="other")
     await create_admin_user(
@@ -107,6 +110,7 @@ _TENANT_SCOPED_PROBES = [
     "/api/admin/other/graph-reviews",
     "/api/admin/other/duplicate-reviews",
     "/api/admin/other/diagnostics",
+    "/api/admin/other/errors/etl-rows",
     "/api/admin/ontology/other/status",
     "/api/admin/other/schema-etl/status",
 ]

@@ -16,18 +16,18 @@
 """
 from __future__ import annotations
 
-import logging
+import csv
+import io
 
 import aiosqlite
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api import deps
 from app.graphrag.etl_skipped_rows import count_skipped_rows, list_skipped_rows
-from app.ingestion.ingestion_queue import list_dead_jobs
+from app.ingestion.ingestion_queue import count_dead_jobs, list_dead_jobs
 from app.memory.qa_diagnostics import list_diagnostics
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/admin/{tenant_id}/errors",
@@ -76,14 +76,20 @@ class QaFailure(BaseModel):
 
 class DocumentFailureList(BaseModel):
     items: list[DocumentFailure]
+    #: **真实总数**，不是这一页的条数。少了它，前端说不出「只列了 50 /
+    #: 共 250」——而它眼里的世界就只有那 50 条，剩下 200 条既不在任何页签
+    #: 里，也没有任何信号让人怀疑它们存在。
+    total: int
 
 
 class EtlSkippedRowList(BaseModel):
     items: list[EtlSkippedRow]
+    total: int
 
 
 class QaFailureList(BaseModel):
     items: list[QaFailure]
+    total: int
 
 
 class ErrorCounts(BaseModel):
@@ -103,6 +109,7 @@ class ErrorCounts(BaseModel):
 async def list_document_failures(
     tenant_id: str,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
     ingestion_conn: aiosqlite.Connection = Depends(deps.get_ingestion_conn),
 ) -> DocumentFailureList:
     """重试耗尽、彻底失败的文档任务。
@@ -111,8 +118,11 @@ async def list_document_failures(
     这一页自己写一遍 `status = ...` 的话，队列那边改了状态词汇表，这里会
     静默地少列或多列，而没有任何东西会红。
     """
-    jobs = await list_dead_jobs(ingestion_conn, limit=limit, tenant_id=tenant_id)
+    jobs = await list_dead_jobs(
+        ingestion_conn, limit=limit, offset=offset, tenant_id=tenant_id
+    )
     return DocumentFailureList(
+        total=await count_dead_jobs(ingestion_conn, tenant_id=tenant_id),
         items=[
             DocumentFailure(
                 job_id=job["job_id"],
@@ -137,13 +147,50 @@ async def list_etl_skipped_rows(
     rows = await list_skipped_rows(
         review_conn, tenant_id=tenant_id, limit=limit, offset=offset
     )
-    return EtlSkippedRowList(items=[EtlSkippedRow(**row) for row in rows])
+    return EtlSkippedRowList(
+        items=[EtlSkippedRow(**row) for row in rows],
+        total=await count_skipped_rows(review_conn, tenant_id=tenant_id),
+    )
+
+
+@router.get("/etl-rows.csv")
+async def download_etl_skipped_rows_csv(
+    tenant_id: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> StreamingResponse:
+    """把跳过行整份下下来（spec D7 里「表格跳行」那一格的修复动作）。
+
+    页面上只列前几十行，而要改的表格在用户自己电脑上——让他对着屏幕手抄
+    两百个行号，这个功能就等于没做。
+
+    数据源是 `etl_skipped_rows` 而不是 `etl_runs.report_json`：后者只对
+    从管理后台发起的跑批存在，命令行导入跳掉的行在那里查不到，下下来会
+    比页面上看到的少——而少了哪些没有任何提示。
+    """
+    rows = await list_skipped_rows(review_conn, tenant_id=tenant_id, limit=None)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["run_id", "label", "source_file", "row_number", "reason", "created_at"])
+    for row in rows:
+        writer.writerow(
+            [
+                row["run_id"], row["label"], row["source_file"],
+                row["row_number"], row["reason"], row["created_at"],
+            ]
+        )
+    buffer.seek(0)
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="etl_skipped_rows.csv"'},
+    )
 
 
 @router.get("/qa", response_model=QaFailureList)
 async def list_qa_failures(
     tenant_id: str,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
     memory_conn: aiosqlite.Connection = Depends(deps.get_memory_conn),
 ) -> QaFailureList:
     """答不出来的那些问答（`outcome != 'answered'`）。
@@ -154,7 +201,10 @@ async def list_qa_failures(
     """
     rows = await list_diagnostics(memory_conn, tenant_id=tenant_id, limit=None)
     failures = [row for row in rows if row["outcome"] != "answered"]
-    return QaFailureList(items=[QaFailure(**row) for row in failures[:limit]])
+    return QaFailureList(
+        items=[QaFailure(**row) for row in failures[offset : offset + limit]],
+        total=len(failures),
+    )
 
 
 @router.get("/counts", response_model=ErrorCounts)
@@ -165,10 +215,11 @@ async def get_error_counts(
     memory_conn: aiosqlite.Connection = Depends(deps.get_memory_conn),
 ) -> ErrorCounts:
     """三个页签的角标。"""
-    jobs = await list_dead_jobs(ingestion_conn, limit=MAX_LIMIT, tenant_id=tenant_id)
     diagnostics = await list_diagnostics(memory_conn, tenant_id=tenant_id, limit=None)
     return ErrorCounts(
-        documents=len(jobs),
+        # 真的 COUNT(*)，不是 list_dead_jobs 的长度——那个带 limit，攒到
+        # 250 条时数出来恒等于上限，角标显示 200 而用户以为看清了规模。
+        documents=await count_dead_jobs(ingestion_conn, tenant_id=tenant_id),
         etl_rows=await count_skipped_rows(review_conn, tenant_id=tenant_id),
         qa=sum(1 for row in diagnostics if row["outcome"] != "answered"),
     )

@@ -21,8 +21,8 @@ import { valueTypeOptionLabel } from './extraFieldDisplay'
 import { fetchTermsSummary } from './termsApi'
 import { useOntologyData } from './useOntologyData'
 import { useOntologyVersion } from './useOntologyVersion'
-import { Link } from 'react-router-dom'
-import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
+import { Link, useSearchParams } from 'react-router-dom'
+import { ADMIN_ROUTES, MODEL_FROM_QUESTION_KEY, PAGE_TITLES } from '../adminRoutes'
 import type {
   Constraint,
   ExtraFieldSpec,
@@ -128,6 +128,11 @@ const emptyRelationTypeDraft = (): RelationType => ({
 
 export function OntologySchemaPage() {
   const { sessionToken } = useAdminAuth()
+  // 报错明细的「去建模」带着那个答不出来的问题跳过来。把它显示出来，
+  // 用户才不用一边配本体一边回忆刚才问的是什么——不接住的话，那个参数
+  // 就只是一段没人读的 URL，而入口处的注释在说一件不成立的事。
+  const [searchParams] = useSearchParams()
+  const fromQuestion = searchParams.get(MODEL_FROM_QUESTION_KEY)
   const { tenantId } = useAdminTenant()
   const confirm = useConfirm()
   const showToast = useToast()
@@ -340,6 +345,15 @@ export function OntologySchemaPage() {
       {/* 页头只有标题。草稿/已确认这个轴归侧边栏的版本切换器——同一个轴在
           两个地方各摆一份控件，用户会以为它们管的不是同一件事。 */}
       <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.ontology}</h1>
+
+      {fromQuestion !== null && fromQuestion !== '' && (
+        <p
+          data-testid="from-question"
+          className="rounded-card border border-subtle bg-card p-3 text-sm text-ink"
+        >
+          {`你从报错明细过来：「${fromQuestion}」这个问题答不出来。看看它涉及的概念在下面的实体类型和关系类型里有没有。`}
+        </p>
+      )}
 
       {/* 引导负责从零到一；三个 tab 负责后续微调。两条路径都留着，因为它们
           的用户和场景确实不同。

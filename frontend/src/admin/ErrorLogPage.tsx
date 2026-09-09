@@ -1,19 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { CheckCircle2, FileWarning, MessageSquareOff, TableProperties } from 'lucide-react'
-import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
+import { ADMIN_ROUTES, MODEL_FROM_QUESTION_KEY, PAGE_TITLES } from '../adminRoutes'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
+import { useLatestRequestGuard } from './useLatestRequestGuard'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 const actionClass = `flex min-h-[36px] shrink-0 cursor-pointer items-center rounded-control border border-subtle bg-paper px-3 text-sm font-bold text-ink transition hover:bg-interactive-hover disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`
-
-/** 本体结构页上用这个参数带出「刚才答不出来的那个问题」。 */
-export const MODEL_FROM_QUESTION_KEY = 'question'
 
 type TabKey = 'documents' | 'etlRows' | 'qa'
 
@@ -50,6 +48,9 @@ interface Counts {
   qa: number
 }
 
+/** 一次取多少条。点「显示更多」时翻倍。 */
+const PAGE_SIZE = 50
+
 const TABS: { key: TabKey; label: string; path: string; countKey: keyof Counts }[] = [
   { key: 'documents', label: '文档失败', path: 'documents', countKey: 'documents' },
   { key: 'etlRows', label: '表格跳行', path: 'etl-rows', countKey: 'etl_rows' },
@@ -83,6 +84,13 @@ export function ErrorLogPage() {
   // 每一页一条错误，不是全页一条。
   const [errors, setErrors] = useState<Partial<Record<TabKey, string>>>({})
   const [retrying, setRetrying] = useState<string | null>(null)
+  // 三个来源各自的真实总数。列表只显示前几十条，没有这个数就说不出
+  // 「只列了 50 / 共 250」——而用户眼里的世界就只有那 50 条。
+  const [totals, setTotals] = useState<Partial<Record<TabKey, number>>>({})
+  const [limit, setLimit] = useState(PAGE_SIZE)
+  // 切租户时上一个租户的响应可能后到并盖掉新租户的数据。这一页反复在讲
+  // 租户隔离，自己不能在这里破功。
+  const requestGuard = useLatestRequestGuard()
 
   useEffect(() => {
     document.title = `${PAGE_TITLES.errors} · 管理后台`
@@ -105,12 +113,17 @@ export function ErrorLogPage() {
 
   const loadAll = useCallback(async () => {
     if (!sessionToken || !tenantId) return
+    const requestId = requestGuard.next()
     const nextErrors: Partial<Record<TabKey, string>> = {}
+    const nextTotals: Partial<Record<TabKey, number>> = {}
     const settle = async (key: TabKey, suffix: string, apply: (items: never[]) => void) => {
       try {
-        const body = await fetchJson(suffix)
+        const body = await fetchJson(`${suffix}?limit=${limit}`)
+        if (!requestGuard.isLatest(requestId)) return
         apply(body.items)
+        nextTotals[key] = body.total
       } catch (err) {
+        if (!requestGuard.isLatest(requestId)) return
         // 记在这一页名下。整页共用一条的话，后失败的那个会盖掉先失败的，
         // 用户看到的错误跟他正在看的页签对不上。
         nextErrors[key] = err instanceof Error ? err.message : '没拉到'
@@ -122,17 +135,49 @@ export function ErrorLogPage() {
       settle('etlRows', 'etl-rows', (items) => setEtlRows(items as EtlSkippedRow[])),
       settle('qa', 'qa', (items) => setQa(items as QaFailure[])),
       fetchJson('counts')
-        .then((body: Counts) => setCounts(body))
+        .then((body: Counts) => requestGuard.isLatest(requestId) && setCounts(body))
         // 角标拉不到就不显示角标，**不编一个 0 出来**——0 的意思是"这一类
         // 没问题"，那是一句这时并不知道真假的话。
-        .catch(() => setCounts(null)),
+        .catch(() => requestGuard.isLatest(requestId) && setCounts(null)),
     ])
+    if (!requestGuard.isLatest(requestId)) return
     setErrors(nextErrors)
-  }, [fetchJson, sessionToken, tenantId])
+    setTotals(nextTotals)
+  }, [fetchJson, limit, requestGuard, sessionToken, tenantId])
 
   useEffect(() => {
     void loadAll()
   }, [loadAll])
+
+  const handleDownloadCsv = async () => {
+    if (!sessionToken || !tenantId) return
+    try {
+      const response = await adminFetch(
+        `/api/admin/${encodeURIComponent(tenantId)}/errors/etl-rows.csv`,
+        sessionToken,
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '下载失败'))
+      }
+      // 写法照抄 SchemaEtlPage 的报告下载：blob URL 延迟 60 秒再释放，
+      // 太快 revoke 有些浏览器的下载尚未真正读完数据。
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'etl_skipped_rows.csv'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (err) {
+      setErrors((prev) => ({
+        ...prev,
+        etlRows: err instanceof Error ? err.message : '下载失败',
+      }))
+    }
+  }
 
   const handleRetry = async (jobId: string) => {
     if (!sessionToken || !tenantId) return
@@ -163,6 +208,7 @@ export function ErrorLogPage() {
 
   const loading = documents === null && etlRows === null && qa === null
   const error = errors[tab]
+  const shownCount = { documents, etlRows, qa }[tab]?.length ?? 0
 
   return (
     <div className="flex flex-col gap-6">
@@ -218,6 +264,21 @@ export function ErrorLogPage() {
 
       {loading && <Skeleton variant="card-list" count={3} />}
 
+      {/* 只列了一部分时说出来。不说的话，用户眼里的世界就只有这几十条
+          ——他会以为问题就这么大，而剩下的既不在任何页签里，也没有任何
+          信号让人怀疑它们存在。 */}
+      {!loading && shownCount < (totals[tab] ?? 0) && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center gap-3 rounded-card border border-subtle bg-card p-3 text-sm text-ink"
+        >
+          <span>{`只列出了前 ${shownCount.toLocaleString()} / 共 ${(totals[tab] ?? 0).toLocaleString()} 条。`}</span>
+          <button type="button" className={actionClass} onClick={() => setLimit((n) => n + PAGE_SIZE)}>
+            显示更多
+          </button>
+        </div>
+      )}
+
       {!loading && tab === 'documents' && (
         <DocumentsTab
           items={documents ?? []}
@@ -227,7 +288,11 @@ export function ErrorLogPage() {
         />
       )}
       {!loading && tab === 'etlRows' && (
-        <EtlRowsTab items={etlRows ?? []} hasError={errors.etlRows !== undefined} />
+        <EtlRowsTab
+          items={etlRows ?? []}
+          hasError={errors.etlRows !== undefined}
+          onDownloadCsv={handleDownloadCsv}
+        />
       )}
       {!loading && tab === 'qa' && <QaTab items={qa ?? []} hasError={errors.qa !== undefined} />}
     </div>
@@ -284,7 +349,7 @@ function DocumentsTab({
           <button
             type="button"
             className={actionClass}
-            disabled={retrying !== null}
+            disabled={retrying === item.job_id}
             onClick={() => onRetry(item.job_id)}
           >
             {retrying === item.job_id ? '重试中…' : '重试'}
@@ -295,7 +360,15 @@ function DocumentsTab({
   )
 }
 
-function EtlRowsTab({ items, hasError }: { items: EtlSkippedRow[]; hasError: boolean }) {
+function EtlRowsTab({
+  items,
+  hasError,
+  onDownloadCsv,
+}: {
+  items: EtlSkippedRow[]
+  hasError: boolean
+  onDownloadCsv: () => void
+}) {
   if (items.length === 0 && !hasError) {
     return (
       <EmptyState
@@ -314,7 +387,16 @@ function EtlRowsTab({ items, hasError }: { items: EtlSkippedRow[]; hasError: boo
     )
   }
   return (
-    <ul className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2">
+      {/* 「下载这批」是这一页签的修复动作：要改的表格在用户自己电脑上，
+          让他对着屏幕手抄两百个行号的话，这个功能等于没做。下的是整份，
+          不是当前这一页——他要改的是全部。 */}
+      <div>
+        <button type="button" className={actionClass} onClick={onDownloadCsv}>
+          下载这批（CSV）
+        </button>
+      </div>
+      <ul className="flex flex-col gap-2">
       {items.map((item) => (
         <li key={item.id} className={rowClass}>
           <span className="flex flex-wrap items-center gap-2">
@@ -329,7 +411,8 @@ function EtlRowsTab({ items, hasError }: { items: EtlSkippedRow[]; hasError: boo
           <span className="shrink-0 text-xs text-ink-soft">改表格后重新导入</span>
         </li>
       ))}
-    </ul>
+      </ul>
+    </div>
   )
 }
 

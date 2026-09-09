@@ -1789,3 +1789,99 @@ async def test_rerunning_the_same_run_does_not_double_the_skipped_rows(tmp_path)
         )
 
     assert await count_skipped_rows(conn, tenant_id="muji") == 1
+
+
+async def test_skipped_rows_are_persisted_even_when_the_run_blows_up_later(tmp_path):
+    """实体已经写进图谱、后面才抛异常时，跳过行仍然要落库。
+
+    关系侧的安全阀之类的异常发生在实体真的写完之后——那时攒着的跳过行是
+    真实发生过的。跟着异常一起丢掉的话，用户看到一次「导入失败」，而那批
+    被跳过的坏数据在报错明细里一条都没有，他无从知道该改哪几行。
+    """
+    from app.graphrag.etl_skipped_rows import list_skipped_rows
+
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,md_no\n"
+        "1001,圆角收纳盒,A123\n"
+        ",没有ID的商品,B456\n",
+        encoding="utf-8",
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    class _BlowsUpAfterEntities(FakeGraphClient):
+        """实体同步照常，收尾时炸——模拟关系侧安全阀那类异常。"""
+
+        async def delete_term_node(self, **kwargs):
+            raise RuntimeError("图谱在收尾阶段挂了")
+
+    graph_client = _BlowsUpAfterEntities()
+    # 触发收尾阶段的删除路径：先跑一次把实体写进去，再跑一次让源文件少一行。
+    await run_schema_etl(
+        conn=conn, graph_client=graph_client, config=config,
+        data_dir=tmp_path, run_id="run-1",
+    )
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,md_no\n"
+        ",没有ID的商品,B456\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError):
+        await run_schema_etl(
+            conn=conn, graph_client=graph_client, config=config,
+            data_dir=tmp_path, run_id="run-2", allow_large_sweep=True,
+        )
+
+    rows = await list_skipped_rows(conn, tenant_id="muji")
+    # run-1 也跳了同一行（第一份文件里就有那条缺 ID 的），所以两次都在。
+    # 要害是 **run-2 在**：它是抛了异常的那一次。
+    assert "run-2" in {r["run_id"] for r in rows}, "炸掉的那次也要留下它的跳过行"
+
+
+async def test_a_dry_run_records_nothing_because_it_reads_no_rows(tmp_path):
+    """预演不产生跳过行——它在逐行处理之前就返回了。
+
+    这条用例钉的是一句**曾经写错过的注释**：之前那里写着「dry_run 也写：
+    预演跳掉的行是真实的数据问题」，而 dry_run 分支带着一份空报告在读任何
+    一行之前就 return 了，那句因果站不住。
+    """
+    from app.graphrag.etl_skipped_rows import count_skipped_rows
+
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,md_no\n"
+        ",没有ID的商品,B456\n",
+        encoding="utf-8",
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config,
+        data_dir=tmp_path, dry_run=True, run_id="run-dry",
+    )
+
+    assert report.skipped_rows == []
+    assert await count_skipped_rows(conn, tenant_id="muji") == 0

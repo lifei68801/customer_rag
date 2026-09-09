@@ -292,3 +292,11 @@ export function routeRequiresTenant(pathname: string): boolean {
  * 从那边 import 页面组件会把整个预览页拖进术语表的 chunk。
  */
 export const GRAPH_PREVIEW_QUERY_KEY = 'node_key'
+
+/**
+ * 报错明细的「去建模」用这个参数把「答不出来的那个问题」带到本体结构页。
+ *
+ * 放在这里而不是任一页面文件里：两边都要用，从对方 import 会把整页组件
+ * 拖进另一页的 chunk。
+ */
+export const MODEL_FROM_QUESTION_KEY = 'question'

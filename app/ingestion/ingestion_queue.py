@@ -188,7 +188,8 @@ async def list_pending_jobs(
 
 
 async def list_dead_jobs(
-    conn: aiosqlite.Connection, *, limit: int = 50, tenant_id: str | None = None
+    conn: aiosqlite.Connection, *, limit: int = 50, offset: int = 0,
+    tenant_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """列出重试耗尽、彻底失败的任务，按最近失败的排前面（updated_at 倒序）
     ——管理后台展示"失败任务"区块用，参数含义和 list_pending_jobs() 一致。
@@ -197,17 +198,33 @@ async def list_dead_jobs(
     if tenant_id is None:
         cursor = await conn.execute(
             "SELECT * FROM ingestion_jobs WHERE status = 'dead' "
-            "ORDER BY updated_at DESC LIMIT ?",
-            (limit,),
+            "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         )
     else:
         cursor = await conn.execute(
             "SELECT * FROM ingestion_jobs WHERE status = 'dead' AND tenant_id = ? "
-            "ORDER BY updated_at DESC LIMIT ?",
-            (tenant_id, limit),
+            "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            (tenant_id, limit, offset),
         )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
+
+
+async def count_dead_jobs(conn: aiosqlite.Connection, *, tenant_id: str) -> int:
+    """这个租户有多少条彻底失败的任务。
+
+    **必须是真的 COUNT(\*)，不能拿 `list_dead_jobs` 的长度充数**：那个函数
+    带 limit，攒到 250 条失败文档时数出来恒等于上限——角标显示 200，用户
+    以为自己看清了问题的规模，实际少报 50 个。而且那个数字永远不会变大，
+    看不出任何异常。
+    """
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM ingestion_jobs WHERE status = 'dead' AND tenant_id = ?",
+        (tenant_id,),
+    )
+    row = await cursor.fetchone()
+    return int(row[0]) if row else 0
 
 
 async def _fetch_job(

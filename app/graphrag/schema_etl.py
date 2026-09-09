@@ -367,6 +367,10 @@ async def run_schema_etl(
     直接跑时没有那个 id，自己生成一个——**不能因此就不落库**：命令行导入
     也是真实的导入路径，它跳掉的行同样是数据问题，静默丢掉的话报错明细页
     会显示一份看起来很干净、实际残缺的清单。
+
+    **`dry_run` 不产生任何跳过行**，因为它在逐行处理之前就带着一份空报告
+    返回了（见下面那个 `if dry_run` 分支）。预演只回答"会删掉多少实体"这
+    一个问题，不读任何一行源数据。
     """
     if not await is_ontology_confirmed(conn, config.tenant_id):
         raise SchemaETLNotConfirmedError(
@@ -504,146 +508,151 @@ async def run_schema_etl(
 
     recorded_at = datetime.now()
     report = ETLRunReport()
+    try:
 
-    for entity_mapping in config.entities:
-        try:
-            await _write_entity_mapping(
-                conn=conn, graph_client=graph_client, tenant_id=config.tenant_id,
-                mapping=entity_mapping, data_dir=data_dir, report=report,
-            )
-        except RowProcessingError as exc:
-            report.skipped_mappings.append(
-                SkippedMapping(
-                    label=entity_mapping.term_type, source_file=entity_mapping.source_file, reason=str(exc),
+        for entity_mapping in config.entities:
+            try:
+                await _write_entity_mapping(
+                    conn=conn, graph_client=graph_client, tenant_id=config.tenant_id,
+                    mapping=entity_mapping, data_dir=data_dir, report=report,
                 )
-            )
-
-    confirmed_relation_types = {
-        r.relation_type for r in await list_relation_types(conn, config.tenant_id, status="confirmed")
-    }
-    allowed_combinations = to_combination_keys(
-        await list_allowed_combinations(conn, config.tenant_id, status="confirmed")
-    )
-    entity_mappings_by_term_type = {m.term_type: m for m in config.entities}
-    for relation_mapping in config.relations:
-        try:
-            await _write_relation_mapping(
-                conn=conn, graph_client=graph_client, tenant_id=config.tenant_id,
-                mapping=relation_mapping, entity_mappings_by_term_type=entity_mappings_by_term_type,
-                confirmed_relation_types=confirmed_relation_types,
-                allowed_combinations=allowed_combinations, recorded_at=recorded_at,
-                data_dir=data_dir, report=report, sweep_by_term_type=sweep_by_term_type,
-            )
-        except RowProcessingError as exc:
-            report.skipped_mappings.append(
-                SkippedMapping(
-                    label=relation_mapping.relation_type, source_file=relation_mapping.source_file, reason=str(exc),
+            except RowProcessingError as exc:
+                report.skipped_mappings.append(
+                    SkippedMapping(
+                        label=entity_mapping.term_type, source_file=entity_mapping.source_file, reason=str(exc),
+                    )
                 )
-            )
 
-    # 关系用"先写后扫"：本轮该写的边都已 MERGE 完（时间戳被刷新成本轮的
-    # 值），现在删掉同源下时间戳更早的——那些就是上一轮写过、这一轮源里
-    # 已经没有的边。任何时刻图谱都是完整的，中途失败最多留下新旧共存，
-    # 下次重跑自愈；若改成"先全删再全写"，中途失败会留下一个边被删光、
-    # 实体还在的图谱，而 ETL 数据量大、这个窗口很长。
-    #
-    # 按源文件去重：多条关系映射常常共享同一个源文件（demo 配置里五条关系
-    # 全部来自 soft_drink_sales.xlsx），逐映射扫一遍是重复劳动，
-    # dict.fromkeys 去重的同时保持顺序。
-    #
-    # recorded_at 传给 merge_relation 时由 neo4j_client 内部做 strftime；
-    # 这里必须自己格式化成完全一样的字符串，否则字符串比较会错——见
-    # delete_stale_relations_by_source 的说明。
-    recorded_at_text = recorded_at.strftime("%Y-%m-%d %H:%M:%S")
-    relation_source_files = list(dict.fromkeys(m.source_file for m in config.relations))
+        confirmed_relation_types = {
+            r.relation_type for r in await list_relation_types(conn, config.tenant_id, status="confirmed")
+        }
+        allowed_combinations = to_combination_keys(
+            await list_allowed_combinations(conn, config.tenant_id, status="confirmed")
+        )
+        entity_mappings_by_term_type = {m.term_type: m for m in config.entities}
+        for relation_mapping in config.relations:
+            try:
+                await _write_relation_mapping(
+                    conn=conn, graph_client=graph_client, tenant_id=config.tenant_id,
+                    mapping=relation_mapping, entity_mappings_by_term_type=entity_mappings_by_term_type,
+                    confirmed_relation_types=confirmed_relation_types,
+                    allowed_combinations=allowed_combinations, recorded_at=recorded_at,
+                    data_dir=data_dir, report=report, sweep_by_term_type=sweep_by_term_type,
+                )
+            except RowProcessingError as exc:
+                report.skipped_mappings.append(
+                    SkippedMapping(
+                        label=relation_mapping.relation_type, source_file=relation_mapping.source_file, reason=str(exc),
+                    )
+                )
 
-    # 关系侧的安全阀。实体侧那道阀挡不住"关系源文件被误传或截断、而实体侧
-    # 完全正常"这条独立路径——两侧可以配置成不同的源文件。
-    #
-    # 这道阀的保证比实体侧**弱一档**，而且是设计使然：实体的 sweep 集合在
-    # 任何写入之前就能算出来（预检第一遍已持有全部 node_key），所以那边能
-    # 做到"整轮零改动"；关系这边要精确知道会删多少条，必须先知道本轮写了
-    # 哪些边，而那要等关系真的写完。
-    #
-    # 所以它保证的是"没有发生任何删除"，不是"没有发生任何改动"。触发时图谱
-    # 停在"新边已写、陈旧边未删"的状态——那正是"先写后扫"这个设计本来就
-    # 接受的中途失败状态，下次重跑自愈。危险的操作是删除，这道阀挡的正是它。
-    if not allow_large_sweep:
+        # 关系用"先写后扫"：本轮该写的边都已 MERGE 完（时间戳被刷新成本轮的
+        # 值），现在删掉同源下时间戳更早的——那些就是上一轮写过、这一轮源里
+        # 已经没有的边。任何时刻图谱都是完整的，中途失败最多留下新旧共存，
+        # 下次重跑自愈；若改成"先全删再全写"，中途失败会留下一个边被删光、
+        # 实体还在的图谱，而 ETL 数据量大、这个窗口很长。
+        #
+        # 按源文件去重：多条关系映射常常共享同一个源文件（demo 配置里五条关系
+        # 全部来自 soft_drink_sales.xlsx），逐映射扫一遍是重复劳动，
+        # dict.fromkeys 去重的同时保持顺序。
+        #
+        # recorded_at 传给 merge_relation 时由 neo4j_client 内部做 strftime；
+        # 这里必须自己格式化成完全一样的字符串，否则字符串比较会错——见
+        # delete_stale_relations_by_source 的说明。
+        recorded_at_text = recorded_at.strftime("%Y-%m-%d %H:%M:%S")
+        relation_source_files = list(dict.fromkeys(m.source_file for m in config.relations))
+
+        # 关系侧的安全阀。实体侧那道阀挡不住"关系源文件被误传或截断、而实体侧
+        # 完全正常"这条独立路径——两侧可以配置成不同的源文件。
+        #
+        # 这道阀的保证比实体侧**弱一档**，而且是设计使然：实体的 sweep 集合在
+        # 任何写入之前就能算出来（预检第一遍已持有全部 node_key），所以那边能
+        # 做到"整轮零改动"；关系这边要精确知道会删多少条，必须先知道本轮写了
+        # 哪些边，而那要等关系真的写完。
+        #
+        # 所以它保证的是"没有发生任何删除"，不是"没有发生任何改动"。触发时图谱
+        # 停在"新边已写、陈旧边未删"的状态——那正是"先写后扫"这个设计本来就
+        # 接受的中途失败状态，下次重跑自愈。危险的操作是删除，这道阀挡的正是它。
+        if not allow_large_sweep:
+            for source_file in relation_source_files:
+                stale, total = await graph_client.count_stale_relations_by_source(
+                    source_file, tenant_id=config.tenant_id, before_recorded_at=recorded_at_text,
+                )
+                if total == 0 or stale == 0:
+                    continue
+                ratio = stale / total
+                if ratio > _SWEEP_SAFETY_THRESHOLD:
+                    raise SweepSafetyValveError(
+                        f"源文件 {source_file!r} 的关系清理将移除 {stale} / {total} 条边"
+                        f"（{ratio:.0%}），超过安全阈值 {_SWEEP_SAFETY_THRESHOLD:.0%}，"
+                        "本次未删除任何边。注意：本轮的关系边已经写入、陈旧边保持原样，"
+                        "图谱处于新旧共存状态，重跑一次即可收敛；实体侧的清理也未执行。"
+                        "如果源文件确实缩减到这个规模，勾选「允许大规模清理」后重跑。"
+                    )
         for source_file in relation_source_files:
-            stale, total = await graph_client.count_stale_relations_by_source(
+            report.relations_removed += await graph_client.delete_stale_relations_by_source(
                 source_file, tenant_id=config.tenant_id, before_recorded_at=recorded_at_text,
             )
-            if total == 0 or stale == 0:
+
+        # sweep 的执行放在写入之后：判定必须在写入前（才能保证阀触发时零改动），
+        # 但执行必须在写入后——先删后写会在中途留下实体缺失，关系写入的端点
+        # 存在性守卫会大面积误判、把合法的关系行全部跳过。
+        #
+        # 双存储内部的删除顺序：每个 term_type 都先删 Neo4j 节点、再删 SQLite
+        # 行——这个顺序不是随手排的，是"哪个方向能自愈"决定的。doomed 集合
+        # 本身算自 SQLite 的 source='etl' 行（scanned_keys_by_term_type 之前
+        # 那一段）；如果反过来先删 SQLite（批量 DELETE，内部已 commit）、
+        # 再逐节点删 Neo4j，一旦 delete_term_node 中途抛异常：SQLite 行已经
+        # 没了，Neo4j 节点还在，而这个孤儿节点的 node_key 已经不在任何一次
+        # 未来 sweep 的候选集里（候选集来自 SQLite）——重跑也救不回来，是
+        # 不可自愈的方向。现在这个顺序下，同样中途失败：SQLite 还完好，
+        # delete_term_node 已经处理过的那些节点在 Neo4j 里也已经没了，但
+        # 下次重跑会重新算出同一个 doomed 集合、对着这些节点再调一次
+        # delete_term_node——MATCH 匹配不到就是空操作，天然幂等——直到全部
+        # 处理完才会执行 SQLite 侧的批量删除。这个方向最终收敛，反方向不会。
+        for term_type, doomed in sweep_by_term_type.items():
+            if not doomed:
+                # 零删除也要出现在报告里——"本次没有移除任何实体"和"根本没
+                # 跑删除逻辑"必须能区分开，见 ETLRunReport 上的字段注释。
+                report.entities_removed_by_type[term_type] = 0
                 continue
-            ratio = stale / total
-            if ratio > _SWEEP_SAFETY_THRESHOLD:
-                raise SweepSafetyValveError(
-                    f"源文件 {source_file!r} 的关系清理将移除 {stale} / {total} 条边"
-                    f"（{ratio:.0%}），超过安全阈值 {_SWEEP_SAFETY_THRESHOLD:.0%}，"
-                    "本次未删除任何边。注意：本轮的关系边已经写入、陈旧边保持原样，"
-                    "图谱处于新旧共存状态，重跑一次即可收敛；实体侧的清理也未执行。"
-                    "如果源文件确实缩减到这个规模，勾选「允许大规模清理」后重跑。"
+            for node_key in doomed:
+                # delete_term_node 是 DETACH DELETE，连这个节点的边和别名节点
+                # 一起清掉，不会留下悬空引用。
+                await graph_client.delete_term_node(
+                    tenant_id=config.tenant_id, node_key=node_key
                 )
-    for source_file in relation_source_files:
-        report.relations_removed += await graph_client.delete_stale_relations_by_source(
-            source_file, tenant_id=config.tenant_id, before_recorded_at=recorded_at_text,
+            # 两个字段都用 delete_terms_by_node_keys 的真实返回值，而不是
+            # len(doomed)（计划要删多少）——两者语义不同，理论上可能分叉，
+            # 报告里应该反映实际发生了什么，不是预期发生了什么。
+            removed = await delete_terms_by_node_keys(conn, config.tenant_id, doomed)
+            report.entities_removed += removed
+            report.entities_removed_by_type[term_type] = removed
+
+
+    finally:
+        # **无论这次跑批是正常收尾还是中途抛异常，跳过行都要落库。**
+        # 关系侧的安全阀（SweepSafetyValveError）之类的异常发生在实体已经
+        # 真的写进图谱之后——那时 report.skipped_rows 里攒着的行是真实发生
+        # 过的，跟着异常一起丢掉的话，用户看到一次"导入失败"，而那批被跳过
+        # 的坏数据在报错明细里一条都没有，他无从知道该改哪几行。
+        #
+        # 整批一次写完：逐行写库的话两万行的导入会被每行一次事务拖垮，
+        # 所以 _record_skipped_row 全程只往报告里攒，落库只在这里发生一次。
+        await record_skipped_rows(
+            conn,
+            tenant_id=config.tenant_id,
+            run_id=resolved_run_id,
+            rows=[
+                SkippedRowRecord(
+                    label=row.label,
+                    source_file=row.source_file,
+                    row_number=row.row_number,
+                    reason=row.reason,
+                )
+                for row in report.skipped_rows
+            ],
         )
-
-    # sweep 的执行放在写入之后：判定必须在写入前（才能保证阀触发时零改动），
-    # 但执行必须在写入后——先删后写会在中途留下实体缺失，关系写入的端点
-    # 存在性守卫会大面积误判、把合法的关系行全部跳过。
-    #
-    # 双存储内部的删除顺序：每个 term_type 都先删 Neo4j 节点、再删 SQLite
-    # 行——这个顺序不是随手排的，是"哪个方向能自愈"决定的。doomed 集合
-    # 本身算自 SQLite 的 source='etl' 行（scanned_keys_by_term_type 之前
-    # 那一段）；如果反过来先删 SQLite（批量 DELETE，内部已 commit）、
-    # 再逐节点删 Neo4j，一旦 delete_term_node 中途抛异常：SQLite 行已经
-    # 没了，Neo4j 节点还在，而这个孤儿节点的 node_key 已经不在任何一次
-    # 未来 sweep 的候选集里（候选集来自 SQLite）——重跑也救不回来，是
-    # 不可自愈的方向。现在这个顺序下，同样中途失败：SQLite 还完好，
-    # delete_term_node 已经处理过的那些节点在 Neo4j 里也已经没了，但
-    # 下次重跑会重新算出同一个 doomed 集合、对着这些节点再调一次
-    # delete_term_node——MATCH 匹配不到就是空操作，天然幂等——直到全部
-    # 处理完才会执行 SQLite 侧的批量删除。这个方向最终收敛，反方向不会。
-    for term_type, doomed in sweep_by_term_type.items():
-        if not doomed:
-            # 零删除也要出现在报告里——"本次没有移除任何实体"和"根本没
-            # 跑删除逻辑"必须能区分开，见 ETLRunReport 上的字段注释。
-            report.entities_removed_by_type[term_type] = 0
-            continue
-        for node_key in doomed:
-            # delete_term_node 是 DETACH DELETE，连这个节点的边和别名节点
-            # 一起清掉，不会留下悬空引用。
-            await graph_client.delete_term_node(
-                tenant_id=config.tenant_id, node_key=node_key
-            )
-        # 两个字段都用 delete_terms_by_node_keys 的真实返回值，而不是
-        # len(doomed)（计划要删多少）——两者语义不同，理论上可能分叉，
-        # 报告里应该反映实际发生了什么，不是预期发生了什么。
-        removed = await delete_terms_by_node_keys(conn, config.tenant_id, doomed)
-        report.entities_removed += removed
-        report.entities_removed_by_type[term_type] = removed
-
-    # 整批一次写完。逐行写库的话两万行的导入会被每行一次事务拖垮，所以
-    # _record_skipped_row 全程只往报告里攒，落库只在这里发生一次。
-    #
-    # dry_run 也写：预演跳掉的行是真实的数据问题（价格非数字就是非数字），
-    # 不写的话用户跑完预演去报错明细页什么也看不到，而他刚刚才看见"跳了
-    # 127 行"。run_id 把两次跑批分得开。
-    await record_skipped_rows(
-        conn,
-        tenant_id=config.tenant_id,
-        run_id=resolved_run_id,
-        rows=[
-            SkippedRowRecord(
-                label=row.label,
-                source_file=row.source_file,
-                row_number=row.row_number,
-                reason=row.reason,
-            )
-            for row in report.skipped_rows
-        ],
-    )
 
     return report
 

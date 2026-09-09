@@ -22,8 +22,12 @@ interface Fixture {
   documents: unknown[]
   etlRows: unknown[]
   qa: unknown[]
+  totals: { documents: number; etlRows: number; qa: number }
   failing: Set<string>
 }
+
+/** 记下每个请求的完整 URL，用来断言分页参数和下载动作。 */
+let requestedUrls: string[] = []
 
 let fixture: Fixture
 
@@ -60,6 +64,7 @@ function baseFixture(): Fixture {
         created_at: '2026-09-08 10:00:00',
       },
     ],
+    totals: { documents: 1, etlRows: 1, qa: 1 },
     failing: new Set<string>(),
   }
 }
@@ -82,11 +87,15 @@ function stubApi() {
           ),
         )
       }
+      requestedUrls.push(url)
+      if (url.includes('/errors/etl-rows.csv')) {
+        return Promise.resolve(new Response('run_id,label', { status: 200 }))
+      }
       const routes: [string, () => unknown][] = [
         ['/errors/counts', () => fixture.counts],
-        ['/errors/documents', () => ({ items: fixture.documents })],
-        ['/errors/etl-rows', () => ({ items: fixture.etlRows })],
-        ['/errors/qa', () => ({ items: fixture.qa })],
+        ['/errors/documents', () => ({ items: fixture.documents, total: fixture.totals.documents })],
+        ['/errors/etl-rows', () => ({ items: fixture.etlRows, total: fixture.totals.etlRows })],
+        ['/errors/qa', () => ({ items: fixture.qa, total: fixture.totals.qa })],
       ]
       for (const [suffix, body] of routes) {
         if (url.includes(suffix)) {
@@ -108,6 +117,7 @@ function stubApi() {
 
 beforeEach(() => {
   fixture = baseFixture()
+  requestedUrls = []
   resetAdminSession()
   localStorage.clear()
   stubApi()
@@ -190,6 +200,48 @@ describe('报错明细页', () => {
     await renderPage()
 
     await waitFor(() => expect(screen.getByText(/没有失败的文档/)).toBeTruthy())
+  })
+
+  it('只列出了一部分时说出来，并且能显示更多', async () => {
+    // 不说的话，用户眼里的世界就只有这几十条——他会以为问题就这么大，
+    // 而剩下的既不在任何页签里，也没有任何信号让人怀疑它们存在。
+    fixture.totals = { documents: 250, etlRows: 1, qa: 1 }
+    const user = userEvent.setup()
+    await renderPage()
+
+    await waitFor(() => expect(screen.getByText(/只列出了前 1 \/ 共 250 条/)).toBeTruthy())
+
+    requestedUrls = []
+    await user.click(screen.getByRole('button', { name: '显示更多' }))
+
+    await waitFor(() =>
+      expect(requestedUrls.some((u) => u.includes('/errors/documents?limit=100'))).toBe(true),
+    )
+  })
+
+  it('表格跳行那一页能把整批下下来', async () => {
+    // 要改的表格在用户自己电脑上。让他对着屏幕手抄两百个行号的话，
+    // 这个功能等于没做。
+    const clicks: string[] = []
+    const realCreate = document.createElement.bind(document)
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = realCreate(tag)
+      if (tag === 'a') el.click = () => clicks.push((el as HTMLAnchorElement).download)
+      return el
+    })
+    globalThis.URL.createObjectURL = () => 'blob:fake'
+    globalThis.URL.revokeObjectURL = () => {}
+    await renderPage()
+
+    await user_clickTab('表格')
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /下载这批/ }))
+
+    await waitFor(() =>
+      expect(requestedUrls.some((u) => u.includes('/errors/etl-rows.csv'))).toBe(true),
+    )
+    expect(clicks).toEqual(['etl_skipped_rows.csv'])
+    vi.restoreAllMocks()
   })
 
   it('某一个来源拉取失败只影响那一页', async () => {

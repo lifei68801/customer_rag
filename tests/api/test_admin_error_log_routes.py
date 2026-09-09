@@ -199,7 +199,7 @@ def test_the_document_error_carries_the_message_not_just_a_flag(conns):
     assert body["items"][0]["file_path"].endswith("j1.pdf")
 
 
-@pytest.mark.parametrize("suffix", ["documents", "etl-rows", "qa", "counts"])
+@pytest.mark.parametrize("suffix", ["documents", "etl-rows", "etl-rows.csv", "qa", "counts"])
 def test_every_page_is_tenant_scoped(conns, suffix: str):
     """member 拿不到别的租户的报错明细。
 
@@ -213,7 +213,7 @@ def test_every_page_is_tenant_scoped(conns, suffix: str):
     assert response.status_code == 403
 
 
-@pytest.mark.parametrize("suffix", ["documents", "etl-rows", "qa", "counts"])
+@pytest.mark.parametrize("suffix", ["documents", "etl-rows", "etl-rows.csv", "qa", "counts"])
 def test_admin_is_not_blocked_on_any_page(conns, suffix: str):
     """反面：403 必须来自权限判断，不是因为这条路由整个坏了。
 
@@ -244,3 +244,86 @@ def test_each_page_is_scoped_to_its_tenant(conns):
     assert _get(conns, "/api/admin/demo/errors/counts").json() == {
         "documents": 1, "etl_rows": 0, "qa": 1
     }
+
+
+def test_the_document_count_is_not_capped_by_the_page_size(conns):
+    """角标数的是**全部**失败文档，不是被 limit 截断的那一页。
+
+    拿列表长度充数的话，攒到 250 条时角标恒等于上限（200）——用户以为自己
+    看清了问题的规模，实际少报 50 个，而那个数字永远不会再变大。
+    """
+    for i in range(250):
+        asyncio.run(_seed_job(conns.ingestion, job_id=f"j{i}"))
+
+    body = _get(conns, "/api/admin/demo/errors/counts").json()
+
+    assert body["documents"] == 250
+
+
+def test_each_list_reports_the_real_total_so_the_page_can_say_it_truncated(conns):
+    """列表回包带**真实总数**。
+
+    少了它，前端说不出「只列了 50 / 共 250」——而用户眼里的世界就只有那
+    50 条，剩下的既不在任何页签里，也没有任何信号让人怀疑它们存在。
+    """
+    for i in range(60):
+        asyncio.run(_seed_job(conns.ingestion, job_id=f"j{i}"))
+
+    body = _get(conns, "/api/admin/demo/errors/documents?limit=10").json()
+
+    assert len(body["items"]) == 10
+    assert body["total"] == 60
+
+
+def test_paging_walks_the_document_list_without_repeating(conns):
+    """offset 能翻页，不重不漏。"""
+    for i in range(5):
+        asyncio.run(_seed_job(conns.ingestion, job_id=f"j{i}"))
+
+    first = _get(conns, "/api/admin/demo/errors/documents?limit=2&offset=0").json()["items"]
+    second = _get(conns, "/api/admin/demo/errors/documents?limit=2&offset=2").json()["items"]
+    third = _get(conns, "/api/admin/demo/errors/documents?limit=2&offset=4").json()["items"]
+
+    seen = [d["job_id"] for d in first + second + third]
+    assert sorted(seen) == sorted(f"j{i}" for i in range(5))
+
+
+def test_the_csv_download_carries_every_skipped_row(conns):
+    """「下载这批」下的是**整份**，不是当前这一页。
+
+    用户要改的是全部——只给一页的话，他改完再导入还会跳一批，而他以为
+    已经改完了。
+    """
+    asyncio.run(
+        record_skipped_rows(
+            conns.review, tenant_id="demo", run_id="run-1",
+            rows=[
+                SkippedRowRecord(
+                    label="产品", source_file="商品表.csv", row_number=i, reason="价格非数字"
+                )
+                for i in range(120)
+            ],
+        )
+    )
+
+    response = _get(conns, "/api/admin/demo/errors/etl-rows.csv")
+
+    assert response.status_code == 200
+    assert "text/csv" in response.headers["content-type"]
+    lines = [line for line in response.text.splitlines() if line]
+    assert len(lines) == 121, "表头 + 120 行"
+    assert "价格非数字" in response.text
+
+
+def test_the_csv_only_contains_this_tenants_rows(conns):
+    """别的租户的跳过行不能下到这份 CSV 里。"""
+    asyncio.run(
+        record_skipped_rows(
+            conns.review, tenant_id="other", run_id="run-x",
+            rows=[SkippedRowRecord(label="X", source_file="别人的.csv", row_number=1, reason="r")],
+        )
+    )
+
+    response = _get(conns, "/api/admin/demo/errors/etl-rows.csv")
+
+    assert "别人的.csv" not in response.text
