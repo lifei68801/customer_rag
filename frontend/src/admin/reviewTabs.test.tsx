@@ -59,11 +59,15 @@ let counts: Record<string, number>
 let countsStatus = 200
 /** 记下每次列表请求带的 tab，用来断言"点了哪一页就问哪一页"。 */
 let requestedTabs: string[] = []
+/** 两个就地修复端点收到的请求。 */
+let fixRequests: { path: string; body: unknown }[] = []
+let fixStatus = 200
+let fixDetail = ''
 
 function stubApi() {
   vi.stubGlobal(
     'fetch',
-    vi.fn((input: RequestInfo | URL) => {
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.includes('/auth/whoami')) {
         return Promise.resolve(
@@ -93,6 +97,32 @@ function stubApi() {
           new Response(JSON.stringify({ reviews, total: reviews.length }), { status: 200 }),
         )
       }
+      if (url.includes('/create-missing-term') || url.includes('/allow-combination')) {
+        fixRequests.push({ path: url, body: JSON.parse(String(init?.body ?? '{}')) })
+        if (fixStatus !== 200) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ detail: fixDetail }), { status: fixStatus }),
+          )
+        }
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              approved: true,
+              combination: '产品 -RELATED_TO-> 模块',
+              next_step: '已加进本体草稿。去「本体结构」页确认这份草稿之后，回来批准这条待审。',
+            }),
+            { status: 200 },
+          ),
+        )
+      }
+      if (url.includes('/term-types')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ term_types: [{ value: '产品' }, { value: '模块' }] }),
+            { status: 200 },
+          ),
+        )
+      }
       if (url.includes('/terms')) {
         return Promise.resolve(new Response(JSON.stringify({ terms: [] }), { status: 200 }))
       }
@@ -108,12 +138,21 @@ beforeEach(() => {
   byTab = {
     fuzzy: [row(1, 'fuzzy_match_needs_confirmation', '网关超时示例2.0')],
     unresolved: [row(2, 'subject_unresolved', '某个没见过的东西')],
-    out_of_ontology: [row(3, 'not_in_confirmed_ontology', '越界的主语')],
+    out_of_ontology: [
+      {
+        ...row(3, 'not_in_confirmed_ontology', '越界的主语'),
+        subject_type_candidate: '产品',
+        object_type_candidate: '模块',
+      },
+    ],
     bad_type: [row(4, 'invalid_relation_type', '类型不对的主语')],
   }
   counts = { fuzzy: 1, unresolved: 7, out_of_ontology: 0, bad_type: 4 }
   countsStatus = 200
   requestedTabs = []
+  fixRequests = []
+  fixStatus = 200
+  fixDetail = ''
   resetAdminSession()
   localStorage.clear()
   stubApi()
@@ -202,5 +241,114 @@ describe('关系审核的四个分页', () => {
     await user.click(tabBar().getByRole('tab', { name: /不在本体/ }))
 
     await waitFor(() => expect(screen.getByText(/这一类没有待审/)).toBeTruthy())
+  })
+})
+
+describe('就地修复', () => {
+  it('一端对不上那页能就地建实体并批准，名字预填候选名', async () => {
+    // 此前审核员得跳到实体明细页建实体、再回来找到这条待审批准。中间隔着
+    // 一次导航和一次搜索，而他手上正开着十几条。
+    const user = userEvent.setup()
+    await renderReviews()
+    await user.click(tabBar().getByRole('tab', { name: /一端对不上/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /新建并批准/ })).toBeTruthy())
+
+    // 名字预填的是管线给的候选名——让审核员从头敲一遍等于让他有机会敲错。
+    const nameInput = screen.getByRole('textbox', { name: '要新建的实体名' }) as HTMLInputElement
+    expect(nameInput.value).toBe('某个没见过的东西')
+
+    await user.selectOptions(screen.getByRole('combobox', { name: '实体类型' }), '产品')
+    await user.click(screen.getByRole('button', { name: /新建并批准/ }))
+
+    await waitFor(() => expect(fixRequests).toHaveLength(1))
+    expect(fixRequests[0].path).toContain('/create-missing-term')
+    expect(fixRequests[0].body).toEqual({
+      standard_name: '某个没见过的东西',
+      term_type: '产品',
+      side: 'subject',
+    })
+  })
+
+  it('对不上的是宾语那一端时，side 传的是 object', async () => {
+    // reason 决定缺的是哪一端。两端都传 subject 的话，宾语那批会把实体建在
+    // 主语位置上——建出来的东西名字对、位置错，而界面看不出来。
+    byTab.unresolved = [row(9, 'object_unresolved', '某产品')]
+    const user = userEvent.setup()
+    await renderReviews()
+    await user.click(tabBar().getByRole('tab', { name: /一端对不上/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /新建并批准/ })).toBeTruthy())
+
+    // 预填的是宾语候选名，不是主语。
+    expect(
+      (screen.getByRole('textbox', { name: '要新建的实体名' }) as HTMLInputElement).value,
+    ).toBe('认证模块')
+
+    await user.selectOptions(screen.getByRole('combobox', { name: '实体类型' }), '模块')
+    await user.click(screen.getByRole('button', { name: /新建并批准/ }))
+
+    await waitFor(() => expect(fixRequests).toHaveLength(1))
+    expect((fixRequests[0].body as { side: string }).side).toBe('object')
+  })
+
+  it('没选类型时按钮点不动，并说清为什么', async () => {
+    // 点不动且不说原因，用户会以为界面坏了。
+    const user = userEvent.setup()
+    await renderReviews()
+    await user.click(tabBar().getByRole('tab', { name: /一端对不上/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /新建并批准/ })).toBeTruthy())
+
+    expect((screen.getByRole('button', { name: /新建并批准/ }) as HTMLButtonElement).disabled).toBe(
+      true,
+    )
+    expect(screen.getByText(/先选一个类型/)).toBeTruthy()
+  })
+
+  it('建实体失败时把后端说的原话显示出来，那条待审也还在', async () => {
+    // 后端的 400 里点名了是哪个类型不在本体、还列了可以选哪些。包装成
+    // 「操作失败」等于把用户唯一能用的信息扔掉。
+    fixStatus = 400
+    fixDetail = "类型 '产品' 不在这个租户的本体里。先去本体结构页把它建出来"
+    const user = userEvent.setup()
+    await renderReviews()
+    await user.click(tabBar().getByRole('tab', { name: /一端对不上/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /新建并批准/ })).toBeTruthy())
+
+    await user.selectOptions(screen.getByRole('combobox', { name: '实体类型' }), '产品')
+    await user.click(screen.getByRole('button', { name: /新建并批准/ }))
+
+    await waitFor(() => expect(screen.getByText(/不在这个租户的本体里/)).toBeTruthy())
+    expect(screen.getByRole('button', { name: /新建并批准/ })).toBeTruthy()
+  })
+
+  it('超出本体那页的按钮写出具体组合，且说的是加进草稿不是批准', async () => {
+    // 按钮上写「加白名单」的话，审核员不知道自己在放宽什么。
+    //
+    // 措辞也不能是「并批准」：后端只把组合加进**草稿**，这条待审仍在队列里
+    // （加完立刻批准会撞 RelationNotInConfirmedOntologyError，见
+    // admin_graph_review_routes.py::allow_combination 的 docstring）。
+    // 写成"并批准"就是在界面上承诺一件没发生的事。
+    const user = userEvent.setup()
+    await renderReviews()
+    await user.click(tabBar().getByRole('tab', { name: /不在本体/ }))
+
+    const button = await screen.findByRole('button', { name: /产品.*RELATED_TO.*模块/ })
+    expect(button.textContent).not.toContain('批准')
+    expect(button.textContent).toContain('草稿')
+
+    await user.click(button)
+
+    await waitFor(() => expect(fixRequests).toHaveLength(1))
+    expect(fixRequests[0].path).toContain('/allow-combination')
+  })
+
+  it('加进草稿之后把「还没批准」这件事说出来', async () => {
+    // 只弹一句「已加白名单」的话，审核员会以为这条处理完了，而它还挂在
+    // 队列里——他下次看到会以为自己上次点了没生效。
+    const user = userEvent.setup()
+    await renderReviews()
+    await user.click(tabBar().getByRole('tab', { name: /不在本体/ }))
+    await user.click(await screen.findByRole('button', { name: /产品.*RELATED_TO.*模块/ }))
+
+    await waitFor(() => expect(screen.getByText(/去「本体结构」页确认/)).toBeTruthy())
   })
 })

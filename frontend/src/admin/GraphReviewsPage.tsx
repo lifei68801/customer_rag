@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { EmptyState } from './EmptyState'
+import {
+  InlineAllowCombination,
+  InlineCreateMissingTerm,
+  missingSide,
+  type FixableReview,
+} from './ReviewInlineFixes'
 import { History } from 'lucide-react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
@@ -91,6 +97,11 @@ export function GraphReviewsPage() {
   // （0 不渲染角标），而"角标没拉到"时审核员看到四个光秃秃的分页，会读成
   // "没活干"——那是静默失败。
   const [tabCountsFailed, setTabCountsFailed] = useState(false)
+  // 就地修复的三份状态。按 review_id 分开存：一屏里有十几条，共用一份的话
+  // 一条出错会让所有行都显示同一句报错。
+  const [fixingId, setFixingId] = useState<number | null>(null)
+  const [fixErrors, setFixErrors] = useState<Record<number, string>>({})
+  const [fixNotes, setFixNotes] = useState<Record<number, string>>({})
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [pending, setPending] = useState<PendingReview[]>([])
   const [pendingLoaded, setPendingLoaded] = useState(false)
@@ -259,6 +270,71 @@ export function GraphReviewsPage() {
   useEffect(() => {
     void refreshTabCounts()
   }, [refreshTabCounts, pending.length])
+
+  /** 就地修复的两个动作共用的收尾：报错原样显示，成功就刷新列表。 */
+  const runFix = useCallback(
+    async (reviewId: number, path: string, body: unknown, fallback: string) => {
+      if (!sessionToken) return
+      setFixingId(reviewId)
+      setFixErrors((prev) => ({ ...prev, [reviewId]: '' }))
+      try {
+        const response = await adminFetch(
+          `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews/${reviewId}${path}`,
+          sessionToken,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+        )
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          // 后端的 400 里点名了是哪个类型不在本体、还列了可以选哪些。包装成
+          // 「操作失败」等于把用户唯一能用的信息扔掉。
+          throw new Error(extractErrorDetail(payload, fallback))
+        }
+        return payload as Record<string, unknown>
+      } catch (err) {
+        setFixErrors((prev) => ({
+          ...prev,
+          [reviewId]: err instanceof Error ? err.message : fallback,
+        }))
+        return null
+      } finally {
+        setFixingId(null)
+      }
+    },
+    [sessionToken, tenantId],
+  )
+
+  const handleCreateMissingTerm = useCallback(
+    async (review: FixableReview, termType: string) => {
+      const side = missingSide(review.reason)
+      const result = await runFix(
+        review.review_id,
+        '/create-missing-term',
+        {
+          standard_name:
+            side === 'object' ? review.object_candidate : review.subject_candidate,
+          term_type: termType,
+          side,
+        },
+        '新建实体失败',
+      )
+      // 只有成功才刷新。失败时留在原地，报错就挂在那一行上——刷新会把它
+      // 冲掉，而用户还没读完。
+      if (result) await refreshPending()
+    },
+    [runFix, refreshPending],
+  )
+
+  const handleAllowCombination = useCallback(
+    async (review: FixableReview) => {
+      const result = await runFix(review.review_id, '/allow-combination', {}, '加白名单失败')
+      if (!result) return
+      // 不刷新列表：这条待审**还在队列里**（后端只把组合加进了草稿）。刷新
+      // 会让它原地重绘，看起来像什么都没发生。把下一步说出来才是这一步的
+      // 全部产出。
+      setFixNotes((prev) => ({ ...prev, [review.review_id]: String(result.next_step ?? '') }))
+    },
+    [runFix],
+  )
 
   // 只清选中状态，不清 batchResult——batchResult 要留到用户看到汇总为止。
   // 批量提交结束后会调用 refreshPending()，那会产生一个新的 pending 数组
@@ -937,10 +1013,24 @@ export function GraphReviewsPage() {
                 关系类型不合法，无法批准，请驳回。
               </p>
             )}
+            {(review.reason === 'subject_unresolved' ||
+              review.reason === 'object_unresolved') && (
+              <InlineCreateMissingTerm
+                review={review}
+                termTypeOptions={termTypeOptions}
+                busy={fixingId === review.review_id}
+                error={fixErrors[review.review_id]}
+                onSubmit={(termType) => void handleCreateMissingTerm(review, termType)}
+              />
+            )}
             {review.reason === 'not_in_confirmed_ontology' && (
-              <p className="text-xs text-status-error">
-                关系类型或实体类型组合不在已确认本体范围内，无法批准，请驳回。
-              </p>
+              <InlineAllowCombination
+                review={review}
+                busy={fixingId === review.review_id}
+                error={fixErrors[review.review_id]}
+                note={fixNotes[review.review_id]}
+                onSubmit={() => void handleAllowCombination(review)}
+              />
             )}
             <p className="text-xs text-ink-soft">来源文档：{review.source || '（无记录）'}</p>
             {review.evidence && (
