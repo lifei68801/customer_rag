@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
 from app.db_migrations import add_column_if_missing
+from app.graphrag.attribute_conflicts import record_conflict
 from app.graphrag.ontology import Term, load_terminology
 from app.graphrag.ontology_categories import (
     ensure_categories_schema,
@@ -32,6 +34,9 @@ CREATE TABLE IF NOT EXISTS terms (
     term_type         TEXT NOT NULL,
     extra_properties  TEXT NOT NULL DEFAULT '{}',
     source            TEXT NOT NULL DEFAULT 'unknown',
+    -- 每个属性字段各自来自哪次导入：{字段名: 来源}。见
+    -- ensure_terms_schema 里那条 add_column_if_missing 上方的说明。
+    extra_property_sources TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (tenant_id, node_key)
 );
 CREATE INDEX IF NOT EXISTS idx_terms_tenant_standard_name
@@ -218,6 +223,20 @@ async def ensure_terms_schema(
         )
         await add_column_if_missing(
             conn, table="terms", column="source", ddl="TEXT NOT NULL DEFAULT 'unknown'"
+        )
+        # 每个属性字段各自来自哪次导入。JSON 对象 {字段名: 来源}。
+        #
+        # 为什么逐字段而不是整行记一个"最近导入来源"：属性冲突页要显示
+        # 「39 来自 商品表.xlsx」。整行只记一个的话，A 表写了售价、B 表写了
+        # 产地之后那个值是 B——于是售价那条冲突会声称 39 来自 B 表，而它其实
+        # 来自 A 表。一个看起来精确、实际是错的来源比不显示来源更糟：审核员
+        # 会据此挑错边。
+        #
+        # 只有带 incoming_source 调用 upsert_term_with_node_key 时才写这一列。
+        # 这次改动之前的存量行留空，读的时候退回行级的 source 渠道值。
+        await add_column_if_missing(
+            conn, table="terms", column="extra_property_sources",
+            ddl="TEXT NOT NULL DEFAULT '{}'",
         )
         await _migrate_terms_table_to_tenant_scoped_if_needed(conn)
         await _migrate_terms_drop_product_line_column_if_needed(conn)
@@ -961,6 +980,62 @@ async def migrate_term_type(
     return cursor.rowcount
 
 
+async def _keep_old_values_and_record_conflicts(
+    conflict_conn: aiosqlite.Connection,
+    *,
+    tenant_id: str,
+    node_key: str,
+    existing_extra: dict[str, Any],
+    existing_field_sources: dict[str, str],
+    existing_row_source: str,
+    incoming_extra: dict[str, object],
+    incoming_source: str,
+) -> tuple[dict[str, object], dict[str, str]]:
+    """逐字段比对，冲突的字段换回旧值并记一条，返回该写进库的那份属性。
+
+    三种情况分开处理，混在一起就是这个函数最容易出错的地方：
+
+    - **旧记录里没有这个字段**：直接写，不算冲突。补充属性是多表导入最常见
+      的用法（一张表给基础信息、另一张补价格），算成冲突的话审核页会被正常
+      操作淹掉。
+    - **值一样**：不算冲突。ETL 每天跑一次，记的话会积出一屏
+      「39 和 39 冲突了」。
+    - **值不一样**：保留旧值，记一条。
+
+    逐**字段**记而不是逐行记：一行里两个字段都变了要记两条。合并成一条的话，
+    审核员只能整行选 A 或选 B——而正确答案可能是「售价用 A、产地用 B」。
+    """
+    kept = dict(incoming_extra)
+    sources = dict(existing_field_sources)
+    for field, incoming_value in incoming_extra.items():
+        if field not in existing_extra:
+            # 新字段：这次导入写进去的，来源就是这次的。
+            sources[field] = incoming_source
+            continue
+        old_value = existing_extra[field]
+        if old_value == incoming_value:
+            # 值没变。来源也不动：先写进来的那次才是这个值的出处，改成这次的
+            # 会让"39 来自哪"随最后一次重跑漂移。
+            continue
+        kept[field] = old_value
+        await record_conflict(
+            conflict_conn,
+            tenant_id=tenant_id,
+            node_key=node_key,
+            field=field,
+            # 值统一转成字符串存：这张表是给人看的，两个 JSON 值长得一样
+            # 但类型不同（39 与 "39"）在审核页上没法区分，也没法让审核员
+            # 做出不同的决定。
+            kept_value=str(old_value),
+            # 逐字段的来源。存量行（这一列上线之前写的）没有记录，退回行级的
+            # source 渠道值——那至少是真的，只是粗。
+            kept_source=existing_field_sources.get(field, existing_row_source),
+            incoming_value=str(incoming_value),
+            incoming_source=incoming_source,
+        )
+    return kept, sources
+
+
 async def upsert_term_with_node_key(
     conn: aiosqlite.Connection,
     *,
@@ -971,6 +1046,8 @@ async def upsert_term_with_node_key(
     term_type: str,
     extra_properties: dict[str, object] | None = None,
     source: str = "etl",
+    conflict_conn: aiosqlite.Connection | None = None,
+    incoming_source: str = "unknown",
 ) -> None:
     """ETL 专用的幂等写入：按 (tenant_id, node_key) 判定冲突，已存在就更新，不存在
     就插入——不是 create_term/update_term 那种"创建 xor 更新"两态分支，是真正的
@@ -996,18 +1073,64 @@ async def upsert_term_with_node_key(
     已存在的行（哪怕是被 ETL 再次 upsert）保留它最初的 source，这与
     update_term 不碰 source 列是同一个道理的两种写法（这里是 upsert 语句
     层面的对应处理）。
+
+    ---
+
+    **conflict_conn 不为 None 时，覆盖之前逐字段比对已有的 extra_properties：
+    值不同的字段保留旧值，并往 attribute_conflicts 记一条。**
+
+    这是 spec §1 点名的「今天最大的静默失败」：表格 A 说售价 39、表格 B 说
+    45，后跑的赢，没有任何人知道发生过冲突。
+
+    保留**旧**值而不是新值，是 Global Constraint 13（不确定的时候不擅自改
+    数据）：改成新值赢的话，这次改动只是把静默覆盖换了个方向，一个问题都
+    没解决。
+
+    只比对 extra_properties，不比对 standard_name：改名走的是人工编辑层
+    （term_edits）那条路，那件事已经在别处解决了。混进来的话，ETL 每次跑
+    都会跟人工改过的名字冲突一次。
+
+    conflict_conn 为 None 时行为**完全不变**——既有调用方一个字都不用改，
+    也不会因为这次改动而行为变化。冲突表和术语表通常是同一个库，但参数分开
+    留着：让"要不要记冲突"成为调用方的显式选择，而不是"只要那张表在就记"。
+
+    incoming_source 是**这次导入的来源**（表名/文件名），跟 `source` 那个
+    渠道字段（etl/manual/review）不是一回事——审核页要显示「39 来自
+    商品表.xlsx」靠的是这个。两个名字容易看混，改这里时注意别串。
     """
     extra_properties = extra_properties or {}
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT extra_properties FROM terms WHERE tenant_id = ? AND node_key = ?",
+        "SELECT extra_properties, source, extra_property_sources "
+        "FROM terms WHERE tenant_id = ? AND node_key = ?",
         (tenant_id, node_key),
     )
     existing_row = await cursor.fetchone()
-    existing_extra_property_keys = (
-        frozenset(json.loads(existing_row["extra_properties"]))
-        if existing_row is not None else frozenset()
+    existing_extra = (
+        json.loads(existing_row["extra_properties"]) if existing_row is not None else {}
     )
+    existing_extra_property_keys = frozenset(existing_extra)
+    existing_field_sources: dict[str, str] = (
+        json.loads(existing_row["extra_property_sources"]) if existing_row is not None else {}
+    )
+    field_sources = dict(existing_field_sources)
+    if conflict_conn is not None:
+        if existing_row is not None:
+            # 就地改 extra_properties：下面那条 INSERT ... DO UPDATE 用的就是
+            # 这个字典，冲突字段在这里被换回旧值之后，写进库的自然是旧值。
+            extra_properties, field_sources = await _keep_old_values_and_record_conflicts(
+                conflict_conn,
+                tenant_id=tenant_id,
+                node_key=node_key,
+                existing_extra=existing_extra,
+                existing_field_sources=existing_field_sources,
+                existing_row_source=existing_row["source"],
+                incoming_extra=extra_properties,
+                incoming_source=incoming_source,
+            )
+        else:
+            # 新行：每个字段都来自这次导入。
+            field_sources = {field: incoming_source for field in extra_properties}
     await validate_term_categories(
         conn, tenant_id=tenant_id, term_type=term_type,
         extra_properties=extra_properties,
@@ -1016,11 +1139,12 @@ async def upsert_term_with_node_key(
     try:
         await conn.execute(
             "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
-            "extra_properties, source) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "extra_properties, source, extra_property_sources) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (tenant_id, node_key) DO UPDATE SET "
             "standard_name = excluded.standard_name, aliases = excluded.aliases, "
             "term_type = excluded.term_type, "
-            "extra_properties = excluded.extra_properties",
+            "extra_properties = excluded.extra_properties, "
+            "extra_property_sources = excluded.extra_property_sources",
             (
                 tenant_id,
                 node_key,
@@ -1029,6 +1153,7 @@ async def upsert_term_with_node_key(
                 term_type,
                 json.dumps(extra_properties, ensure_ascii=False),
                 source,
+                json.dumps(field_sources, ensure_ascii=False),
             ),
         )
     except aiosqlite.IntegrityError:

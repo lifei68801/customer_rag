@@ -1,6 +1,11 @@
 import aiosqlite
 import pytest
 
+from app.graphrag.attribute_conflicts import (
+    count_conflicts,
+    ensure_attribute_conflicts_schema,
+    list_conflicts,
+)
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import (
     create_term_type,
@@ -1768,3 +1773,247 @@ async def test_counts_follow_the_edit_layer_too():
 
     assert await count_terms_merged_by_term_type(conn, "default") == {"module": 1}
     await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# upsert 不再静默覆盖
+#
+# 表格 A 说售价 39、表格 B 说 45——改这里之前后跑的赢，没有任何人知道发生过
+# 冲突（spec §1 点名的「今天最大的静默失败」）。
+#
+# 处理原则是 Global Constraint 13：记下来、保留先写的、等人来定。改成"新值
+# 赢"只是把静默覆盖换了个方向，一个问题都没解决。
+# ---------------------------------------------------------------------------
+
+
+async def _conflict_conn() -> aiosqlite.Connection:
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_attribute_conflicts_schema(conn)
+    return conn
+
+
+async def _connect_with_price_fields() -> aiosqlite.Connection:
+    """建一个声明了 price / origin 两个属性字段的分类。
+
+    `validate_term_categories` 只放行分类上声明过的字段——不先声明的话，
+    upsert 在比对冲突之前就被它拦下了，红的原因跟这批用例要测的东西无关。
+
+    字段名用 ASCII 标识符而不是中文：`ExtraFieldSpec` 要求
+    `^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`（这些名字后续会当 Neo4j 的索引属性名
+    和结构化查询字段名用）。
+
+    出错时也要把连接关掉：aiosqlite 的后台线程不是 daemon，泄漏一个未关闭
+    的连接会让 pytest 在跑完全部用例后卡在解释器退出阶段——表现为"测试全绿
+    但命令不返回"，而真正的失败信息已经打出来了，人很容易只看见那个卡死。
+    """
+    from app.graphrag.ontology_categories import ExtraFieldSpec
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await ensure_terms_schema(conn)
+        await ensure_term_edits_schema(conn)
+        await ensure_ontology_schema(conn)
+        await create_term_type(
+            conn, tenant_id="default", value="error_code",
+            extra_fields=[
+                ExtraFieldSpec(name="price", value_type="string"),
+                ExtraFieldSpec(name="origin", value_type="string"),
+            ],
+            actor="alice",
+        )
+        await confirm_ontology(conn, "default", actor="alice")
+    except BaseException:
+        await conn.close()
+        raise
+    return conn
+
+
+async def _upsert(
+    conn: aiosqlite.Connection,
+    *,
+    extra_properties: dict,
+    conflict_conn: aiosqlite.Connection | None = None,
+    incoming_source: str = "商品表.xlsx",
+    standard_name: str = "洗发水",
+) -> None:
+    await upsert_term_with_node_key(
+        conn, tenant_id="default", node_key="error_code:洗发水",
+        standard_name=standard_name, aliases=[], term_type="error_code",
+        extra_properties=extra_properties,
+        conflict_conn=conflict_conn, incoming_source=incoming_source,
+    )
+
+
+async def _extra(conn: aiosqlite.Connection) -> dict:
+    term = await get_term_by_node_key(conn, tenant_id="default", node_key="error_code:洗发水")
+    return term.extra_properties
+
+
+async def test_a_differing_attribute_value_is_recorded_and_the_old_value_is_kept():
+    """**这是整个计划的核心断言。**
+
+    表格 A 写 39，表格 B 写 45。改后：库里还是 39，冲突表里多一条。
+
+    「保留旧值」不是随便选的——不确定的时候不擅自改数据。改成新值的话，
+    这次改动只是把静默覆盖换了个方向，没解决任何问题。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        await _upsert(conn, extra_properties={"price": "39"},
+                      conflict_conn=conflicts, incoming_source="商品表.xlsx")
+        await _upsert(conn, extra_properties={"price": "45"},
+                      conflict_conn=conflicts, incoming_source="促销表.xlsx")
+
+        assert (await _extra(conn))["price"] == "39"
+        rows = await list_conflicts(conflicts, tenant_id="default")
+        assert len(rows) == 1
+        assert (rows[0]["field"], rows[0]["kept_value"], rows[0]["incoming_value"]) == (
+            "price", "39", "45",
+        )
+    finally:
+        await conn.close()
+        await conflicts.close()
+
+
+async def test_the_conflict_carries_both_sources():
+    """审核页要显示「39 来自 商品表.xlsx」。
+
+    来源丢了的话，审核员看到两个数字但不知道该信哪个——而"哪张表更权威"
+    往往就是他做这个决定的全部依据。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        await _upsert(conn, extra_properties={"price": "39"},
+                      conflict_conn=conflicts, incoming_source="商品表.xlsx")
+        await _upsert(conn, extra_properties={"price": "45"},
+                      conflict_conn=conflicts, incoming_source="促销表.xlsx")
+
+        row = (await list_conflicts(conflicts, tenant_id="default"))[0]
+        assert row["kept_source"] == "商品表.xlsx"
+        assert row["incoming_source"] == "促销表.xlsx"
+    finally:
+        await conn.close()
+        await conflicts.close()
+
+
+async def test_an_identical_value_records_no_conflict():
+    """同一个值反复导入不是冲突。
+
+    记成冲突的话，每天跑一次 ETL 就会积出一屏「39 和 39 冲突了」——审核页
+    变成噪音，真正的冲突淹在里面。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        await _upsert(conn, extra_properties={"price": "39"}, conflict_conn=conflicts)
+        await _upsert(conn, extra_properties={"price": "39"}, conflict_conn=conflicts)
+
+        assert await count_conflicts(conflicts, tenant_id="default") == 0
+    finally:
+        await conn.close()
+        await conflicts.close()
+
+
+async def test_a_new_field_is_written_normally():
+    """旧记录没有这个字段时直接写入，不算冲突。
+
+    算成冲突的话，补充属性这个完全正常的动作会被当成问题——而它恰恰是
+    多表导入最常见的用法（一张表给基础信息，另一张补价格）。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        await _upsert(conn, extra_properties={"price": "39"}, conflict_conn=conflicts)
+        await _upsert(conn, extra_properties={"price": "39", "origin": "日本"},
+                      conflict_conn=conflicts)
+
+        assert (await _extra(conn))["origin"] == "日本"
+        assert await count_conflicts(conflicts, tenant_id="default") == 0
+    finally:
+        await conn.close()
+        await conflicts.close()
+
+
+async def test_conflicts_are_recorded_per_field_not_per_row():
+    """一行里两个字段都变了要记两条。
+
+    合并成一条的话，审核员只能整行选 A 或选 B——而正确答案可能是
+    「售价用 A、产地用 B」。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        await _upsert(conn, extra_properties={"price": "39", "origin": "日本"},
+                      conflict_conn=conflicts)
+        await _upsert(conn, extra_properties={"price": "45", "origin": "中国"},
+                      conflict_conn=conflicts)
+
+        rows = await list_conflicts(conflicts, tenant_id="default")
+        assert sorted(r["field"] for r in rows) == ["origin", "price"]
+        # 两个字段都保留旧值，不是只保住第一个。
+        extra = await _extra(conn)
+        assert (extra["price"], extra["origin"]) == ("39", "日本")
+    finally:
+        await conn.close()
+        await conflicts.close()
+
+
+async def test_a_field_that_did_not_change_is_not_recorded_alongside_one_that_did():
+    """同一行里只有一个字段变了时，只记那一个。
+
+    两个字段都记的话，审核员要对一个根本没冲突的字段做决定——他会以为
+    自己漏看了什么。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        await _upsert(conn, extra_properties={"price": "39", "origin": "日本"},
+                      conflict_conn=conflicts)
+        await _upsert(conn, extra_properties={"price": "45", "origin": "日本"},
+                      conflict_conn=conflicts)
+
+        rows = await list_conflicts(conflicts, tenant_id="default")
+        assert [r["field"] for r in rows] == ["price"]
+    finally:
+        await conn.close()
+        await conflicts.close()
+
+
+async def test_standard_name_change_is_not_treated_as_an_attribute_conflict():
+    """改名走的是 term_edits 那条路（人工编辑层），不是属性冲突。
+
+    混进来的话，ETL 每次跑都会跟人工改过的名字冲突一次——而人工编辑层的
+    全部意义就是"人改过的不被 ETL 覆盖"，那件事已经在别处解决了。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        await _upsert(conn, extra_properties={"price": "39"},
+                      conflict_conn=conflicts, standard_name="洗发水")
+        await _upsert(conn, extra_properties={"price": "39"},
+                      conflict_conn=conflicts, standard_name="洗发水（改名后）")
+
+        assert await count_conflicts(conflicts, tenant_id="default") == 0
+    finally:
+        await conn.close()
+        await conflicts.close()
+
+
+async def test_without_conflict_conn_the_behaviour_is_the_old_one():
+    """conflict_conn=None 时完全走老路径——覆盖，不记冲突。
+
+    既有调用方（schema_etl 之外的路径、手工新建）不该因为这次改动而行为
+    变化。这条用例是那些调用方的安全网：它一旦红了，说明有人在没打算改
+    行为的地方改了行为。
+    """
+    conn = await _connect_with_price_fields()
+    try:
+        await _upsert(conn, extra_properties={"price": "39"})
+        await _upsert(conn, extra_properties={"price": "45"})
+
+        # 老行为：后写的赢。
+        assert (await _extra(conn))["price"] == "45"
+    finally:
+        await conn.close()
