@@ -836,3 +836,162 @@ def test_approve_returns_503_and_keeps_the_review_pending_when_graph_is_down(rev
     assert response.status_code == 503
     assert "稍后重试" in response.json()["detail"]
     assert [r["review_id"] for r in pending["reviews"]] == [review_id]
+
+
+# ---------------------------------------------------------------------------
+# 四个分页
+#
+# 审核员面对这四类要做的事完全不同：fuzzy 是确认一个候选，unresolved 是给
+# 那一端建个实体，out_of_ontology 是决定要不要放宽本体，bad_type 是改关系
+# 类型。此前它们共用同一对「批准/驳回」按钮，混在一屏里。
+# ---------------------------------------------------------------------------
+
+
+def _seed_reason(conn: aiosqlite.Connection, reason: str, *, tenant_id: str = "t1") -> None:
+    asyncio.run(
+        enqueue_for_review(
+            conn, subject_candidate=f"s-{reason}", object_candidate="b",
+            relation_type="RELATED_TO", reason=reason, source="s.md", tenant_id=tenant_id,
+        )
+    )
+
+
+def _get(review_conn: aiosqlite.Connection, path: str, **params):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    try:
+        client = TestClient(app)
+        return client.get(
+            f"/api/admin/t1/graph-reviews{path}", params=params,
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _seed_all_five(review_conn: aiosqlite.Connection) -> None:
+    for reason in (
+        "fuzzy_match_needs_confirmation",
+        "subject_unresolved",
+        "object_unresolved",
+        "not_in_confirmed_ontology",
+        "invalid_relation_type",
+    ):
+        _seed_reason(review_conn, reason)
+
+
+def test_each_tab_returns_only_its_own_reasons(review_conn):
+    """五种 reason 各造一条，逐个 tab 断言它拿到的正是自己那几种。
+
+    这是整个拆分的核心断言。五种全造齐而不是只造要测的那一种——只造一种的
+    话，「根本没过滤」的实现在每个 tab 上都能返回那一条，照样全绿。
+    """
+    _seed_all_five(review_conn)
+
+    for tab, expected in (
+        ("fuzzy", ["fuzzy_match_needs_confirmation"]),
+        ("unresolved", ["object_unresolved", "subject_unresolved"]),
+        ("out_of_ontology", ["not_in_confirmed_ontology"]),
+        ("bad_type", ["invalid_relation_type"]),
+    ):
+        body = _get(review_conn, "", tab=tab).json()
+        assert sorted(r["reason"] for r in body["reviews"]) == expected, tab
+        # total 也要跟着 tab 走。不跟的话分页器按 5 条算，用户翻到第二页
+        # 看到的是空的，而他以为那里还有东西。
+        assert body["total"] == len(expected), tab
+
+
+def test_the_unresolved_tab_collects_both_sides(review_conn):
+    """subject_unresolved 和 object_unresolved 都归「一端对不上」。
+
+    只收一种的话，另一半待办会消失在界面上——队列里还在，但没有任何页面
+    列它，审核员永远不知道有这些东西。
+    """
+    _seed_reason(review_conn, "subject_unresolved")
+    _seed_reason(review_conn, "object_unresolved")
+
+    body = _get(review_conn, "", tab="unresolved").json()
+
+    assert sorted(r["reason"] for r in body["reviews"]) == [
+        "object_unresolved",
+        "subject_unresolved",
+    ]
+
+
+def test_no_tab_still_returns_everything(review_conn):
+    """不传 tab 时行为不变——既有前端和用例不传这个参数。"""
+    _seed_all_five(review_conn)
+
+    body = _get(review_conn, "").json()
+
+    assert body["total"] == 5
+
+
+def test_an_unknown_tab_name_is_a_400_not_an_empty_list(review_conn):
+    """拼错 tab 名返回 400 而不是空列表。
+
+    返回空的话，前端拼错一个字母就得到一个永远空着的分页，而它看起来完全
+    正常——「这一类没有待办」和「这个请求根本没问对」长得一模一样。
+    """
+    _seed_all_five(review_conn)
+
+    response = _get(review_conn, "", tab="拼错了")
+
+    assert response.status_code == 400
+    # 报错要点名有哪几个合法值，不然用户只知道自己错了、不知道对的是什么。
+    assert "fuzzy" in response.json()["detail"]
+
+
+def test_counts_endpoint_reports_every_tab_including_the_empty_ones(review_conn):
+    """空的那一页角标是 0，不是这个 key 不存在。
+
+    缺 key 的话前端得写 `?? 0` 兜底，而那会把「后端没算这一页」和「这一页
+    真的是 0」混成一件事。
+    """
+    _seed_reason(review_conn, "fuzzy_match_needs_confirmation")
+
+    body = _get(review_conn, "/counts").json()
+
+    assert sorted(body) == ["bad_type", "fuzzy", "out_of_ontology", "unresolved"]
+    assert body["fuzzy"] == 1
+    assert body["bad_type"] == 0
+
+
+def test_counts_are_scoped_to_the_tenant(review_conn):
+    """另一个租户的待办不能算进来。"""
+    _seed_reason(review_conn, "fuzzy_match_needs_confirmation", tenant_id="t2")
+
+    assert _get(review_conn, "/counts").json()["fuzzy"] == 0
+
+
+def test_every_reason_the_pipeline_writes_lands_in_exactly_one_tab():
+    """管线写入的每一种 reason 都必须落进恰好一个 tab。
+
+    这条防的是最阴的那个 bug：normalization.py 将来加一种新 reason，没人
+    记得更新映射，那批待办就永远不出现在任何页面上——队列里积着，界面上
+    一片清净，而且没有任何报错。
+
+    从源码里数出真实写入的 reason，而不是在这里手抄一份：手抄的那份跟
+    normalization.py 一起漂移，这条用例就成了自说自话。
+    """
+    import pathlib
+    import re
+
+    from app.api.admin_graph_review_routes import TAB_REASONS
+
+    covered = [r for reasons in TAB_REASONS.values() for r in reasons]
+    assert sorted(covered) == sorted(set(covered)), "同一个 reason 落进了两个 tab"
+
+    source = pathlib.Path("app/graphrag/normalization.py").read_text(encoding="utf-8")
+    # 两种写法都要抓：关键字参数 reason="..." 和变量赋值 reason = "..."。
+    # 只抓前者会漏掉 :202 那一行的 subject_unresolved / object_unresolved
+    # ——而漏掉它们就意味着「一端对不上」那一页永远是空的。
+    written = set(re.findall(r'reason\s*=\s*"([a-z_]+)"', source))
+    # 那一行是三元表达式，两个分支的字面量在 if/else 两侧，上面的正则只吃
+    # 得到第一个。第二个单独用它自己的形状抓。
+    written |= set(re.findall(r'else\s+"([a-z_]+)"', source))
+
+    assert written, "没从 normalization.py 里抓到任何 reason——正则失效了"
+    assert written <= set(covered), f"这些 reason 没有归属的分页：{written - set(covered)}"

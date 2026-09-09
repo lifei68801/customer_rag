@@ -20,6 +20,7 @@ from app.graphrag.review_queue import (
     ReviewNotFoundError,
     StandardNameNotInTermsError,
     approve_review,
+    count_pending_by_reason,
     count_pending_reviews,
     count_resolved_reviews,
     list_pending_reviews,
@@ -34,6 +35,37 @@ router = APIRouter(
     prefix="/api/admin/{tenant_id}/graph-reviews",
     dependencies=[Depends(deps.require_admin_session)],
 )
+
+
+#: 分页 → 它收哪几种 reason。
+#:
+#: **映射写在后端而不是前端。** 写在前端的话，reason 字符串会同时存在于前后端
+#: 两处，改一个忘一个就是一个永远空着的分页——而它看起来完全正常，没有任何
+#: 报错，队列里的东西就那么积着。
+#:
+#: 拆成四页不是为了好看：审核员面对这四类要做的事完全不同——fuzzy 是确认一个
+#: 候选，unresolved 是给那一端建个实体，out_of_ontology 是决定要不要放宽本体，
+#: bad_type 是改关系类型。此前它们共用同一对「批准/驳回」按钮，混在一屏里，
+#: 每条都得先判断"这条属于哪一类"。
+#:
+#: 取值来自 app/graphrag/normalization.py（119/186/202/232/279）。
+#: tests/api/test_admin_graph_review_routes.py::
+#: test_every_reason_the_pipeline_writes_lands_in_exactly_one_tab 从那份源码里
+#: 数出真实写入的 reason 跟这里比对——将来加一种新 reason 却忘了归页时，
+#: 那条用例会红，而不是让那批待办永远不出现在任何页面上。
+TAB_REASONS: dict[str, list[str]] = {
+    "fuzzy": ["fuzzy_match_needs_confirmation"],
+    "unresolved": ["subject_unresolved", "object_unresolved"],
+    "out_of_ontology": ["not_in_confirmed_ontology"],
+    "bad_type": ["invalid_relation_type"],
+}
+
+
+class ReviewCountsResponse(BaseModel):
+    fuzzy: int
+    unresolved: int
+    out_of_ontology: int
+    bad_type: int
 
 
 class ReviewListResponse(BaseModel):
@@ -56,16 +88,32 @@ class RejectRequest(BaseModel):
 async def list_reviews(
     tenant_id: str,
     status: str = "pending",
+    tab: str | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> ReviewListResponse:
+    """tab 只对 status=pending 有意义：四个分页分的是**待审**的理由，
+    已处理的记录按时间倒序看历史，不按理由分。
+
+    tab 拼错返回 400 而不是空列表：返回空的话，前端拼错一个字母就得到一个
+    永远空着的分页，而「这一类没有待办」和「这个请求根本没问对」在界面上
+    长得一模一样。
+    """
     offset = (page - 1) * page_size
+    if tab is not None and tab not in TAB_REASONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"tab 必须是 {'/'.join(TAB_REASONS)} 之一，收到的是 {tab!r}",
+        )
+    reasons = TAB_REASONS[tab] if tab is not None else None
     if status == "pending":
         reviews = await list_pending_reviews(
-            review_conn, tenant_id=tenant_id, limit=page_size, offset=offset
+            review_conn, tenant_id=tenant_id, limit=page_size, offset=offset, reasons=reasons
         )
-        total = await count_pending_reviews(review_conn, tenant_id=tenant_id)
+        # total 跟着 tab 走。不跟的话分页器按全部条数算，用户翻到第二页看到
+        # 的是空的，而他以为那里还有东西。
+        total = await count_pending_reviews(review_conn, tenant_id=tenant_id, reasons=reasons)
     elif status in ("approved", "rejected"):
         reviews = await list_resolved_reviews(
             review_conn, tenant_id=tenant_id, status=status, limit=page_size, offset=offset
@@ -82,6 +130,22 @@ async def list_reviews(
     else:
         raise HTTPException(status_code=400, detail="status 必须是 pending/approved/rejected/all")
     return ReviewListResponse(reviews=reviews, total=total)
+
+
+@router.get("/counts", response_model=ReviewCountsResponse)
+async def get_review_counts(
+    tenant_id: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> ReviewCountsResponse:
+    """四个分页各有几条待审。
+
+    每一页都给一个数，空的那页是 0 而不是缺这个 key：缺 key 的话前端得写
+    `?? 0` 兜底，而那会把「后端没算这一页」和「这一页真的是 0」混成一件事。
+    """
+    by_reason = await count_pending_by_reason(review_conn, tenant_id=tenant_id)
+    return ReviewCountsResponse(
+        **{tab: sum(by_reason.get(r, 0) for r in reasons) for tab, reasons in TAB_REASONS.items()}
+    )
 
 
 @router.post("/{review_id}/approve")
