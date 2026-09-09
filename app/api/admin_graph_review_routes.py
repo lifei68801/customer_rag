@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -9,10 +10,25 @@ from pydantic import BaseModel
 import aiosqlite
 
 from app.api import deps
+from app.api.admin_session import AdminSession
 from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
-from app.graphrag.ontology_constraints import list_allowed_combinations, to_combination_keys
+from app.graphrag.ontology_categories import list_term_types
+
+# 两个同名不同源的 UnknownCategoryError：terms_store 那个由 create_term 抛，
+# ontology_constraints 那个由 add_allowed_combination 抛。直接 import 同名
+# 符号会让后 import 的那个静默盖掉前一个——两条 except 里就有一条永远抓不到，
+# 而那一条会变成 500。各自带上模块前缀，看得见它们不是一回事。
+from app.graphrag.ontology_constraints import (
+    UnknownCategoryError as ConstraintUnknownCategoryError,
+)
+from app.graphrag.ontology_constraints import (
+    UnknownRelationTypeError,
+    add_allowed_combination,
+    list_allowed_combinations,
+    to_combination_keys,
+)
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.review_queue import (
     RelationNotInConfirmedOntologyError,
@@ -27,7 +43,12 @@ from app.graphrag.review_queue import (
     list_resolved_reviews,
     reject_review,
 )
-from app.graphrag.terms_store import list_terms_merged
+from app.graphrag.terms_store import (
+    TermNameConflictError,
+    create_term,
+    list_terms_merged,
+)
+from app.graphrag.terms_store import UnknownCategoryError as TermUnknownCategoryError
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +178,33 @@ async def approve(
     graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
 ) -> dict[str, bool]:
     await require_active_tenant_or_404(review_conn, tenant_id)
+    return await _approve_with_names(
+        tenant_id=tenant_id, review_id=review_id, review_conn=review_conn,
+        graph_client=graph_client,
+        subject_standard_name=payload.subject_standard_name,
+        object_standard_name=payload.object_standard_name,
+        subject_term_type=payload.subject_term_type,
+        object_term_type=payload.object_term_type,
+    )
+
+
+async def _approve_with_names(
+    *,
+    tenant_id: str,
+    review_id: int,
+    review_conn: aiosqlite.Connection,
+    graph_client: Neo4jGraphClient,
+    subject_standard_name: str,
+    object_standard_name: str,
+    subject_term_type: str | None,
+    object_term_type: str | None,
+) -> dict[str, bool]:
+    """批准一条待审：写图 + 标记已处理。
+
+    抽成函数是因为 create-missing-term 也要走同一条路。写两份的话，那一长串
+    异常到状态码的映射（尤其是"图谱挂了返回 503 且记录留在队列里"这一支）
+    会在两处分叉，而分叉出来的那一处正是最难发现的：它只在图谱挂掉时才走到。
+    """
     # 这个路由的权威 tenant_id 是路径里的这个，不走 deps.get_terms 那套
     # 独立的 gateway_tenant_id 解析——两者在这条请求里可能不是同一个值，
     # 直接按路径参数加载术语表，避免跨租户读到错的术语表。
@@ -176,16 +224,16 @@ async def approve(
         await approve_review(
             review_conn,
             review_id=review_id,
-            subject_standard_name=payload.subject_standard_name,
-            object_standard_name=payload.object_standard_name,
+            subject_standard_name=subject_standard_name,
+            object_standard_name=object_standard_name,
             tenant_id=tenant_id,
             graph_client=graph_client,
             terms=terms,
             now=datetime.now(),
             confirmed_relation_types=confirmed_relation_types,
             allowed_combinations=allowed_combinations,
-            subject_term_type_hint=payload.subject_term_type,
-            object_term_type_hint=payload.object_term_type,
+            subject_term_type_hint=subject_term_type,
+            object_term_type_hint=object_term_type,
         )
     except ReviewNotFoundError:
         raise HTTPException(status_code=404, detail="待审核记录不存在")
@@ -223,6 +271,155 @@ async def approve(
             detail="图谱写入失败，该记录仍在待审队列中，请稍后重试。",
         )
     return {"approved": True}
+
+
+class CreateMissingTermRequest(BaseModel):
+    standard_name: str
+    term_type: str
+    side: Literal["subject", "object"]
+
+
+@router.post("/{review_id}/create-missing-term")
+async def create_missing_term(
+    tenant_id: str,
+    review_id: int,
+    payload: CreateMissingTermRequest,
+    session: AdminSession = Depends(deps.require_admin_session),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+) -> dict[str, bool]:
+    """给「一端对不上」的那一条建出缺的实体，然后批准它。
+
+    **两件事一起做。** 分成两步的话，审核员建完实体还得回来手动找到那条待审
+    再批准，而中间任何中断都会留下「实体已建、审核还挂着」的状态——他下次
+    看到这条会以为实体还没建，于是再建一次。
+
+    顺序是先建实体、后批准。反过来不行：approve_review 要按标准名去术语表里
+    查这一端，实体还没建的话它查不到。
+
+    写图失败时这条审核**保持 pending**：approve_review 先写图、后改状态
+    （见它的写入顺序），图那一步抛异常时 UPDATE 根本没执行。实体已经建出来
+    了，重试时会撞上重名——那一支下面单独处理成"就用已有的那个"，因为用户
+    这次要做的事跟上次完全一样。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+
+    # 类型必须是本体里已有的。放行的话，审核这个动作自己就制造出了一个孤儿
+    # 类型——而它绕过了本体那一层的全部校验，之后没有任何东西能匹配上它。
+    #
+    # 查 **confirmed**：create_term 内部的 validate_term_categories 查的就是
+    # confirmed（terms_store.py:795）。这里用别的口径的话会出现"这一步放行了、
+    # 下一行 create_term 却抛 UnknownCategoryError"——用户拿到的是 500，而
+    # 他填的东西其实只是还没确认。
+    known_types = {
+        c.value for c in await list_term_types(review_conn, tenant_id, status="confirmed")
+    }
+    if payload.term_type not in known_types:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"类型 {payload.term_type!r} 不在这个租户的本体里。"
+                f"先去本体结构页把它建出来，或者从已有的这些里挑一个："
+                f"{'、'.join(sorted(known_types)) or '（一个都还没有）'}"
+            ),
+        )
+
+    reviews = await list_pending_reviews(review_conn, tenant_id=tenant_id)
+    review = next((r for r in reviews if r["review_id"] == review_id), None)
+    if review is None:
+        raise HTTPException(status_code=404, detail="待审核记录不存在，或者已经处理过了")
+
+    try:
+        await create_term(
+            review_conn, tenant_id=tenant_id, standard_name=payload.standard_name,
+            aliases=[], term_type=payload.term_type, source="review",
+        )
+    except TermNameConflictError:
+        # 已经有同名的了。这里不报错：用户这次要做的事跟上次完全一样，而
+        # 上一次多半是"建成功了、批准那步没成"（见 docstring 里的顺序说明）。
+        # 报错会把一个可以直接往下走的状态说成失败。
+        pass
+    except TermUnknownCategoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    # 缺的那一端用新建的名字，另一端用管线给的候选名。
+    subject_name = (
+        payload.standard_name if payload.side == "subject" else review["subject_candidate"]
+    )
+    object_name = (
+        payload.standard_name if payload.side == "object" else review["object_candidate"]
+    )
+    return await _approve_with_names(
+        tenant_id=tenant_id, review_id=review_id, review_conn=review_conn,
+        graph_client=graph_client, subject_standard_name=subject_name,
+        object_standard_name=object_name,
+        subject_term_type=payload.term_type if payload.side == "subject" else None,
+        object_term_type=payload.term_type if payload.side == "object" else None,
+    )
+
+
+@router.post("/{review_id}/allow-combination")
+async def allow_combination(
+    tenant_id: str,
+    review_id: int,
+    session: AdminSession = Depends(deps.require_admin_session),
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict[str, str]:
+    """把这条审核的类型组合加进本体**草稿**的白名单。
+
+    **加完不批准，也不确认整份草稿。** 两条都是有意的：
+
+    - `add_allowed_combination` 写的是 `status='draft'`
+      （ontology_constraints.py:137），而 `approve_review` 查的是 confirmed
+      的组合。加完立刻批准必然撞 `RelationNotInConfirmedOntologyError`。
+    - 唯一能一步到位的做法是顺手 `confirm_ontology`，而它把**整份草稿**原地
+      提升为已确认（ontology_lifecycle.py:249-253）——别人正在编辑中的半成品
+      本体会被一次审核操作悄悄发布出去。
+
+    所以回包里带上 next_step 说清楚下一步。只回 `{"ok": true}` 的话，审核员
+    会以为这条处理完了，而它还挂在队列里。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+
+    reviews = await list_pending_reviews(review_conn, tenant_id=tenant_id)
+    review = next((r for r in reviews if r["review_id"] == review_id), None)
+    if review is None:
+        raise HTTPException(status_code=404, detail="待审核记录不存在，或者已经处理过了")
+
+    subject_type = review["subject_type_candidate"]
+    object_type = review["object_type_candidate"]
+    if not subject_type or not object_type:
+        # 加进去的会是一个带空类型的组合，它匹配不上任何东西——白名单里多了
+        # 一条永远不生效的规则，而用户以为自己已经放宽了本体。
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "这条待审没有识别出两端的类型，没法加白名单。"
+                "先在「一端对不上」那一页把缺的实体建出来（建的时候要选类型），"
+                "或者直接去本体结构页手工加这条组合。"
+            ),
+        )
+
+    try:
+        await add_allowed_combination(
+            review_conn, tenant_id,
+            subject_term_type=subject_type,
+            relation_type=review["relation_type"],
+            object_term_type=object_type,
+            actor=session.username,
+        )
+    except (ConstraintUnknownCategoryError, UnknownRelationTypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    return {
+        "combination": f"{subject_type} -{review['relation_type']}-> {object_type}",
+        "next_step": (
+            "已加进本体草稿。去「本体结构」页确认这份草稿之后，回来批准这条待审"
+            "——在那之前它还在队列里。"
+        ),
+    }
 
 
 @router.post("/{review_id}/reject")

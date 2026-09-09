@@ -10,10 +10,16 @@ from app.api import deps
 from app.api.admin_session import AdminSessionStore
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
-from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema
+from app.graphrag.ontology_categories import list_term_types
+from app.graphrag.ontology_constraints import list_allowed_combinations
+from app.graphrag.review_queue import (
+    count_pending_reviews,
+    enqueue_for_review,
+    ensure_review_schema,
+)
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.term_edits_store import ensure_term_edits_schema
-from app.graphrag.terms_store import ensure_terms_schema
+from app.graphrag.terms_store import ensure_terms_schema, list_terms_merged
 from app.main import app
 from tests.settings_factory import build_settings
 
@@ -69,6 +75,16 @@ async def _seed_confirmed_ontology(
         "VALUES (?, ?, ?, ?, 'confirmed')",
         (tenant_id, subject_term_type, relation_type, object_term_type),
     )
+    # 分类也要播成 confirmed：create_term 的分类校验查的是 confirmed
+    # （terms_store.py:795），create-missing-term 端点跟它同口径。此前这个
+    # helper 只播了关系类型和组合，没播分类——approve 路由不查分类，所以
+    # 一直没露出来。
+    for value in {subject_term_type, object_term_type}:
+        await conn.execute(
+            "INSERT OR IGNORE INTO ontology_term_types (tenant_id, value, status) "
+            "VALUES (?, ?, 'confirmed')",
+            (tenant_id, value),
+        )
     await conn.commit()
 
 
@@ -995,3 +1011,236 @@ def test_every_reason_the_pipeline_writes_lands_in_exactly_one_tab():
 
     assert written, "没从 normalization.py 里抓到任何 reason——正则失效了"
     assert written <= set(covered), f"这些 reason 没有归属的分页：{written - set(covered)}"
+
+
+# ---------------------------------------------------------------------------
+# 两个就地修复动作
+#
+# 「一端对不上」那一页要建一个实体，「不在本体」那一页要放宽本体。此前两件事
+# 都得跳到别的页面做完再回来找那条待审——中间隔着一次导航和一次搜索，而
+# 审核员手上正开着十几条。
+# ---------------------------------------------------------------------------
+
+
+async def _seed_draft_ontology(
+    conn: aiosqlite.Connection, *, tenant_id: str, term_types: list[str],
+    relation_type: str,
+) -> None:
+    """往草稿里插类型和关系类型。
+
+    add_allowed_combination 的 _validate_references 校验的是 **draft** 的类型
+    和关系类型（ontology_constraints.py:96-104），不是 confirmed——所以这里
+    插 draft 行，跟 _seed_confirmed_ontology 是两件事。
+    """
+    for value in term_types:
+        await conn.execute(
+            "INSERT INTO ontology_term_types (tenant_id, value, status) VALUES (?, ?, 'draft')",
+            (tenant_id, value),
+        )
+    await conn.execute(
+        "INSERT INTO tenant_relation_types "
+        "(tenant_id, relation_type, example_phrase, description, allow_chain_query, "
+        "source, status) VALUES (?, ?, ?, '', 0, 'custom', 'draft')",
+        (tenant_id, relation_type, relation_type),
+    )
+    await conn.commit()
+
+
+def _post(review_conn, path: str, payload: dict, *, graph=None, tenant: str = "t1"):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph or FakeGraphClient()
+    try:
+        client = TestClient(app)
+        return client.post(
+            f"/api/admin/{tenant}/graph-reviews{path}", json=payload,
+            headers=_authed_headers(session_store),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _enqueue_unresolved(review_conn) -> int:
+    return asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="新面孔", object_candidate="认证模块",
+            relation_type="RELATED_TO", reason="subject_unresolved", source="s.md",
+            tenant_id="t1", subject_type_candidate="产品", object_type_candidate="模块",
+        )
+    )
+
+
+def _seed_object_term(review_conn) -> None:
+    asyncio.run(_seed_terms(review_conn, [
+        Term(tenant_id="t1", node_key="模块:认证模块", standard_name="认证模块",
+             aliases=[], term_type="模块", extra_properties={}),
+    ]))
+
+
+def test_create_missing_term_creates_it_and_approves_the_review(review_conn):
+    """两件事一起做。
+
+    分成两步的话，审核员建完实体还得回来手动批准，而中间任何中断都会留下一个
+    「实体已建、审核还挂着」的状态——他下次看到这条会以为实体还没建。
+    """
+    asyncio.run(
+        _seed_confirmed_ontology(
+            review_conn, tenant_id="t1", relation_type="RELATED_TO",
+            subject_term_type="产品", object_term_type="模块",
+        )
+    )
+    _seed_object_term(review_conn)
+    review_id = _enqueue_unresolved(review_conn)
+
+    response = _post(
+        review_conn, f"/{review_id}/create-missing-term",
+        {"standard_name": "新面孔", "term_type": "产品", "side": "subject"},
+    )
+
+    assert response.status_code == 200, response.text
+    terms = asyncio.run(list_terms_merged(review_conn, "t1"))
+    assert "新面孔" in [t.standard_name for t in terms]
+    # 而且这条审核不再挂在待审里
+    assert asyncio.run(count_pending_reviews(review_conn, tenant_id="t1")) == 0
+
+
+def test_create_missing_term_leaves_the_review_pending_when_the_graph_write_fails(review_conn):
+    """建实体成功但写图失败时，这条审核必须还在待审队列里。
+
+    标成已批准的话，这条关系永远不会进图，而队列里也看不到它了——数据静悄悄
+    地少了一条，没有任何地方能发现。
+    """
+    asyncio.run(
+        _seed_confirmed_ontology(
+            review_conn, tenant_id="t1", relation_type="RELATED_TO",
+            subject_term_type="产品", object_term_type="模块",
+        )
+    )
+    _seed_object_term(review_conn)
+    review_id = _enqueue_unresolved(review_conn)
+
+    response = _post(
+        review_conn, f"/{review_id}/create-missing-term",
+        {"standard_name": "新面孔", "term_type": "产品", "side": "subject"},
+        graph=UnavailableGraphClient(),
+    )
+
+    assert response.status_code == 503
+    assert asyncio.run(count_pending_reviews(review_conn, tenant_id="t1")) == 1
+
+
+def test_create_missing_term_refuses_a_type_not_in_the_ontology(review_conn):
+    """新建实体的类型必须是本体里已有的。
+
+    放行的话，审核这个动作自己就制造出了一个孤儿类型——而它绕过了本体那一层
+    的全部校验，之后没有任何东西能匹配上它。
+    """
+    asyncio.run(
+        _seed_confirmed_ontology(
+            review_conn, tenant_id="t1", relation_type="RELATED_TO",
+            subject_term_type="产品", object_term_type="模块",
+        )
+    )
+    review_id = _enqueue_unresolved(review_conn)
+
+    response = _post(
+        review_conn, f"/{review_id}/create-missing-term",
+        {"standard_name": "新面孔", "term_type": "不存在的类型", "side": "subject"},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    # 点名是哪个类型不够——去掉这道预检的话，create_term 自己也会抛
+    # UnknownCategoryError（"未知分类: 'x'"），照样是 400 且含类型名，
+    # 只断言这两点的用例分辨不出预检还在不在（变异验过）。
+    assert "不存在的类型" in detail
+    # 真正的差别在于**告诉他可以填什么**。"未知分类"只说了他错了，
+    # 用户接下来仍然只能猜。
+    assert "产品" in detail and "模块" in detail
+    assert asyncio.run(count_pending_reviews(review_conn, tenant_id="t1")) == 1
+
+
+def test_allow_combination_adds_it_to_the_draft_and_says_what_is_next(review_conn):
+    """加进本体**草稿**，并说清下一步。
+
+    加完不能顺手批准：add_allowed_combination 写的是 status='draft'
+    （ontology_constraints.py:137），而 approve_review 查的是 confirmed——
+    立刻批准必然撞 RelationNotInConfirmedOntologyError。
+    """
+    asyncio.run(
+        _seed_draft_ontology(
+            review_conn, tenant_id="t1", term_types=["产品", "模块"],
+            relation_type="RELATED_TO",
+        )
+    )
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="某产品", object_candidate="认证模块",
+            relation_type="RELATED_TO", reason="not_in_confirmed_ontology", source="s.md",
+            tenant_id="t1", subject_type_candidate="产品", object_type_candidate="模块",
+        )
+    )
+
+    response = _post(review_conn, f"/{review_id}/allow-combination", {})
+
+    assert response.status_code == 200, response.text
+    combos = asyncio.run(list_allowed_combinations(review_conn, "t1", status="draft"))
+    assert ("产品", "RELATED_TO", "模块") in [
+        (c.subject_term_type, c.relation_type, c.object_term_type) for c in combos
+    ]
+    # 回包要说清这条还没批准以及为什么。只回 {"ok": true} 的话，审核员会以为
+    # 这条处理完了，而它还挂在队列里。
+    assert "确认" in response.json()["next_step"]
+
+
+def test_allow_combination_does_not_confirm_the_whole_draft(review_conn):
+    """**不能顺手 confirm_ontology。**
+
+    那个函数把整份草稿原地提升为已确认（ontology_lifecycle.py:249-253）。
+    别人正在编辑中的半成品本体会被一次审核操作悄悄发布出去。
+
+    草稿里另放一个跟这条审核无关的类型：确认整份草稿的实现会把它一起提升成
+    confirmed，这条断言因此抓得住。只看被加的那个组合是分辨不出来的。
+    """
+    asyncio.run(
+        _seed_draft_ontology(
+            review_conn, tenant_id="t1", term_types=["产品", "模块", "别人正在编辑的类型"],
+            relation_type="RELATED_TO",
+        )
+    )
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="某产品", object_candidate="认证模块",
+            relation_type="RELATED_TO", reason="not_in_confirmed_ontology", source="s.md",
+            tenant_id="t1", subject_type_candidate="产品", object_type_candidate="模块",
+        )
+    )
+
+    assert _post(review_conn, f"/{review_id}/allow-combination", {}).status_code == 200
+
+    confirmed = asyncio.run(list_term_types(review_conn, "t1", status="confirmed"))
+    assert "别人正在编辑的类型" not in [c.value for c in confirmed]
+    # 这条审核也还在待审里——加进草稿不等于处理完。
+    assert asyncio.run(count_pending_reviews(review_conn, tenant_id="t1")) == 1
+
+
+def test_allow_combination_refuses_when_the_types_are_unknown(review_conn):
+    """管线没识别出类型时不能加白名单。
+
+    加进去的会是一个带空类型的组合，它匹配不上任何东西——白名单里多了一条
+    永远不生效的规则，而用户以为自己已经放宽了本体。
+    """
+    review_id = asyncio.run(
+        enqueue_for_review(
+            review_conn, subject_candidate="某产品", object_candidate="认证模块",
+            relation_type="RELATED_TO", reason="not_in_confirmed_ontology", source="s.md",
+            tenant_id="t1",
+        )
+    )
+
+    response = _post(review_conn, f"/{review_id}/allow-combination", {})
+
+    assert response.status_code == 400
+    assert "类型" in response.json()["detail"]
