@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS ontology_term_types (
 );
 """
 
-_VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]"})
+_VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]", "date"})
+# date 有意**不**进下面这张表：standard_name 是实体的名字，一个日期不该当
+# 实体的名字。两张白名单从此不对称，这是有意的，不是漏了。
 _VALID_STANDARD_NAME_VALUE_TYPES = frozenset({"string", "number", "integer"})
 
 _EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
@@ -86,8 +88,8 @@ class CategoryNameConflictError(Exception):
 
 class InvalidExtraFieldTypeError(Exception):
     """extra_fields 里某个字段声明的 value_type 不是 "string"/"number"/"integer"/
-    "number[]" 之一——在声明时（create_term_type/update_term_type）就拒绝，不推迟到
-    某条术语真正提交这个字段的值时才发现（见 Global Constraints）。"""
+    "number[]"/"date" 之一——在声明时（create_term_type/update_term_type）就拒绝，
+    不推迟到某条术语真正提交这个字段的值时才发现（见 Global Constraints）。"""
 
 
 @dataclass(frozen=True)

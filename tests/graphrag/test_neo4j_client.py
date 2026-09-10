@@ -587,6 +587,23 @@ async def test_ensure_extra_field_indexes_tolerates_unsanitized_term_type():
     ]
 
 
+async def test_date_fields_get_an_index():
+    """漏了 date 的话功能照样对，只是每次范围过滤全表扫——而范围过滤
+    恰恰是最需要索引的那类查询，压测之前谁也看不出来。"""
+    from app.graphrag.ontology_categories import ExtraFieldSpec
+
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    await client.ensure_extra_field_indexes(
+        tenant_id="demo", term_type="订单",
+        extra_fields=[ExtraFieldSpec(name="purchase_date", value_type="date", label="")],
+    )
+
+    queries = [call[0] for call in session.calls]
+    assert any("purchase_date" in q for q in queries)
+
+
 async def test_ensure_tenant_scoped_schema_creates_indexes_and_backfills_legacy_nodes():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))

@@ -894,3 +894,29 @@ async def test_extra_field_display_name_falls_back_to_name_for_rows_without_labe
     types = await list_term_types(conn, tenant_id="t1", status="draft")
     assert types[0].extra_fields[0].label == ""
     assert types[0].extra_fields[0].display_name == "price"
+
+
+async def test_a_date_extra_field_round_trips():
+    """date 是合法的属性类型，声明之后读回来还是 date。"""
+    conn = await _conn()
+    await create_term_type(
+        conn, tenant_id="demo", value="订单",
+        extra_fields=[ExtraFieldSpec(name="purchase_date", value_type="date", label="下单日期")],
+    actor="admin")
+
+    types = await list_term_types(conn, tenant_id="demo", status="draft")
+    assert types[0].extra_fields[0].value_type == "date"
+
+
+async def test_standard_name_cannot_be_a_date():
+    """standard_name 是实体的名字，一个日期不该当实体的名字。
+
+    两张白名单从此不对称——这条用例是那份不对称的证据，防止有人
+    「顺手」把 date 也加进 _VALID_STANDARD_NAME_VALUE_TYPES。
+    """
+    conn = await _conn()
+    with pytest.raises(InvalidExtraFieldTypeError):
+        await create_term_type(
+            conn, tenant_id="demo", value="订单", extra_fields=[],
+            standard_name_value_type="date", actor="admin",
+        )

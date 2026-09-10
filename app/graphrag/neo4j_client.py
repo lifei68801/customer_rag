@@ -1465,7 +1465,7 @@ class Neo4jGraphClient:
     async def ensure_extra_field_indexes(
         self, *, tenant_id: str, term_type: str, extra_fields: list["ExtraFieldSpec"]
     ) -> None:
-        """给某个 term_type 已确认的 string/number/integer 属性字段建 Neo4j property
+        """给某个 term_type 已确认的 string/number/integer/date 属性字段建 Neo4j property
         index，供 structured_filter_query_tool 的属性过滤在大数据量下不做全表扫描
         （见 docs/superpowers/specs/2026-08-17-structured-filter-query-tool-design.md
         第6节）。number[] 字段不建——Neo4j 对列表属性的 range 索引支持有限，逐元素
@@ -1485,7 +1485,9 @@ class Neo4jGraphClient:
         列表匹配已有索引定义，同一个 (tenant_id, type, field) 三元组重复调用一样会
         no-op。
         """
-        _SCALAR_VALUE_TYPES = {"string", "number", "integer"}
+        # date 也建索引：它在 Neo4j 里是字符串属性（字典序即时间序），
+        # 范围过滤全指着这个索引。
+        _SCALAR_VALUE_TYPES = {"string", "number", "integer", "date"}
         async with self._driver.session() as session:
             for spec in extra_fields:
                 if spec.value_type not in _SCALAR_VALUE_TYPES:
