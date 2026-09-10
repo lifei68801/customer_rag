@@ -175,6 +175,30 @@ def test_convert_field_value_raises_on_non_numeric_string_for_number_type():
         convert_field_value(extra_field_specs=specs, field_name="numeric_value", raw_value="不是数字")
 
 
+def test_a_date_field_is_normalized_before_it_reaches_the_graph():
+    """源数据里的 2026/1/15 写进图之前必须变成 2026-01-15。
+
+    原样存的实现会让「三月的订单」这类范围过滤漏掉这一行，且不报错。
+    """
+    specs = {"purchase_date": ExtraFieldSpec(name="purchase_date", value_type="date", label="")}
+    assert convert_field_value(
+        extra_field_specs=specs, field_name="purchase_date", raw_value="2026/1/15",
+    ) == "2026-01-15"
+
+
+def test_an_unparseable_date_becomes_a_row_processing_error():
+    """抛 RowProcessingError 才会进跳过行明细——管理员在报错明细页看得见
+    是哪一行、哪个值。抛别的异常会穿透成 500，整份导入挂掉。"""
+    specs = {"purchase_date": ExtraFieldSpec(name="purchase_date", value_type="date", label="")}
+    with pytest.raises(RowProcessingError) as exc:
+        convert_field_value(
+            extra_field_specs=specs, field_name="purchase_date", raw_value="03/04/2026",
+        )
+    # 原因要原样透出去，不能包装成一句「转换失败」——那句话回答不了
+    # 「我该把这一列改成什么样」。
+    assert "歧义" in str(exc.value)
+
+
 def test_convert_excel_cell_to_string_int():
     assert convert_excel_cell_to_string(123) == "123"
 
