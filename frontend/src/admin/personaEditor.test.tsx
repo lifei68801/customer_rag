@@ -34,6 +34,21 @@ let putStatus = 200
 let putDetail = ''
 let putBodies: unknown[] = []
 
+interface FaceBody {
+  persona_id: string
+  name: string
+  avatar: string
+  tagline: string
+}
+/** 这个租户挂着的脸（ADR-0004：一个租户可以挂多张）。 */
+let faces: FaceBody[]
+/** 除 default 之外各张脸的详情；default 那张走 personaBody。 */
+let otherFaceDetails: Record<string, PersonaBody>
+let faceCreateStatus = 201
+let faceDeleteRequests: string[] = []
+let faceDeleteStatus = 200
+let faceDeleteDetail = ''
+
 function stubApi() {
   vi.stubGlobal(
     'fetch',
@@ -53,18 +68,54 @@ function stubApi() {
           ),
         )
       }
-      // 失效清单的路径比详情长一段。详情那条正则用的是 `/persona$`，眼下
-      // 吃不到它；先分派仍然更稳——正则哪天松成 includes 就出事。
-      if (url.includes('/persona/stale-questions')) {
+      // 详情 / 失效清单 / 脸的增删都挂在 /persona 下，且详情现在带
+      // `?persona_id=` 查询串。按 pathname 精确分派，不用 includes——
+      // includes('/persona') 会把列表 /personas 也吃进来。
+      const parsed = new URL(url, 'http://x')
+      const personaId = parsed.searchParams.get('persona_id') ?? 'default'
+      if (parsed.pathname.endsWith('/persona/stale-questions')) {
         return Promise.resolve(
           new Response(JSON.stringify(staleStatus === 200 ? staleBody : {}), {
             status: staleStatus,
           }),
         )
       }
-      if (/\/api\/admin\/[^/]+\/persona$/.test(url)) {
+      if (parsed.pathname.endsWith('/persona/faces')) {
+        if (method === 'POST') {
+          const body = JSON.parse(String(init?.body ?? '{}')) as { persona_id: string; name: string }
+          if (faceCreateStatus !== 201) {
+            return Promise.resolve(
+              new Response(JSON.stringify({ detail: '数字人 ID 不能为空' }), { status: faceCreateStatus }),
+            )
+          }
+          const created = { persona_id: body.persona_id, name: body.name, avatar: '', tagline: '' }
+          faces = [...faces, created]
+          otherFaceDetails[body.persona_id] = {
+            ...created,
+            tenant_id: 'demo',
+            questions: [],
+            questions_source: 'generated',
+          }
+          return Promise.resolve(new Response(JSON.stringify(created), { status: 201 }))
+        }
+        return Promise.resolve(new Response(JSON.stringify({ faces }), { status: 200 }))
+      }
+      const deleteMatch = /\/persona\/faces\/([^/]+)$/.exec(parsed.pathname)
+      if (deleteMatch && method === 'DELETE') {
+        const deleted = decodeURIComponent(deleteMatch[1])
+        faceDeleteRequests.push(deleted)
+        if (faceDeleteStatus !== 200) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ detail: faceDeleteDetail }), { status: faceDeleteStatus }),
+          )
+        }
+        faces = faces.filter((f) => f.persona_id !== deleted)
+        return Promise.resolve(new Response(JSON.stringify({ deleted: true }), { status: 200 }))
+      }
+      if (/\/api\/admin\/[^/]+\/persona$/.test(parsed.pathname)) {
+        const target = personaId === 'default' ? personaBody : otherFaceDetails[personaId]
         if (method === 'PUT') {
-          putBodies.push(JSON.parse(String(init?.body ?? '{}')))
+          putBodies.push({ persona_id: personaId, ...JSON.parse(String(init?.body ?? '{}')) })
           if (putStatus !== 200) {
             return Promise.resolve(
               new Response(JSON.stringify({ detail: putDetail }), { status: putStatus }),
@@ -72,17 +123,17 @@ function stubApi() {
           }
           return Promise.resolve(
             new Response(
-              JSON.stringify({ ...personaBody, ...JSON.parse(String(init?.body ?? '{}')) }),
+              JSON.stringify({ ...target, ...JSON.parse(String(init?.body ?? '{}')) }),
               { status: 200 },
             ),
           )
         }
-        if (personaBody === undefined) {
+        if (target === undefined) {
           // 500 且没有 detail：服务端挂了这一类。走的是兜底文案那条路。
           return Promise.resolve(new Response(JSON.stringify({}), { status: 500 }))
         }
         detailGetCount += 1
-        return Promise.resolve(new Response(JSON.stringify(personaBody), { status: 200 }))
+        return Promise.resolve(new Response(JSON.stringify(target), { status: 200 }))
       }
       if (url.includes('/api/admin/personas')) {
         return Promise.resolve(
@@ -109,6 +160,12 @@ beforeEach(() => {
   putStatus = 200
   putDetail = ''
   putBodies = []
+  faces = [{ persona_id: 'default', name: '', avatar: '🛍️', tagline: '我知道商品、口味和产地' }]
+  otherFaceDetails = {}
+  faceCreateStatus = 201
+  faceDeleteRequests = []
+  faceDeleteStatus = 200
+  faceDeleteDetail = ''
   resetAdminSession()
   localStorage.clear()
   stubApi()
@@ -295,6 +352,92 @@ describe('数字人编辑页', () => {
     // 也不能说成「这个数字人不显示任何引导问题」——那读起来像配置的结果，
     // 而它是一个故障。
     expect(screen.queryByText(/这个数字人不显示任何引导问题/)).toBeNull()
+  })
+
+  it('能新建一张脸并切过去编辑', async () => {
+    // 没有这个入口，「一个租户挂多张脸」（ADR-0004）就没做完。
+    const user = userEvent.setup()
+    await renderPersonaEditor()
+    await screen.findByDisplayValue('有哪些无香料的洗发水？')
+
+    await user.type(screen.getByLabelText('新脸的 ID'), 'kefu')
+    await user.type(screen.getByLabelText('新脸的名字'), '客服阿May')
+    await user.click(screen.getByRole('button', { name: '新建这张脸' }))
+
+    // 建完直接切过去编辑：选择器里多了它，且它是当前项；
+    // 表单显示的是它自己的（空的）引导问题，不是 default 那张的。
+    const tab = await screen.findByRole('tab', { name: /客服阿May/ })
+    expect(tab.getAttribute('aria-selected')).toBe('true')
+    await waitFor(() => expect(screen.queryByDisplayValue('有哪些无香料的洗发水？')).toBeNull())
+    // 之后保存落到这张脸上，不是落回 default。
+    await user.type(screen.getByLabelText('人设'), '售后的事问我')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(putBodies).toHaveLength(1))
+    expect((putBodies[0] as { persona_id: string }).persona_id).toBe('kefu')
+  })
+
+  it('切换编辑哪张脸时，引导问题跟着换', async () => {
+    faces = [
+      ...faces,
+      { persona_id: 'kefu', name: '客服阿May', avatar: '🎧', tagline: '售后的事问我' },
+    ]
+    otherFaceDetails.kefu = {
+      tenant_id: 'demo',
+      name: '客服阿May',
+      avatar: '🎧',
+      tagline: '售后的事问我',
+      questions: ['退货要几天？'],
+      questions_source: 'handwritten',
+    }
+    const user = userEvent.setup()
+    await renderPersonaEditor()
+    await screen.findByDisplayValue('有哪些无香料的洗发水？')
+
+    await user.click(screen.getByRole('tab', { name: /客服阿May/ }))
+
+    await screen.findByDisplayValue('退货要几天？')
+    // 上一张脸的问题不能还留在表单里——留着的话一保存就把它们写进这张脸。
+    expect(screen.queryByDisplayValue('有哪些无香料的洗发水？')).toBeNull()
+  })
+
+  it('default 那张脸的删除按钮禁用并给出理由，不是点了静默失败', async () => {
+    // 后端对它回 409（存量会话都挂在它下面）。前端禁掉只是不让人白点一次，
+    // 但禁了必须说为什么——点不动且不说原因，用户会以为界面坏了。
+    await renderPersonaEditor()
+    await screen.findByDisplayValue('有哪些无香料的洗发水？')
+
+    const remove = screen.getByRole('button', { name: /删除这张脸/ })
+    expect(remove.hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText(/存量会话都挂在它下面/)).toBeTruthy()
+    expect(faceDeleteRequests).toEqual([])
+  })
+
+  it('删掉当前编辑的那张脸之后回到 default', async () => {
+    faces = [
+      ...faces,
+      { persona_id: 'kefu', name: '客服阿May', avatar: '🎧', tagline: '售后的事问我' },
+    ]
+    otherFaceDetails.kefu = {
+      tenant_id: 'demo',
+      name: '客服阿May',
+      avatar: '🎧',
+      tagline: '售后的事问我',
+      questions: ['退货要几天？'],
+      questions_source: 'handwritten',
+    }
+    const user = userEvent.setup()
+    await renderPersonaEditor()
+    await user.click(await screen.findByRole('tab', { name: /客服阿May/ }))
+    await screen.findByDisplayValue('退货要几天？')
+
+    await user.click(screen.getByRole('button', { name: /删除这张脸/ }))
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: '删除' }))
+
+    await waitFor(() => expect(faceDeleteRequests).toEqual(['kefu']))
+    // 表单回到 default 那张脸的内容，而不是停在一张已经不存在的脸上。
+    await screen.findByDisplayValue('有哪些无香料的洗发水？')
+    expect(screen.queryByRole('tab', { name: /客服阿May/ })).toBeNull()
   })
 
   it('详情拉取失败时说出来，不是给一张空表单', async () => {

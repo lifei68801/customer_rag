@@ -6,6 +6,7 @@ import { Skeleton } from './Skeleton'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
+import { useConfirm } from './ConfirmContext'
 // 回包形状只写一份：手抄两份的话，后端加字段时只有一份会跟上，
 // 而两份都是 `as` 断言出来的，编译器不会说话。
 import type { PersonaDetail, PersonaSource } from '../lib/personasApi'
@@ -36,8 +37,32 @@ interface QuestionRow {
 let rowSeq = 0
 const newRow = (text: string): QuestionRow => ({ id: `q${(rowSeq += 1)}`, text })
 
+/** 没指定时用的那张脸。跟后端 tenant_personas_store.DEFAULT_PERSONA_ID 同值。 */
+const DEFAULT_PERSONA_ID = 'default'
+
+/** 一张脸在选择器里要用的那几样；引导问题只在详情里给。 */
+interface FaceSummary {
+  persona_id: string
+  name: string
+  avatar: string
+  tagline: string
+}
+
+/** 这张脸在选择器里显示的名字。default 那张没起名时跟随租户名。 */
+function faceLabel(face: FaceSummary): string {
+  if (face.name) return face.name
+  return face.persona_id === DEFAULT_PERSONA_ID ? '默认' : face.persona_id
+}
+
+/** `/api/admin/{tenant}/persona…` 的前缀，脸的所有接口都挂在它下面。 */
+const personaBase = (tenantId: string) => `/api/admin/${encodeURIComponent(tenantId)}/persona`
+
 /**
  * 数字人编辑页：这个知识库对外是谁、可以问它什么。
+ *
+ * 一个租户可以挂多张脸（ADR-0004），这一页一次编辑其中一张：顶上的选择
+ * 器决定在编哪张，下面的表单、失效清单、保存全都落到那一张上。切脸时表单
+ * 整个换掉——上一张脸的问题留在输入框里的话，一保存就写进了这一张。
  *
  * 引导问题的成立与否由后端判定（保存时跑一遍实体匹配），这一页只负责
  * **把后端说的话原样转达**。它自己不做校验——判断依据是本体和图，都在
@@ -56,6 +81,15 @@ export function PersonaEditorPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const showToast = useToast()
+  const confirm = useConfirm()
+
+  const [faces, setFaces] = useState<FaceSummary[]>([])
+  const [facesError, setFacesError] = useState<string | null>(null)
+  const [personaId, setPersonaId] = useState(DEFAULT_PERSONA_ID)
+  const [newFaceId, setNewFaceId] = useState('')
+  const [newFaceName, setNewFaceName] = useState('')
+  const [faceBusy, setFaceBusy] = useState(false)
+  const [faceError, setFaceError] = useState<string | null>(null)
 
   const [name, setName] = useState('')
   const [avatar, setAvatar] = useState('')
@@ -73,10 +107,44 @@ export function PersonaEditorPage() {
     document.title = `${PAGE_TITLES.persona} · 管理后台`
   }, [])
 
+  // 换租户时回到 default 那张脸：另一个租户的脸跟这个 id 没关系。
+  useEffect(() => {
+    setPersonaId(DEFAULT_PERSONA_ID)
+  }, [tenantId])
+
+  const loadFaces = useCallback(async () => {
+    if (!sessionToken || !tenantId) return
+    try {
+      const response = await adminFetch(`${personaBase(tenantId)}/faces`, sessionToken)
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '数字人列表加载失败'))
+      }
+      const body = (await response.json()) as { faces: FaceSummary[] }
+      // 没配过脸的租户后端一行都没有；这里合成一张 default，跟前台右栏
+      // 看到的一致——否则选择器是空的，而表单编辑的明明就是它。
+      setFaces(
+        body.faces.length > 0
+          ? body.faces
+          : [{ persona_id: DEFAULT_PERSONA_ID, name: '', avatar: '', tagline: '' }],
+      )
+      setFacesError(null)
+    } catch (err) {
+      setFacesError(err instanceof Error ? err.message : '数字人列表加载失败')
+    }
+  }, [sessionToken, tenantId])
+
+  useEffect(() => {
+    void loadFaces()
+  }, [loadFaces])
+
   const loadDetail = useCallback(async () => {
     if (!sessionToken || !tenantId) return
     try {
-      const response = await adminFetch(`/api/admin/${encodeURIComponent(tenantId)}/persona`, sessionToken)
+      const response = await adminFetch(
+        `${personaBase(tenantId)}?persona_id=${encodeURIComponent(personaId)}`,
+        sessionToken,
+      )
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '数字人信息加载失败'))
@@ -93,14 +161,14 @@ export function PersonaEditorPage() {
     } finally {
       setDetailLoaded(true)
     }
-  }, [sessionToken, tenantId])
+  }, [sessionToken, tenantId, personaId])
 
   const loadStale = useCallback(async () => {
     if (!sessionToken || !tenantId) return
     setStaleError(null)
     try {
       const response = await adminFetch(
-        `/api/admin/${encodeURIComponent(tenantId)}/persona/stale-questions`,
+        `${personaBase(tenantId)}/stale-questions?persona_id=${encodeURIComponent(personaId)}`,
         sessionToken,
       )
       if (!response.ok) {
@@ -117,13 +185,79 @@ export function PersonaEditorPage() {
       setStale([])
       setStaleError(err instanceof Error ? err.message : '失效检测没跑成功')
     }
-  }, [sessionToken, tenantId])
+  }, [sessionToken, tenantId, personaId])
 
   // 两个请求互不依赖，并发发出去；首屏耗时是两者里慢的那个，不是两者之和。
   // 失败的处置也不同：详情拉不到就不给表单，失效清单拉不到只是少一条提示。
   useEffect(() => {
+    // 切脸时先把上一张的内容清掉，再去拉这一张。不清的话，在新详情回来
+    // 之前保存一次，写进这张脸的是上一张的引导问题。
+    setDetailLoaded(false)
+    setSaveError(null)
     void Promise.all([loadDetail(), loadStale()])
   }, [loadDetail, loadStale])
+
+  const handleCreateFace = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!sessionToken || !tenantId) return
+    setFaceBusy(true)
+    setFaceError(null)
+    try {
+      const response = await adminFetch(`${personaBase(tenantId)}/faces`, sessionToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ persona_id: newFaceId.trim(), name: newFaceName.trim() }),
+      })
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '没建成'))
+      }
+      const created = (await response.json()) as FaceSummary
+      setNewFaceId('')
+      setNewFaceName('')
+      await loadFaces()
+      // 建完直接切过去：建了一张脸的人下一步几乎总是配它。
+      setPersonaId(created.persona_id)
+    } catch (err) {
+      setFaceError(err instanceof Error ? err.message : '没建成')
+    } finally {
+      setFaceBusy(false)
+    }
+  }
+
+  const handleDeleteFace = async () => {
+    if (!sessionToken || !tenantId) return
+    const current = faces.find((f) => f.persona_id === personaId)
+    const label = current ? faceLabel(current) : personaId
+    if (
+      !(await confirm({
+        message: `确定删除「${label}」这张脸吗？\n它的头像、人设和引导问题会一起删掉；跟它聊过的会话不会删，但前台不再列出。`,
+        confirmLabel: '删除',
+      }))
+    ) {
+      return
+    }
+    setFaceBusy(true)
+    setFaceError(null)
+    try {
+      const response = await adminFetch(
+        `${personaBase(tenantId)}/faces/${encodeURIComponent(personaId)}`,
+        sessionToken,
+        { method: 'DELETE' },
+      )
+      if (!response.ok) {
+        // 后端那句话原样显示：409 里说的是「为什么删不掉」，比「没删掉」有用。
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '没删掉'))
+      }
+      await loadFaces()
+      setPersonaId(DEFAULT_PERSONA_ID)
+    } catch (err) {
+      setFaceError(err instanceof Error ? err.message : '没删掉')
+    } finally {
+      setFaceBusy(false)
+    }
+  }
 
   const updateQuestion = (index: number, value: string) => {
     setQuestions((prev) => prev.map((q, i) => (i === index ? { ...q, text: value } : q)))
@@ -153,7 +287,10 @@ export function PersonaEditorPage() {
     if (!sessionToken || !tenantId) return
     setSaving(true)
     try {
-      const response = await adminFetch(`/api/admin/${encodeURIComponent(tenantId)}/persona`, sessionToken, {
+      const response = await adminFetch(
+        `${personaBase(tenantId)}?persona_id=${encodeURIComponent(personaId)}`,
+        sessionToken,
+        {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         // 空行不发出去：用户加了一条又没填，那不是「配了一条空问题」。
@@ -162,7 +299,8 @@ export function PersonaEditorPage() {
           tagline,
           questions: questions.map((q) => q.text.trim()).filter(Boolean),
         }),
-      })
+        },
+      )
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
         // 原样转达后端点名的那几条。这里绝不能换成一句「保存失败」。
@@ -184,13 +322,115 @@ export function PersonaEditorPage() {
     }
   }
 
+  const isDefaultFace = personaId === DEFAULT_PERSONA_ID
+
   const header = (
-    <div className="flex flex-col gap-1">
-      <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.persona}</h1>
-      <p className="text-sm text-ink-soft">
-        前台右栏和空会话首屏显示的就是这里配的内容。引导问题点了必须答得出来，
-        所以保存时后端会拿当前本体核一遍。
-      </p>
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.persona}</h1>
+        <p className="text-sm text-ink-soft">
+          前台右栏和空会话首屏显示的就是这里配的内容。引导问题点了必须答得出来，
+          所以保存时后端会拿当前本体核一遍。
+        </p>
+      </div>
+
+      {/* 脸的选择器。一个租户可以挂多张脸，各有各的头像、人设和引导问题；
+          知识库是同一个——切脸不影响问答的答案（ADR-0004）。 */}
+      <div className={`${card} flex flex-col gap-3`}>
+        <div className="flex flex-col gap-1">
+          <span className="text-sm font-bold text-ink">在编哪张脸</span>
+          <span className="text-xs text-ink-soft">
+            同一个知识库可以对外挂几张不同的脸，各配各的头像、人设和引导问题。答案都来自同一份数据。
+          </span>
+        </div>
+        {facesError !== null ? (
+          <div role="status" className="flex flex-wrap items-center gap-2 text-xs text-status-error-strong">
+            <span>{facesError}</span>
+            <button type="button" className={buttonClass} onClick={() => void loadFaces()}>
+              重试
+            </button>
+          </div>
+        ) : (
+          <div role="tablist" aria-label="数字人" className="flex flex-wrap gap-2">
+            {faces.map((face) => {
+              const active = face.persona_id === personaId
+              return (
+                <button
+                  key={face.persona_id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  className={`${buttonClass} ${active ? 'bg-interactive-hover' : ''}`}
+                  onClick={() => setPersonaId(face.persona_id)}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <span aria-hidden="true">{face.avatar || '◍'}</span>
+                    {faceLabel(face)}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className={buttonClass}
+            disabled={faceBusy || isDefaultFace}
+            onClick={() => void handleDeleteFace()}
+          >
+            <span className="flex items-center gap-1.5">
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+              删除这张脸
+            </span>
+          </button>
+          {/* 禁用了要说为什么。点不动且不说原因，用户会以为界面坏了。 */}
+          {isDefaultFace && (
+            <span className="text-xs text-ink-soft">
+              default 这张脸删不掉：存量会话都挂在它下面。要换个样子的话改它的头像和人设。
+            </span>
+          )}
+        </div>
+
+        <form className="flex flex-wrap items-end gap-2" onSubmit={handleCreateFace}>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-bold text-ink">新脸的 ID</span>
+            <input
+              aria-label="新脸的 ID"
+              className={`${inputClass} w-36`}
+              value={newFaceId}
+              onChange={(e) => setNewFaceId(e.target.value)}
+              placeholder="kefu"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-bold text-ink">新脸的名字</span>
+            <input
+              aria-label="新脸的名字"
+              className={`${inputClass} w-44`}
+              value={newFaceName}
+              onChange={(e) => setNewFaceName(e.target.value)}
+              placeholder="客服阿May"
+            />
+          </label>
+          <button
+            type="submit"
+            className={buttonClass}
+            disabled={faceBusy || !newFaceId.trim() || !newFaceName.trim()}
+          >
+            <span className="flex items-center gap-1.5">
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              新建这张脸
+            </span>
+          </button>
+        </form>
+        {faceError !== null && (
+          <p role="status" className="text-sm text-status-error-strong">
+            {faceError}
+          </p>
+        )}
+      </div>
     </div>
   )
 
@@ -222,170 +462,179 @@ export function PersonaEditorPage() {
   const atLimit = questions.length >= MAX_QUESTIONS
 
   return (
-    <form className="flex max-w-2xl flex-col gap-6" onSubmit={handleSave}>
+    // 脸的选择器（里面有「新建」那个小表单）放在保存表单**外面**：
+    // 表单套表单，里面那个 submit 会冒泡到外面，新建一张脸的同时
+    // 把当前表单也保存一次。
+    <div className="flex max-w-2xl flex-col gap-6">
       {header}
 
-      <div className={`${card} flex flex-col gap-4`}>
-        <div className="flex flex-col gap-1">
-          <span className="text-sm font-bold text-ink">名字</span>
-          {/* 名字取自租户名，不在这里改：它是租户的身份，改它会让「我在哪个
-              知识库」这件事在后台和前台各说各的。 */}
-          <p className="text-sm text-ink-soft">{name}——跟随租户名，要改请去租户管理。</p>
-        </div>
-
-        <label className="flex flex-col gap-1">
-          <span className="text-sm font-bold text-ink">头像</span>
-          <input
-            className={`${inputClass} w-20 text-center text-lg`}
-            value={avatar}
-            maxLength={2}
-            onChange={(e) => setAvatar(e.target.value)}
-            placeholder="🛍️"
-          />
-          <span className="text-xs text-ink-soft">一到两个 emoji。不填时前台显示一个占位符。</span>
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span className="text-sm font-bold text-ink">人设</span>
-          <input
-            aria-label="人设"
-            className={inputClass}
-            value={tagline}
-            onChange={(e) => setTagline(e.target.value)}
-            placeholder="我知道商品、口味和产地"
-          />
-          <span className="text-xs text-ink-soft">一句话说清这个知识库里有什么。</span>
-        </label>
-      </div>
-
-      <div className={`${card} flex flex-col gap-3`}>
-        <div className="flex flex-col gap-1">
-          <span className="text-sm font-bold text-ink">引导问题</span>
-          <span className="text-xs text-ink-soft">
-            前台空会话时列出来，点一下就直接问出去。顺序有意义——第一条最显眼。
-          </span>
-          {source === 'generated' && (
-            <p role="status" className="text-xs text-ink-soft">
-              下面这些是根据本体自动生成的，还没人手写过。一旦保存就固定下来，
-              之后不再随本体变化。
+      <form className="flex flex-col gap-6" onSubmit={handleSave}>
+        <div className={`${card} flex flex-col gap-4`}>
+          <div className="flex flex-col gap-1">
+            <span className="text-sm font-bold text-ink">名字</span>
+            {/* default 那张脸的名字取自租户名，不在这里改：它是租户的身份，改它
+                会让「我在哪个知识库」这件事在后台和前台各说各的。其他脸的名字
+                是建它时起的。 */}
+            <p className="text-sm text-ink-soft">
+              {name}
+              {isDefaultFace ? '——跟随租户名，要改请去租户管理。' : ''}
             </p>
-          )}
-          {source === 'unavailable' && (
-            // 这一条对终端用户不存在——前台该看到的就是一个诚实的空引导区。
-            // 但管理员必须看得出这是故障而不是「本体里还没东西可问」，
-            // 他是唯一修得了图谱连接的人。
-            <p role="status" className="flex items-center gap-1 text-xs text-status-error-strong">
-              <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-              自动生成没跑成功：图谱查不通。下面的空不代表本体里没东西——
-              这是一个要修的故障，前台此刻不显示任何引导问题。
-            </p>
-          )}
-        </div>
-
-        {staleError !== null && (
-          <div role="status" className="flex flex-wrap items-center gap-2 text-xs text-status-error-strong">
-            <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>{staleError}——下面这几条里可能有已经答不出来的。</span>
-            <button type="button" className={buttonClass} onClick={() => void loadStale()}>
-              重新检测
-            </button>
           </div>
-        )}
 
-        {/* 图谱不通那一档不说这句：上面那条红字已经说清楚了，再补一句
-            「这个数字人不显示任何引导问题」会读成"这是配置的结果"，
-            而它其实是一个故障。 */}
-        {questions.length === 0 && source !== 'unavailable' && (
-          // 这句话要分两种情况说，说错就是骗人：还没保存过的时候，前台
-          // 显示的仍是自动生成的那批；保存了空列表之后，前台才真的空着。
-          <p className="text-sm text-ink-soft">
-            {source === 'generated'
-              ? '一条引导问题都没有。就这样保存，等于说「这个数字人不要引导问题」，前台会空着；不保存的话，前台继续显示上面那批自动生成的。'
-              : '这个数字人不显示任何引导问题。'}
+          <label className="flex flex-col gap-1">
+            <span className="text-sm font-bold text-ink">头像</span>
+            <input
+              className={`${inputClass} w-20 text-center text-lg`}
+              value={avatar}
+              maxLength={2}
+              onChange={(e) => setAvatar(e.target.value)}
+              placeholder="🛍️"
+            />
+            <span className="text-xs text-ink-soft">一到两个 emoji。不填时前台显示一个占位符。</span>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-sm font-bold text-ink">人设</span>
+            <input
+              aria-label="人设"
+              className={inputClass}
+              value={tagline}
+              onChange={(e) => setTagline(e.target.value)}
+              placeholder="我知道商品、口味和产地"
+            />
+            <span className="text-xs text-ink-soft">一句话说清这个知识库里有什么。</span>
+          </label>
+        </div>
+
+        <div className={`${card} flex flex-col gap-3`}>
+          <div className="flex flex-col gap-1">
+            <span className="text-sm font-bold text-ink">引导问题</span>
+            <span className="text-xs text-ink-soft">
+              前台空会话时列出来，点一下就直接问出去。顺序有意义——第一条最显眼。
+            </span>
+            {source === 'generated' && (
+              <p role="status" className="text-xs text-ink-soft">
+                下面这些是根据本体自动生成的，还没人手写过。一旦保存就固定下来，
+                之后不再随本体变化。
+              </p>
+            )}
+            {source === 'unavailable' && (
+              // 这一条对终端用户不存在——前台该看到的就是一个诚实的空引导区。
+              // 但管理员必须看得出这是故障而不是「本体里还没东西可问」，
+              // 他是唯一修得了图谱连接的人。
+              <p role="status" className="flex items-center gap-1 text-xs text-status-error-strong">
+                <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                自动生成没跑成功：图谱查不通。下面的空不代表本体里没东西——
+                这是一个要修的故障，前台此刻不显示任何引导问题。
+              </p>
+            )}
+          </div>
+
+          {staleError !== null && (
+            <div role="status" className="flex flex-wrap items-center gap-2 text-xs text-status-error-strong">
+              <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{staleError}——下面这几条里可能有已经答不出来的。</span>
+              <button type="button" className={buttonClass} onClick={() => void loadStale()}>
+                重新检测
+              </button>
+            </div>
+          )}
+
+          {/* 图谱不通那一档不说这句：上面那条红字已经说清楚了，再补一句
+              「这个数字人不显示任何引导问题」会读成"这是配置的结果"，
+              而它其实是一个故障。 */}
+          {questions.length === 0 && source !== 'unavailable' && (
+            // 这句话要分两种情况说，说错就是骗人：还没保存过的时候，前台
+            // 显示的仍是自动生成的那批；保存了空列表之后，前台才真的空着。
+            <p className="text-sm text-ink-soft">
+              {source === 'generated'
+                ? '一条引导问题都没有。就这样保存，等于说「这个数字人不要引导问题」，前台会空着；不保存的话，前台继续显示上面那批自动生成的。'
+                : '这个数字人不显示任何引导问题。'}
+            </p>
+          )}
+
+          {questions.map((row, index) => {
+            const isStale = stale.includes(row.text)
+            return (
+              <div key={row.id} data-testid={`question-row-${index}`} className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <input
+                    aria-label={`引导问题第 ${index + 1} 条`}
+                    className={`${inputClass} flex-1`}
+                    value={row.text}
+                    onChange={(e) => updateQuestion(index, e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    aria-label={`上移第 ${index + 1} 条`}
+                    className={iconButtonClass}
+                    disabled={index === 0}
+                    onClick={() => moveQuestion(index, -1)}
+                  >
+                    <ArrowUp className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`下移第 ${index + 1} 条`}
+                    className={iconButtonClass}
+                    disabled={index === questions.length - 1}
+                    onClick={() => moveQuestion(index, 1)}
+                  >
+                    <ArrowDown className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`删除第 ${index + 1} 条`}
+                    className={iconButtonClass}
+                    onClick={() => removeQuestion(index)}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
+                {isStale && (
+                  // 标记挂在这一行上，不是页面顶上飘一句：六条里哪条坏了，
+                  // 用户不该靠猜。
+                  <p className="flex items-center gap-1 text-xs text-status-error-strong">
+                    <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                    已失效——本体改动之后这条不再命中，点了答不出来。
+                  </p>
+                )}
+              </div>
+            )
+          })}
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              className={buttonClass}
+              disabled={atLimit}
+              onClick={() => setQuestions((prev) => [...prev, newRow('')])}
+              aria-label="添加一条引导问题"
+            >
+              <span className="flex items-center gap-1.5">
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                添加一条
+              </span>
+            </button>
+            {/* 禁用了还要说清为什么。点不动且不说原因，用户会以为界面坏了。 */}
+            {atLimit && (
+              <span className="text-xs text-ink-soft">已达上限 6 条，删掉一条才能再加。</span>
+            )}
+          </div>
+        </div>
+
+        {saveError !== null && (
+          <p role="status" className={`${card} text-sm text-status-error-strong`}>
+            {saveError}
           </p>
         )}
 
-        {questions.map((row, index) => {
-          const isStale = stale.includes(row.text)
-          return (
-            <div key={row.id} data-testid={`question-row-${index}`} className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <input
-                  aria-label={`引导问题第 ${index + 1} 条`}
-                  className={`${inputClass} flex-1`}
-                  value={row.text}
-                  onChange={(e) => updateQuestion(index, e.target.value)}
-                />
-                <button
-                  type="button"
-                  aria-label={`上移第 ${index + 1} 条`}
-                  className={iconButtonClass}
-                  disabled={index === 0}
-                  onClick={() => moveQuestion(index, -1)}
-                >
-                  <ArrowUp className="h-4 w-4" aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  aria-label={`下移第 ${index + 1} 条`}
-                  className={iconButtonClass}
-                  disabled={index === questions.length - 1}
-                  onClick={() => moveQuestion(index, 1)}
-                >
-                  <ArrowDown className="h-4 w-4" aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  aria-label={`删除第 ${index + 1} 条`}
-                  className={iconButtonClass}
-                  onClick={() => removeQuestion(index)}
-                >
-                  <Trash2 className="h-4 w-4" aria-hidden="true" />
-                </button>
-              </div>
-              {isStale && (
-                // 标记挂在这一行上，不是页面顶上飘一句：六条里哪条坏了，
-                // 用户不该靠猜。
-                <p className="flex items-center gap-1 text-xs text-status-error-strong">
-                  <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-                  已失效——本体改动之后这条不再命中，点了答不出来。
-                </p>
-              )}
-            </div>
-          )
-        })}
-
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            className={buttonClass}
-            disabled={atLimit}
-            onClick={() => setQuestions((prev) => [...prev, newRow('')])}
-            aria-label="添加一条引导问题"
-          >
-            <span className="flex items-center gap-1.5">
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              添加一条
-            </span>
+        <div>
+          <button type="submit" className={buttonClass} disabled={saving}>
+            保存
           </button>
-          {/* 禁用了还要说清为什么。点不动且不说原因，用户会以为界面坏了。 */}
-          {atLimit && (
-            <span className="text-xs text-ink-soft">已达上限 6 条，删掉一条才能再加。</span>
-          )}
         </div>
-      </div>
-
-      {saveError !== null && (
-        <p role="status" className={`${card} text-sm text-status-error-strong`}>
-          {saveError}
-        </p>
-      )}
-
-      <div>
-        <button type="submit" className={buttonClass} disabled={saving}>
-          保存
-        </button>
-      </div>
-    </form>
+      </form>
+    </div>
   )
 }
