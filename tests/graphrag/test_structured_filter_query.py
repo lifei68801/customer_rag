@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from datetime import date
 
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import ExtraFieldSpec, TermTypeCategory
@@ -1756,3 +1757,140 @@ def test_validate_error_lists_unlabeled_field_without_empty_parentheses():
             confirmed_relation_types=set(), term_type_schema={"SKU": _SKU_SCHEMA},
         )
     assert "numeric_value（" not in str(exc_info.value)
+
+
+_SCHEMA_WITH_DATE = {
+    "订单": TermTypeCategory(
+        value="订单",
+        extra_fields=[
+            ExtraFieldSpec(name="purchase_date", value_type="date"),
+            ExtraFieldSpec(name="amount", value_type="number"),
+        ],
+    ),
+    "客户": TermTypeCategory(value="客户", extra_fields=[]),
+}
+
+
+async def test_in_period_is_expanded_into_two_plain_constraints():
+    """in_period 在到达图谱层之前就被展开成 gte + lte。
+
+    这是整个设计的支点：图谱执行层一行不用改，新语义完全落在校验+展开
+    这一层。不展开的话 Neo4j 那边会拿到一个它不认识的运算符。
+    """
+    graph = _FakeGraphClient()
+    await run_structured_filter_query(
+        {
+            "anchor": {"term_type": "订单"},
+            "constraints": [
+                {"kind": "attribute", "field": "purchase_date",
+                 "operator": "in_period", "value": "last_month"},
+            ],
+        },
+        graph_client=graph, tenant_id="demo", terms=[],
+        confirmed_relation_types=set(), term_type_schema=_SCHEMA_WITH_DATE,
+        today=date(2026, 9, 10),
+    )
+    assert [(c.field, c.operator, c.value) for c in graph.last_args.constraints] == [
+        ("purchase_date", "gte", "2026-08-01"),
+        ("purchase_date", "lte", "2026-08-31"),
+    ]
+
+
+async def test_in_period_on_a_relation_constraint_keeps_the_same_hops():
+    """关系约束里的 in_period 展开成两条 hops 相同的约束。
+
+    只展开属性约束的实现在这里会把一个图谱层不认识的 target_operator
+    直接送下去。
+    """
+    graph = _FakeGraphClient()
+    await run_structured_filter_query(
+        {
+            "anchor": {"term_type": "客户"},
+            "constraints": [
+                {"kind": "relation",
+                 "hops": [{"relation_type": "HAS_ORDER", "direction": "outgoing",
+                           "target_term_type": "订单"}],
+                 "target_field": "purchase_date",
+                 "target_operator": "in_period", "target_value": "today"},
+            ],
+        },
+        graph_client=graph, tenant_id="demo", terms=[],
+        confirmed_relation_types={"HAS_ORDER"}, term_type_schema=_SCHEMA_WITH_DATE,
+        today=date(2026, 9, 10),
+    )
+    expanded = graph.last_args.constraints
+    assert [(c.target_operator, c.target_value) for c in expanded] == [
+        ("gte", "2026-09-10"), ("lte", "2026-09-10"),
+    ]
+    assert expanded[0].hops == expanded[1].hops
+
+
+async def test_an_unknown_period_name_is_refused_with_the_list():
+    """报错要让 LLM 下一次能产出对的。"""
+    result = await run_structured_filter_query(
+        {
+            "anchor": {"term_type": "订单"},
+            "constraints": [
+                {"kind": "attribute", "field": "purchase_date",
+                 "operator": "in_period", "value": "last_fortnight"},
+            ],
+        },
+        graph_client=_FakeGraphClient(), tenant_id="demo", terms=[],
+        confirmed_relation_types=set(), term_type_schema=_SCHEMA_WITH_DATE,
+        today=date(2026, 9, 10),
+    )
+    assert "last_month" in result["error"]
+
+
+async def test_starts_with_is_not_available_on_a_date_field():
+    """starts_with('2026-08') 能表达「8 月」，但那是把日期当字符串用的
+    旁门。第三种写法只会让 LLM 在三条路之间摇摆，而它们的边界行为不一致
+    （starts_with 表达不了跨月区间）。"""
+    result = await run_structured_filter_query(
+        {
+            "anchor": {"term_type": "订单"},
+            "constraints": [
+                {"kind": "attribute", "field": "purchase_date",
+                 "operator": "starts_with", "value": "2026-08"},
+            ],
+        },
+        graph_client=_FakeGraphClient(), tenant_id="demo", terms=[],
+        confirmed_relation_types=set(), term_type_schema=_SCHEMA_WITH_DATE,
+        today=date(2026, 9, 10),
+    )
+    assert "error" in result
+
+
+async def test_in_period_is_not_available_on_a_number_field():
+    """「上个月的售价」没有意义。"""
+    result = await run_structured_filter_query(
+        {
+            "anchor": {"term_type": "订单"},
+            "constraints": [
+                {"kind": "attribute", "field": "amount",
+                 "operator": "in_period", "value": "last_month"},
+            ],
+        },
+        graph_client=_FakeGraphClient(), tenant_id="demo", terms=[],
+        confirmed_relation_types=set(), term_type_schema=_SCHEMA_WITH_DATE,
+        today=date(2026, 9, 10),
+    )
+    assert "error" in result
+
+
+async def test_absolute_range_on_a_date_field_still_works():
+    """任意窗口（「最近 45 天」）走绝对区间——那条路径必须留着。"""
+    graph = _FakeGraphClient()
+    await run_structured_filter_query(
+        {
+            "anchor": {"term_type": "订单"},
+            "constraints": [
+                {"kind": "attribute", "field": "purchase_date",
+                 "operator": "gte", "value": "2026-07-27"},
+            ],
+        },
+        graph_client=graph, tenant_id="demo", terms=[],
+        confirmed_relation_types=set(), term_type_schema=_SCHEMA_WITH_DATE,
+        today=date(2026, 9, 10),
+    )
+    assert graph.last_args.constraints[0].operator == "gte"

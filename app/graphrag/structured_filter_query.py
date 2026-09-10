@@ -3,12 +3,14 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, replace
+from datetime import date as _date
 from typing import TYPE_CHECKING, Any
 
 from app.graphrag.ontology import Term, resolve_term, resolve_term_or_candidates
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.ontology_constraints import AllowedCombination, to_combination_keys
 from app.graphrag.ontology_recall import precision_match_score
+from app.graphrag.date_periods import InvalidPeriodError, resolve_period
 
 if TYPE_CHECKING:
     from app.graphrag.neo4j_client import Neo4jGraphClient
@@ -40,12 +42,21 @@ _VALID_EXPAND_HOPS = frozenset({1, 2})
 _STRING_OPERATORS = frozenset({"eq", "ne", "starts_with"})
 _NUMERIC_OPERATORS = frozenset({"gt", "gte", "lt", "lte", "eq", "ne"})
 _ARRAY_OPERATORS = frozenset({"all_lte", "all_gte", "any_lte", "any_gte"})
-_VALID_OPERATORS = _STRING_OPERATORS | _NUMERIC_OPERATORS | _ARRAY_OPERATORS
+# 日期在图里是字符串属性，字典序即时间序，所以数值那套比较运算符原样可用。
+# in_period 是相对时间的入口（「上个月」），它在校验之后被展开成
+# gte + lte 两条普通约束，图谱执行层不认识它。
+#
+# **有意不给 date 开 starts_with**：starts_with('2026-08') 能表达「8 月」，
+# 但那是把日期当字符串用的旁门，而且表达不了跨月区间。有了 in_period 和
+# 绝对区间，第三种写法只会让 LLM 在三条路之间摇摆。
+_DATE_OPERATORS = frozenset({"gt", "gte", "lt", "lte", "eq", "ne", "in_period"})
+_VALID_OPERATORS = _STRING_OPERATORS | _NUMERIC_OPERATORS | _ARRAY_OPERATORS | _DATE_OPERATORS
 _OPERATORS_BY_VALUE_TYPE = {
     "string": _STRING_OPERATORS,
     "number": _NUMERIC_OPERATORS,
     "integer": _NUMERIC_OPERATORS,
     "number[]": _ARRAY_OPERATORS,
+    "date": _DATE_OPERATORS,
 }
 _VALID_KINDS = frozenset({"attribute", "relation"})
 
@@ -592,6 +603,38 @@ async def _probe_fanout_warning(
     return None
 
 
+def _expand_period_constraints(
+    constraints: list[AttributeConstraint | RelationConstraint], *, today: _date,
+) -> list[AttributeConstraint | RelationConstraint]:
+    """把每条 in_period 约束换成两条普通约束（gte start + lte end）。
+
+    在校验通过之后、执行之前跑。这样 neo4j_client 一行不用改：
+    _COMPARISON_OPERATOR_TO_CYPHER 已经有 >= 和 <=，多条约束本来就是
+    " AND ".join(where_clauses)。新语义完全落在这一层，图谱执行层的
+    攻击面不变。
+
+    区间两端都含，所以是 gte/lte 而不是 gte/lt——resolve_period 返回的
+    end 是区间最后一天本身。
+    """
+    expanded: list[AttributeConstraint | RelationConstraint] = []
+    for constraint in constraints:
+        if isinstance(constraint, AttributeConstraint):
+            if constraint.operator != "in_period":
+                expanded.append(constraint)
+                continue
+            start, end = resolve_period(str(constraint.value), today=today)
+            expanded.append(replace(constraint, operator="gte", value=start))
+            expanded.append(replace(constraint, operator="lte", value=end))
+            continue
+        if constraint.target_operator != "in_period":
+            expanded.append(constraint)
+            continue
+        start, end = resolve_period(str(constraint.target_value), today=today)
+        expanded.append(replace(constraint, target_operator="gte", target_value=start))
+        expanded.append(replace(constraint, target_operator="lte", target_value=end))
+    return expanded
+
+
 def _resolve_fuzzy_constraint_values(
     constraints: list[AttributeConstraint | RelationConstraint],
     *,
@@ -640,6 +683,7 @@ async def run_structured_filter_query(
     confirmed_relation_types: set[str],
     term_type_schema: dict[str, TermTypeCategory],
     allowed_combinations: list[AllowedCombination] | None = None,
+    today: _date | None = None,
 ) -> dict[str, Any]:
     """structured_filter_query_tool 的执行体调用的编排入口：解析→（NameAnchor 时）
     消歧解析→校验→执行→格式化。"""
@@ -704,6 +748,13 @@ async def run_structured_filter_query(
     except StructuredFilterQueryError as exc:
         return {"error": str(exc)}
     args = replace(args, constraints=resolved_constraints)
+
+    try:
+        args = replace(args, constraints=_expand_period_constraints(
+            args.constraints, today=today or _date.today(),
+        ))
+    except InvalidPeriodError as exc:
+        return {"error": str(exc)}
 
     # 执行阶段单独兜一层 except Exception（比 StructuredFilterQueryError 宽）——这层
     # 边界要防的是"图谱后端挂了/Cypher 运行时报错"（Neo4j 驱动异常、数组谓词碰到
