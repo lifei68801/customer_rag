@@ -18,7 +18,7 @@ import {
  */
 
 describe('新路由表', () => {
-  it('六个模块共十六个目的地，加上账号页、租户页和设置页', () => {
+  it('六个模块共十六个目的地，加上账号页、租户页、组织页和设置页', () => {
     expect(ADMIN_ROUTES).toEqual({
       dashboard: '/admin/dashboard',
       ontology: '/admin/ontology/ontology',
@@ -40,6 +40,7 @@ describe('新路由表', () => {
       // 根本不存在——放进侧边栏会让两种角色看到不同的侧边栏。
       accounts: '/admin/accounts',
       tenants: '/admin/tenants',
+      organizations: '/admin/organizations',
       settings: '/admin/settings',
     })
   })
@@ -155,6 +156,7 @@ describe('导航分组', () => {
       settings: '账号级偏好，不是流程的一站；入口在底部账号菜单',
       accounts: '对 member 根本不存在；放进侧边栏会让两种角色看到不同的侧边栏',
       tenants: '同上，admin 专属；入口在账号菜单',
+      organizations: '同上，admin 专属；组织只是租户之上的归拢，不是流程的一站',
     }
     const inNav = NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path)).sort()
     const shouldBeInNav = Object.entries(ADMIN_ROUTES)
@@ -224,12 +226,13 @@ describe('租户依赖分类', () => {
     expect(both).toEqual([])
   })
 
-  it('三个账号级页面加看板不依赖租户', () => {
+  it('四个账号级页面加看板不依赖租户', () => {
     // 把租户管理页一起挡住的话，admin 会被锁在一个什么都点不动的界面里：
     // 空态叫他去选一个租户，而唯一能新建/启用租户的页面也被空态盖着。
     expect([...NON_TENANT_ROUTE_KEYS].sort()).toEqual([
       'accounts',
       'dashboard',
+      'organizations',
       'settings',
       'tenants',
     ])
