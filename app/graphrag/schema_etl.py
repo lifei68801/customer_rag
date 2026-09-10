@@ -210,6 +210,8 @@ async def _write_entity_mapping(
                 # "etl"）。冲突页要显示「39 来自 商品表.xlsx」，审核员判断
                 # 该信哪个的全部依据就是"哪张表更权威"。
                 incoming_source=mapping.source_file,
+                # 行号跟来源一起传：冲突页要显示「来自 商品表.csv 第 88 行」。
+                incoming_row_number=projected.row_number,
             )
             # 写完 upsert_term_with_node_key 后用 get_term_merged_by_node_key
             # 取回合并结果——图谱应当是合并视图的投影，而非 terms 表原始值的投影。

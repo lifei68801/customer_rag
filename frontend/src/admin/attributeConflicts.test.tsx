@@ -23,6 +23,8 @@ interface ConflictRow {
   kept_source: string
   incoming_value: string
   incoming_source: string
+  kept_row_number: number | null
+  incoming_row_number: number | null
 }
 
 const CONFLICT: ConflictRow = {
@@ -33,6 +35,8 @@ const CONFLICT: ConflictRow = {
   kept_source: '商品表.xlsx',
   incoming_value: '45',
   incoming_source: '价格库.csv',
+  kept_row_number: 88,
+  incoming_row_number: 12,
 }
 
 let conflicts: ConflictRow[]
@@ -126,6 +130,27 @@ describe('属性冲突审核页', () => {
     expect(card().getByRole('button', { name: /45.*价格库\.csv/ })).toBeTruthy()
     // 哪个实体的哪个属性也要说清——不说的话审核员在给一个匿名的数字投票。
     expect(card().getByText(/产品:洗发水.*price/)).toBeTruthy()
+  })
+
+  it('冲突两边都写出文件名和第几行', async () => {
+    // spec §6：「值 A（来自 商品表.xlsx 第 88 行）」。只有文件名的话审核员
+    // 要去两万行的表里自己找那一行才能核对。
+    await renderPage()
+
+    await waitFor(() => expect(screen.getByTestId('conflict-7')).toBeTruthy())
+    expect(card().getByRole('button', { name: /商品表\.xlsx 第 88 行/ })).toBeTruthy()
+    expect(card().getByRole('button', { name: /价格库\.csv 第 12 行/ })).toBeTruthy()
+  })
+
+  it('没有行号的一边只写文件名，不写「第 0 行」', async () => {
+    // 这两列上线之前记的冲突没有行号。编一个 0 出来是一个看起来精确、实际
+    // 是假的位置，审核员会照着去表里找第 0 行。
+    conflicts = [{ ...CONFLICT, kept_row_number: null }]
+    await renderPage()
+
+    await waitFor(() => expect(screen.getByTestId('conflict-7')).toBeTruthy())
+    expect(card().getByRole('button', { name: /39（来自 商品表\.xlsx）/ })).toBeTruthy()
+    expect(card().queryByRole('button', { name: /第 0 行/ })).toBeNull()
   })
 
   it('三个动作都在：选 A、选 B、手填', async () => {

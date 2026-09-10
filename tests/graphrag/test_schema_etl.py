@@ -1677,6 +1677,9 @@ async def test_two_imports_disagreeing_on_a_value_record_a_conflict_and_keep_the
         # 来源必须是**两张表各自的文件名**，不是渠道（etl）。审核员判断该信
         # 哪个的全部依据就是"哪张表更权威"。
         assert (row["kept_source"], row["incoming_source"]) == ("a.csv", "b.csv")
+        # 行号也要从真实 ETL 路径传下来。store 层的用例直接传参数，谁也没问过
+        # "ETL 真的传了吗"（阶段四 C-1）。两份文件里那一行都是第 2 行。
+        assert (row["kept_row_number"], row["incoming_row_number"]) == (2, 2)
     finally:
         await conn.close()
 

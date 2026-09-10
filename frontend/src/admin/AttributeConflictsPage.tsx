@@ -20,6 +20,19 @@ interface Conflict {
   kept_source: string
   incoming_value: string
   incoming_source: string
+  /** 各来自源文件的第几行。这两列上线之前记的冲突没有，是 null。 */
+  kept_row_number: number | null
+  incoming_row_number: number | null
+}
+
+/**
+ * 「商品表.xlsx 第 88 行」；没有行号时只写文件名。
+ *
+ * null 不能显示成「第 0 行」：那是一个看起来精确、实际是编出来的位置，
+ * 审核员会照着去表里找第 0 行。
+ */
+function describeSource(source: string, row: number | null): string {
+  return row === null ? source : `${source} 第 ${row.toLocaleString()} 行`
 }
 
 /**
@@ -180,7 +193,7 @@ export function AttributeConflictsPage() {
                 disabled={busyId === conflict.conflict_id}
                 onClick={() => void resolve(conflict, conflict.kept_value)}
               >
-                用 {conflict.kept_value}（来自 {conflict.kept_source}）
+                用 {conflict.kept_value}（来自 {describeSource(conflict.kept_source, conflict.kept_row_number)}）
               </button>
               <button
                 type="button"
@@ -188,7 +201,7 @@ export function AttributeConflictsPage() {
                 disabled={busyId === conflict.conflict_id}
                 onClick={() => void resolve(conflict, conflict.incoming_value)}
               >
-                用 {conflict.incoming_value}（来自 {conflict.incoming_source}）
+                用 {conflict.incoming_value}（来自 {describeSource(conflict.incoming_source, conflict.incoming_row_number)}）
               </button>
             </div>
             <div className="flex flex-wrap items-center gap-2">

@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS terms (
     -- 每个属性字段各自来自哪次导入：{字段名: 来源}。见
     -- ensure_terms_schema 里那条 add_column_if_missing 上方的说明。
     extra_property_sources TEXT NOT NULL DEFAULT '{}',
+    -- 逐字段：这个值来自源文件的第几行。跟 extra_property_sources 平行的一份
+    -- {field: row_number}，冲突页据此显示「39 来自 商品表.xlsx 第 88 行」。
+    extra_property_source_rows TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (tenant_id, node_key)
 );
 CREATE INDEX IF NOT EXISTS idx_terms_tenant_standard_name
@@ -248,6 +251,11 @@ async def ensure_terms_schema(
         # ——只有最老的那批存量库会踩，而它们恰恰是最没人盯着的。
         await add_column_if_missing(
             conn, table="terms", column="extra_property_sources",
+            ddl="TEXT NOT NULL DEFAULT '{}'",
+        )
+        # 同上，同一个位置：也必须排在重建型迁移之后。
+        await add_column_if_missing(
+            conn, table="terms", column="extra_property_source_rows",
             ddl="TEXT NOT NULL DEFAULT '{}'",
         )
     await conn.executescript(_SCHEMA_SQL)
@@ -1100,10 +1108,12 @@ async def _keep_old_values_and_record_conflicts(
     node_key: str,
     existing_extra: dict[str, Any],
     existing_field_sources: dict[str, str],
+    existing_field_rows: dict[str, int],
     existing_row_source: str,
     incoming_extra: dict[str, object],
     incoming_source: str,
-) -> tuple[dict[str, object], dict[str, str]]:
+    incoming_row_number: int | None,
+) -> tuple[dict[str, object], dict[str, str], dict[str, int]]:
     """逐字段比对，冲突的字段换回旧值并记一条，返回该写进库的那份属性。
 
     三种情况分开处理，混在一起就是这个函数最容易出错的地方：
@@ -1120,10 +1130,21 @@ async def _keep_old_values_and_record_conflicts(
     """
     kept = dict(incoming_extra)
     sources = dict(existing_field_sources)
+    # 行号跟来源走同一套规则：新字段/同源更新记这次的行，值没变不动，
+    # 冲突保留旧行。行号不明（None）时不写，读出来就是"没有"，不是 0。
+    rows = dict(existing_field_rows)
+
+    def _note_row(field_name: str) -> None:
+        if incoming_row_number is not None:
+            rows[field_name] = incoming_row_number
+        else:
+            rows.pop(field_name, None)
+
     for field, incoming_value in incoming_extra.items():
         if field not in existing_extra:
             # 新字段：这次导入写进去的，来源就是这次的。
             sources[field] = incoming_source
+            _note_row(field)
             continue
         old_value = existing_extra[field]
         if old_value == incoming_value:
@@ -1134,6 +1155,7 @@ async def _keep_old_values_and_record_conflicts(
             # 同一个来源给出了新值 → **更新**，不是冲突。上游数据变了正是
             # 重跑 ETL 的目的。来源不变（还是这一个），值换成新的。
             sources[field] = incoming_source
+            _note_row(field)
             continue
         kept[field] = old_value
         await record_conflict(
@@ -1150,8 +1172,10 @@ async def _keep_old_values_and_record_conflicts(
             kept_source=existing_field_sources.get(field, existing_row_source),
             incoming_value=str(incoming_value),
             incoming_source=incoming_source,
+            kept_row_number=existing_field_rows.get(field),
+            incoming_row_number=incoming_row_number,
         )
-    return kept, sources
+    return kept, sources, rows
 
 
 async def upsert_term_with_node_key(
@@ -1166,6 +1190,7 @@ async def upsert_term_with_node_key(
     source: str = "etl",
     conflict_conn: aiosqlite.Connection | None = None,
     incoming_source: str = "unknown",
+    incoming_row_number: int | None = None,
 ) -> None:
     """ETL 专用的幂等写入：按 (tenant_id, node_key) 判定冲突，已存在就更新，不存在
     就插入——不是 create_term/update_term 那种"创建 xor 更新"两态分支，是真正的
@@ -1215,11 +1240,14 @@ async def upsert_term_with_node_key(
     incoming_source 是**这次导入的来源**（表名/文件名），跟 `source` 那个
     渠道字段（etl/manual/review）不是一回事——审核页要显示「39 来自
     商品表.xlsx」靠的是这个。两个名字容易看混，改这里时注意别串。
+
+    incoming_row_number 是这一行在源文件里的行号（跟跳过行的记法一致，
+    表头是第 1 行），冲突页据此显示「第 88 行」。不知道时传 None，不要传 0。
     """
     extra_properties = extra_properties or {}
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
-        "SELECT extra_properties, source, extra_property_sources "
+        "SELECT extra_properties, source, extra_property_sources, extra_property_source_rows "
         "FROM terms WHERE tenant_id = ? AND node_key = ?",
         (tenant_id, node_key),
     )
@@ -1231,24 +1259,37 @@ async def upsert_term_with_node_key(
     existing_field_sources: dict[str, str] = (
         json.loads(existing_row["extra_property_sources"]) if existing_row is not None else {}
     )
+    existing_field_rows: dict[str, int] = (
+        json.loads(existing_row["extra_property_source_rows"]) if existing_row is not None else {}
+    )
     field_sources = dict(existing_field_sources)
+    field_rows = dict(existing_field_rows)
     if conflict_conn is not None:
         if existing_row is not None:
             # 就地改 extra_properties：下面那条 INSERT ... DO UPDATE 用的就是
             # 这个字典，冲突字段在这里被换回旧值之后，写进库的自然是旧值。
-            extra_properties, field_sources = await _keep_old_values_and_record_conflicts(
-                conflict_conn,
-                tenant_id=tenant_id,
-                node_key=node_key,
-                existing_extra=existing_extra,
-                existing_field_sources=existing_field_sources,
-                existing_row_source=existing_row["source"],
-                incoming_extra=extra_properties,
-                incoming_source=incoming_source,
+            extra_properties, field_sources, field_rows = (
+                await _keep_old_values_and_record_conflicts(
+                    conflict_conn,
+                    tenant_id=tenant_id,
+                    node_key=node_key,
+                    existing_extra=existing_extra,
+                    existing_field_sources=existing_field_sources,
+                    existing_field_rows=existing_field_rows,
+                    existing_row_source=existing_row["source"],
+                    incoming_extra=extra_properties,
+                    incoming_source=incoming_source,
+                    incoming_row_number=incoming_row_number,
+                )
             )
         else:
             # 新行：每个字段都来自这次导入。
             field_sources = {field: incoming_source for field in extra_properties}
+            field_rows = (
+                {field: incoming_row_number for field in extra_properties}
+                if incoming_row_number is not None
+                else {}
+            )
     await validate_term_categories(
         conn, tenant_id=tenant_id, term_type=term_type,
         extra_properties=extra_properties,
@@ -1257,12 +1298,14 @@ async def upsert_term_with_node_key(
     try:
         await conn.execute(
             "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
-            "extra_properties, source, extra_property_sources) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "extra_properties, source, extra_property_sources, extra_property_source_rows) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (tenant_id, node_key) DO UPDATE SET "
             "standard_name = excluded.standard_name, aliases = excluded.aliases, "
             "term_type = excluded.term_type, "
             "extra_properties = excluded.extra_properties, "
-            "extra_property_sources = excluded.extra_property_sources",
+            "extra_property_sources = excluded.extra_property_sources, "
+            "extra_property_source_rows = excluded.extra_property_source_rows",
             (
                 tenant_id,
                 node_key,
@@ -1272,6 +1315,7 @@ async def upsert_term_with_node_key(
                 json.dumps(extra_properties, ensure_ascii=False),
                 source,
                 json.dumps(field_sources, ensure_ascii=False),
+                json.dumps(field_rows, ensure_ascii=False),
             ),
         )
     except aiosqlite.IntegrityError:

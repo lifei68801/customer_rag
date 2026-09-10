@@ -5,6 +5,8 @@ from typing import Any
 
 import aiosqlite
 
+from app.db_migrations import add_column_if_missing
+
 logger = logging.getLogger(__name__)
 
 _SCHEMA_SQL = """
@@ -17,6 +19,11 @@ CREATE TABLE IF NOT EXISTS attribute_conflicts (
     kept_source     TEXT NOT NULL,
     incoming_value  TEXT NOT NULL,
     incoming_source TEXT NOT NULL,
+    -- 两个值各来自源文件的第几行（spec §6「值 A 来自 商品表.xlsx 第 88 行」）。
+    -- 可空：这两列上线之前写进来的值没有记录，读成 NULL 而不是 0——0 会被
+    -- 页面显示成「第 0 行」，一个看起来精确、实际是编出来的位置。
+    kept_row_number     INTEGER,
+    incoming_row_number INTEGER,
     status          TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending', 'resolved')),
     resolved_value  TEXT,
@@ -56,6 +63,9 @@ async def ensure_attribute_conflicts_schema(conn: aiosqlite.Connection) -> None:
     """
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
+    # 已经存在的库补这两列：上面的 CREATE TABLE 是 IF NOT EXISTS，对老表不生效。
+    for column in ("kept_row_number", "incoming_row_number"):
+        await add_column_if_missing(conn, table="attribute_conflicts", column=column, ddl="INTEGER")
 
 
 async def record_conflict(
@@ -68,6 +78,8 @@ async def record_conflict(
     kept_source: str,
     incoming_value: str,
     incoming_source: str,
+    kept_row_number: int | None = None,
+    incoming_row_number: int | None = None,
 ) -> None:
     """记一条冲突。同一个 (实体, 属性) 已有待处理的那条时**更新**它，不新增。
 
@@ -82,14 +94,19 @@ async def record_conflict(
     """
     await conn.execute(
         "INSERT INTO attribute_conflicts "
-        "(tenant_id, node_key, field, kept_value, kept_source, incoming_value, incoming_source) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "(tenant_id, node_key, field, kept_value, kept_source, incoming_value, incoming_source, "
+        "kept_row_number, incoming_row_number) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
         # 冲突目标必须跟那条部分唯一索引完全一致（含 WHERE），否则 SQLite
         # 匹配不到它，DO UPDATE 不生效、直接抛 UNIQUE 约束错误。
         "ON CONFLICT (tenant_id, node_key, field) WHERE status = 'pending' DO UPDATE SET "
         "incoming_value = excluded.incoming_value, "
-        "incoming_source = excluded.incoming_source",
-        (tenant_id, node_key, field, kept_value, kept_source, incoming_value, incoming_source),
+        "incoming_source = excluded.incoming_source, "
+        "incoming_row_number = excluded.incoming_row_number",
+        (
+            tenant_id, node_key, field, kept_value, kept_source, incoming_value, incoming_source,
+            kept_row_number, incoming_row_number,
+        ),
     )
     await conn.commit()
 
@@ -112,8 +129,8 @@ async def list_conflicts(
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT conflict_id, tenant_id, node_key, field, kept_value, kept_source, "
-        "incoming_value, incoming_source, status, resolved_value, resolved_by, "
-        "created_at, resolved_at FROM attribute_conflicts "
+        "incoming_value, incoming_source, kept_row_number, incoming_row_number, "
+        "status, resolved_value, resolved_by, created_at, resolved_at FROM attribute_conflicts "
         "WHERE tenant_id = ? AND status = ? ORDER BY conflict_id LIMIT ? OFFSET ?",
         (tenant_id, status, limit if limit is not None else -1, offset),
     )

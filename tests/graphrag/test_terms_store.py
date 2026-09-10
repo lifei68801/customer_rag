@@ -1835,12 +1835,14 @@ async def _upsert(
     conflict_conn: aiosqlite.Connection | None = None,
     incoming_source: str = "商品表.xlsx",
     standard_name: str = "洗发水",
+    incoming_row_number: int | None = None,
 ) -> None:
     await upsert_term_with_node_key(
         conn, tenant_id="default", node_key="error_code:洗发水",
         standard_name=standard_name, aliases=[], term_type="error_code",
         extra_properties=extra_properties,
         conflict_conn=conflict_conn, incoming_source=incoming_source,
+        incoming_row_number=incoming_row_number,
     )
 
 
@@ -2154,3 +2156,77 @@ async def test_resolving_a_numeric_field_with_a_non_number_is_refused():
             )
     finally:
         await conn.close()
+
+
+async def test_a_conflict_records_both_row_numbers():
+    """第一次导入第 3 行写了 39，第二次导入第 12 行给了 45：
+    kept_row_number == 3，incoming_row_number == 12。
+
+    spec §6 写的是「值 A（来自 商品表.xlsx **第 88 行**）」。只有文件名的话，
+    审核员要去两万行的表里自己找那一行才能核对。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        await _upsert(conn, extra_properties={"price": "39"},
+                      conflict_conn=conflicts, incoming_source="商品表.xlsx",
+                      incoming_row_number=3)
+        await _upsert(conn, extra_properties={"price": "45"},
+                      conflict_conn=conflicts, incoming_source="促销表.xlsx",
+                      incoming_row_number=12)
+
+        row = (await list_conflicts(conflicts, tenant_id="default"))[0]
+        assert row["kept_row_number"] == 3
+        assert row["incoming_row_number"] == 12
+    finally:
+        await conn.close()
+        await conflicts.close()
+
+
+async def test_rows_written_before_this_column_existed_have_no_row_number():
+    """存量行没有记录，行号是 None，不是 0。
+
+    0 会被页面读成「第 0 行」——一个看起来精确、实际是编出来的位置。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        # 第一次写入不带行号（模拟这一列上线之前写进去的行）。
+        await _upsert(conn, extra_properties={"price": "39"},
+                      conflict_conn=conflicts, incoming_source="商品表.xlsx")
+        await _upsert(conn, extra_properties={"price": "45"},
+                      conflict_conn=conflicts, incoming_source="促销表.xlsx",
+                      incoming_row_number=12)
+
+        row = (await list_conflicts(conflicts, tenant_id="default"))[0]
+        assert row["kept_row_number"] is None
+        assert row["incoming_row_number"] == 12
+    finally:
+        await conn.close()
+        await conflicts.close()
+
+
+async def test_a_same_source_update_moves_the_row_number_along():
+    """同源新值是更新（不是冲突），它的行号也要跟着换成新的那一行。
+
+    留着旧行号的话，下一次异源冲突里「39 来自第 3 行」指的是一个已经被
+    覆盖掉的旧值所在的行。
+    """
+    conn = await _connect_with_price_fields()
+    conflicts = await _conflict_conn()
+    try:
+        await _upsert(conn, extra_properties={"price": "39"},
+                      conflict_conn=conflicts, incoming_source="商品表.xlsx",
+                      incoming_row_number=3)
+        await _upsert(conn, extra_properties={"price": "41"},
+                      conflict_conn=conflicts, incoming_source="商品表.xlsx",
+                      incoming_row_number=7)
+        await _upsert(conn, extra_properties={"price": "45"},
+                      conflict_conn=conflicts, incoming_source="促销表.xlsx",
+                      incoming_row_number=12)
+
+        row = (await list_conflicts(conflicts, tenant_id="default"))[0]
+        assert (row["kept_value"], row["kept_row_number"]) == ("41", 7)
+    finally:
+        await conn.close()
+        await conflicts.close()
