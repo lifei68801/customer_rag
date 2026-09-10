@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 from app.agent.tool_registry import ToolContext
+from app.graphrag.date_periods import PERIOD_NAMES
 from app.graphrag.ontology_recall import format_recall_candidates, recall_ontology_candidates
 from app.graphrag.structured_filter_query import run_structured_filter_query
 from app.providers.base import ProviderCapability, ProviderRequest
@@ -43,7 +45,13 @@ _USAGE_GUIDE = (
     "观察结果里出现 ambiguous_anchor 时，说明这个名字在库里对应多个不同实体"
     "（各自的 node_key 和属性都列在 candidates 里）。这不是「没找到」——必须"
     "向用户澄清指的是哪一个，把区分性属性（比如所在城市、邮编）念给用户听，"
-    "不能自己挑一个，也不能回答「没有查到」。"
+    "不能自己挑一个，也不能回答「没有查到」。\n"
+    f"日期类型的字段支持按时间范围过滤。相对时间用 operator=in_period，"
+    f"value 填下面这些具名区间之一：{'、'.join(PERIOD_NAMES)}。\n"
+    "注意「上个月」和「最近一个月」不是一回事：前者是自然月（last_month），"
+    "后者是滚动窗口（last_30_days）。用户说「上个月的订单」通常指自然月。\n"
+    "这些区间之外的窗口（比如「最近 45 天」），用 gte/lte 填绝对日期"
+    "（YYYY-MM-DD），当前日期见下方。\n"
 )
 
 _PARAMETERS_SCHEMA: dict[str, Any] = {
@@ -96,8 +104,8 @@ _PARAMETERS_SCHEMA: dict[str, Any] = {
                     "operator": {
                         "type": "string",
                         "enum": ["gt", "gte", "lt", "lte", "eq", "ne", "starts_with",
-                                 "all_lte", "all_gte", "any_lte", "any_gte"],
-                        "description": "比较运算符，实际可用范围取决于字段类型",
+                                 "all_lte", "all_gte", "any_lte", "any_gte", "in_period"],
+                        "description": "比较运算符，实际可用范围取决于字段类型；in_period 只对日期类型字段可用",
                     },
                     "value": {"description": "kind=attribute 时必填：比较的目标值"},
                     "hops": {
@@ -120,8 +128,8 @@ _PARAMETERS_SCHEMA: dict[str, Any] = {
                     "target_operator": {
                         "type": "string",
                         "enum": ["gt", "gte", "lt", "lte", "eq", "ne", "starts_with",
-                                 "all_lte", "all_gte", "any_lte", "any_gte"],
-                        "description": "kind=relation 时必填：对 target_field 用的运算符",
+                                 "all_lte", "all_gte", "any_lte", "any_gte", "in_period"],
+                        "description": "kind=relation 时必填：对 target_field 用的运算符；in_period 只对日期类型字段可用",
                     },
                     "target_value": {"description": "kind=relation 时必填：比较的目标值"},
                 },
@@ -184,7 +192,7 @@ def _strip_json_code_fence(text: str) -> str:
     return stripped
 
 
-def _build_prompt(query_intent: str, original_question: str, candidates) -> str:
+def _build_prompt(query_intent: str, original_question: str, candidates, *, today: date) -> str:
     schema_text = json.dumps(_PARAMETERS_SCHEMA, ensure_ascii=False, indent=2)
     return (
         "你是一个把自然语言查询意图转成结构化查询参数的助手。给定下面的查询意图、"
@@ -192,6 +200,10 @@ def _build_prompt(query_intent: str, original_question: str, candidates) -> str:
         "JSON Schema 的 JSON 对象作为你的完整回复——不要输出任何 JSON 之外的文字，"
         "也不要用 markdown 代码块包裹。\n\n"
         f"使用说明：\n{_USAGE_GUIDE}\n\n"
+        # 当前日期在**调用时**注入，不是模块级常量：常量会冻结在 import
+        # 那一刻，服务器连跑几天之后「今天」还是启动那天，而 LLM 照着它
+        # 算出的绝对区间看上去完全正常。
+        f"当前日期：{today.isoformat()}\n\n"
         f"JSON Schema：\n{schema_text}\n\n"
         "constraints.hops 里的 relation_type/target_term_type、constraints 里的 "
         "field/target_field，以及 anchor.term_type，都应该优先使用下面候选参考里"
@@ -217,7 +229,7 @@ class StructuredFilterQueryTool:
             term_type_schema=context.term_type_schema,
             allowed_combinations=context.allowed_combinations,
         )
-        prompt = _build_prompt(query_intent, context.question, candidates)
+        prompt = _build_prompt(query_intent, context.question, candidates, today=date.today())
         try:
             result = await context.llm_registry.run(
                 ProviderCapability.LLM,
@@ -238,12 +250,14 @@ class StructuredFilterQueryTool:
     ) -> tuple[dict[str, Any], list[VectorRecord]]:
         if context.graph_client is None:
             return {"error": "structured_filter_query_tool 未配置"}, []
+        today = date.today()
         observation = await run_structured_filter_query(
             arguments, terms=context.terms, graph_client=context.graph_client,
             tenant_id=context.tenant_id,
             confirmed_relation_types=context.confirmed_relation_types,
             term_type_schema=context.term_type_schema,
             allowed_combinations=context.allowed_combinations,
+            today=today,
         )
         return observation, []
 

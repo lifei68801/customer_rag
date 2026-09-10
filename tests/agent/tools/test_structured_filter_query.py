@@ -1,11 +1,14 @@
+from datetime import date
 from pathlib import Path
 
 import yaml
 
 from app.agent.tool_registry import ToolContext
-from app.agent.tools.structured_filter_query.tool import TOOL
+from app.agent.tools.structured_filter_query.tool import TOOL, _USAGE_GUIDE, _PARAMETERS_SCHEMA, _build_prompt
+from app.graphrag.date_periods import PERIOD_NAMES
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import ExtraFieldSpec, TermTypeCategory
+from app.graphrag.ontology_recall import RecallCandidates
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderResult
 from app.providers.registry import ProviderRegistry
 
@@ -201,3 +204,32 @@ async def test_usage_guide_prefers_a_direct_hop_over_multi_hop_for_counting():
     # 原有约束不能在改写中丢失
     assert "constraints.kind=relation" in prompt_content
     assert "只抄第一跳" in prompt_content
+
+
+def test_the_operator_enum_offers_in_period():
+    """LLM 只会产出 enum 里有的运算符。"""
+    props = _PARAMETERS_SCHEMA["properties"]["constraints"]["items"]["properties"]
+    assert "in_period" in props["operator"]["enum"]
+    assert "in_period" in props["target_operator"]["enum"]
+
+
+def test_the_usage_guide_lists_every_period_name():
+    """PERIOD_NAMES 和说明里的清单必须同步——列漏一个，那个区间对 LLM
+    就等于不存在；多列一个，LLM 会产出后端拒绝的值。"""
+    for name in PERIOD_NAMES:
+        assert name in _USAGE_GUIDE
+
+
+def test_the_prompt_carries_the_date_of_this_call_not_of_process_start():
+    """当前日期必须在**调用时**注入。
+
+    写成模块级常量的话它会冻结在 import 那一刻——服务器连跑几天之后，
+    「今天」还是启动那天，而这个错误一声不吭：LLM 照着一个过期的日期
+    算出的绝对区间，看上去完全正常。
+    """
+    candidates = RecallCandidates(term_types=[], relations=[], fields=[], paths=[], entities=[])
+    prompt = _build_prompt(
+        query_intent="上个月的订单", original_question="上个月的订单有多少",
+        candidates=candidates, today=date(2026, 9, 10),
+    )
+    assert "2026-09-10" in prompt
