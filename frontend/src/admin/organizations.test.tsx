@@ -27,6 +27,10 @@ let signedInRole: 'admin' | 'member' = 'admin'
 let organizations: { org_id: string; name: string; status: string; tenant_ids: string[] }[]
 let tenants: { tenant_id: string; name: string; status: string }[]
 let createOrgError: string | null = null
+let deleteStatus = 200
+let deleteDetail = ''
+let assignStatus = 200
+let assignDetail = ''
 
 function stubApi() {
   vi.stubGlobal(
@@ -62,7 +66,28 @@ function stubApi() {
         return Promise.resolve(new Response(JSON.stringify({ organizations }), { status: 200 }))
       }
       if (url.includes('/organization') && method === 'PUT') {
+        if (assignStatus !== 200) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ detail: assignDetail }), { status: assignStatus }),
+          )
+        }
         return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }))
+      }
+      if (/\/organizations\/[^/]+\/(disable|enable)$/.test(url) && method === 'POST') {
+        const disabling = url.endsWith('/disable')
+        organizations = organizations.map((o) =>
+          url.includes(`/${o.org_id}/`) ? { ...o, status: disabling ? 'disabled' : 'active' } : o,
+        )
+        return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }))
+      }
+      if (/\/organizations\/[^/]+$/.test(url) && method === 'DELETE') {
+        if (deleteStatus !== 200) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ detail: deleteDetail }), { status: deleteStatus }),
+          )
+        }
+        organizations = organizations.filter((o) => !url.endsWith(`/${o.org_id}`))
+        return Promise.resolve(new Response(JSON.stringify({ deleted: true }), { status: 200 }))
       }
       if (url.includes('/api/admin/tenants')) {
         return Promise.resolve(new Response(JSON.stringify({ tenants }), { status: 200 }))
@@ -79,6 +104,10 @@ beforeEach(() => {
   requests = []
   signedInRole = 'admin'
   createOrgError = null
+  deleteStatus = 200
+  deleteDetail = ''
+  assignStatus = 200
+  assignDetail = ''
   organizations = [
     { org_id: 'muji', name: '无印良品', status: 'active', tenant_ids: ['muji-商品', 'muji-门店'] },
   ]
@@ -192,5 +221,88 @@ describe('组织管理页', () => {
 
     await waitFor(() => expect(screen.getByTestId('no-permission')).toBeTruthy())
     expect(requests.some((r) => r.url.endsWith('/api/admin/organizations'))).toBe(false)
+  })
+
+  it('建错的组织能删掉', async () => {
+    // 这一组功能存在的全部理由：建错一个组织，现在删不掉。
+    const user = userEvent.setup()
+    await renderPage()
+    await screen.findByTestId('org-muji')
+
+    await user.click(within(screen.getByTestId('org-muji')).getByRole('button', { name: '删除' }))
+
+    await waitFor(() => {
+      const del = requests.find((r) => r.method === 'DELETE')
+      expect(del).toBeTruthy()
+      expect(del!.url).toContain('/api/admin/organizations/muji')
+    })
+    await waitFor(() => expect(screen.queryByTestId('org-muji')).toBeNull())
+  })
+
+  it('名下还有租户时删不掉，把后端那句话原样显示', async () => {
+    // 「还有 2 个租户，先把它们移出去」——比一句「删除失败」有用得多。
+    deleteStatus = 409
+    deleteDetail = "组织 'muji' 名下还有 2 个租户，先把它们移出去再删。"
+    const user = userEvent.setup()
+    await renderPage()
+    await screen.findByTestId('org-muji')
+
+    await user.click(within(screen.getByTestId('org-muji')).getByRole('button', { name: '删除' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('先把它们移出去'))
+    // 组织还在——失败之后不能从界面上消失。
+    expect(screen.getByTestId('org-muji')).toBeTruthy()
+  })
+
+  it('停用之后那个组织不能再被选中，但已经在里面的租户仍显示它', async () => {
+    // 停用的组织从下拉框里整个删掉的话，已经挂在里面的租户会显示成「无」
+    // ——看起来像被移出去了，而它其实还在里面。
+    const user = userEvent.setup()
+    await renderPage()
+    await screen.findByTestId('org-muji')
+
+    await user.click(within(screen.getByTestId('org-muji')).getByRole('button', { name: '停用' }))
+
+    // 卡片标题上要标出来。「已停用」在下拉选项里也会出现，所以限定在标题里查。
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId('org-muji')).getByRole('heading').textContent,
+      ).toContain('已停用'),
+    )
+    const option = within(screen.getByTestId('org-unassigned')).getByRole('option', {
+      name: /无印良品/,
+    }) as HTMLOptionElement
+    expect(option.disabled).toBe(true)
+    // 已经在里面的那个仍然选中它。
+    const inOrg = within(screen.getByTestId('org-muji')).getByLabelText(
+      '导购小美 所属组织',
+    ) as HTMLSelectElement
+    expect(inOrg.value).toBe('muji')
+  })
+
+  it('停用的组织能再启用', async () => {
+    // 反面：不给启用入口的话，停用就是一条单行道。
+    const user = userEvent.setup()
+    await renderPage()
+    const org = await screen.findByTestId('org-muji')
+
+    const heading = () => within(screen.getByTestId('org-muji')).getByRole('heading').textContent
+    await user.click(within(org).getByRole('button', { name: '停用' }))
+    await waitFor(() => expect(heading()).toContain('已停用'))
+    await user.click(within(screen.getByTestId('org-muji')).getByRole('button', { name: '启用' }))
+
+    await waitFor(() => expect(heading()).not.toContain('已停用'))
+  })
+
+  it('挂到停用的组织下被拒时，把后端那句话原样显示', async () => {
+    assignStatus = 409
+    assignDetail = "组织 'muji' 已停用，不能再往它下面挂租户。要用的话先启用它。"
+    const user = userEvent.setup()
+    await renderPage()
+    const unassigned = await screen.findByTestId('org-unassigned')
+
+    await user.selectOptions(within(unassigned).getByLabelText('演示 所属组织'), 'muji')
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('已停用'))
   })
 })

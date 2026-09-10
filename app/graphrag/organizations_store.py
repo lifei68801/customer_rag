@@ -48,6 +48,28 @@ class InvalidOrganizationError(ValueError):
     """org_id 或 name 是空的/纯空白。"""
 
 
+class OrganizationDisabledError(Exception):
+    """这个组织已停用，不能再往它下面挂新租户。"""
+
+
+class OrganizationNotEmptyError(Exception):
+    """这个组织名下还有租户，不能删。"""
+
+
+#: 组织的两个状态。
+#:
+#: **「停用」在这个模型里只有一个含义：不能再往它下面挂新租户。** 已经挂着的
+#: 不动，那些租户也照常工作——隔离是 tenant_id 一维（spec D1），组织只是归拢，
+#: 停用它不该让任何数据变得不可访问。
+#:
+#: 把里面的租户一起踢出去是另一回事：用户点「停用」时想的是"先别再往里放了"，
+#: 不是"把里面的东西倒出来"。
+#:
+#: 如果停用什么都不改变，那它就是个骗人的开关——所以这一条必须真的生效，
+#: 有专门的用例钉着（test_disabling_an_org_blocks_new_assignments_...）。
+_VALID_STATUSES = ("active", "disabled")
+
+
 async def create_organization(conn: aiosqlite.Connection, *, org_id: str, name: str) -> None:
     """建一个组织。
 
@@ -135,13 +157,64 @@ async def assign_tenant_to_org(
       不新造一个同义的，避免调用方要 catch 两种异常。
     """
     if org_id is not None:
-        cursor = await conn.execute("SELECT 1 FROM organizations WHERE org_id = ?", (org_id,))
-        if await cursor.fetchone() is None:
+        cursor = await conn.execute(
+            "SELECT status FROM organizations WHERE org_id = ?", (org_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
             raise OrganizationNotFoundError(f"组织 {org_id!r} 不存在")
+        # 停用的组织拒收新租户。**移出（org_id=None）不走这条路**——不然
+        # 停用之后里面的租户就被锁死了：既挂不进新的，也出不来。
+        if row[0] == "disabled":
+            raise OrganizationDisabledError(
+                f"组织 {org_id!r} 已停用，不能再往它下面挂租户。要用的话先启用它。"
+            )
     cursor = await conn.execute("SELECT 1 FROM tenants WHERE tenant_id = ?", (tenant_id,))
     if await cursor.fetchone() is None:
         raise TenantNotFoundError(f"租户 {tenant_id!r} 不存在")
     await conn.execute("UPDATE tenants SET org_id = ? WHERE tenant_id = ?", (org_id, tenant_id))
+    await conn.commit()
+
+
+async def set_organization_status(
+    conn: aiosqlite.Connection, *, org_id: str, status: str
+) -> None:
+    """停用 / 启用一个组织。语义见 `_VALID_STATUSES` 上方那段说明。
+
+    不存在时抛而不是静默影响 0 行——`UPDATE ... WHERE org_id = ?` 在没有
+    匹配行时不报错，调用方会以为停用成功了。这跟 `assign_tenant_to_org`
+    对 tenant_id 的处理是同一种校验。
+    """
+    if status not in _VALID_STATUSES:
+        raise ValueError(f"非法 status: {status!r}，只能是 {list(_VALID_STATUSES)}")
+    cursor = await conn.execute("SELECT 1 FROM organizations WHERE org_id = ?", (org_id,))
+    if await cursor.fetchone() is None:
+        raise OrganizationNotFoundError(f"组织 {org_id!r} 不存在")
+    await conn.execute(
+        "UPDATE organizations SET status = ? WHERE org_id = ?", (status, org_id)
+    )
+    await conn.commit()
+
+
+async def delete_organization(conn: aiosqlite.Connection, *, org_id: str) -> None:
+    """删掉一个组织。**名下还有租户时拒绝，并说清还有几个。**
+
+    级联清掉那些租户的 org_id 是另一种做法，这里不用：那几个租户会静默地
+    从组织视图里掉出来——用户不会注意到，直到打开看板发现分组变了。先让他
+    把租户移出去，是一个他看得见、也做得到的纠正动作。
+
+    这跟 `assign_tenant_to_org` 拒绝"挂到不存在的组织下"是同一条理由的两面：
+    不让 `tenants.org_id` 指向一个查不到的组织。
+    """
+    cursor = await conn.execute("SELECT 1 FROM organizations WHERE org_id = ?", (org_id,))
+    if await cursor.fetchone() is None:
+        raise OrganizationNotFoundError(f"组织 {org_id!r} 不存在")
+    tenant_ids = await list_tenants_in_org(conn, org_id)
+    if tenant_ids:
+        raise OrganizationNotEmptyError(
+            f"组织 {org_id!r} 名下还有 {len(tenant_ids)} 个租户，先把它们移出去再删。"
+        )
+    await conn.execute("DELETE FROM organizations WHERE org_id = ?", (org_id,))
     await conn.commit()
 
 

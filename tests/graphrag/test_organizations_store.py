@@ -6,12 +6,16 @@ import pytest
 from app.graphrag.organizations_store import (
     InvalidOrganizationError,
     OrganizationAlreadyExistsError,
+    OrganizationDisabledError,
+    OrganizationNotEmptyError,
     OrganizationNotFoundError,
     assign_tenant_to_org,
     create_organization,
     ensure_organizations_schema,
     list_organizations,
     list_tenants_in_org,
+    delete_organization,
+    set_organization_status,
     list_tenants_with_organization,
 )
 from app.graphrag.tenants_store import (
@@ -290,5 +294,121 @@ async def test_a_blank_name_is_refused():
     try:
         with pytest.raises(InvalidOrganizationError):
             await create_organization(conn, org_id="muji", name="  ")
+    finally:
+        await conn.close()
+
+
+async def test_disabling_an_org_blocks_new_assignments_but_leaves_the_existing_ones():
+    """停用只做一件事：**不能再往它下面挂新租户**。
+
+    已经挂着的不动——把它们踢出去等于静默改数据，而用户点「停用」时想的是
+    「先别再往里放了」，不是「把里面的东西倒出来」。租户本身照常工作：隔离
+    是 tenant_id 一维（spec D1），组织只是归拢，停用它不该让任何数据不可访问。
+
+    停用如果什么都不改变，那就是个骗人的开关——这条用例就是它的全部含义。
+    """
+    conn = await _conn()
+    try:
+        await create_organization(conn, org_id="muji", name="无印良品")
+        await create_tenant(conn, tenant_id="muji-商品", name="导购")
+        await create_tenant(conn, tenant_id="muji-门店", name="店务")
+        await assign_tenant_to_org(conn, tenant_id="muji-商品", org_id="muji")
+
+        await set_organization_status(conn, org_id="muji", status="disabled")
+
+        # 已经挂着的还在。
+        assert await list_tenants_in_org(conn, "muji") == ["muji-商品"]
+        # 新的挂不进去。
+        with pytest.raises(OrganizationDisabledError):
+            await assign_tenant_to_org(conn, tenant_id="muji-门店", org_id="muji")
+        # 从停用的组织里移出去要放行：不然里面的租户就被锁死了。
+        await assign_tenant_to_org(conn, tenant_id="muji-商品", org_id=None)
+        assert await list_tenants_in_org(conn, "muji") == []
+    finally:
+        await conn.close()
+
+
+async def test_enabling_it_again_lets_assignments_through():
+    """反面：不重新启用的话，上一条在「一律拒绝」的实现下也是绿的。"""
+    conn = await _conn()
+    try:
+        await create_organization(conn, org_id="muji", name="无印良品")
+        await create_tenant(conn, tenant_id="muji-商品", name="导购")
+        await set_organization_status(conn, org_id="muji", status="disabled")
+        await set_organization_status(conn, org_id="muji", status="active")
+
+        await assign_tenant_to_org(conn, tenant_id="muji-商品", org_id="muji")
+
+        assert await list_tenants_in_org(conn, "muji") == ["muji-商品"]
+    finally:
+        await conn.close()
+
+
+async def test_setting_the_status_of_a_missing_org_is_refused():
+    """不存在的组织要抛，不是静默影响 0 行——调用方会以为停用成功了。"""
+    conn = await _conn()
+    try:
+        with pytest.raises(OrganizationNotFoundError):
+            await set_organization_status(conn, org_id="nope", status="disabled")
+    finally:
+        await conn.close()
+
+
+async def test_an_illegal_status_is_refused():
+    """只有 active / disabled 两个值。写进一个第三种值的话，
+    CHECK 约束会在 SQLite 层报一句看不懂的话。"""
+    conn = await _conn()
+    try:
+        await create_organization(conn, org_id="muji", name="无印良品")
+        with pytest.raises(ValueError):
+            await set_organization_status(conn, org_id="muji", status="deleted")
+    finally:
+        await conn.close()
+
+
+async def test_deleting_an_empty_org_removes_it():
+    """建错了要能删掉——这是这一组功能存在的理由。"""
+    conn = await _conn()
+    try:
+        await create_organization(conn, org_id="typo", name="打错的")
+        await create_organization(conn, org_id="muji", name="无印良品")
+
+        await delete_organization(conn, org_id="typo")
+
+        assert [o["org_id"] for o in await list_organizations(conn)] == ["muji"]
+    finally:
+        await conn.close()
+
+
+async def test_deleting_an_org_that_still_has_tenants_is_refused():
+    """名下还有租户时拒绝，**并且说清还有几个**。
+
+    级联清掉 org_id 的话，那几个租户会静默地从组织视图里掉出来——用户不会
+    注意到，直到打开看板发现分组变了。先让他把租户移出去，是一个他看得见、
+    也做得到的纠正动作。
+    """
+    conn = await _conn()
+    try:
+        await create_organization(conn, org_id="muji", name="无印良品")
+        await create_tenant(conn, tenant_id="muji-商品", name="导购")
+        await create_tenant(conn, tenant_id="muji-门店", name="店务")
+        for tenant_id in ("muji-商品", "muji-门店"):
+            await assign_tenant_to_org(conn, tenant_id=tenant_id, org_id="muji")
+
+        with pytest.raises(OrganizationNotEmptyError, match="2"):
+            await delete_organization(conn, org_id="muji")
+
+        # 组织还在，租户的归属也没被动过。
+        assert [o["org_id"] for o in await list_organizations(conn)] == ["muji"]
+        assert len(await list_tenants_in_org(conn, "muji")) == 2
+    finally:
+        await conn.close()
+
+
+async def test_deleting_a_missing_org_is_refused():
+    conn = await _conn()
+    try:
+        with pytest.raises(OrganizationNotFoundError):
+            await delete_organization(conn, org_id="nope")
     finally:
         await conn.close()

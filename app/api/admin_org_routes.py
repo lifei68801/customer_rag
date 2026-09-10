@@ -27,6 +27,10 @@ from pydantic import BaseModel
 from app.api import deps
 from app.graphrag.organizations_store import (
     InvalidOrganizationError,
+    OrganizationNotEmptyError,
+    OrganizationNotFoundError,
+    delete_organization,
+    set_organization_status,
     OrganizationAlreadyExistsError,
     create_organization,
     list_organizations,
@@ -87,3 +91,47 @@ async def list_orgs(
             )
         )
     return OrganizationListResponse(organizations=organizations)
+
+
+@router.post("/{org_id}/disable")
+async def disable_org(
+    org_id: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict[str, str]:
+    """停用一个组织：不能再往它下面挂新租户。已经挂着的不动，也照常工作。"""
+    try:
+        await set_organization_status(review_conn, org_id=org_id, status="disabled")
+    except OrganizationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    return {"org_id": org_id, "status": "disabled"}
+
+
+@router.post("/{org_id}/enable")
+async def enable_org(
+    org_id: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict[str, str]:
+    try:
+        await set_organization_status(review_conn, org_id=org_id, status="active")
+    except OrganizationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    return {"org_id": org_id, "status": "active"}
+
+
+@router.delete("/{org_id}")
+async def remove_org(
+    org_id: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> dict[str, bool]:
+    """删掉一个组织。名下还有租户时 409，消息里说清还有几个。
+
+    用 409 不用 400：这不是请求写错了，是当前状态不允许——用户改请求体
+    没用，得先去把租户移出去。跟审核那边「已经决议过了」用同一个码。
+    """
+    try:
+        await delete_organization(review_conn, org_id=org_id)
+    except OrganizationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except OrganizationNotEmptyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return {"deleted": True}

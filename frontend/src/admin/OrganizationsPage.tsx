@@ -112,6 +112,48 @@ export function OrganizationsPage() {
     }
   }
 
+  const handleStatus = async (org: Organization, next: 'active' | 'disabled') => {
+    if (!sessionToken) return
+    setError(null)
+    try {
+      const response = await adminFetch(
+        `/api/admin/organizations/${encodeURIComponent(org.org_id)}/${
+          next === 'disabled' ? 'disable' : 'enable'
+        }`,
+        sessionToken,
+        { method: 'POST' },
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '没改成'))
+      }
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '没改成')
+    }
+  }
+
+  const handleDelete = async (org: Organization) => {
+    if (!sessionToken) return
+    setError(null)
+    try {
+      const response = await adminFetch(
+        `/api/admin/organizations/${encodeURIComponent(org.org_id)}`,
+        sessionToken,
+        { method: 'DELETE' },
+      )
+      if (!response.ok) {
+        // 后端那句话原样显示：「还有 2 个租户，先把它们移出去」比一句
+        // 「删除失败」有用得多——它直接说出了下一步该做什么。
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '没删掉'))
+      }
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '没删掉')
+    }
+  }
+
   const handleAssign = async (tenant: Tenant, orgId: string) => {
     if (!sessionToken) return
     setError(null)
@@ -158,8 +200,17 @@ export function OrganizationsPage() {
         >
           <option value="">无</option>
           {(organizations ?? []).map((org) => (
-            <option key={org.org_id} value={org.org_id}>
+            // 停用的组织**留在列表里但不可选**，不是整个删掉：删掉的话，
+            // 已经挂在里面的租户会显示成「无」——看起来像被移出去了，而它
+            // 其实还在里面。当前就在这个组织里的那一项不禁用，否则浏览器
+            // 渲染不出选中值。
+            <option
+              key={org.org_id}
+              value={org.org_id}
+              disabled={org.status !== 'active' && org.org_id !== currentOrg}
+            >
               {org.name}
+              {org.status !== 'active' ? '（已停用）' : ''}
             </option>
           ))}
         </select>
@@ -205,11 +256,29 @@ export function OrganizationsPage() {
       {!loading &&
         (organizations ?? []).map((org) => (
           <section key={org.org_id} data-testid={`org-${org.org_id}`} className={`${card} flex flex-col gap-3`}>
-            <h2 className="text-sm font-bold text-ink">
-              {org.name}
-              <span className="text-ink-soft"> · {org.org_id}</span>
-              {org.status !== 'active' && <span className="text-ink-soft">（已停用）</span>}
-            </h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-bold text-ink">
+                {org.name}
+                <span className="text-ink-soft"> · {org.org_id}</span>
+                {org.status !== 'active' && <span className="text-ink-soft">（已停用）</span>}
+              </h2>
+              <div className="flex gap-2">
+                {/* 停用只做一件事：不能再往它下面挂新租户。已经挂着的不动，
+                    那些租户也照常工作——隔离是 tenant_id 一维，组织只是归拢。 */}
+                <button
+                  type="button"
+                  className={buttonClass}
+                  onClick={() =>
+                    void handleStatus(org, org.status === 'active' ? 'disabled' : 'active')
+                  }
+                >
+                  {org.status === 'active' ? '停用' : '启用'}
+                </button>
+                <button type="button" className={buttonClass} onClick={() => void handleDelete(org)}>
+                  删除
+                </button>
+              </div>
+            </div>
             {org.tenant_ids.length === 0 ? (
               <p className="text-sm text-ink-soft">这个组织下还没有租户。从下面「未归入组织」里挑一个挂进来。</p>
             ) : (

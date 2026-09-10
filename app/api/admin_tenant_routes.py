@@ -7,7 +7,11 @@ import aiosqlite
 
 from app.api import deps
 from app.tenancy import is_valid_tenant_id
-from app.graphrag.organizations_store import OrganizationNotFoundError, assign_tenant_to_org
+from app.graphrag.organizations_store import (
+    OrganizationDisabledError,
+    OrganizationNotFoundError,
+    assign_tenant_to_org,
+)
 from app.graphrag.tenants_store import (
     TenantAlreadyExistsError,
     TenantNotFoundError,
@@ -135,6 +139,9 @@ async def set_tenant_organization(
         await assign_tenant_to_org(review_conn, tenant_id=tenant_id, org_id=payload.org_id)
     except OrganizationNotFoundError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except OrganizationDisabledError as exc:
+        # 409：不是请求写错了，是这个组织当前的状态不接收新租户。
+        raise HTTPException(status_code=409, detail=str(exc))
     except TenantNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return {"tenant_id": tenant_id, "org_id": payload.org_id}

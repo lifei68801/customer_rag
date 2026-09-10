@@ -208,3 +208,115 @@ def test_granting_a_newly_disabled_tenant_the_account_never_had_is_still_refused
     resp = _put_account_tenants_raw(org_conn, "alice", ["a", "b"])
     assert resp.status_code == 400
     assert _get_account_tenants(org_conn, "alice") == []
+
+
+def _disable_org(org_conn, org_id: str, *, role: str = "admin"):
+    _as(role)
+    return _client().post(f"/api/admin/organizations/{org_id}/disable")
+
+
+def _enable_org(org_conn, org_id: str):
+    _as("admin")
+    return _client().post(f"/api/admin/organizations/{org_id}/enable")
+
+
+def _delete_org(org_conn, org_id: str, *, role: str = "admin"):
+    _as(role)
+    return _client().delete(f"/api/admin/organizations/{org_id}")
+
+
+def test_a_blank_org_id_is_refused_at_the_http_layer(org_conn):
+    """空 org_id 要在接口这一层就被挡住。
+
+    store 层的用例证明不了路由把那个异常翻成了 400——不翻的话它会冲成 500，
+    响应体只有「Internal Server Error」，用户不知道是自己填错了。
+    """
+    resp = _post_org(org_conn, org_id="   ", name="Acme")
+
+    assert resp.status_code == 400
+    assert "组织 ID" in resp.text
+
+
+def test_disabling_an_org_blocks_new_assignments(org_conn):
+    """停用之后挂新租户返回 409，**且消息说清是"已停用"**。
+
+    409 不是 400：不是请求写错了，是这个组织当前的状态不接收新租户——
+    用户改请求体没用，得先去启用它。
+    """
+    _post_org(org_conn, org_id="org1", name="Acme")
+    assert _assign_tenant_to_org(org_conn, "a", "org1").status_code == 200
+
+    assert _disable_org(org_conn, "org1").status_code == 200
+
+    resp = _assign_tenant_to_org(org_conn, "b", "org1")
+    assert resp.status_code == 409
+    assert "已停用" in resp.text
+    # 已经挂着的那个不动——停用不是"把里面的东西倒出来"。
+    body = _get_orgs(org_conn).json()["organizations"][0]
+    assert body["tenant_ids"] == ["a"]
+    assert body["status"] == "disabled"
+
+
+def test_enabling_it_again_lets_assignments_through(org_conn):
+    """反面：不重新启用的话，上一条在「一律 409」的实现下也是绿的。"""
+    _post_org(org_conn, org_id="org1", name="Acme")
+    _disable_org(org_conn, "org1")
+
+    assert _enable_org(org_conn, "org1").status_code == 200
+
+    assert _assign_tenant_to_org(org_conn, "a", "org1").status_code == 200
+
+
+def test_a_tenant_can_still_leave_a_disabled_org(org_conn):
+    """从停用的组织里移出去要放行。
+
+    一并挡住的话，里面的租户就被锁死了：既挂不进新的，也出不来——而"先把
+    租户移出去再删"正是删除那条路径要求用户做的事。
+    """
+    _post_org(org_conn, org_id="org1", name="Acme")
+    _assign_tenant_to_org(org_conn, "a", "org1")
+    _disable_org(org_conn, "org1")
+
+    assert _assign_tenant_to_org(org_conn, "a", None).status_code == 200
+
+    assert _get_orgs(org_conn).json()["organizations"][0]["tenant_ids"] == []
+
+
+def test_deleting_an_empty_org_removes_it(org_conn):
+    """建错了要能删掉——这是这一组功能存在的理由。"""
+    _post_org(org_conn, org_id="typo", name="打错的")
+    _post_org(org_conn, org_id="org1", name="Acme")
+
+    assert _delete_org(org_conn, "typo").status_code == 200
+
+    assert [o["org_id"] for o in _get_orgs(org_conn).json()["organizations"]] == ["org1"]
+
+
+def test_deleting_an_org_that_still_has_tenants_is_refused(org_conn):
+    """名下还有租户时 409，消息里说清还有几个，且组织和归属都没被动过。
+
+    级联清掉的话，那些租户会静默地从组织视图里掉出来——用户不会注意到，
+    直到打开看板发现分组变了。
+    """
+    _post_org(org_conn, org_id="org1", name="Acme")
+    _assign_tenant_to_org(org_conn, "a", "org1")
+
+    resp = _delete_org(org_conn, "org1")
+
+    assert resp.status_code == 409
+    assert "1" in resp.text
+    body = _get_orgs(org_conn).json()["organizations"]
+    assert [o["org_id"] for o in body] == ["org1"]
+    assert body[0]["tenant_ids"] == ["a"]
+
+
+def test_deleting_a_missing_org_is_a_404(org_conn):
+    assert _delete_org(org_conn, "nope").status_code == 404
+
+
+def test_member_cannot_disable_or_delete_an_organization(org_conn):
+    """组织管理是 admin 专属，跟建组织同一档。"""
+    _post_org(org_conn, org_id="org1", name="Acme")
+
+    assert _disable_org(org_conn, "org1", role="member").status_code == 403
+    assert _delete_org(org_conn, "org1", role="member").status_code == 403
