@@ -66,8 +66,14 @@ to_term_type=, direction=)` 在没有匹配边时返回 0，拿它过滤一遍�
 
 1. 现有关系队列按 reason 拆成四个分页，每页带自己的修复动作
 2. 属性值冲突（新建）
-3. 实体消歧（新建）
+3. 实体消歧 —— **落地时并入第 1 项的「待确认匹配」页，不单开一页**
 4. 脏边与孤儿数据（新建）
+
+**第 3 项的落地裁定（`2026-09-08-review-split-and-conflicts.md`）**：
+`fuzzy_match_needs_confirmation` 就是消歧失败那一类，而
+`resolve_term_or_candidates`（`app/graphrag/ontology.py`）已经把「没找到」和
+「有歧义」分开了。单独再开一页会让同一个问题出现在两个地方——审核员在 A 页
+处理掉的条目，在 B 页还挂着。
 
 **明确不做**：低置信度审核。抽取环节今天不产出任何置信度分数
 （`app/graphrag/normalization.py` 里 grep `confidence` 无结果），要做得先改抽取。
