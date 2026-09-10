@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
+from app.graphrag.date_normalization import is_normalized_date
 from app.graphrag.ontology import Term
 from app.graphrag import provenance
 from app.graphrag.structured_filter_query import (
@@ -625,6 +626,22 @@ RETURN max(k) AS fanout
 # 属性值，一律参数化，并且走 (tenant_id, type) 复合索引
 # term_tenant_term_type_idx（见 _ENSURE_INDEXES_QUERIES）。
 
+_NON_ISO_DATE_VALUES_QUERY = """
+MATCH (t:Term {tenant_id: $tenant_id, type: $term_type})
+WHERE t[$field] IS NOT NULL
+RETURN DISTINCT t[$field] AS value
+"""
+# 确认本体前扫存量日期值（Task 7：count_non_iso_date_values）。field 走
+# t[$field] 动态属性访问参数化，不拼进语句文本——经实测确认 Neo4j 5.22
+# （docker-compose 里跑的版本）配 driver 6.2.0 支持这个语法：往一个临时
+# 节点写入属性后用 t[$field] 参数化读回，确实拿到了写入的值。
+#
+# 不需要 execute_structured_filter_query 那种"插值换索引命中"的取舍——
+# 那里插值是为了让规划器在结构化查询的 WHERE 里用上 (tenant_id, type,
+# field) 复合索引；这里本来就要把该字段的全部去重值搬到 Python 侧逐个
+# 跑 is_normalized_date，(tenant_id, type) 索引已经把扫描收窄到这一个
+# term_type 下的节点，字段本身是否命中标量索引不影响这次要做的工作量。
+
 _ENSURE_INDEXES_QUERIES = [
     "CREATE INDEX term_tenant_node_key_idx IF NOT EXISTS FOR (t:Term) ON (t.tenant_id, t.node_key)",
     "CREATE INDEX term_tenant_term_type_idx IF NOT EXISTS FOR (t:Term) ON (t.tenant_id, t.type)",
@@ -812,6 +829,10 @@ class GraphWriteProtocol(Protocol):
     async def migrate_term_type_nodes(
         self, *, tenant_id: str, old_type: str, new_type: str
     ) -> int: ...
+
+    async def count_non_iso_date_values(
+        self, *, tenant_id: str, term_type: str, field: str
+    ) -> tuple[int, list[str]]: ...
 
 
 class Neo4jGraphClient:
@@ -1552,3 +1573,35 @@ class Neo4jGraphClient:
             )
             rows = await result.data()
         return rows[0]["migrated_count"] if rows else 0
+
+    async def count_non_iso_date_values(
+        self, *, tenant_id: str, term_type: str, field: str
+    ) -> tuple[int, list[str]]:
+        """这个租户这个类型下，该字段的值不是补零 ISO 的有几个，外加最多 3 个样例。
+
+        判据是「已经是补零 ISO」，不是「能不能归一」：2026/1/15 能归一，但它
+        此刻躺在图里的样子仍然会破坏字典序，放行等于把问题留在数据里。
+
+        字段名不拼进 Cypher 文本，走 t[$field] 动态属性访问的参数化写法——
+        见 _NON_ISO_DATE_VALUES_QUERY 上方注释，这个语法在本项目实际跑的
+        Neo4j 版本上经过实测确认可用。
+
+        判定逻辑放在 Python 侧用 is_normalized_date，不在 Cypher 里写正则：
+        写两份「合格」的定义迟早会不一致。
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                _NON_ISO_DATE_VALUES_QUERY,
+                {"tenant_id": tenant_id, "term_type": term_type, "field": field},
+            )
+            rows = await result.data()
+        # 非字符串值（正常写入路径不会产生，但防御性地处理历史脏数据）一律
+        # 算不合格：is_normalized_date 要求 str 输入，None 已经被查询的
+        # IS NOT NULL 挡掉了。
+        bad_values = [
+            value for row in rows
+            for value in (row["value"],)
+            if not (isinstance(value, str) and is_normalized_date(value))
+        ]
+        samples = [str(value) for value in bad_values[:3]]
+        return len(bad_values), samples

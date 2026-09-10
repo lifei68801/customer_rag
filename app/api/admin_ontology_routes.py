@@ -595,12 +595,66 @@ async def checkout_tenant_ontology_draft(
     return {"checked_out": True}
 
 
+async def _assert_new_date_fields_have_clean_values(
+    review_conn: aiosqlite.Connection, graph_client: GraphWriteProtocol, *, tenant_id: str,
+) -> None:
+    """确认之前，挡住「字段刚变成 date、但图里还躺着非 ISO 值」这种情况。
+
+    图里的日期是字符串属性，范围过滤靠字典序。如果一个字段刚被改成 date
+    类型，但图里还躺着 "2026/1/15" 这类没归一的值，这些实体在按时间过滤
+    时会被静默漏掉——字典序把它们排到了十月之后，而没有任何地方会报错。
+
+    只查**这次从非 date 变成 date** 的字段：
+    - 没变的不查，否则每次确认本体都要扫一遍全图；
+    - 已确认版本里不存在的 term_type 不查，那是新建的类型，图里一个节点
+      都没有，扫它是白扫。
+
+    这是「查询开始照着新类型跑」的唯一分界点：update_term_type 写的是草稿，
+    只有 confirm 会把它提升成 confirmed。
+    """
+    draft = {t.value: t for t in await list_term_types(review_conn, tenant_id, status="draft")}
+    if not draft:
+        # confirm_ontology 对空草稿是 no-op（幂等），这里同样直接放行。
+        return
+    confirmed = {
+        t.value: t for t in await list_term_types(review_conn, tenant_id, status="confirmed")
+    }
+    problems: list[str] = []
+    for value, term_type in draft.items():
+        previous = confirmed.get(value)
+        if previous is None:
+            continue
+        was_date = {f.name for f in previous.extra_fields if f.value_type == "date"}
+        for spec in term_type.extra_fields:
+            if spec.value_type != "date" or spec.name in was_date:
+                continue
+            count, samples = await graph_client.count_non_iso_date_values(
+                tenant_id=tenant_id, term_type=value, field=spec.name,
+            )
+            if count:
+                sample_text = "、".join(repr(s) for s in samples)
+                problems.append(
+                    f"{value}.{spec.name} 还有 {count} 个实体的值不是 YYYY-MM-DD，"
+                    f"例如 {sample_text}"
+                )
+    if problems:
+        raise HTTPException(
+            status_code=409,
+            detail="；".join(problems)
+            + "。改成日期类型之前先重新导入这份数据，否则这些实体在按时间过滤时会被静默漏掉。",
+        )
+
+
 @router.post("/{tenant_id}/confirm")
 async def confirm_tenant_ontology(
     tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
     session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
+    await _assert_new_date_fields_have_clean_values(
+        review_conn, graph_client, tenant_id=tenant_id,
+    )
     await confirm_ontology(review_conn, tenant_id, actor=session.username)
     return {"confirmed": True}
 

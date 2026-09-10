@@ -551,3 +551,11 @@ class NeptuneGraphClient:
             "NeptuneGraphClient 尚未实现 migrate_term_type_nodes——见 "
             "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
         )
+
+    async def count_non_iso_date_values(
+        self, *, tenant_id: str, term_type: str, field: str
+    ) -> tuple[int, list[str]]:
+        raise NotImplementedError(
+            "NeptuneGraphClient 尚未实现 count_non_iso_date_values——见 "
+            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+        )

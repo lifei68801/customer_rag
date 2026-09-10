@@ -77,9 +77,21 @@ class _FakeGraphClient:
         self.migrate_term_type_nodes_calls: list[tuple[str, str, str]] = []
         self.fanout_by_relation: dict[str, int] = {}
         self.fanout_error: Exception | None = None
+        # Task 7：确认本体前的存量日期值扫描。non_iso_by_field 按字段名配置
+        # 返回值（默认 (0, []) 即"干净"）；date_scan_calls 记录实际发生过的
+        # 扫描调用，供"不该扫的字段没被扫"这类用例断言——只断言"确认成功"
+        # 在"每次都扫、但恰好没有脏值"的实现下也是绿的，测不出该测的东西。
+        self.non_iso_by_field: dict[str, tuple[int, list[str]]] = {}
+        self.date_scan_calls: list[tuple[str, str]] = []
 
     async def sync_term(self, term) -> None:
         pass
+
+    async def count_non_iso_date_values(
+        self, *, tenant_id: str, term_type: str, field: str
+    ) -> tuple[int, list[str]]:
+        self.date_scan_calls.append((term_type, field))
+        return self.non_iso_by_field.get(field, (0, []))
 
     async def probe_relation_fanout(
         self, *, tenant_id: str, relation_type: str, from_term_type: str,
@@ -1521,3 +1533,133 @@ def test_bulk_delete_routes_reject_unknown_tenant(client):
             f"/api/admin/ontology/no_such_tenant/{path}", json=payload, headers=_headers()
         )
         assert resp.status_code == 404, (path, resp.text)
+
+
+# ---------------------------------------------------------------------------
+# 确认本体前校验存量日期值（Task 7）
+#
+# 图里的日期是字符串属性，范围过滤靠字典序。字段刚被改成 date 类型时，如果
+# 图里还躺着 "2026/1/15" 这类没归一的值，这些实体在按时间过滤时会被静默
+# 漏掉——不报错，只是查不出来。所以要在 update_term_type 写的草稿被
+# confirm 提升为确定版本的那一刻挡住。
+# ---------------------------------------------------------------------------
+
+
+def _replace_draft_with_purchase_date_field(client, *, value_type: str, tenant_id: str = "t1"):
+    return client.post(
+        f"/api/admin/ontology/{tenant_id}/draft/replace",
+        json={
+            "term_types": [
+                {
+                    "value": "订单",
+                    "extra_fields": [{"name": "purchase_date", "value_type": value_type}],
+                }
+            ],
+            "relation_types": [],
+            "constraints": [],
+        },
+        headers=_headers(),
+    )
+
+
+def test_confirming_a_new_date_field_with_dirty_values_is_refused(client):
+    """图里还躺着 2026/1/15 这类值时不能确认。
+
+    放行的话这些实体在按时间过滤时会被静默漏掉——字典序把它们排到了
+    十月之后，而没有任何地方会报错。
+    """
+    graph = _FakeGraphClient()
+    graph.non_iso_by_field["purchase_date"] = (12, ["2026/1/15", "待定"])
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph
+
+    # 已确认版本里 purchase_date 是 string
+    assert _replace_draft_with_purchase_date_field(client, value_type="string").status_code == 200
+    assert client.post("/api/admin/ontology/t1/confirm", headers=_headers()).status_code == 200
+
+    # 草稿把它改成 date
+    assert _replace_draft_with_purchase_date_field(client, value_type="date").status_code == 200
+    response = client.post("/api/admin/ontology/t1/confirm", headers=_headers())
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    # 数量和样例都要有：只说"有不合格的值"回答不了"我该去修什么"。
+    assert "12" in detail and "2026/1/15" in detail and "purchase_date" in detail
+
+
+def test_confirming_a_new_date_field_with_clean_values_goes_through(client):
+    graph = _FakeGraphClient()  # non_iso_by_field 空 → 一律 (0, [])
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph
+
+    assert _replace_draft_with_purchase_date_field(client, value_type="string").status_code == 200
+    assert client.post("/api/admin/ontology/t1/confirm", headers=_headers()).status_code == 200
+
+    assert _replace_draft_with_purchase_date_field(client, value_type="date").status_code == 200
+    response = client.post("/api/admin/ontology/t1/confirm", headers=_headers())
+    assert response.status_code == 200
+
+
+def test_a_field_that_was_already_a_date_is_not_rescanned(client):
+    """没变的字段不查图——否则每次确认本体都要扫一遍全图。
+
+    用 date_scan_calls 断言空，而不是断言"确认成功"：后者在"每次都扫、
+    但恰好没有脏值"的实现下也是绿的。
+    """
+    graph = _FakeGraphClient()
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph
+
+    # 已确认版本里 purchase_date 就已经是 date（新建类型本身也不扫，见下一条用例）
+    assert _replace_draft_with_purchase_date_field(client, value_type="date").status_code == 200
+    assert client.post("/api/admin/ontology/t1/confirm", headers=_headers()).status_code == 200
+    assert graph.date_scan_calls == []
+
+    # 草稿没改它，还是 date
+    assert _replace_draft_with_purchase_date_field(client, value_type="date").status_code == 200
+    response = client.post("/api/admin/ontology/t1/confirm", headers=_headers())
+
+    assert response.status_code == 200
+    assert graph.date_scan_calls == []
+
+
+def test_a_brand_new_term_type_with_a_date_field_is_not_scanned(client):
+    """新建的实体类型图里一个节点都没有，扫它是白扫。
+
+    这条同时挡住"只要草稿里有 date 字段就扫"的实现。
+    """
+    graph = _FakeGraphClient()
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph
+
+    response = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [
+                {"value": "订单号", "extra_fields": [], "standard_name_value_type": "string"}
+            ],
+            "relation_types": [],
+            "constraints": [],
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    assert client.post("/api/admin/ontology/t1/confirm", headers=_headers()).status_code == 200
+
+    # 草稿新增一个已确认版本里不存在的 term_type，带 date 字段
+    response = client.post(
+        "/api/admin/ontology/t1/draft/replace",
+        json={
+            "term_types": [
+                {"value": "订单号", "extra_fields": [], "standard_name_value_type": "string"},
+                {
+                    "value": "发货单",
+                    "extra_fields": [{"name": "ship_date", "value_type": "date"}],
+                },
+            ],
+            "relation_types": [],
+            "constraints": [],
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    response = client.post("/api/admin/ontology/t1/confirm", headers=_headers())
+
+    assert response.status_code == 200
+    assert graph.date_scan_calls == []
