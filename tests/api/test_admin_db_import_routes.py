@@ -448,3 +448,79 @@ def test_sources_are_scoped_to_the_tenant(db_conn, goods_db):
 
     assert _get(db_conn, "/api/admin/demo/db-import/sources").json()["items"] == []
     assert len(_get(db_conn, "/api/admin/other/db-import/sources").json()["items"]) == 1
+
+
+def test_a_validation_error_response_does_not_echo_the_password(db_conn, goods_db):
+    """校验失败的 422 响应里不能出现密码。
+
+    pydantic v2 + FastAPI 的默认 422 会把每个错误对应的 `input` 原样回显——
+    对请求体级别的错误（比如 extra="forbid" 拒掉的那个 password 字段），
+    `input` 就是**整个请求体**，密码就在里面。它会被写进任何一层访问/错误
+    日志，也会被截图。
+    """
+    response = _create_source(db_conn, goods_db, extra={"password": "hunter2"})
+
+    assert response.status_code in (400, 422)
+    assert "hunter2" not in response.text
+
+
+def test_a_type_error_in_the_connection_fields_does_not_echo_the_password(db_conn):
+    """连接字段类型不对（端口写成字母）时的 422 同样不能带密码。"""
+    response = _post(
+        db_conn, "/api/admin/demo/db-import/test-connection",
+        {
+            "driver": "mysql", "host": "h", "port": "not-a-number",
+            "database": "d", "username": "u", "password": "hunter2",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "hunter2" not in response.text
+
+
+def test_other_routes_keep_the_default_validation_echo(db_conn):
+    """脱敏只作用于数据库导入这一组。
+
+    别的路由的 422 回显 input 是有用的调试信息，而且不含密码——全局一刀切
+    的实现也能让上面两条变绿，但会让所有接口的校验错误变得难排查。
+    """
+    client, headers = _client(db_conn)
+    try:
+        response = client.post(
+            "/api/admin/demo/diagnostics/not-a-number", json={}, headers=headers
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    # 405 或 422 都可能；只要是校验错误就得带 input。
+    if response.status_code == 422:
+        assert any("input" in error for error in response.json()["detail"])
+
+
+def test_an_etl_failure_during_sync_is_a_400_with_the_reason_not_a_500(
+    db_conn, goods_db, monkeypatch
+):
+    """同步跑到 ETL 那一步炸了，要把原因说出来，不是一个 500。
+
+    500 的响应体是「Internal Server Error」——用户知道失败了，但不知道是
+    本体没确认、安全阀拦下来了、还是图谱挂了，三件事要做的完全不同。
+    真的让 run_schema_etl 抛（monkeypatch），不靠"配一个坏映射"——坏映射
+    只会被当成跳过的 mapping，根本不抛。
+    """
+    from app.api import admin_db_import_routes
+
+    async def _boom(**kwargs):
+        raise RuntimeError("图谱在收尾阶段挂了")
+
+    monkeypatch.setattr(admin_db_import_routes, "run_schema_etl", _boom)
+    source_id = _create_source(db_conn, goods_db).json()["source_id"]
+
+    response = _post(
+        db_conn, f"/api/admin/demo/db-import/sources/{source_id}/sync", {"password": ""}
+    )
+
+    assert response.status_code == 400, response.text
+    assert "图谱在收尾阶段挂了" in response.text
+    # 失败的同步不刷新时间戳。
+    stored = asyncio.run(get_db_source(db_conn, tenant_id="demo", source_id=source_id))
+    assert stored is not None and stored["last_sync_at"] is None

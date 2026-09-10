@@ -2,7 +2,9 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 
 from app.api import deps
 from app.auth.admin_users_store import ensure_admin_users_schema
@@ -14,6 +16,7 @@ from app.api.admin_document_routes import router as admin_document_router
 from app.api.admin_duplicate_review_routes import router as admin_duplicate_review_router
 from app.api.admin_graph_review_routes import router as admin_graph_review_router
 from app.api.admin_diagnostics_routes import router as admin_diagnostics_router
+from app.api.admin_db_import_routes import redact_validation_error
 from app.api.admin_db_import_routes import router as admin_db_import_router
 from app.api.admin_error_log_routes import router as admin_error_log_router
 from app.api.admin_nav_badges_routes import router as admin_nav_badges_router
@@ -146,6 +149,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request: Request, exc: RequestValidationError):
+    """数据库导入那一组路由的 422 要去掉回显的请求体（里面有密码）；
+    其余路由走 FastAPI 的默认处理。理由见 redact_validation_error。"""
+    redacted = redact_validation_error(request, exc)
+    if redacted is not None:
+        return redacted
+    return await request_validation_exception_handler(request, exc)
+
 app.include_router(qa_router)
 app.include_router(agent_router)
 app.include_router(session_router)

@@ -196,3 +196,33 @@ def test_the_spec_repr_has_nothing_secret_in_it():
 
     assert "hunter2" not in repr(spec)
     assert "reader" in repr(spec)
+
+
+def test_the_module_imports_without_the_database_driver_installed():
+    """没装 sqlalchemy 时这个模块也要能 import。
+
+    它被 `app/main.py` 间接 import。顶层 import 驱动的话，离线环境装不上
+    那三个包时**整个后端起不来**，而不只是数据库导入这一页不可用——其余
+    功能不该陪葬。跟仓库对 redis 的懒 import 约定一致。
+    """
+    import importlib
+    import sys
+
+    saved = {k: v for k, v in sys.modules.items() if k == "sqlalchemy" or k.startswith("sqlalchemy.")}
+    saved_mod = sys.modules.pop("app.ingestion.db_connector", None)
+    for key in saved:
+        sys.modules.pop(key, None)
+    sys.modules["sqlalchemy"] = None  # type: ignore[assignment]  # 让 import 立刻 ImportError
+    try:
+        module = importlib.import_module("app.ingestion.db_connector")
+        assert module.DbConnectionSpec("mysql", "h", 3306, "d", "u").driver == "mysql"
+        # 真要连的时候才需要驱动，那时给的是一句说清楚装什么的话，
+        # 不是模块加载时炸、也不是一个 ImportError 堆栈冲成 500。
+        with pytest.raises(module.UnsupportedDriverError, match="没有安装数据库驱动"):
+            asyncio.run(module.check_connection(module.DbConnectionSpec("mysql", "h", 3306, "d", "u"), "pw"))
+    finally:
+        sys.modules.pop("sqlalchemy", None)
+        sys.modules.update(saved)
+        sys.modules.pop("app.ingestion.db_connector", None)
+        if saved_mod is not None:
+            sys.modules["app.ingestion.db_connector"] = saved_mod

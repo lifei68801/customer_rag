@@ -16,9 +16,6 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
-
 #: 支持的数据库。写死白名单而不是接受任意字符串。
 _DRIVER_URLS: dict[str, str] = {
     "mysql": "mysql+pymysql",
@@ -44,8 +41,15 @@ _COMMENT_PATTERN = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 _SELECT_PATTERN = re.compile(r"^(SELECT|WITH)\b", re.IGNORECASE)
 
 
+#: 部署里没装驱动时的提示。说清楚装什么，不是一个 ImportError 的堆栈。
+_MISSING_DRIVER_MESSAGE = (
+    "这个部署没有安装数据库驱动（sqlalchemy / pymysql / psycopg），数据库导入"
+    "不可用。离线环境装不上的话，可以把数据导出成 CSV 走「表格导入」。"
+)
+
+
 class UnsupportedDriverError(Exception):
-    """driver 不在白名单里。"""
+    """driver 不在白名单里，或者这个部署根本没装驱动。"""
 
 
 class UnsafeQueryError(Exception):
@@ -93,8 +97,14 @@ def _assert_safe_query(query: str) -> None:
         raise UnsafeQueryError("一次只能执行一条 SELECT：检测到分号后还有别的语句")
 
 
-def _build_url(spec: DbConnectionSpec, password: str) -> URL:
-    """拼连接 URL。
+def _build_url(spec: DbConnectionSpec, password: str) -> Any:
+    """拼连接 URL（返回 `sqlalchemy.engine.URL`）。
+
+    sqlalchemy 在函数内 import 而不是模块顶层，跟 `app/memory/session_window_
+    factory.py` 对 redis 的做法一致（见 pyproject.toml 里那段说明）：这个模块
+    被 `app/main.py` 间接 import，顶层 import 的话，没装数据库驱动的部署
+    **整个后端起不来**，而不只是"数据库导入这一页不可用"。离线环境确实
+    可能装不上这三个包，那时其余功能不该陪葬。
 
     用 SQLAlchemy 的 `URL.create` 而不是自己拼字符串：它负责各字段的转义，
     密码里带 `@` 或 `/` 时手拼会拼出一个指向别处的地址。
@@ -102,6 +112,11 @@ def _build_url(spec: DbConnectionSpec, password: str) -> URL:
     **返回值绝不进日志。** 它的 `__str__` 会把密码隐去（SQLAlchemy 的行为），
     但不要依赖那一点——本模块的做法是压根不打印它。
     """
+    try:
+        from sqlalchemy.engine import URL
+    except ImportError:
+        raise UnsupportedDriverError(_MISSING_DRIVER_MESSAGE) from None
+
     scheme = _DRIVER_URLS.get(spec.driver) or _TEST_DRIVERS.get(spec.driver)
     if scheme is None:
         raise UnsupportedDriverError(
@@ -138,6 +153,11 @@ def _run_sync(
     抛等于把密码写进日志。`from None` 而不是 `from exc`——链起来的话原始异常
     的消息仍然会出现在 traceback 里。
     """
+    try:
+        from sqlalchemy import create_engine, text
+    except ImportError:
+        raise UnsupportedDriverError(_MISSING_DRIVER_MESSAGE) from None
+
     url = _build_url(spec, password)
     try:
         engine = create_engine(url)

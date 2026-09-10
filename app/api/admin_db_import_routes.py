@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from app.api import deps
@@ -46,6 +48,33 @@ from app.ingestion.db_connector import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: 这一组路由的路径前缀。`redact_validation_error` 用它判断"这个 422 是不是
+#: 从数据库导入这里出来的"。
+ROUTE_PREFIX = "/db-import/"
+
+
+def redact_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse | None:
+    """把 422 响应里回显的请求体去掉——**那里面有密码**。
+
+    pydantic v2 + FastAPI 的默认 422 会把每个错误对应的 `input` 原样回显。
+    对请求体级别的错误（比如 `extra="forbid"` 拒掉的那个 `password` 字段），
+    `input` 就是**整个请求体**，密码就在里面；它会被写进任何一层访问/错误
+    日志，也会被截图。有专门的用例钉着这一点。
+
+    只处理本路由组的请求，别的路由不动：它们的 422 回显 input 是有用的
+    调试信息，而且不含密码。不是本组的请求返回 None，交回给默认处理。
+
+    `app/main.py` 在启动时把它挂成全局 RequestValidationError 处理器。
+    """
+    if ROUTE_PREFIX not in request.url.path:
+        return None
+    errors = [
+        {key: value for key, value in error.items() if key != "input"}
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": errors})
+
 
 router = APIRouter(
     prefix="/api/admin/{tenant_id}/db-import",
@@ -306,14 +335,24 @@ async def sync_source(
                 detail=f"这个数据源的列映射读不出来（{exc}）。请重新配置它的列映射。",
             ) from None
 
-        report = await run_schema_etl(
-            conn=review_conn,
-            graph_client=graph_client,
-            config=SchemaETLConfig(tenant_id=tenant_id, entities=[entity_mapping], relations=[]),
-            data_dir=data_dir,
-            # run_id 让这次同步跳掉的行在报错明细里聚成一组，跟别的跑批分得开。
-            run_id=f"db-sync-{source_id}-{uuid.uuid4().hex[:8]}",
-        )
+        try:
+            report = await run_schema_etl(
+                conn=review_conn,
+                graph_client=graph_client,
+                config=SchemaETLConfig(
+                    tenant_id=tenant_id, entities=[entity_mapping], relations=[]
+                ),
+                data_dir=data_dir,
+                # run_id 让这次同步跳掉的行在报错明细里聚成一组，跟别的跑批分得开。
+                run_id=f"db-sync-{source_id}-{uuid.uuid4().hex[:8]}",
+            )
+        except Exception as exc:
+            # 本体没确认、安全阀拦下、图谱挂了……都是用户要看到原因才知道
+            # 下一步的事。不接的话它们冲成一个 500，响应体只有
+            # 「Internal Server Error」。这条路径上的异常来自 ETL 管线，
+            # 不经过数据库驱动，消息里不会有密码。
+            logger.warning("数据源 %r（租户 %r）同步失败", source_id, tenant_id, exc_info=True)
+            raise HTTPException(status_code=400, detail=f"同步没成功：{exc}") from None
 
     await touch_last_sync(
         review_conn, tenant_id=tenant_id, source_id=source_id, row_count=len(rows)
