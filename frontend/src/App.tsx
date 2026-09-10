@@ -14,6 +14,7 @@ import { TermDetailPage } from './admin/TermDetailPage'
 import { DiagnosticsPage } from './admin/DiagnosticsPage'
 import { AccountsPage } from './admin/AccountsPage'
 import { TenantsPage } from './admin/TenantsPage'
+import { OrganizationsPage } from './admin/OrganizationsPage'
 import { SettingsPage } from './admin/SettingsPage'
 import { NotFoundPage } from './admin/NotFoundPage'
 import { GuidedOntologyPage } from './admin/guidedOntology/GuidedOntologyPage'
@@ -89,6 +90,7 @@ function App() {
 
         <Route path="accounts" element={<AccountsPage />} />
         <Route path="tenants" element={<TenantsPage />} />
+        <Route path="organizations" element={<OrganizationsPage />} />
         <Route path="settings" element={<SettingsPage />} />
 
         {/* 旧书签。每条一跳直达，不经过中间那一代。 */}

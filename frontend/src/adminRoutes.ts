@@ -58,6 +58,7 @@ export const ADMIN_ROUTES = {
   // 这三个都不在侧边栏里，入口在左下角的账号菜单。
   accounts: '/admin/accounts',
   tenants: '/admin/tenants',
+  organizations: '/admin/organizations',
   settings: '/admin/settings',
 } as const
 
@@ -196,6 +197,7 @@ const EXTRA_TITLES: Partial<Record<keyof typeof ADMIN_ROUTES, string>> = {
   // 的"这个心智模型。
   accounts: '账号',
   tenants: '租户',
+  organizations: '组织',
   settings: '设置',
 }
 
@@ -230,7 +232,7 @@ export const PAGE_TITLES: Record<keyof typeof ADMIN_ROUTES, string> = Object.fro
  * 新登录、还没切过租户的 admin（tenant_id 恒为 None）第一眼看到的是「请先
  * 选择一个租户」，而不是他的看板。
  */
-export const NON_TENANT_ROUTE_KEYS = ['accounts', 'tenants', 'settings', 'dashboard'] as const
+export const NON_TENANT_ROUTE_KEYS = ['accounts', 'tenants', 'organizations', 'settings', 'dashboard'] as const
 
 /**
  * 依赖当前租户的路由：读写的都是某一个租户里的数据。

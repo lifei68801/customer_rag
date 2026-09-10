@@ -4,6 +4,7 @@ import {
   Building2,
   Check,
   ChevronUp,
+  Landmark,
   LogOut,
   Settings,
   Users,
@@ -150,6 +151,17 @@ export function AccountMenu({
             >
               <Building2 aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
               租户管理
+            </Link>
+          )}
+          {isAdmin && showManagementLinks && (
+            <Link
+              to={ADMIN_ROUTES.organizations}
+              role="menuitem"
+              className={itemClass}
+              onClick={close}
+            >
+              <Landmark aria-hidden="true" className="h-4 w-4 flex-shrink-0" />
+              组织管理
             </Link>
           )}
           <Link to={ADMIN_ROUTES.settings} role="menuitem" className={itemClass} onClick={close}>
