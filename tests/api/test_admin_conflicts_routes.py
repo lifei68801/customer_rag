@@ -72,6 +72,7 @@ async def _open_conn() -> aiosqlite.Connection:
             conn, tenant_id="t1", node_key="产品:洗发水", field="price",
             kept_value="39", kept_source="商品表.xlsx",
             incoming_value="45", incoming_source="促销表.xlsx",
+            kept_row_number=88, incoming_row_number=12,
         )
     except BaseException:
         await conn.close()
@@ -263,3 +264,22 @@ def test_resolving_a_conflict_whose_entity_is_gone_says_so(conflicts_conn):
     assert response.status_code == 409
     assert "产品:洗发水" in response.json()["detail"]
     assert asyncio.run(count_conflicts(conflicts_conn, tenant_id="t1")) == 1
+
+
+def test_the_row_numbers_reach_the_http_response(conflicts_conn):
+    """两个行号必须真的出现在接口返回的 JSON 里。
+
+    响应模型现在是裸 `list[dict]`，字段是透传的——**没有任何东西钉住这件事**。
+    以后有人把它重构成显式字段的 Pydantic 模型（`list[dict]` 看着就像该还的
+    债），漏列这两个字段的话 FastAPI 会静默丢掉它们：前端拿到 undefined，
+    `row === null` 判false，`undefined.toLocaleString()` 抛 TypeError，
+    整张审核卡片崩溃——而没有一条测试会红。
+
+    这是阶段四 C-1 那个形态在 API 层的重演：那次是"生产路径没调用"，
+    这次是"生产路径调用了，但没人验证结果真的送到了边界外"。
+    """
+    body = _get_list(conflicts_conn).json()
+
+    row = body["conflicts"][0]
+    assert row["kept_row_number"] == 88
+    assert row["incoming_row_number"] == 12

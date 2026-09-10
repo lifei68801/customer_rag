@@ -60,6 +60,20 @@ async def collect_tenant_stats(
     实体数走 `count_terms_merged`（合并视图）而不是 `count_terms`（裸表）：
     人工删除（`__deleted__`）的行仍在 terms 里但不出现在实体明细页的列表中。
     看板上的数字必须等于用户在那一页数得出来的条数。
+
+    **`stale_question_count` 是这里唯一一个不是 COUNT(*) 量级的数字，代价
+    要说清楚。** 它要判断"每条手写问题里有没有提到任何一个已知名字"，因此
+    需要全部实体的名字/别名/类型——`list_terms_merged` 会把该租户所有 terms
+    读出来、逐行 JSON 解析再叠加编辑层。实测（内存库、2 万实体、每行 3 个
+    额外属性）：`list_terms_merged` 97ms，旁边的 `count_terms_merged` 1ms，
+    差两个数量级。而看板是登录后的落地页，每张卡各自请求一次。
+
+    现在没有优化它，两条理由：配了手写问题的租户才会走到这一步（存量租户
+    都没配，直接是 0）；每张卡是独立请求，慢的那张不拖累别的（spec D5 的
+    消解措施之二）。**后续路径**：真要降的话，做法是给这个计数加一层按
+    (tenant_id, terms 版本) 失效的缓存，而不是换一个更便宜但口径不同的判据
+    ——判据必须跟 `GET /{tenant_id}/persona/stale-questions` 保持逐字相同，
+    两处给出不同的数字比慢 97ms 糟得多。
     """
     term_count = await count_terms_merged(review_conn, tenant_id)
     edge_count = await graph_client.count_relation_edges_for_tenant(tenant_id=tenant_id)
@@ -76,7 +90,7 @@ async def collect_tenant_stats(
     )
     sheet_row_count = await count_terms_merged(review_conn, tenant_id, source="etl")
     # 没配过数字人的租户 get_questions 返回空列表——存量租户都是这样，
-    # 这时是 0，不是「统计失败」。
+    # 这时是 0，不是「统计失败」，也不碰 terms 一下。
     handwritten = await get_questions(review_conn, tenant_id)
     stale_question_count = (
         len(find_unmatched_questions(handwritten, await list_terms_merged(review_conn, tenant_id)))

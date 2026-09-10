@@ -44,7 +44,24 @@ async def ensure_organizations_schema(conn: aiosqlite.Connection) -> None:
     await conn.commit()
 
 
+class InvalidOrganizationError(ValueError):
+    """org_id 或 name 是空的/纯空白。"""
+
+
 async def create_organization(conn: aiosqlite.Connection, *, org_id: str, name: str) -> None:
+    """建一个组织。
+
+    **空 / 纯空白的 org_id 直接拒绝，不能只靠前端按钮禁用。** 空串是 SQLite
+    TEXT PRIMARY KEY 的合法值，唯一性检查也过得去（`""` 只跟另一个 `""` 撞），
+    于是它会建出一个"看得见、摸不着"的组织：租户的「所属组织」下拉框里，
+    `<option value="">` 正是「无」那一项，选中这个组织的名字实际发的是
+    `org_id: null`（移出组织），租户被静默地移出而不是移入——而这个组织
+    永远挂不上任何租户，也没有任何报错说明哪里不对。
+    """
+    if not org_id.strip():
+        raise InvalidOrganizationError("组织 ID 不能为空")
+    if not name.strip():
+        raise InvalidOrganizationError("组织名称不能为空")
     cursor = await conn.execute("SELECT 1 FROM organizations WHERE org_id = ?", (org_id,))
     if await cursor.fetchone() is not None:
         raise OrganizationAlreadyExistsError(f"组织 {org_id!r} 已存在")

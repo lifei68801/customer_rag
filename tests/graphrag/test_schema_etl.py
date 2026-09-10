@@ -1639,8 +1639,14 @@ async def test_two_imports_disagreeing_on_a_value_record_a_conflict_and_keep_the
     """
     conn = await _confirmed_conn()
     try:
+        # **两个文件里目标行的行号必须不同**，否则「kept 和 incoming 被写反」
+        # 这类 bug 测不出来——两个数字都是 2 的话，换位之后断言照样绿。
+        # a.csv 里目标行在第 3 行（前面垫一行别的商品），b.csv 里在第 2 行。
         (tmp_path / "a.csv").write_text(
-            "product_group_id,product_group_name,md_no\n1001,圆角收纳盒,A123\n", encoding="utf-8"
+            "product_group_id,product_group_name,md_no\n"
+            "1002,亚麻抱枕套,Z999\n"
+            "1001,圆角收纳盒,A123\n",
+            encoding="utf-8",
         )
         (tmp_path / "b.csv").write_text(
             "product_group_id,product_group_name,md_no\n1001,圆角收纳盒,B456\n", encoding="utf-8"
@@ -1678,8 +1684,9 @@ async def test_two_imports_disagreeing_on_a_value_record_a_conflict_and_keep_the
         # 哪个的全部依据就是"哪张表更权威"。
         assert (row["kept_source"], row["incoming_source"]) == ("a.csv", "b.csv")
         # 行号也要从真实 ETL 路径传下来。store 层的用例直接传参数，谁也没问过
-        # "ETL 真的传了吗"（阶段四 C-1）。两份文件里那一行都是第 2 行。
-        assert (row["kept_row_number"], row["incoming_row_number"]) == (2, 2)
+        # "ETL 真的传了吗"（阶段四 C-1）。两个数字**不相等**，所以这条断言
+        # 同时也能测出 kept 和 incoming 被写反。
+        assert (row["kept_row_number"], row["incoming_row_number"]) == (3, 2)
     finally:
         await conn.close()
 

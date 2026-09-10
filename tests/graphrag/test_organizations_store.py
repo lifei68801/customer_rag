@@ -4,6 +4,7 @@ import aiosqlite
 import pytest
 
 from app.graphrag.organizations_store import (
+    InvalidOrganizationError,
     OrganizationAlreadyExistsError,
     OrganizationNotFoundError,
     assign_tenant_to_org,
@@ -261,3 +262,33 @@ def test_list_tenants_with_organization_hides_disabled_tenants_by_default():
             await conn.close()
 
     asyncio.run(run())
+
+
+async def test_a_blank_org_id_is_refused():
+    """空 / 纯空白的 org_id 直接拒绝，不能只靠前端按钮禁用。
+
+    空串是 SQLite TEXT PRIMARY KEY 的合法值，唯一性检查也过得去。建出来
+    之后它会在每个租户的「所属组织」下拉框里跟 `<option value="">无</option>`
+    撞车：用户选中这个组织的名字，实际发出的是「移出组织」——租户被静默地
+    移出而不是移入，而这个组织永远挂不上任何租户。
+    """
+    conn = await _conn()
+    try:
+        for bad in ("", "   ", "\t"):
+            with pytest.raises(InvalidOrganizationError):
+                await create_organization(conn, org_id=bad, name="无印良品")
+        # 反面：正常的要建得成，否则"一律拒绝"的实现也能让上面变绿。
+        await create_organization(conn, org_id="muji", name="无印良品")
+        assert [o["org_id"] for o in await list_organizations(conn)] == ["muji"]
+    finally:
+        await conn.close()
+
+
+async def test_a_blank_name_is_refused():
+    """名字也一样：一个没有名字的组织在列表上是一行空白，谁也认不出它是什么。"""
+    conn = await _conn()
+    try:
+        with pytest.raises(InvalidOrganizationError):
+            await create_organization(conn, org_id="muji", name="  ")
+    finally:
+        await conn.close()

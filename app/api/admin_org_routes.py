@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from app.api import deps
 from app.graphrag.organizations_store import (
+    InvalidOrganizationError,
     OrganizationAlreadyExistsError,
     create_organization,
     list_organizations,
@@ -64,7 +65,7 @@ async def create_org(
 ) -> dict[str, str]:
     try:
         await create_organization(review_conn, org_id=payload.org_id, name=payload.name)
-    except OrganizationAlreadyExistsError as exc:
+    except (OrganizationAlreadyExistsError, InvalidOrganizationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"org_id": payload.org_id, "name": payload.name}
 
