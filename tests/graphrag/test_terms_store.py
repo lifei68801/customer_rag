@@ -2205,6 +2205,77 @@ async def test_resolving_a_numeric_field_with_a_non_number_is_refused():
         await conn.close()
 
 
+async def test_resolving_a_date_field_with_a_normalized_iso_value_stores_it():
+    """决议一个 date 字段：补零 ISO 直接收，字典序即时间序这条不能破。
+
+    钉住终审 C1——`_coerce_to_declared_type` 曾经完全没有 date 分支，落到
+    最后一行统统拒绝，日期字段的属性冲突永远没有出口。
+    """
+    from app.graphrag.ontology_categories import ExtraFieldSpec
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await ensure_terms_schema(conn)
+        await ensure_term_edits_schema(conn)
+        await ensure_ontology_schema(conn)
+        await create_term_type(
+            conn, tenant_id="default", value="订单",
+            extra_fields=[ExtraFieldSpec(name="purchase_date", value_type="date")],
+            actor="alice",
+        )
+        await confirm_ontology(conn, "default", actor="alice")
+        await upsert_term_with_node_key(
+            conn, tenant_id="default", node_key="订单:A001",
+            standard_name="A001", aliases=[], term_type="订单",
+            extra_properties={"purchase_date": "2026-01-05"},
+        )
+
+        await terms_store.set_extra_property(
+            conn, tenant_id="default", node_key="订单:A001",
+            field="purchase_date", value="2026-02-14", value_source="人工决议：alice",
+        )
+
+        term = await get_term_by_node_key(conn, tenant_id="default", node_key="订单:A001")
+        assert term.extra_properties["purchase_date"] == "2026-02-14"
+    finally:
+        await conn.close()
+
+
+async def test_resolving_a_date_field_with_an_unnormalized_value_is_refused():
+    """填了个没补零的日期写法时要拒绝，并且报错里要给出正确格式的例子。
+
+    这里是写库前的类型闸，职责是判定不是转换：即使 '2026/2/14' 能被
+    normalize_date 归一，也不该在这里帮着转——界面上输入 A 存进去 B 会让
+    管理员摸不着头脑，应该让他照着报错里的例子自己改。
+    """
+    from app.graphrag.ontology_categories import ExtraFieldSpec
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await ensure_terms_schema(conn)
+        await ensure_term_edits_schema(conn)
+        await ensure_ontology_schema(conn)
+        await create_term_type(
+            conn, tenant_id="default", value="订单",
+            extra_fields=[ExtraFieldSpec(name="purchase_date", value_type="date")],
+            actor="alice",
+        )
+        await confirm_ontology(conn, "default", actor="alice")
+        await upsert_term_with_node_key(
+            conn, tenant_id="default", node_key="订单:A001",
+            standard_name="A001", aliases=[], term_type="订单",
+            extra_properties={"purchase_date": "2026-01-05"},
+        )
+
+        with pytest.raises(ValueError, match="2026-01-05"):
+            await terms_store.set_extra_property(
+                conn, tenant_id="default", node_key="订单:A001",
+                field="purchase_date", value="2026/2/14", value_source="人工决议：alice",
+            )
+    finally:
+        await conn.close()
+
+
 async def test_a_conflict_records_both_row_numbers():
     """第一次导入第 3 行写了 39，第二次导入第 12 行给了 45：
     kept_row_number == 3，incoming_row_number == 12。

@@ -1036,6 +1036,17 @@ async def _coerce_to_declared_type(
     value_type = declared.get(field)
     if value_type in (None, "string"):
         return value
+    if value_type == "date":
+        # 这里是写库前的类型闸，职责是判定，不是转换：即使 value 能被
+        # normalize_date 归一（比如 '2026/1/15'），也不在这里帮着转——
+        # 界面上输入 A 存进去 B 会让管理员摸不着头脑。判不合格就报错，
+        # 报错里给出正确格式的例子，让管理员照着改。
+        if is_normalized_date(value):
+            return value
+        raise ValueError(
+            f"{field!r} 声明的类型是 date，但 {value!r} 不是补零的 "
+            f"YYYY-MM-DD 格式，例如 2026-01-05。请改成这个格式再提交。"
+        )
     try:
         if value_type == "integer":
             return int(value)

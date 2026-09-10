@@ -651,6 +651,17 @@ async def confirm_tenant_ontology(
     graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
     session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
+    """确认草稿本体，把它提升为 confirmed。
+
+    行为变化记录：这个端点现在声明了 `graph_client` 依赖，即使这次确认
+    完全不涉及任何字段变成 date（`_assert_new_date_fields_have_clean_values`
+    在那种情况下不会碰 graph_client 的任何方法）。FastAPI 在进入函数体之前
+    就会解析所有依赖，`deps.get_graph_client` 进程内第一次被解析时会真的
+    连接图数据库；也就是说，这次改动之前纯 SQLite 的"确认"操作，现在起
+    对图数据库的可用性有了依赖——图数据库不可达时，这个端点会失败，不论
+    本次确认的字段是不是 date 类型。这是有意保留的耦合（确认时要校验图里
+    的存量日期值），失败是响亮的（连接错误/异常），不是静默的。
+    """
     await require_active_tenant_or_404(review_conn, tenant_id)
     await _assert_new_date_fields_have_clean_values(
         review_conn, graph_client, tenant_id=tenant_id,

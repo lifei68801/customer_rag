@@ -22,6 +22,8 @@ from app.graphrag.attribute_conflicts import (
     list_conflicts,
     record_conflict,
 )
+from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
+from app.graphrag.ontology_lifecycle import confirm_ontology, ensure_ontology_schema
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
 from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import ensure_terms_schema
@@ -218,6 +220,78 @@ def test_resolve_accepts_a_third_value(conflicts_conn):
     """
     assert _resolve(conflicts_conn, value="39.00 元").status_code == 200
     assert _price(conflicts_conn) == "39.00 元"
+
+
+async def _open_date_conflict_conn() -> aiosqlite.Connection:
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await ensure_terms_schema(conn)
+        await ensure_term_edits_schema(conn)
+        await ensure_attribute_conflicts_schema(conn)
+        await ensure_ontology_schema(conn)
+        await create_tenants_table(conn)
+        await ensure_admin_auth_schema(conn)
+        await create_admin_user(
+            conn, username="alice", password="password1", role="admin", tenant_id=None
+        )
+        await create_tenant(conn, tenant_id="t1", name="t1")
+        await create_term_type(
+            conn, tenant_id="t1", value="订单",
+            extra_fields=[ExtraFieldSpec(name="purchase_date", value_type="date")],
+            actor="alice",
+        )
+        await confirm_ontology(conn, "t1", actor="alice")
+        # 直接插 terms，模拟 ETL 已经写过一次；下面的 record_conflict 模拟
+        # 第二次导入给出了不同的日期，这正是终审 C1 指出的可达场景——
+        # schema_etl.py 的 `_write_entity_mapping` 恒定传 conflict_conn，
+        # 两张进货单表对同一订单的 purchase_date 说法不同就会走到这里。
+        await conn.execute(
+            "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
+            "extra_properties, source) VALUES (?, ?, ?, ?, ?, ?, 'etl')",
+            ("t1", "订单:A001", "A001", "[]", "订单",
+             json.dumps({"purchase_date": "2026-01-05"}, ensure_ascii=False)),
+        )
+        await conn.commit()
+        await record_conflict(
+            conn, tenant_id="t1", node_key="订单:A001", field="purchase_date",
+            kept_value="2026-01-05", kept_source="进货单A.xlsx",
+            incoming_value="2026-02-14", incoming_source="进货单B.xlsx",
+            kept_row_number=10, incoming_row_number=20,
+        )
+    except BaseException:
+        await conn.close()
+        raise
+    return conn
+
+
+def test_resolving_a_date_conflict_end_to_end_reaches_resolved():
+    """终审 C1：ETL 产生的 date 字段冲突要能走完「决议」这条完整链路。
+
+    `_coerce_to_declared_type` 曾经没有 date 分支，任何值都会被
+    `ValueError` 拒绝、转成 400——这条冲突会永远卡在 pending 队列里，
+    `resolve_conflict`（唯一能把状态改成 resolved 的函数）永远走不到。
+    单测那层测的是 `set_extra_property` 本身，钉不住"决议页 400"这个
+    后果——这条测试才走的是终审报告点名的那条真实链路：
+    HTTP POST /resolve → admin_conflicts_routes → set_extra_property →
+    _coerce_to_declared_type。
+    """
+    conn = asyncio.run(_open_date_conflict_conn())
+    try:
+        response = _resolve(conn, value="2026-02-14")
+        assert response.status_code == 200
+
+        async def read_back():
+            cursor = await conn.execute(
+                "SELECT extra_properties FROM terms WHERE tenant_id = 't1' "
+                "AND node_key = '订单:A001'"
+            )
+            row = await cursor.fetchone()
+            return json.loads(row[0])["purchase_date"]
+
+        assert asyncio.run(read_back()) == "2026-02-14"
+        assert asyncio.run(count_conflicts(conn, tenant_id="t1")) == 0
+    finally:
+        asyncio.run(conn.close())
 
 
 def test_conflicts_are_scoped_to_the_tenant(conflicts_conn):
