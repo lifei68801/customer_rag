@@ -45,6 +45,8 @@ function stats(tenantId: string, over: Partial<Record<string, number>> = {}) {
     edge_count: 1204883,
     document_count: 42,
     pending_review_count: 7,
+    sheet_row_count: 4712,
+    stale_question_count: 0,
     ...over,
   }
 }
@@ -220,6 +222,34 @@ describe('看板', () => {
 
     resolveSwitch!()
     await waitFor(() => expect(screen.queryByTestId('domain-card-slow')).toBeNull())
+  })
+
+  it('卡片上有「表格行数」', async () => {
+    // spec §5 卡片的第四格。少了它用户分不清 2 万个实体里多少是表格导进来的、
+    // 多少是文档抽出来的——而这两条路径的修法完全不同。
+    await renderDashboard()
+    await waitFor(() => expect(card('fast').getByText('4,712')).toBeTruthy())
+    expect(card('fast').getByText('表格行')).toBeTruthy()
+  })
+
+  it('有失效的引导问题时卡片上出现一条待办并能跳到数字人页', async () => {
+    // spec 前台硬规矩之二：失效了必须有人知道。只在数字人配置页能看见的话，
+    // 要用户主动去翻——那正是「默默消失」。
+    statsResponders.fast = () => jsonResponse(stats('fast', { stale_question_count: 2 }))
+    const user = userEvent.setup()
+    await renderDashboard()
+
+    const todo = await waitFor(() => card('fast').getByRole('button', { name: /2 条引导问题失效/ }))
+    resolveSwitch = () => {}
+    await user.click(todo)
+    await waitFor(() => expect(switchRequests).toEqual(['fast']))
+  })
+
+  it('没有失效问题时那条待办不出现', async () => {
+    // 恒显示的话用户很快就不看它了，而它在真的失效时是关键信息。
+    await renderDashboard()
+    await waitFor(() => expect(card('fast').getByText('20,017')).toBeTruthy())
+    expect(card('fast').queryByRole('button', { name: /引导问题失效/ })).toBeNull()
   })
 
   it('待办为零的领域不给一个点了没用的入口', async () => {

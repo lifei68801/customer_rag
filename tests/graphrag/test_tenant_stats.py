@@ -26,6 +26,7 @@ from app.graphrag.duplicate_review_queue import (
     enqueue_duplicate_suggestion,
 )
 from app.graphrag.review_queue import ensure_review_schema, enqueue_for_review
+from app.graphrag.tenant_personas_store import ensure_tenant_personas_schema
 from app.graphrag.tenant_stats import TenantStats, collect_tenant_stats
 from app.graphrag.term_edits_store import (
     FIELD_DELETED,
@@ -65,6 +66,8 @@ async def _review_conn() -> aiosqlite.Connection:
     await ensure_review_schema(conn)
     await ensure_duplicate_review_schema(conn)
     await ensure_attribute_conflicts_schema(conn)
+    # 看板也读数字人表（失效引导问题）。启动时 app/main.py 建这张表。
+    await ensure_tenant_personas_schema(conn)
     for tenant_id in ("demo", "other"):
         # 分类要**已确认**才能拿来建实体：草稿态的分类 create_term 不认
         # （UnknownCategoryError）。三步一套是本仓库既有的写法。
@@ -137,6 +140,8 @@ async def test_collects_all_four_numbers_from_the_right_sources():
             edge_count=27,
             document_count=5,
             pending_review_count=3,
+            sheet_row_count=0,
+            stale_question_count=0,
         )
     finally:
         await review_conn.close()
@@ -244,6 +249,126 @@ async def test_a_graph_failure_surfaces_instead_of_reporting_zero_edges():
             await collect_tenant_stats(
                 review_conn, ingestion_conn, FakeGraph(broken={"demo"}), tenant_id="demo"
             )
+    finally:
+        await review_conn.close()
+        await ingestion_conn.close()
+
+
+async def _seed_source_terms(conn: aiosqlite.Connection, tenant_id: str, source: str, count: int) -> None:
+    for i in range(count):
+        await create_term(
+            conn, tenant_id=tenant_id, standard_name=f"{source}-{i}", aliases=[],
+            term_type="产品", source=source,
+        )
+
+
+async def test_sheet_row_count_only_counts_etl_rows():
+    """「表格行数」只数表格/数据库导入进来的实体（source='etl'）。
+
+    手工录入（manual）和审核创建（review）的不算。三种来源各造不同数量：
+    数全部 terms 的实现会得到 6 而不是 3。
+    """
+    review_conn = await _review_conn()
+    ingestion_conn = await _ingestion_conn()
+    try:
+        await _seed_source_terms(review_conn, "demo", "etl", 3)
+        await _seed_source_terms(review_conn, "demo", "manual", 2)
+        await _seed_source_terms(review_conn, "demo", "review", 1)
+
+        stats = await collect_tenant_stats(
+            review_conn, ingestion_conn, FakeGraph(), tenant_id="demo"
+        )
+
+        assert stats.sheet_row_count == 3
+        assert stats.term_count == 6
+    finally:
+        await review_conn.close()
+        await ingestion_conn.close()
+
+
+async def test_sheet_row_count_excludes_manually_deleted_rows():
+    """人工删除（__deleted__）的 etl 行不算。
+
+    看板上的数字要等于用户在实体明细页按来源筛出来的条数。
+    """
+    review_conn = await _review_conn()
+    ingestion_conn = await _ingestion_conn()
+    try:
+        await _seed_source_terms(review_conn, "demo", "etl", 3)
+        await upsert_term_edit(
+            review_conn, tenant_id="demo", node_key="产品:etl-0",
+            field=FIELD_DELETED, value="1", edited_by="alice",
+        )
+
+        stats = await collect_tenant_stats(
+            review_conn, ingestion_conn, FakeGraph(), tenant_id="demo"
+        )
+
+        assert stats.sheet_row_count == 2
+    finally:
+        await review_conn.close()
+        await ingestion_conn.close()
+
+
+async def test_stale_question_count_matches_the_persona_endpoint():
+    """配三条手写问题，其中一条提到的东西本体里没有 → 计数是 1。
+
+    口径必须跟 GET /{tenant_id}/persona/stale-questions 完全一致（同一个
+    函数）：看板说 1 条失效、数字人页列出 2 条，用户会以为其中一处坏了。
+    """
+    from app.graphrag.question_validation import find_unmatched_questions
+    from app.graphrag.tenant_personas_store import (
+        ensure_tenant_personas_schema,
+        get_questions,
+        set_questions,
+    )
+    from app.graphrag.terms_store import list_terms_merged
+
+    review_conn = await _review_conn()
+    ingestion_conn = await _ingestion_conn()
+    try:
+        await ensure_tenant_personas_schema(review_conn)
+        await create_term(
+            review_conn, tenant_id="demo", standard_name="Beer", aliases=[], term_type="产品"
+        )
+        await set_questions(
+            review_conn, tenant_id="demo",
+            questions=["Beer 是哪个产地的？", "产品有哪些口味？", "库存还有多少？"],
+        )
+
+        stats = await collect_tenant_stats(
+            review_conn, ingestion_conn, FakeGraph(), tenant_id="demo"
+        )
+
+        assert stats.stale_question_count == 1
+        # 跟端点用的那份口径逐字相同。
+        expected = find_unmatched_questions(
+            await get_questions(review_conn, "demo"), await list_terms_merged(review_conn, "demo")
+        )
+        assert stats.stale_question_count == len(expected) == 1
+    finally:
+        await review_conn.close()
+        await ingestion_conn.close()
+
+
+async def test_a_tenant_without_a_persona_row_has_zero_stale_questions():
+    """没配过数字人的租户：0，不抛异常。
+
+    tenant_personas 里没这一行是常态（存量租户都没配），抛异常的话整张卡
+    变成「统计失败」，而它明明什么都没坏。
+    """
+    from app.graphrag.tenant_personas_store import ensure_tenant_personas_schema
+
+    review_conn = await _review_conn()
+    ingestion_conn = await _ingestion_conn()
+    try:
+        await ensure_tenant_personas_schema(review_conn)
+
+        stats = await collect_tenant_stats(
+            review_conn, ingestion_conn, FakeGraph(), tenant_id="demo"
+        )
+
+        assert stats.stale_question_count == 0
     finally:
         await review_conn.close()
         await ingestion_conn.close()

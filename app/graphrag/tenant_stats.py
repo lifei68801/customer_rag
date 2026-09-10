@@ -8,7 +8,9 @@ import aiosqlite
 from app.graphrag.attribute_conflicts import count_conflicts
 from app.graphrag.duplicate_review_queue import count_pending_duplicate_suggestions
 from app.graphrag.review_queue import count_pending_reviews
-from app.graphrag.terms_store import count_terms_merged
+from app.graphrag.question_validation import find_unmatched_questions
+from app.graphrag.tenant_personas_store import get_questions
+from app.graphrag.terms_store import count_terms_merged, list_terms_merged
 from app.ingestion.tracking import count_tracked_files
 
 
@@ -21,6 +23,15 @@ class TenantStats:
     edge_count: int
     document_count: int
     pending_review_count: int
+    #: 表格/数据库导入进来、且没被人工删除的实体数（terms.source='etl'，
+    #: 合并视图）。它是 term_count 的子集。**不用** etl_runs 里历次
+    #: entities_written 求和：那是"历次跑批写了多少次"，重跑三次就翻三倍，
+    #: 而卡片上要的是"现在有多少"。
+    sheet_row_count: int
+    #: 当前本体下已经不再命中的手写引导问题数（spec 前台硬规矩之二：
+    #: 「失效了必须有人知道」）。口径与 GET /{tenant_id}/persona/stale-questions
+    #: 是同一个函数，两处必须一个数。
+    stale_question_count: int
 
 
 class EdgeCounter(Protocol):
@@ -63,10 +74,21 @@ async def collect_tenant_stats(
         + await count_pending_duplicate_suggestions(review_conn, tenant_id=tenant_id)
         + await count_conflicts(review_conn, tenant_id=tenant_id)
     )
+    sheet_row_count = await count_terms_merged(review_conn, tenant_id, source="etl")
+    # 没配过数字人的租户 get_questions 返回空列表——存量租户都是这样，
+    # 这时是 0，不是「统计失败」。
+    handwritten = await get_questions(review_conn, tenant_id)
+    stale_question_count = (
+        len(find_unmatched_questions(handwritten, await list_terms_merged(review_conn, tenant_id)))
+        if handwritten
+        else 0
+    )
     return TenantStats(
         tenant_id=tenant_id,
         term_count=term_count,
         edge_count=edge_count,
         document_count=document_count,
         pending_review_count=pending_review_count,
+        sheet_row_count=sheet_row_count,
+        stale_question_count=stale_question_count,
     )

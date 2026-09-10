@@ -21,6 +21,8 @@ interface DomainStats {
   edge_count: number
   document_count: number
   pending_review_count: number
+  sheet_row_count: number
+  stale_question_count: number
 }
 
 /**
@@ -144,8 +146,26 @@ export function DomainCard({ domain }: { domain: Domain }) {
         <Stat label="实体" value={stats.term_count} />
         <Stat label="关系" value={stats.edge_count} />
         <Stat label="文档" value={stats.document_count} />
+        {/* 表格/数据库导入进来的实体行数，是「实体」的子集。少了它用户分不清
+            两万个实体里多少是表格导进来的、多少是文档抽出来的——而这两条
+            路径的修法完全不同。 */}
+        <Stat label="表格行" value={stats.sheet_row_count} />
         <Stat label="待审" value={stats.pending_review_count} />
       </dl>
+
+      {/* 失效的手写引导问题（spec 前台硬规矩之二：失效了必须有人知道）。
+          只在数字人配置页能看见的话，要用户主动去翻——那正是「默默消失」。
+          0 时不显示：恒显示的话用户很快就不看它了。 */}
+      {stats.stale_question_count > 0 && (
+        <button
+          type="button"
+          className={buttonClass}
+          disabled={going}
+          onClick={() => void goTo(ADMIN_ROUTES.persona)}
+        >
+          {stats.stale_question_count} 条引导问题失效，去修
+        </button>
+      )}
 
       {hasNoEntities ? (
         // 0 只说明"这里是空的"，不说明该干什么。

@@ -33,6 +33,10 @@ class DomainStats(BaseModel):
     edge_count: int
     document_count: int
     pending_review_count: int
+    #: 表格/数据库导入进来的实体行数（spec §5 卡片第四格）。
+    sheet_row_count: int
+    #: 失效的手写引导问题数（spec 前台硬规矩之二）。>0 时卡片上出一条待办。
+    stale_question_count: int
 
 
 # 领域清单。**非租户**路径：「我能看到哪些领域」对每个角色都要回答得出来，
@@ -124,4 +128,6 @@ async def get_domain_stats(
         edge_count=stats.edge_count,
         document_count=stats.document_count,
         pending_review_count=stats.pending_review_count,
+        sheet_row_count=stats.sheet_row_count,
+        stale_question_count=stats.stale_question_count,
     )

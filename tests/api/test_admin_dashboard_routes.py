@@ -31,6 +31,7 @@ from app.graphrag.organizations_store import (
 from app.graphrag.duplicate_review_queue import ensure_duplicate_review_schema
 from app.graphrag.review_queue import ensure_review_schema, enqueue_for_review
 from app.graphrag.tenants_store import create_tenant, create_tenants_table
+from app.graphrag.tenant_personas_store import ensure_tenant_personas_schema
 from app.graphrag.term_edits_store import ensure_term_edits_schema
 from app.graphrag.terms_store import create_term, ensure_terms_schema
 from app.ingestion.tracking import ensure_tracking_schema, record_ingested
@@ -61,6 +62,7 @@ async def _open_review_conn() -> aiosqlite.Connection:
     await ensure_admin_auth_schema(conn)
     await create_tenants_table(conn)
     await ensure_organizations_schema(conn)
+    await ensure_tenant_personas_schema(conn)
     await ensure_terms_schema(conn)
     await ensure_term_edits_schema(conn)
     await ensure_ontology_schema(conn)
@@ -206,6 +208,8 @@ def test_stats_endpoint_returns_all_four_numbers(dashboard_conns):
         "edge_count": 27,
         "document_count": 5,
         "pending_review_count": 3,
+        "sheet_row_count": 0,
+        "stale_question_count": 0,
     }
 
 
