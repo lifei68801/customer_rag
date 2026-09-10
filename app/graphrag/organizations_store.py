@@ -206,16 +206,27 @@ async def delete_organization(conn: aiosqlite.Connection, *, org_id: str) -> Non
     这跟 `assign_tenant_to_org` 拒绝"挂到不存在的组织下"是同一条理由的两面：
     不让 `tenants.org_id` 指向一个查不到的组织。
     """
-    cursor = await conn.execute("SELECT 1 FROM organizations WHERE org_id = ?", (org_id,))
-    if await cursor.fetchone() is None:
-        raise OrganizationNotFoundError(f"组织 {org_id!r} 不存在")
+    # **"还有没有租户"和"删"必须是同一条语句。** 先查后删的话，两步之间
+    # （aiosqlite 每个 await 都是一个调度点）有请求把租户挂进来，就会删掉一个
+    # 非空组织：那个租户的 org_id 指向一个查不到的组织，它在组织视图里既不
+    # 属于任何组织、也不在「未归入组织」的判定里——一个谁也看不见的状态。
+    cursor = await conn.execute(
+        "DELETE FROM organizations WHERE org_id = ? "
+        "AND NOT EXISTS (SELECT 1 FROM tenants WHERE org_id = ?)",
+        (org_id, org_id),
+    )
+    if cursor.rowcount:
+        await conn.commit()
+        return
+
+    # 没删掉，回头查是哪一种：不存在，还是还有租户。这两句只用来**措辞**，
+    # 不是判据——判据在上面那条语句里，已经执行完了。
     tenant_ids = await list_tenants_in_org(conn, org_id)
     if tenant_ids:
         raise OrganizationNotEmptyError(
             f"组织 {org_id!r} 名下还有 {len(tenant_ids)} 个租户，先把它们移出去再删。"
         )
-    await conn.execute("DELETE FROM organizations WHERE org_id = ?", (org_id,))
-    await conn.commit()
+    raise OrganizationNotFoundError(f"组织 {org_id!r} 不存在")
 
 
 async def list_tenants_in_org(conn: aiosqlite.Connection, org_id: str) -> list[str]:

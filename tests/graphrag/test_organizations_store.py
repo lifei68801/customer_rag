@@ -412,3 +412,42 @@ async def test_deleting_a_missing_org_is_refused():
             await delete_organization(conn, org_id="nope")
     finally:
         await conn.close()
+
+
+async def test_the_emptiness_check_and_the_delete_are_one_statement(monkeypatch):
+    """「还有没有租户」和「删」必须是同一条语句。
+
+    先查后删的话，两步之间（aiosqlite 每个 await 都是调度点）有请求把租户
+    挂进来，就会删掉一个非空组织——那个租户的 org_id 指向一个查不到的组织，
+    它在组织视图里既不属于任何组织、也不在「未归入组织」的判定里。
+
+    这里不去编排真实的并发（那种用例又慢又飘），而是**把前置检查骗过去**：
+    让它报告"空的"，而库里其实有一个租户。删除仍然必须不发生——因为判据
+    在 SQL 里，不在那次检查里。
+    """
+    from app.graphrag import organizations_store
+
+    conn = await _conn()
+    try:
+        await create_organization(conn, org_id="muji", name="无印良品")
+        await create_tenant(conn, tenant_id="muji-商品", name="导购")
+        await assign_tenant_to_org(conn, tenant_id="muji-商品", org_id="muji")
+
+        # 前置检查恒报"空"——模拟"检查通过之后、删除之前被挂进来一个租户"。
+        async def _lies(conn_, org_id_):
+            return []
+
+        monkeypatch.setattr(organizations_store, "list_tenants_in_org", _lies)
+
+        # 骗过检查之后，这次调用会走进"删掉了"的分支还是抛错都可以接受；
+        # **不可接受的是组织真的没了**。
+        try:
+            await organizations_store.delete_organization(conn, org_id="muji")
+        except Exception:
+            pass
+
+        assert [o["org_id"] for o in await list_organizations(conn)] == ["muji"], (
+            "非空组织被删掉了——判据落在了那次前置检查上，而不是 SQL 里"
+        )
+    finally:
+        await conn.close()
