@@ -48,6 +48,9 @@ class AgentChatRequest(BaseModel):
     # 实测 AgentChatRequest(question="x", tenant_id="t") 构造成功。
     tenant_id: str | None = None
     session_id: str = "default"
+    # 这次对话是跟哪张脸聊的（ADR-0004）。只用来给会话记归属，**对问答行为
+    # 零影响**——脸是展示单元，不是知识边界，也不是权限判据。
+    persona_id: str = "default"
     # 按需触发：仅当本轮以语音提问时才为 true，文字提问始终为 false，
     # 避免不必要的 TTS 成本和延迟。
     voice_response: bool = False
@@ -218,6 +221,7 @@ async def agent_chat_endpoint(
                         "tenant_id": tenant_id,
                         "session_id": payload.session_id,
                         "user_id": user_id,
+                        "persona_id": payload.persona_id,
                     },
                     # LangGraph 默认 recursion_limit=25；Planner<->ToolCall 循环每轮
                     # 占 2 个节点步骤，留足余量防止状态内轮次计数器万一有 bug 时

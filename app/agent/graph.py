@@ -719,6 +719,7 @@ def build_agent_graph(
             user_id=user_id,
             first_message=state["question"],
             now=datetime.now(),
+            persona_id=state.get("persona_id", "default"),
         )
         assert resolved_session_window_store is not None
         await resolved_session_window_store.append_turn(

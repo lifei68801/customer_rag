@@ -65,7 +65,7 @@ const EMPTY_SESSION_STATE: SessionChatState = { messages: [], isSending: false }
  * 单纯是因为 chat_sessions 的主键是 (tenant_id, session_id)——换了租户，
  * 上一个租户的会话列表和消息都不再对，必须重新拉、重新存。
  */
-export function useAgentChat(tenantId: string) {
+export function useAgentChat(tenantId: string, personaId: string = 'default') {
   const [searchParams, setSearchParams] = useSearchParams()
   const activeSessionId = searchParams.get(SESSION_QUERY_KEY)
 
@@ -83,16 +83,16 @@ export function useAgentChat(tenantId: string) {
 
   const refreshSessions = useCallback(async () => {
     try {
-      const list = await fetchSessions()
+      const list = await fetchSessions(personaId)
       setSessions(list)
       setSessionsError(null)
     } catch (error) {
       setSessionsError(error instanceof Error ? error.message : '获取会话列表失败')
     }
-    // tenantId 进依赖数组：换了租户，refreshSessions 的身份跟着变，下面
-    // 那个 effect 才会重跑。空依赖数组的话这个 effect 只在挂载时跑一次，
-    // 切了数字人之后左栏还是上一个数字人的会话列表。
-  }, [tenantId])
+    // tenantId / personaId 进依赖数组：换了租户或换了脸，refreshSessions 的
+    // 身份跟着变，下面那个 effect 才会重跑。空依赖数组的话这个 effect 只在
+    // 挂载时跑一次，切了数字人之后左栏还是上一个数字人的会话列表。
+  }, [tenantId, personaId])
 
   useEffect(() => {
     refreshSessions()
@@ -220,6 +220,8 @@ export function useAgentChat(tenantId: string) {
           body: JSON.stringify({
             question,
             session_id: sessionId,
+            // 这次对话跟哪张脸聊的——只给会话记归属，对答案零影响。
+            persona_id: personaId,
             voice_response: false,
           }),
           signal: controller.signal,

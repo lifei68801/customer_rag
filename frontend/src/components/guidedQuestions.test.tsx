@@ -19,12 +19,14 @@ import type { Persona, PersonaDetail } from '../lib/personasApi'
  */
 const PERSONA: Persona = {
   tenant_id: 'muji-goods',
+  persona_id: 'default',
   name: '导购小美',
   avatar: '🛍️',
   tagline: '我知道商品、口味和产地',
 }
 const PERSONA_STORE: Persona = {
   tenant_id: 'muji-store',
+  persona_id: 'default',
   name: '店务老张',
   avatar: '🏪',
   tagline: '门店的事问我',
@@ -69,7 +71,7 @@ function stubApi() {
       // 按 URL 里的租户分发，不是不管问谁都回同一份。用 `[^/]+` 通配的话，
       // 「拉错了租户」这种实现照样能让「切换之后问题换了」变绿——它实际
       // 只证明了"又请求了一次"。
-      const detail = /\/api\/admin\/([^/]+)\/persona$/.exec(url)
+      const detail = /\/api\/admin\/([^/]+)\/persona(?:\?|$)/.exec(url)
       if (detail) {
         const asked = decodeURIComponent(detail[1])
         const body = personaDetails[asked]

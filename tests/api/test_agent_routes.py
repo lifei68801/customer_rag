@@ -363,3 +363,23 @@ def test_chat_refuses_when_no_current_tenant_is_selected(client_admin):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "请先选择一个租户"
+
+
+def test_chat_records_the_session_under_the_face_it_was_asked_with(agent_chat_env, client_member_demo):
+    """聊天请求带 persona_id 时，这条会话归到那张脸下。
+
+    走真实路径：POST /agent/chat 之后用 GET /agent/sessions 按脸查——两个
+    路由共用同一个 memory_conn 覆写。只在 graph 里断言 state 的话，
+    "路由没把字段传进 state" 这一层测不到（阶段四 C-1 那类断线）。
+    """
+    response = client_member_demo.post(
+        "/agent/chat",
+        json={"question": "网络连不上怎么办？", "session_id": "s-face", "persona_id": "dianwu"},
+    )
+    assert response.status_code == 200
+
+    under_dianwu = client_member_demo.get("/agent/sessions?persona_id=dianwu").json()["sessions"]
+    under_default = client_member_demo.get("/agent/sessions").json()["sessions"]
+
+    assert "s-face" in {s["session_id"] for s in under_dianwu}
+    assert "s-face" not in {s["session_id"] for s in under_default}

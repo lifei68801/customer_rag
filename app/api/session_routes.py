@@ -47,11 +47,19 @@ class SessionMessagesResponse(BaseModel):
 
 @router.get("/agent/sessions", response_model=ListSessionsResponse)
 async def list_sessions_endpoint(
+    persona_id: str = "default",
     identity: tuple[str, str] = Depends(deps.require_chat_session),
     memory_conn: aiosqlite.Connection = Depends(deps.get_memory_conn),
 ) -> ListSessionsResponse:
+    """当前这张脸下的会话（ADR-0004：一个会话属于一个数字人）。
+
+    persona_id 在这里是「跟谁聊的」，**不是权限判据**——租户和用户仍然来自
+    登录会话（require_chat_session），脸只决定左栏列哪些。
+    """
     tenant_id, user_id = identity
-    rows = await list_sessions(memory_conn, tenant_id=tenant_id, user_id=user_id)
+    rows = await list_sessions(
+        memory_conn, tenant_id=tenant_id, user_id=user_id, persona_id=persona_id
+    )
     return ListSessionsResponse(sessions=[SessionSummary(**row) for row in rows])
 
 

@@ -92,6 +92,9 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
   // hook 管的是一次会话内的消息，数字人是会话之外的作用域（换数字人不是
   // 换一条消息，是换整个知识库）。
   const { tenantId, setTenantId } = useAdminTenant()
+  // 当前在跟哪张脸聊（ADR-0004：脸是展示单元，租户才是隔离单元）。
+  // 换租户时归位到 default：另一个租户的脸跟这个 id 没关系。
+  const [personaId, setPersonaId] = useState('default')
   const [personas, setPersonas] = useState<Persona[]>([])
   const [personasLoading, setPersonasLoading] = useState(true)
   const [personasError, setPersonasError] = useState<string | null>(null)
@@ -135,7 +138,7 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
     let cancelled = false
     setPersonaDetail(null)
     setPersonaDetailError(null)
-    fetchPersonaDetail('', tenantId)
+    fetchPersonaDetail('', tenantId, personaId)
       .then((detail) => {
         if (cancelled) return
         setPersonaDetail(detail)
@@ -149,7 +152,7 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
     return () => {
       cancelled = true
     }
-  }, [tenantId])
+  }, [tenantId, personaId])
 
   const {
     messages,
@@ -161,7 +164,19 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
     activeSessionId,
     selectSession,
     deleteSession,
-  } = useAgentChat(tenantId)
+  } = useAgentChat(tenantId, personaId)
+
+  // 切脸分两种情形，**不能都走切租户**：
+  // - 同一个租户下换脸：只换 personaId。脸是纯展示层，切它不该动租户——
+  //   动了的话一次纯展示的切换会连带刷新整个知识库上下文，还会 PUT 一次
+  //   当前租户。
+  // - 跨租户：先切租户（TenantContext.setTenantId 内部会 PUT
+  //   /api/admin/auth/session/tenant），再落到那张脸上。不切租户的话，
+  //   用户点了别的租户的脸，问答还在原租户的知识里跑。
+  const selectPersona = (persona: Persona) => {
+    if (persona.tenant_id !== tenantId) setTenantId(persona.tenant_id)
+    setPersonaId(persona.persona_id)
+  }
 
   // 数字人列表拉回来之后才能判断「当前租户是否在里面」——加载中/拉取失败
   // 时不下结论，避免在真相还没到手之前就误判成「你没权限」而短暂闪一下
@@ -209,13 +224,14 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
           <TenantInaccessibleNotice />
         )}
       </div>
-      {/* 切换直接复用 TenantContext.setTenantId——它内部已经会 PUT
-          /api/admin/auth/session/tenant。不另写一份切租户请求：两份实现
-          会在「切了但没生效」这个 bug 上分叉。 */}
+      {/* 跨租户时复用 TenantContext.setTenantId——它内部已经会 PUT
+          /api/admin/auth/session/tenant，不另写一份切租户请求。
+          同租户内切脸不经过它，见 selectPersona。 */}
       <PersonaRail
         personas={personas}
         activeTenantId={tenantId}
-        onSelect={setTenantId}
+        activePersonaId={personaId}
+        onSelect={selectPersona}
         loading={personasLoading}
         error={personasError}
       />

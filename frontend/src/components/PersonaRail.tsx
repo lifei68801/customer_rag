@@ -6,9 +6,16 @@ const focusRing =
 interface PersonaRailProps {
   personas: Persona[]
   activeTenantId: string | null
-  onSelect: (tenantId: string) => void
+  activePersonaId: string
+  /** 点了哪张脸。同租户还是跨租户，由调用方决定要不要切租户。 */
+  onSelect: (persona: Persona) => void
   loading: boolean
   error: string | null
+}
+
+/** 右栏每一项的身份：同一个租户的两张脸必须是两项。 */
+function faceKey(persona: Pick<Persona, 'tenant_id' | 'persona_id'>): string {
+  return `${persona.tenant_id}\u0000${persona.persona_id}`
 }
 
 /**
@@ -33,6 +40,7 @@ interface PersonaRailProps {
 export function PersonaRail({
   personas,
   activeTenantId,
+  activePersonaId,
   onSelect,
   loading,
   error,
@@ -59,13 +67,14 @@ export function PersonaRail({
     >
       <p className="mb-1 px-1 text-xs font-bold uppercase tracking-wide text-ink-soft">数字人</p>
       {personas.map((persona) => {
-        const isActive = persona.tenant_id === activeTenantId
+        const isActive =
+          persona.tenant_id === activeTenantId && persona.persona_id === activePersonaId
         return (
           <button
-            key={persona.tenant_id}
+            key={faceKey(persona)}
             type="button"
             aria-current={isActive ? 'true' : undefined}
-            onClick={() => onSelect(persona.tenant_id)}
+            onClick={() => onSelect(persona)}
             className={`flex cursor-pointer items-center gap-2 rounded-control px-2 py-2 text-left text-sm transition ${focusRing} ${
               isActive
                 ? 'bg-accent-primary font-bold text-on-accent'

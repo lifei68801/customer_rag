@@ -45,6 +45,7 @@ function whoamiResponse() {
 
 const ONE_PERSONA: Persona = {
   tenant_id: 'muji-goods',
+  persona_id: 'default',
   name: '导购小美',
   avatar: '🛍️',
   tagline: '导购的事问我',
@@ -52,13 +53,29 @@ const ONE_PERSONA: Persona = {
 
 const TWO_PERSONAS: Persona[] = [
   ONE_PERSONA,
-  { tenant_id: 'muji-store', name: '店务老张', avatar: '🏪', tagline: '门店的事问我' },
+  {
+    tenant_id: 'muji-store',
+    persona_id: 'default',
+    name: '店务老张',
+    avatar: '🏪',
+    tagline: '门店的事问我',
+  },
 ]
+
+/** 同一个租户下的第二张脸（ADR-0004）。 */
+const SECOND_FACE_SAME_TENANT: Persona = {
+  tenant_id: 'muji-goods',
+  persona_id: 'kefu',
+  name: '客服阿May',
+  avatar: '🎧',
+  tagline: '售后的事问我',
+}
 
 let personasResponse: { personas: Persona[]; current_tenant_id: string | null }
 let personasStatus = 200
 let switchRequests: { method: string; body: unknown }[] = []
 let sessionsRequestCount = 0
+let sessionsRequestedPersonas: (string | null)[] = []
 
 function stubApi() {
   vi.stubGlobal(
@@ -72,15 +89,16 @@ function stubApi() {
           new Response(JSON.stringify(personasResponse), { status: personasStatus }),
         )
       }
-      // 数字人详情：ChatWorkspace 现在对当前租户拉一次。这里给个空引导
-      // 问题的回包，不是任由它落进末尾那个永不 resolve 的兜底——挂着的
-      // 请求会让这些用例在「详情加载失败该说话」这类回归上瞎掉。
-      if (/\/api\/admin\/[^/]+\/persona$/.test(url)) {
+      // 数字人详情：ChatWorkspace 对 (当前租户, 当前脸) 拉一次。这里按
+      // persona_id 回对应那张脸，不是任由它落进末尾那个永不 resolve 的
+      // 兜底——挂着的请求会让这些用例在「详情加载失败该说话」这类回归上
+      // 瞎掉；回错脸的话「切脸之后一句话换了」那条就看不到换。
+      if (/\/api\/admin\/[^/]+\/persona(\?|$)/.test(url)) {
+        const requested = new URL(url, 'http://x').searchParams.get('persona_id') ?? 'default'
+        const face =
+          personasResponse.personas.find((p) => p.persona_id === requested) ?? ONE_PERSONA
         return Promise.resolve(
-          new Response(
-            JSON.stringify({ ...ONE_PERSONA, questions: [] }),
-            { status: 200 },
-          ),
+          new Response(JSON.stringify({ ...face, questions: [] }), { status: 200 }),
         )
       }
       if (url.includes('/api/admin/auth/session/tenant')) {
@@ -96,8 +114,9 @@ function stubApi() {
       // 会话列表：精确匹配，不能用 includes('/agent/sessions')——那会连
       // /agent/sessions/{id}/messages 也一起吃掉，把消息接口的响应形状
       // 换成 { sessions: [] }。
-      if (url === '/agent/sessions') {
+      if (url === '/agent/sessions' || url.startsWith('/agent/sessions?')) {
         sessionsRequestCount += 1
+        sessionsRequestedPersonas.push(new URL(url, 'http://x').searchParams.get('persona_id'))
         return Promise.resolve(new Response(JSON.stringify({ sessions: [] }), { status: 200 }))
       }
       if (url.includes('/agent/sessions/')) {
@@ -114,6 +133,7 @@ beforeEach(() => {
   personasResponse = { personas: TWO_PERSONAS, current_tenant_id: 'muji-goods' }
   personasStatus = 200
   switchRequests = []
+  sessionsRequestedPersonas = []
   sessionsRequestCount = 0
   resetAdminSession()
   localStorage.clear()
@@ -191,6 +211,81 @@ describe('数字人右栏', () => {
     await waitFor(() => expect(sessionsRequestCount).toBeGreaterThan(0))
   })
 
+  it('同一个租户下切脸，不发切租户的请求', async () => {
+    // 今天 onSelect={setTenantId}，切脸会 PUT 一次当前租户。同租户内切脸
+    // 不该动租户——发了的话，一次纯展示的切换会连带刷新整个知识库上下文，
+    // 而脸是展示单元、租户才是隔离单元（ADR-0004）。
+    personasResponse = {
+      personas: [ONE_PERSONA, SECOND_FACE_SAME_TENANT],
+      current_tenant_id: 'muji-goods',
+    }
+    const user = userEvent.setup()
+    renderChat()
+    await waitFor(() => expect(screen.getByText('客服阿May')).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: /客服阿May/ }))
+
+    // 脸换了（一句话换了），但一个切租户的 PUT 都没发。
+    await waitFor(() => expect(screen.getByText(/售后的事问我/)).toBeTruthy())
+    expect(switchRequests.filter((r) => r.method === 'PUT')).toEqual([])
+  })
+
+  it('跨租户切脸，仍然要先切租户', async () => {
+    // 反面：不切的话，用户点了别的租户的脸，问答还在原租户的知识里跑。
+    // 上面那条在「一律不切租户」的实现下也是绿的，这条把它挡住。
+    const user = userEvent.setup()
+    renderChat()
+    await waitFor(() => expect(screen.getByText('店务老张')).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: /店务老张/ }))
+
+    await waitFor(() =>
+      expect(
+        switchRequests.some(
+          (r) => r.method === 'PUT' && JSON.parse(String(r.body)).tenant_id === 'muji-store',
+        ),
+      ).toBe(true),
+    )
+  })
+
+  it('切脸之后左栏会话列表按那张脸重拉', async () => {
+    // 一个会话属于一个数字人。切脸不重拉的话，左栏挂着的是上一张脸的会话。
+    personasResponse = {
+      personas: [ONE_PERSONA, SECOND_FACE_SAME_TENANT],
+      current_tenant_id: 'muji-goods',
+    }
+    const user = userEvent.setup()
+    renderChat()
+    await waitFor(() => expect(screen.getByText('客服阿May')).toBeTruthy())
+    await waitFor(() => expect(sessionsRequestCount).toBeGreaterThan(0))
+
+    await user.click(screen.getByRole('button', { name: /客服阿May/ }))
+
+    await waitFor(() => expect(sessionsRequestedPersonas).toContain('kefu'))
+  })
+
+  it('右栏用 (租户, 脸) 两段标识，同一个租户的两张脸各是一项', async () => {
+    // 只用 tenant_id 当 key 的话，同一个租户的两张脸会被 React 当成同一项。
+    // 两个按钮照样都渲染出来（React 只是警告，不吞元素），所以数按钮抓不到
+    // 这个回归——要抓的是那条 "Encountered two children with the same key"
+    // 警告本身：它是 key 撞车唯一可观察的后果，也是重排/切脸时错位的前兆。
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    personasResponse = {
+      personas: [ONE_PERSONA, SECOND_FACE_SAME_TENANT],
+      current_tenant_id: 'muji-goods',
+    }
+    renderChat()
+
+    await waitFor(() => expect(screen.getByText('客服阿May')).toBeTruthy())
+    expect(screen.getByText('导购小美')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: /导购小美|客服阿May/ })).toHaveLength(2)
+    const duplicateKeyWarnings = consoleError.mock.calls.filter((args) =>
+      args.some((a) => typeof a === 'string' && a.includes('same key')),
+    )
+    consoleError.mockRestore()
+    expect(duplicateKeyWarnings).toEqual([])
+  })
+
   it('只有一个数字人时右栏不出现', async () => {
     // 一个选项的选择器不是选择器，是噪音。它还会误导用户以为「还有别的，
     // 只是我没权限」——而实际上这个部署就只有一个知识库。
@@ -219,8 +314,8 @@ describe('数字人右栏', () => {
   it('没配脸的数字人显示租户名和一个占位头像，不是空白', async () => {
     personasResponse = {
       personas: [
-        { tenant_id: 'muji-goods', name: '商品', avatar: '', tagline: '' },
-        { tenant_id: 'muji-store', name: '门店', avatar: '🏪', tagline: '门店的事问我' },
+        { tenant_id: 'muji-goods', persona_id: 'default', name: '商品', avatar: '', tagline: '' },
+        { tenant_id: 'muji-store', persona_id: 'default', name: '门店', avatar: '🏪', tagline: '门店的事问我' },
       ],
       current_tenant_id: 'muji-goods',
     }
@@ -238,7 +333,7 @@ describe('数字人右栏', () => {
     // 唯一能纠正的入口也藏起来，人从此看得见 403、纠正不了。
     currentTenantIdOverride = 'muji-goods'
     personasResponse = {
-      personas: [{ tenant_id: 'muji-store', name: '店务老张', avatar: '🏪', tagline: '门店的事问我' }],
+      personas: [{ tenant_id: 'muji-store', persona_id: 'default', name: '店务老张', avatar: '🏪', tagline: '门店的事问我' }],
       current_tenant_id: 'muji-goods',
     }
     renderChat()

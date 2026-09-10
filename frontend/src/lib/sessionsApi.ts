@@ -23,8 +23,13 @@ export interface SessionMessage {
  * 的话页面会一直显示已登录，而每个请求都 401。第二个参数是 adminFetch
  * 留给 21 个旧调用方的占位符，这里没有 token 可传。
  */
-export async function fetchSessions(): Promise<SessionSummary[]> {
-  const response = await adminFetch('/agent/sessions', '')
+export async function fetchSessions(personaId: string = 'default'): Promise<SessionSummary[]> {
+  // 按脸过滤：一个会话属于一个数字人（ADR-0004）。persona_id 在这里是
+  // 「跟谁聊的」，不是权限判据——租户和用户仍来自登录会话。
+  const response = await adminFetch(
+    `/agent/sessions?persona_id=${encodeURIComponent(personaId)}`,
+    '',
+  )
   if (!response.ok) {
     throw new Error(`获取会话列表失败：状态码 ${response.status}`)
   }

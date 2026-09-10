@@ -12,6 +12,12 @@ import { adminFetch, extractErrorDetail } from '../admin/adminApi'
  */
 export interface Persona {
   tenant_id: string
+  /**
+   * 哪张脸。一个租户可以挂多张（ADR-0004）；没配过脸的租户后端合成一张
+   * 'default'。右栏用 (tenant_id, persona_id) 当 key——只用 tenant_id 的话
+   * 同一个租户的两张脸会被 React 当成同一项。
+   */
+  persona_id: string
   name: string
   /** 没配过脸时是空串。前端负责给一个占位，不是显示空白。 */
   avatar: string
@@ -59,9 +65,10 @@ export interface PersonaDetail extends Persona {
 export async function fetchPersonaDetail(
   sessionToken: string,
   tenantId: string,
+  personaId: string = 'default',
 ): Promise<PersonaDetail> {
   const response = await adminFetch(
-    `/api/admin/${encodeURIComponent(tenantId)}/persona`,
+    `/api/admin/${encodeURIComponent(tenantId)}/persona?persona_id=${encodeURIComponent(personaId)}`,
     sessionToken,
   )
   if (!response.ok) {

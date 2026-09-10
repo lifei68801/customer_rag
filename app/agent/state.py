@@ -10,6 +10,9 @@ class AgentState(TypedDict, total=False):
     tenant_id: str
     session_id: str
     user_id: str
+    # 跟哪张脸聊的（ADR-0004）。只给 chat_sessions 记归属用，任何节点都
+    # 不该拿它改变行为——脸对问答零影响。没传时读取方退回 "default"。
+    persona_id: str
     is_input_safe: bool
     input_unsafe_terms: list[str]
     term_guard_context: str | None

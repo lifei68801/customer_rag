@@ -35,6 +35,13 @@ def _seeded_memory_conn_override():
                 conn, tenant_id="t1", session_id="s1", user_id="user1",
                 first_message="网络连不上怎么办？", now=datetime(2026, 8, 12, 10, 0, 0),
             )
+            # 同一个用户在另一张脸下的会话：列表按脸过滤时它不该出现在
+            # default 那一列里（ADR-0004）。
+            await touch_session(
+                conn, tenant_id="t1", session_id="s-dianwu", user_id="user1",
+                first_message="哪家店缺货", now=datetime(2026, 8, 12, 11, 0, 0),
+                persona_id="dianwu",
+            )
             await append_turn(
                 conn, tenant_id="t1", session_id="s1", user_id="user1",
                 role="user", content="网络连不上怎么办？",
@@ -207,3 +214,16 @@ def test_sessions_show_the_logged_in_users_own_history(client_alice, client_bob)
 
     assert alice_ids == {"s-alice"}
     assert bob_ids == {"s-bob"}
+
+
+def test_list_sessions_is_filtered_by_face(client_user1):
+    """左栏只列当前这张脸的会话（spec 裁决补充「一个会话属于一个数字人」）。
+
+    不过滤的话，用户切到「店务老张」会看到一屏跟「导购小美」聊的历史。
+    不传 persona_id 时是 default——存量前端一行不用改。
+    """
+    default = client_user1.get("/agent/sessions").json()["sessions"]
+    dianwu = client_user1.get("/agent/sessions?persona_id=dianwu").json()["sessions"]
+
+    assert [s["session_id"] for s in default] == ["s1"]
+    assert [s["session_id"] for s in dianwu] == ["s-dianwu"]
