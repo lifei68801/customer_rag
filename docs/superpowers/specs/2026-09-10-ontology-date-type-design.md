@@ -41,6 +41,31 @@ _VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "numb
 的名字，一个日期不该当实体的名字。两张白名单从此不再对称，代码里要写明这是有意的
 ——否则下次读到的人会以为是漏了。
 
+#### 加一个 value_type 要改四处，不是一处
+
+这一节最初只写了 `ontology_categories.py`，实现之后的评审实测发现另外三处也各自
+独立维护着一份类型枚举，漏改任何一处都会让新类型在某条路径上不可用，而且**都不会
+在单元测试里暴露**——它们分别在四个不同的模块里：
+
+| 位置 | 管什么 | 漏改的后果 |
+|---|---|---|
+| `ontology_categories.py::_VALID_EXTRA_FIELD_VALUE_TYPES` | 单条创建/更新 term_type | 后台单条声明就被 400 拒掉 |
+| `ontology_lifecycle.py::_VALID_EXTRA_FIELD_VALUE_TYPES` | `replace_draft`（引导页一次写入整套本体的唯一入口） | 单条接口放行、引导页拒绝。该模块顶部的注释自己就预言过这种不一致 |
+| `terms_store.py::_extra_property_value_matches_type` | 写库前的类型闸 | 值已经归一正确，这一步仍判类型不匹配抛 `InvalidExtraPropertyTypeError`，**整批导入挂掉** |
+| `schema_etl_sample.py::_example_values_for` | 「下载 ETL 示例文件」 | 抛通用 `ValueError`，该租户的示例文件下载整体 500 |
+
+后两处尤其隐蔽：`terms_store` 那个函数落不到任何分支时**隐式返回 `None`**（falsy），
+也就是「不认识的类型一律判为不匹配」，没有任何提示说它不认识这个类型。
+
+配套的一处：`schema_etl.py::_write_entity_mapping` 的 except 元组要包含
+`InvalidExtraPropertyTypeError`。它和 `UnknownCategoryError` 是同一处代码抛出的姊妹
+异常，都是**单行数据的形状问题**，归宿是跳过行明细；不纳入的话，一行坏数据会杀掉
+整批导入，而管理员看到的是一个 500，不是「第 N 行的这个值不对」。
+
+**测试上的教训**：四处里有三处的缺陷，在各自模块的单元测试里全是绿的——因为每个
+模块只测自己。抓住它们的是一条跨过模块边界的端到端测试（`run_schema_etl` 一路写到
+图里）。以后加类型时，那条端到端测试比四处白名单的单元测试更值钱。
+
 ### 3.2 值的不变量
 
 **图里存的日期值一律是补零的 `YYYY-MM-DD`，10 个字符。**

@@ -104,6 +104,30 @@ def test_integer_and_number_array_value_types_generate_expected_example_values()
     assert rows[1]["坐标列"] == "3.5;4.5"
 
 
+def test_date_value_type_generates_two_distinct_normalized_iso_examples():
+    """一旦本体确认了 date 字段，_example_values_for 漏掉这个分支会让
+    generate_schema_etl_sample_files 抛未处理的 ValueError（I1），进而让
+    "下载 ETL 示例文件"这个端点对该租户的所有类型都 500，而不是只影响 date
+    字段所在的那个 term_type。示例值本身也要是补零 ISO——它就该长成
+    convert_field_value 认可的样子，不需要用户再手动改一遍格式。"""
+    term_types = [
+        TermTypeCategory(
+            value="订单",
+            extra_fields=[ExtraFieldSpec(name="下单日期", value_type="date")],
+        ),
+    ]
+
+    files = generate_schema_etl_sample_files(
+        tenant_id="demo", term_types=term_types, allowed_combinations=[]
+    )
+
+    rows = _csv_rows(next(f for f in files if f.filename == "订单.csv").content)
+    assert rows[0]["下单日期列"] != rows[1]["下单日期列"]
+    from app.graphrag.date_normalization import is_normalized_date
+    assert is_normalized_date(rows[0]["下单日期列"])
+    assert is_normalized_date(rows[1]["下单日期列"])
+
+
 def test_relation_csv_includes_subject_and_object_node_key_columns():
     term_types = [
         TermTypeCategory(value="商品", extra_fields=[]),

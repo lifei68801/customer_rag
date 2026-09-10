@@ -266,6 +266,107 @@ async def test_run_schema_etl_skips_bad_row_in_the_middle_and_still_processes_th
     assert report.skipped_rows[0].row_number == 3
 
 
+async def test_run_schema_etl_writes_a_normalized_date_field(tmp_path):
+    """跨模块端到端：从 convert_field_value 的归一化，一路到
+    upsert_term_with_node_key 真正落库——这是 task 3/4 各自的模块内单元测试
+    覆盖不到的结构性盲区（见 C1 修复）。两个模块各自的单元测试全绿，不代表
+    拼起来的整条写入路径真的能把一个声明成 date 的字段写进图：
+    validate_term_categories 内部的类型闸曾经不认识 date，即使
+    convert_field_value 已经把值转对了，也会在这一步被拒绝、把整批导入
+    打挂。这里跑一次完整的 run_schema_etl，断言写库的值确实是补零 ISO。
+    """
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    await ensure_term_edits_schema(conn)
+    await ensure_ontology_schema(conn)
+    await ensure_stable_code_registry_schema(conn)
+    await create_term_type(
+        conn, tenant_id="muji", value="Order",
+        extra_fields=[ExtraFieldSpec(name="purchase_date", value_type="date")],
+    actor="alice")
+    await checkout_draft(conn, "muji")
+    await confirm_ontology(conn, "muji", actor="alice")
+    (tmp_path / "orders.csv").write_text(
+        "order_id,order_name,purchase_date\n1001,示例订单,2026/1/15\n", encoding="utf-8"
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Order", source_file="orders.csv",
+                standard_name_parts=["order_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="order_id")],
+                field_mappings={"purchase_date": "purchase_date"},
+            ),
+        ],
+        relations=[],
+    )
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=FakeGraphClient(), config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 1
+    assert report.entities_skipped == 0
+    order = await get_term(conn, tenant_id="muji", standard_name="示例订单")
+    assert order.extra_properties == {"purchase_date": "2026-01-15"}
+
+
+async def test_write_entity_mapping_skips_row_on_type_mismatch_instead_of_crashing(tmp_path):
+    """极端但真实的竞态：一次 ETL 运行处理到一半时，本体的字段类型被改了并
+    确认（比如另一个管理员同时在后台操作）。第二行此时撞见的
+    InvalidExtraPropertyTypeError 和 UnknownCategoryError 是
+    validate_term_categories 里同一处代码抛出的姊妹异常，都是"这一行的数据
+    形状有问题"，理应同样进跳过行明细——而不是让它穿透成未处理异常，把已经
+    写完的第一行也搭进一次失败的运行里（见 C1 修复：_write_entity_mapping
+    的 except 元组要接住它）。"""
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_text(
+        "product_group_id,product_group_name,md_no\n"
+        "1001,圆角收纳盒,A123\n"
+        "1002,亚麻抱枕套,B456\n",
+        encoding="utf-8",
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+    )
+
+    class SchemaMutatingGraphClient(FakeGraphClient):
+        """sync_term 是每一行写完之后才会被调用的钩子，借它在第一行写完、
+        第二行写之前，把 md_no 的已确认声明类型从 string 改成 integer——
+        模拟"导入进行到一半，本体被改了并确认"这个真实的并发场景，而不是
+        直接改测试代码去人为制造异常。"""
+
+        async def sync_term(self, term) -> None:
+            await super().sync_term(term)
+            await conn.execute(
+                "UPDATE ontology_term_types SET extra_fields = ? "
+                "WHERE tenant_id = 'muji' AND value = 'Product' AND status = 'confirmed'",
+                ('[{"name": "md_no", "value_type": "integer", "label": ""}]',),
+            )
+            await conn.commit()
+
+    graph_client = SchemaMutatingGraphClient()
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 1
+    assert report.entities_skipped == 1
+    assert len(report.skipped_rows) == 1
+    assert (await get_term(conn, tenant_id="muji", standard_name="圆角收纳盒")) is not None
+
+
 async def test_run_schema_etl_unconfirmed_relation_type_skips_only_that_mapping(tmp_path):
     """relation_type 不在已确认 schema 里，只跳过这一个 mapping、记进
     skipped_mappings，其余实体照常写入，不抛异常中断整次运行。"""

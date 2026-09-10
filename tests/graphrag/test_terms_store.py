@@ -662,6 +662,53 @@ async def test_create_term_rejects_extra_property_with_wrong_type():
         )
 
 
+async def test_create_term_with_a_normalized_date_extra_property():
+    """写库前的最后一道类型闸也要认 date——这是 C1 修复的核心断言：
+    _extra_property_value_matches_type 漏了 date 分支的话，即使
+    convert_field_value 已经把值归一化成补零 ISO，这里也会误判类型不符，
+    把一个完全合法的日期值挡在库外。"""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    await ensure_ontology_schema(conn)
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
+    await create_term_type(
+        conn, tenant_id="t1", value="订单",
+        extra_fields=[ExtraFieldSpec(name="purchase_date", value_type="date")],
+    actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
+
+    await create_term(
+        conn, tenant_id="t1", standard_name="示例订单", aliases=[],
+        term_type="订单",
+        extra_properties={"purchase_date": "2026-01-15"},
+    )
+
+    term = await get_term(conn, tenant_id="t1", standard_name="示例订单")
+    assert term.extra_properties == {"purchase_date": "2026-01-15"}
+
+
+async def test_create_term_rejects_a_date_value_that_is_not_normalized():
+    """这一道闸判的是"已经是补零 ISO"，不是"能不能归一"——'2026/1/15' 能被
+    normalize_date 归一，但它此刻长的样子仍然会破坏字典序，必须在写库前
+    就被拒绝，不能放行、把问题留在数据里。"""
+    conn = await aiosqlite.connect(":memory:")
+    await ensure_terms_schema(conn)
+    await ensure_ontology_schema(conn)
+    from app.graphrag.ontology_categories import ExtraFieldSpec, create_term_type
+    await create_term_type(
+        conn, tenant_id="t1", value="订单",
+        extra_fields=[ExtraFieldSpec(name="purchase_date", value_type="date")],
+    actor="alice")
+    await confirm_ontology(conn, "t1", actor="alice")
+
+    with pytest.raises(InvalidExtraPropertyTypeError):
+        await create_term(
+            conn, tenant_id="t1", standard_name="示例订单", aliases=[],
+            term_type="订单",
+            extra_properties={"purchase_date": "2026/1/15"},
+        )
+
+
 async def test_create_term_rejects_bool_as_number():
     """bool 是 int 的子类，必须显式排除——见 Global Constraints。"""
     conn = await aiosqlite.connect(":memory:")

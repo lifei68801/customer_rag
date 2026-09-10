@@ -39,6 +39,7 @@ from app.graphrag.etl_skipped_rows import (
     record_skipped_rows,
 )
 from app.graphrag.terms_store import (
+    InvalidExtraPropertyTypeError,
     TermNameConflictError,
     TermNotFoundError,
     UnknownCategoryError,
@@ -226,10 +227,17 @@ async def _write_entity_mapping(
                 await graph_client.delete_term_node(tenant_id=tenant_id, node_key=projected.node_key)
             report.entities_written += 1
             _record_written(report, label=mapping.term_type)
-        except (TermNameConflictError, UnknownCategoryError) as exc:
+        except (TermNameConflictError, UnknownCategoryError, InvalidExtraPropertyTypeError) as exc:
             # RowProcessingError 不在这里捕获了——它只可能来自 projection 层，
             # 而 projection 已经把它转成 RowFailure。这里剩下的是写入本身
-            # 才会抛的两种：别名/名字冲突，和属性值引用了未声明的分类。
+            # 才会抛的三种：别名/名字冲突，属性值引用了未声明的分类，以及属性值
+            # 类型跟 term_type 当前声明的类型对不上。InvalidExtraPropertyTypeError
+            # 和 UnknownCategoryError 是 validate_term_categories 里同一处代码抛出
+            # 的姊妹异常，都是"这一行的数据形状有问题"，理应同样只丢这一行、
+            # 不该让它穿透成未处理异常、打断整批导入——即使 projection 阶段的
+            # convert_field_value 已经按声明类型转换过一次，这里仍可能因为并发
+            # 修改本体（比如导入进行到一半，另一个操作把字段类型改了并确认）而
+            # 撞见类型不匹配。
             report.entities_skipped += 1
             _record_skipped_row(
                 report, label=mapping.term_type, source_file=mapping.source_file,

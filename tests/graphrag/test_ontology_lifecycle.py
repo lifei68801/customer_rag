@@ -4,7 +4,11 @@ import aiosqlite
 import pytest
 
 from app.graphrag.ontology_constraints import add_allowed_combination, list_allowed_combinations
-from app.graphrag.ontology_categories import create_term_type, list_term_types
+from app.graphrag.ontology_categories import (
+    InvalidExtraFieldTypeError,
+    create_term_type,
+    list_term_types,
+)
 from app.graphrag.ontology_lifecycle import (
     checkout_draft,
     confirm_ontology,
@@ -452,3 +456,51 @@ async def test_replace_draft_accepts_extra_field_without_label():
     spec = (await list_term_types(conn, "t1", status="draft"))[0].extra_fields[0]
     assert spec.label == ""
     assert spec.display_name == "price"
+
+
+async def test_replace_draft_accepts_a_date_extra_field():
+    """replace_draft 校验用的是本模块自己那份手抄白名单（见模块顶部
+    ontology_categories.py 复制品那段说明），跟单条创建接口的白名单是
+    两处独立维护的规则——这条测试钉住"引导页一次性提交整套本体"这条路径
+    同样认得 date，防止两处白名单再次不同步（单条创建认，整份替换草稿
+    不认，是曾经真实发生过的缺陷）。"""
+    conn = await _conn()
+    await checkout_draft(conn, "t1")
+
+    await replace_draft(
+        conn,
+        "t1",
+        term_types=[
+            {
+                "value": "订单",
+                "extra_fields": [
+                    {"name": "purchase_date", "value_type": "date", "label": "下单日期"}
+                ],
+                "standard_name_value_type": "string",
+            }
+        ],
+        relation_types=[],
+        constraints=[],
+    actor="alice")
+
+    spec = (await list_term_types(conn, "t1", status="draft"))[0].extra_fields[0]
+    assert spec.value_type == "date"
+
+
+async def test_replace_draft_rejects_date_as_standard_name_value_type():
+    """跟 ontology_categories.py 那份原件一样的不对称也要在这份手抄白名单里
+    钉住：standard_name 是实体的名字，一个日期不该当实体的名字，引导页整份
+    提交这条路径不能比单条创建接口宽松。"""
+    conn = await _conn()
+    await checkout_draft(conn, "t1")
+
+    with pytest.raises(InvalidExtraFieldTypeError):
+        await replace_draft(
+            conn,
+            "t1",
+            term_types=[
+                {"value": "订单", "extra_fields": [], "standard_name_value_type": "date"}
+            ],
+            relation_types=[],
+            constraints=[],
+        actor="alice")

@@ -40,6 +40,10 @@ _STRING_EXAMPLE_VALUES = ("示例文本1", "示例文本2")
 _NUMBER_EXAMPLE_VALUES = ("1.5", "2.5")
 _INTEGER_EXAMPLE_VALUES = ("1", "2")
 _NUMBER_ARRAY_EXAMPLE_VALUES = ("1.5;2.5", "3.5;4.5")
+# 给两个不同的补零 ISO 日期，而不是同一天写两次——同一份示例文件里两行的
+# 其他字段（编号、名称）本来就是递增的两个不同示例，日期给成一样反而不像
+# 示例数据。写法本身就是 convert_field_value 认识的写法之一，不需要额外转换。
+_DATE_EXAMPLE_VALUES = ("2026-01-05", "2026-02-10")
 
 
 def _example_values_for(value_type: str) -> tuple[str, str]:
@@ -53,6 +57,8 @@ def _example_values_for(value_type: str) -> tuple[str, str]:
         return _INTEGER_EXAMPLE_VALUES
     if value_type == "number[]":
         return _NUMBER_ARRAY_EXAMPLE_VALUES
+    if value_type == "date":
+        return _DATE_EXAMPLE_VALUES
     raise ValueError(f"未知的 value_type: {value_type!r}")
 
 

@@ -38,7 +38,9 @@ from app.graphrag.tenant_ingestion_config import ensure_ingestion_config_schema,
 # ontology_relations.py 改了合法性规则（比如放宽字段名格式），这里也要跟着改，
 # 否则会出现"单条创建时报错，整份替换草稿时放行"的不一致体验。
 _EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
-_VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]"})
+_VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]", "date"})
+# date 有意**不**进下面这张表，跟 ontology_categories.py 那份原件保持一致的
+# 不对称：standard_name 是实体的名字，一个日期不该当实体的名字。
 _VALID_STANDARD_NAME_VALUE_TYPES = frozenset({"string", "number", "integer"})
 _RELATION_TYPE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 

@@ -9,6 +9,7 @@ import aiosqlite
 
 from app.db_migrations import add_column_if_missing
 from app.graphrag.attribute_conflicts import record_conflict
+from app.graphrag.date_normalization import is_normalized_date
 from app.graphrag.ontology import Term, load_terminology
 from app.graphrag.ontology_categories import (
     ensure_categories_schema,
@@ -330,6 +331,14 @@ def _extra_property_value_matches_type(value: object, value_type: str) -> bool:
         return isinstance(value, list) and all(
             isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
         )
+    if value_type == "date":
+        # 判的是"已经是补零 ISO"，不是"能不能归一"——这是写库前的最后一道闸，
+        # 放行一个没补零的值就等于把破坏字典序的数据放进图里（见
+        # date_normalization.is_normalized_date 的说明）。ETL 路径下
+        # convert_field_value 已经归一化过，这里理应总是符合；但校验不能因为
+        # "调用方应该已经做对了"就跳过，别的写入路径（如 admin_terms_routes.py
+        # 的手工编辑）不经过 convert_field_value。
+        return isinstance(value, str) and is_normalized_date(value)
     return False
 
 
