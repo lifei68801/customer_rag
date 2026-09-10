@@ -470,6 +470,71 @@ async def test_migrate_term_type_nodes_returns_zero_when_no_matching_nodes():
     assert count == 0
 
 
+async def test_count_non_iso_date_values_counts_entities_not_distinct_values():
+    """多个实体共享同一个非法值时，count 必须是实体数，不是不同取值数。
+
+    这条钉住 Task 7 评审 C1：409 文案说的是"还有 N 个实体"，如果 Cypher 用
+    DISTINCT 去重计数，100 个实体共享同一个占位值"待定"时会报成"1 个"，
+    管理员会把大规模数据问题误判成孤立小问题。这里两个实体都是"待定"、
+    一个是"2026/1/15"，去重后只有 2 个不同取值，但不合格的实体一共 3 个。
+    """
+    session = FakeSession(
+        rows=[{"value": "待定"}, {"value": "待定"}, {"value": "2026/1/15"}]
+    )
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    count, samples = await client.count_non_iso_date_values(
+        tenant_id="t1", term_type="订单", field="purchase_date"
+    )
+
+    assert count == 3
+    # 样例仍然去重展示，避免同一个占位值反复占满 3 个名额。
+    assert samples == ["待定", "2026/1/15"]
+    assert "DISTINCT" not in session.last_query
+    assert "t.purchase_date" in session.last_query
+    assert session.last_parameters == {"tenant_id": "t1", "term_type": "订单"}
+
+
+async def test_count_non_iso_date_values_treats_non_string_values_as_invalid():
+    """历史脏数据里字段值不是字符串时（正常写入路径不会产生），一律算不合格。
+
+    is_normalized_date 要求 str 输入，直接传非字符串值会报错，不能假装它
+    合格放过去——放过去等于把这类脏数据的检测责任推给了别处。
+    """
+    session = FakeSession(rows=[{"value": 20260115}, {"value": "2026-01-15"}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    count, samples = await client.count_non_iso_date_values(
+        tenant_id="t1", term_type="订单", field="purchase_date"
+    )
+
+    assert count == 1
+    assert samples == ["20260115"]
+
+
+async def test_count_non_iso_date_values_returns_zero_for_clean_values():
+    session = FakeSession(rows=[{"value": "2026-01-05"}, {"value": "2026-10-05"}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    count, samples = await client.count_non_iso_date_values(
+        tenant_id="t1", term_type="订单", field="purchase_date"
+    )
+
+    assert (count, samples) == (0, [])
+
+
+async def test_count_non_iso_date_values_rejects_invalid_field_name():
+    """field 插值进 Cypher 前必须先过格式校验，不能无条件拼接。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    with pytest.raises(ValueError):
+        await client.count_non_iso_date_values(
+            tenant_id="t1", term_type="订单", field="purchase_date`} MATCH (n) DETACH DELETE n //"
+        )
+    assert session.calls == [], "格式校验必须在发起查询之前，不合法的字段名不能触发任何往返"
+
+
 async def test_sync_term_merges_by_tenant_and_node_key():
     session = FakeSession(rows=[])
     client = Neo4jGraphClient(driver=FakeDriver(session))

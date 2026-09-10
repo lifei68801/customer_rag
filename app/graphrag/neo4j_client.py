@@ -33,6 +33,16 @@ _RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 # 跟 structured_filter_query.py::_RESERVED_FIELD_NAME 保持同一份约定，独立定义
 # 不做跨模块导入——原因同文件顶部 _RELATION_TYPE_NAME_PATTERN 的说明。
 _RESERVED_FIELD_NAME = "standard_name"
+
+# 与 ontology_categories.py::_EXTRA_FIELD_NAME_PATTERN / structured_filter_query.py::
+# _EXTRA_FIELD_NAME_PATTERN 保持同一份格式约束，独立定义不做跨模块导入——三处校验的
+# 是同一条注入防线契约，但分属"声明字段时的格式校验""把已确认字段名拼进结构化查询
+# Cypher 前的防御性复检"和"把已确认字段名拼进本方法的 Cypher 前的防御性复检"三个
+# 不同职责层，各自独立演化不构成重复劳动。count_non_iso_date_values 用它在插值前
+# 断言 field 合法：这是经过正则校验的字符集，不是无条件拼接，做法与本文件
+# ensure_extra_field_indexes 把字段名插值进 CREATE INDEX 语句一致（字段名同样来源于
+# ontology_categories.py 声明时已校验过的本体定义）。
+_EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
 _CAST_BY_VALUE_TYPE = {"number": "toFloat", "integer": "toInteger"}
 
 # 详情页专用：一跳邻居，带 node_key 和方向。
@@ -626,21 +636,36 @@ RETURN max(k) AS fanout
 # 属性值，一律参数化，并且走 (tenant_id, type) 复合索引
 # term_tenant_term_type_idx（见 _ENSURE_INDEXES_QUERIES）。
 
-_NON_ISO_DATE_VALUES_QUERY = """
-MATCH (t:Term {tenant_id: $tenant_id, type: $term_type})
-WHERE t[$field] IS NOT NULL
-RETURN DISTINCT t[$field] AS value
+_NON_ISO_DATE_VALUES_QUERY_TEMPLATE = """
+MATCH (t:Term {{tenant_id: $tenant_id, type: $term_type}})
+WHERE t.{field} IS NOT NULL
+RETURN t.{field} AS value
 """
-# 确认本体前扫存量日期值（Task 7：count_non_iso_date_values）。field 走
-# t[$field] 动态属性访问参数化，不拼进语句文本——经实测确认 Neo4j 5.22
-# （docker-compose 里跑的版本）配 driver 6.2.0 支持这个语法：往一个临时
-# 节点写入属性后用 t[$field] 参数化读回，确实拿到了写入的值。
+# 确认本体前扫存量日期值（Task 7：count_non_iso_date_values）。
 #
-# 不需要 execute_structured_filter_query 那种"插值换索引命中"的取舍——
-# 那里插值是为了让规划器在结构化查询的 WHERE 里用上 (tenant_id, type,
-# field) 复合索引；这里本来就要把该字段的全部去重值搬到 Python 侧逐个
-# 跑 is_normalized_date，(tenant_id, type) 索引已经把扫描收窄到这一个
-# term_type 下的节点，字段本身是否命中标量索引不影响这次要做的工作量。
+# field 走字符串插值拼进语句文本，不是参数化的动态属性访问（t[$field]）——
+# 原先用过 t[$field]，实测确认 Neo4j 5.22 + driver 6.2.0 确实支持这个语法
+# 本身（临时节点写入属性、按参数化属性名读回，读到了写入的值），但那只
+# 证明了语法可用，没有证明性能可接受：动态属性访问在运行时才解析属性名，
+# 规划器没法在规划阶段用上 ensure_extra_field_indexes 为这个字段建的
+# (tenant_id, type, field) 三列索引做仅索引扫描，退化成"先按 (tenant_id,
+# type) 定位节点、再逐个堆访问取属性"——跟 execute_structured_filter_query
+# 文档字符串里对同一技术手段的结论一致（那里插值正是为了避免这种退化）。
+# 没有实测过这退化在几十万节点规模下的确认请求上是否会慢到不可接受，不能
+# 靠"范围已经被索引收窄"这类未经验证的因果来担保，所以改回静态插值这条
+# 已经在本文件 ensure_extra_field_indexes 里验证过的路。
+#
+# 插值前必须先用 _EXTRA_FIELD_NAME_PATTERN 断言 field 合法——这是经过正则
+# 校验的字符集（^[a-zA-Z_][a-zA-Z0-9_]{0,63}$），不是无条件拼接，字段名
+# 来源同样是 ontology_categories.py 声明时已校验过的本体定义，风险性质与
+# ensure_extra_field_indexes 把字段名插值进 CREATE INDEX 语句完全一致。
+#
+# 不用 DISTINCT：409 文案说的是"还有 N 个实体的值不是 YYYY-MM-DD"，数字
+# 必须是不合格的实体数，不能是不合格的不同取值数——多个实体共享同一个
+# 未归一占位值（如批量导入脚本留下的"待定"）时，去重计数会把真实的大规模
+# 数据问题报成"只有 1 个"，管理员据此判断成孤立小问题、修一条就确认，
+# 其余实体在按时间过滤时被静默漏掉，正是这个特性本该防止的后果。样例展示
+# 时才在 Python 侧对不合格值去重，避免同一个值反复出现在样例里。
 
 _ENSURE_INDEXES_QUERIES = [
     "CREATE INDEX term_tenant_node_key_idx IF NOT EXISTS FOR (t:Term) ON (t.tenant_id, t.node_key)",
@@ -1577,22 +1602,33 @@ class Neo4jGraphClient:
     async def count_non_iso_date_values(
         self, *, tenant_id: str, term_type: str, field: str
     ) -> tuple[int, list[str]]:
-        """这个租户这个类型下，该字段的值不是补零 ISO 的有几个，外加最多 3 个样例。
+        """这个租户这个类型下，该字段的值不是补零 ISO 的有几个**实体**，外加
+        最多 3 个去重后的样例。
 
         判据是「已经是补零 ISO」，不是「能不能归一」：2026/1/15 能归一，但它
         此刻躺在图里的样子仍然会破坏字典序，放行等于把问题留在数据里。
 
-        字段名不拼进 Cypher 文本，走 t[$field] 动态属性访问的参数化写法——
-        见 _NON_ISO_DATE_VALUES_QUERY 上方注释，这个语法在本项目实际跑的
-        Neo4j 版本上经过实测确认可用。
+        返回的 count 是不合格的行数（= 实体数），不是不合格的不同取值数——
+        见 _NON_ISO_DATE_VALUES_QUERY_TEMPLATE 上方注释，调用方
+        （admin_ontology_routes.py::_assert_new_date_fields_have_clean_values）
+        的 409 文案说的是"还有 N 个实体"，数字必须对得上这句话。
+
+        字段名走字符串插值拼进 Cypher 文本，先用 _EXTRA_FIELD_NAME_PATTERN
+        断言合法——理由同 ensure_extra_field_indexes：字段名来源是
+        ontology_categories.py 声明时已校验过的本体定义，正则校验过的字符
+        集，不是无条件拼接。
 
         判定逻辑放在 Python 侧用 is_normalized_date，不在 Cypher 里写正则：
         写两份「合格」的定义迟早会不一致。
         """
+        if not _EXTRA_FIELD_NAME_PATTERN.match(field):
+            raise ValueError(
+                f"字段名 {field!r} 不合法，必须满足 ^[a-zA-Z_][a-zA-Z0-9_]{{0,63}}$"
+            )
+        query = _NON_ISO_DATE_VALUES_QUERY_TEMPLATE.format(field=field)
         async with self._driver.session() as session:
             result = await session.run(
-                _NON_ISO_DATE_VALUES_QUERY,
-                {"tenant_id": tenant_id, "term_type": term_type, "field": field},
+                query, {"tenant_id": tenant_id, "term_type": term_type}
             )
             rows = await result.data()
         # 非字符串值（正常写入路径不会产生，但防御性地处理历史脏数据）一律
@@ -1603,5 +1639,16 @@ class Neo4jGraphClient:
             for value in (row["value"],)
             if not (isinstance(value, str) and is_normalized_date(value))
         ]
-        samples = [str(value) for value in bad_values[:3]]
+        # count 对全部不合格的行计数（不去重）；samples 去重展示，避免同一
+        # 个占位值反复占满 3 个样例名额，看不到问题的多样性。
+        seen: set[str] = set()
+        samples: list[str] = []
+        for value in bad_values:
+            text = str(value)
+            if text in seen:
+                continue
+            seen.add(text)
+            samples.append(text)
+            if len(samples) == 3:
+                break
         return len(bad_values), samples

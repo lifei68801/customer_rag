@@ -402,7 +402,7 @@ class NeptuneGraphClient:
             await self._client.execute_open_cypher(query)
         await self._client.execute_open_cypher(_BACKFILL_LEGACY_TERM_NODES_QUERY)
 
-    # 以下 9 个方法是 GraphWriteProtocol（neo4j_client.py）声明的后台管理写
+    # 以下 15 个方法是 GraphWriteProtocol（neo4j_client.py）声明的后台管理写
     # 接口——NeptuneGraphClient 尚未实现，显式存根报 NotImplementedError，
     # 而不是任由调用方撞上一个没有说明的 AttributeError。收窄 GraphWriteProtocol
     # 本身不会在 CI 里拦住误接的调用（本项目 CI 只跑 pytest，不跑类型检查），
