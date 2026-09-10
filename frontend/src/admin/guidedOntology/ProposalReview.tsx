@@ -42,6 +42,21 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
   const setDecision = (patch: Partial<GuidedDecision>) =>
     onDecisionChange({ ...decision, ...patch })
 
+  // 换中心：原来挂在旧中心下的实体一并改挂到新中心。不改挂的话，产品仍
+  // 挂在客户号下、客户号再挂到订单号下——界面上多出一层用户没要的层级，
+  // 而"中心"这个词说的就是"别的都挂在它下面"。新中心自己的 parentOf 要
+  // 删掉：中心没有上级，留着会画出一个环。
+  const setRoot = (nextRoot: string) => {
+    const parentOf: Record<string, string> = {}
+    for (const [child, parent] of Object.entries(decision.parentOf)) {
+      if (child === nextRoot) continue
+      parentOf[child] = parent === rootName ? nextRoot : parent
+    }
+    setDecision({ rootName: nextRoot, parentOf })
+  }
+  // 只有一个标识列时不出这个选择器：一个选项的选择器是噪音。
+  const rootChoosable = identifiers.filter((c) => isEntityColumn(c, decision)).length > 1
+
   return (
     <div className="flex flex-col gap-6">
       {identifiers.length > 0 && (
@@ -56,10 +71,10 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
         <section className="flex flex-col gap-3">
           <h2 className={sectionTitle}>这几列被当成了标识</h2>
           <p className="text-sm text-ink-soft">
-            标识列的每一个值都会在图谱里变成一个节点，第一列还会成为整份本体的
-            中心。如果其中有一列其实是金额或计数（比如以分为单位的金额，同样
-            几乎每行都不一样），把它改成「做成属性」——不然图谱里会为每一个
-            金额值建一个节点。
+            标识列的每一个值都会在图谱里变成一个节点，其中一列会成为整份本体的
+            中心（默认是第一列；有多列时可以在下面改）。如果其中有一列其实是
+            金额或计数（比如以分为单位的金额，同样几乎每行都不一样），把它改成
+            「做成属性」——不然图谱里会为每一个金额值建一个节点。
           </p>
           {identifiers.map((column, index) => {
             const name = column.stats.name
@@ -80,6 +95,20 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
                     </span>
                   )}
                 </div>
+                {rootChoosable && asEntity && (
+                  <label className="flex items-start gap-2 text-sm text-ink">
+                    <input
+                      type="radio"
+                      name="root"
+                      checked={rootName === name}
+                      onChange={() => setRoot(name)}
+                    />
+                    <span>
+                      <strong>设为中心</strong>——这张表每一行说的是一个{name}：
+                      属性都挂在它身上，别的实体都挂在它下面
+                    </span>
+                  </label>
+                )}
                 <label className="flex items-start gap-2 text-sm text-ink">
                   <input
                     type="radio"

@@ -283,6 +283,61 @@ describe('标识列可以被改判成属性', () => {
   })
 })
 
+describe('选中心', () => {
+  // 两个标识列的表：客户号排在订单号前面。按列顺序中心会是客户号，但这张
+  // 表每一行说的是"一笔订单"——中心该是订单号。以前唯一的办法是改文件里
+  // 的列顺序，或者把客户号改判成属性（那就丢了客户这个实体）。
+  function twoIdentifierColumns(): RoledColumn[] {
+    return [
+      makeColumn('客户号', 'identifier', 9500),
+      makeColumn('订单号', 'identifier', 9998),
+      makeColumn('产品', 'dimension', 10),
+      makeColumn('revenue', 'measure', 500),
+    ]
+  }
+
+  it('没指定时中心是列顺序里第一个标识列——默认行为不变', () => {
+    const roled = twoIdentifierColumns()
+    const proposal = buildProposal(roled, initialDecision(roled))
+    expect(proposal.rootName).toBe('客户号')
+  })
+
+  it('指定第二个标识列当中心：属性挂它身上，别的标识列挂在它下面', () => {
+    const roled = twoIdentifierColumns()
+    const decision = initialDecision(roled)
+    decision.rootName = '订单号'
+    const proposal = buildProposal(roled, decision)
+    expect(proposal.rootName).toBe('订单号')
+    expect(proposal.rootIsGuessed).toBe(false)
+    const host = proposal.termTypes.find((t) => t.value === '订单号')
+    expect(host?.extra_fields.map((f) => f.name)).toEqual(['revenue'])
+    // 客户号仍是实体，且作为非中心实体挂到中心下面。
+    expect(proposal.termTypes.map((t) => t.value)).toContain('客户号')
+    const edge = proposal.constraints.find((c) => c.object_term_type === '客户号')
+    expect(edge?.subject_term_type).toBe('订单号')
+  })
+
+  it('指定的中心已经被改判成属性时，回落到第一个仍是实体的标识列，不拿一个不存在的中心', () => {
+    // 用户先选了订单号当中心，又把它改判成属性。rootName 若照单全收，
+    // 属性会挂到一个不在 termTypes 里的名字上——提交出去是孤儿字段。
+    const roled = twoIdentifierColumns()
+    const decision = initialDecision(roled)
+    decision.rootName = '订单号'
+    decision.dimensionsAsEntity['订单号'] = false
+    const proposal = buildProposal(roled, decision)
+    expect(proposal.rootName).toBe('客户号')
+  })
+
+  it('用户明确选了一个维度列当中心，那不是猜的——不出「中心是猜的」告警', () => {
+    const roled = twoIdentifierColumns()
+    const decision = initialDecision(roled)
+    decision.rootName = '产品'
+    const proposal = buildProposal(roled, decision)
+    expect(proposal.rootName).toBe('产品')
+    expect(proposal.rootIsGuessed).toBe(false)
+  })
+})
+
 describe('会成为属性的列要能被界面点名', () => {
   it('attributeColumns 按原列名列出度量列和日期列', () => {
     const roled = demoColumns()

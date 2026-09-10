@@ -73,6 +73,17 @@ export interface GuidedDecision {
   parentOf: Record<string, string>
   /** 每条边的关系类型名。键是子实体名。 */
   relationNameOf: Record<string, string>
+  /**
+   * 用户指定的中心实体（列名）。缺省 / undefined 时按列顺序取第一个标识列。
+   *
+   * 中心是这张表的主语：属性挂在它身上，星型的边都从它出发。只按列顺序
+   * 取的话，「客户号」排在「订单号」前面的订单表会把客户当成中心，而唯一
+   * 的纠正办法是改文件里的列顺序或者把客户号改判成属性（丢掉一个实体）。
+   *
+   * 指向的列若已不是实体（被改判成属性），buildProposal 回落到列顺序，
+   * 不拿一个不存在的名字当宿主。
+   */
+  rootName?: string
 }
 
 export interface Proposal {

@@ -172,19 +172,29 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
   // 属性没处挂（entityNames 空）时，属性列必须落进 unusedColumns。任何
   // 一列最终只能是「进了某个实体的 extra_fields」或「进了 unusedColumns」
   // 这两种下场之一，不允许第三种——第三种就是静默丢列。
+  //
+  // 用户指定的中心优先，但只在它还是实体时生效：先选了订单号当中心、又把
+  // 它改判成属性，照单全收会把属性挂到一个不在 termTypes 里的名字上。
+  const chosenRoot =
+    decision.rootName !== undefined && entityNames.has(decision.rootName)
+      ? decision.rootName
+      : undefined
   const rootName =
+    chosenRoot ??
     roled.find((c) => c.role === 'identifier' && entityNames.has(c.stats.name))?.stats.name ??
     roled.find((c) => entityNames.has(c.stats.name))?.stats.name ??
     ''
   const attributeHost = rootName === '' ? undefined : rootName
 
-  // 中心是猜的 = 中心那一列不是标识列。两种来源：这张表本来就没有标识列
-  // （纯维度表），或者用户把标识列改判成了属性。后一种以前答错：
-  // rootIsGuessed 只看"有没有标识列存在过"，用户把它改判掉之后中心已经是
-  // 一个维度列了，界面却照旧不出"中心是猜的"那条提示。
-  const rootIsGuessed = !roled.some(
-    (c) => c.role === 'identifier' && c.stats.name === rootName,
-  )
+  // 中心是猜的 = 中心那一列不是标识列，**且不是用户选的**。前者两种来源：
+  // 这张表本来就没有标识列（纯维度表），或者用户把标识列改判成了属性。
+  // 后一种以前答错：rootIsGuessed 只看"有没有标识列存在过"，用户把它改判
+  // 掉之后中心已经是一个维度列了，界面却照旧不出"中心是猜的"那条提示。
+  // 用户明确选了一个维度列当中心的，不叫猜——那条告警会把他自己的决定
+  // 说成系统的臆测。
+  const rootIsGuessed =
+    chosenRoot === undefined &&
+    !roled.some((c) => c.role === 'identifier' && c.stats.name === rootName)
 
   const renamedFields: Record<string, string> = {}
   const hostFields: DraftExtraField[] = []

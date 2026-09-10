@@ -233,6 +233,79 @@ describe('被当成标识的列', () => {
   })
 })
 
+describe('选中心', () => {
+  /** 两个标识列：客户号排在订单号前面，但这张表每行说的是一笔订单。 */
+  function twoIdentifierStats(): ColumnStats[] {
+    return [
+      stat('客户号', 9500),
+      stat('订单号', 9998),
+      stat('产品', 10, 'string', ['咖啡', '茶']),
+      stat('revenue', 500, 'number'),
+    ]
+  }
+  const twoRoled = assignRoles(twoIdentifierStats())
+  const twoDecision = initialDecision(twoRoled)
+  const twoProposal = buildProposal(twoRoled, twoDecision)
+
+  it('有两个标识列时，每张标识卡上有「设为中心」，默认第一列选中', async () => {
+    renderReview({ roled: twoRoled, decision: twoDecision, proposal: twoProposal })
+    const first = await screen.findByTestId('identifier-客户号')
+    const second = screen.getByTestId('identifier-订单号')
+    expect((within(first).getByRole('radio', { name: /设为中心/ }) as HTMLInputElement).checked).toBe(true)
+    expect((within(second).getByRole('radio', { name: /设为中心/ }) as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('点第二列的「设为中心」：rootName 换成它，原来挂在旧中心下的实体跟着改挂', async () => {
+    // 不改挂的话：产品仍挂在客户号下，客户号再挂到订单号下——界面上多出
+    // 一层用户没要的层级，而"中心"这个词说的就是"别的都挂在它下面"。
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    renderReview({
+      roled: twoRoled,
+      decision: twoDecision,
+      proposal: twoProposal,
+      onDecisionChange: onChange,
+    })
+    const second = await screen.findByTestId('identifier-订单号')
+    await user.click(within(second).getByRole('radio', { name: /设为中心/ }))
+    const next = onChange.mock.calls[onChange.mock.calls.length - 1][0] as GuidedDecision
+    expect(next.rootName).toBe('订单号')
+    expect(next.parentOf['产品']).toBe('订单号')
+    expect(next.parentOf['订单号']).toBeUndefined()
+  })
+
+  it('把一个有上级的实体设为中心，它不会变成自己的上级', async () => {
+    // 第二个标识列作为非中心实体，界面上是有「挂在」下拉框的——用户可以先
+    // 把订单号挂到客户号（当时的中心）下面，再把订单号设为中心。改挂那一步
+    // 不排除新中心自己的话，parentOf['订单号'] 会从「客户号」被改写成
+    // 「订单号」：一个自环。buildProposal 眼下会跳过中心，所以它是哑的——
+    // 直到用户再把中心换成别人，这条自环立刻生效，那个实体被判无效上级、
+    // 静默改挂到中心下，还要在改挂提示里点名一次。
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    const withParent: GuidedDecision = {
+      ...twoDecision,
+      parentOf: { ...twoDecision.parentOf, 订单号: '客户号' },
+    }
+    renderReview({
+      roled: twoRoled,
+      decision: withParent,
+      proposal: buildProposal(twoRoled, withParent),
+      onDecisionChange: onChange,
+    })
+    const second = await screen.findByTestId('identifier-订单号')
+    await user.click(within(second).getByRole('radio', { name: /设为中心/ }))
+    const next = onChange.mock.calls[onChange.mock.calls.length - 1][0] as GuidedDecision
+    expect(next.parentOf['订单号']).toBeUndefined()
+  })
+
+  it('只有一个标识列时不出现「设为中心」——一个选项的选择器是噪音', async () => {
+    renderReview()
+    await screen.findByTestId('identifier-订单号')
+    expect(screen.queryByRole('radio', { name: /设为中心/ })).toBeNull()
+  })
+})
+
 describe('会成为属性的列', () => {
   it('度量列和日期列的去向可见，不是从界面上消失', async () => {
     // 这两类列此前在审阅视图里一处都不出现：一列本该建成实体的数值列被
