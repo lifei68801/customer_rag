@@ -440,3 +440,139 @@ def test_a_member_cannot_write_another_tenants_persona(personas_conn):
     """写入端点必须走 require_tenant_access。读端点按 accessible 过滤，
     写端点却不校验的话，member 能改别人数字人的脸。"""
     assert _put_persona(personas_conn, tenant_id="secret", role="member").status_code == 403
+
+
+# ---- 一个租户多张脸（ADR-0004）----
+#
+# persona_id 只用来定位一张脸，**绝不进任何权限判据**。下面的两条安全用例
+# 守的正是"多脸不能成为绕过授权的新路径"。
+
+
+def _faces_call(
+    conn: aiosqlite.Connection, method: str, path: str, *,
+    username: str = "alice", role: str = "member", json_body=None,
+):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: FakeGraph()
+    try:
+        token = session_store.create_session(username=username, role=role, tenant_id=None)
+        client = TestClient(app)
+        return client.request(
+            method, path, json=json_body, headers={"Authorization": f"Bearer {token}"}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _create_face(conn, tenant_id="muji-goods", persona_id="dianwu", name="店务老张", **who):
+    return _faces_call(
+        conn, "POST", f"/api/admin/{tenant_id}/persona/faces",
+        json_body={"persona_id": persona_id, "name": name}, **who,
+    )
+
+
+def test_a_tenant_with_two_faces_lists_both(personas_conn):
+    """右栏要列出两张，不是一张。
+
+    今天列表按租户各出一项——多脸之后同一个租户要出两项，且各自的头像/
+    一句话是自己的。
+    """
+    assert _create_face(personas_conn).status_code == 201
+
+    body = _get_personas(personas_conn, username="alice", role="member")
+    goods = [p for p in body["personas"] if p["tenant_id"] == "muji-goods"]
+
+    assert [p["persona_id"] for p in goods] == ["default", "dianwu"]
+    assert goods[1]["name"] == "店务老张"
+    # default 那张沿用租户名——它是解耦之前那唯一的一张脸。
+    assert goods[0]["name"] == "杂货"
+
+
+def test_a_tenant_with_no_face_still_lists_one(personas_conn):
+    """没配过脸的租户合成一张 default，name 退回租户名——今天的行为不变。
+
+    不合成的话，管理员新建租户并授权之后用户看不见它。
+    """
+    body = _get_personas(personas_conn, username="alice", role="member")
+    store = [p for p in body["personas"] if p["tenant_id"] == "muji-store"]
+
+    assert [(p["persona_id"], p["name"]) for p in store] == [("default", "门店")]
+
+
+def test_faces_of_an_unauthorized_tenant_do_not_appear(personas_conn):
+    """**安全核心**：多脸不能成为绕过授权的新路径。
+
+    secret 租户建了两张脸，alice 无权访问它——两张都不能出现在她的列表里。
+    只按租户过滤、再把所有脸不加区分地拼进去的实现会在这里红。
+    """
+    assert _create_face(
+        personas_conn, tenant_id="secret", persona_id="x", name="X",
+        username="root", role="admin",
+    ).status_code == 201
+
+    body = _get_personas(personas_conn, username="alice", role="member")
+
+    assert all(p["tenant_id"] != "secret" for p in body["personas"])
+
+
+def test_writing_a_face_of_an_unauthorized_tenant_is_refused(personas_conn):
+    """读挡住了不等于写挡住了，两条路径各断言一次。"""
+    assert _create_face(personas_conn, tenant_id="secret").status_code == 403
+    assert _faces_call(
+        personas_conn, "DELETE", "/api/admin/secret/persona/faces/x"
+    ).status_code == 403
+
+
+def test_reading_and_writing_a_named_face(personas_conn):
+    """按 persona_id 读写：两张脸的头像/一句话/引导问题互不干扰。"""
+    _create_face(personas_conn)
+
+    put = _faces_call(
+        personas_conn, "PUT", "/api/admin/muji-goods/persona?persona_id=dianwu",
+        json_body={"avatar": "B", "tagline": "我懂门店", "questions": ["产品有哪些？"]},
+    )
+    assert put.status_code == 200, put.text
+
+    dianwu = _faces_call(
+        personas_conn, "GET", "/api/admin/muji-goods/persona?persona_id=dianwu"
+    ).json()
+    default = _faces_call(personas_conn, "GET", "/api/admin/muji-goods/persona").json()
+    assert (dianwu["persona_id"], dianwu["tagline"]) == ("dianwu", "我懂门店")
+    assert default["tagline"] == "欢迎光临杂货部", "default 那张脸不能被另一张的写入碰到"
+
+
+def test_deleting_the_default_face_is_refused(personas_conn):
+    """default 那张脸删不掉。
+
+    存量会话都挂在它下面（chat_sessions.persona_id 回填成 'default'）。
+    删掉它，那些会话在右栏就没有归属，左栏整个空掉，而用户会以为历史丢了。
+    """
+    _create_face(personas_conn)
+
+    resp = _faces_call(personas_conn, "DELETE", "/api/admin/muji-goods/persona/faces/default")
+
+    assert resp.status_code == 409
+    assert "default" in resp.text
+
+
+def test_deleting_a_named_face_removes_it(personas_conn):
+    _create_face(personas_conn)
+
+    assert _faces_call(
+        personas_conn, "DELETE", "/api/admin/muji-goods/persona/faces/dianwu"
+    ).status_code == 200
+
+    body = _get_personas(personas_conn, username="alice", role="member")
+    goods = [p["persona_id"] for p in body["personas"] if p["tenant_id"] == "muji-goods"]
+    assert goods == ["default"]
+
+
+def test_a_blank_face_id_is_refused_at_the_http_layer(personas_conn):
+    """空 persona_id 在接口这一层就挡住并说清楚，不是冲成 500。"""
+    resp = _create_face(personas_conn, persona_id="   ")
+
+    assert resp.status_code == 400
+    assert "数字人 ID" in resp.text
