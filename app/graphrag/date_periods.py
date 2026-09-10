@@ -75,7 +75,15 @@ def resolve_period(name: str, *, today: date) -> tuple[str, str]:
     this_* 这几个的结束端取到周期末尾而不是今天：数据里通常没有未来日期，
     两种取法多半等价；但真有预约、排期这类未来日期时，取到今天会把它们
     漏掉，而用户问「本月的排期」时要的正是那些。
+
+    `today` 显式重构成纯 `date`：`datetime` 是 `date` 的子类，类型标注和
+    运行时都拦不住调用方传 `datetime.now()` 进来。`this_month` 这组分支
+    本来就重新构造 `date(y, m, d)` 所以天然安全，但 `today`/`this_week`/
+    `last_*_days` 这组是直接对传入对象做减法——不重构的话，传入
+    `datetime` 会让 `.isoformat()` 带出时分秒，产出 14 个字符而不是补零
+    的 10 个字符，一声不吭地违反"图里存的日期一律是 YYYY-MM-DD"这条约束。
     """
+    today = date(today.year, today.month, today.day)
     if name == "today":
         start, end = today, today
     elif name == "this_week":

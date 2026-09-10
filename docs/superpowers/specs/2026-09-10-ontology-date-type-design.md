@@ -193,10 +193,11 @@ def normalize_date(raw: str) -> str:
 - `03/04/2026`、`15-01-2026` 这类日/月在前的两位数写法——分不出三月四日还是四月三日
 - `Jan 15, 2026` 英文月名——其实无歧义，但要引入 locale 表，先不做，需要时再加
 
-**Excel 序列号不认。** `convert_excel_cell_to_string`
-（`schema_etl_row_processing.py:113`）已经把日期单元格用 `%Y-%m-%d` 转好了；序列号
-只在单元格没被格式化成日期时才冒出来，那时它跟一个普通整数在数据上无法区分，认它
-就是在猜。
+**Excel 序列号不认。** 序列号本身在数据上跟一个普通整数无法区分，认它就是在猜。
+（未验证：`convert_excel_cell_to_string`——`schema_etl_row_processing.py:114-117`——
+对零点整的 `datetime` 转成 `%Y-%m-%d`，对带时间的转成 `%Y-%m-%d %H:%M:%S`，不是统一
+转成 `%Y-%m-%d`；两种格式 `normalize_date` 都会拒，但不能据此断言"序列号只在未格式化
+时才冒出来"。）
 
 ### 5.2 接入点
 

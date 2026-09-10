@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -135,6 +135,20 @@ def test_every_declared_name_resolves():
     for name in PERIOD_NAMES:
         start, end = resolve_period(name, today=date(2026, 9, 10))
         assert start <= end
+
+
+def test_a_datetime_passed_as_today_does_not_leak_a_time_suffix():
+    """`datetime` 是 `date` 的子类，类型标注拦不住调用方传 `datetime.now()`。
+
+    `today`/`this_week`/`last_7_days` 这组分支直接对传入对象做减法——不
+    显式重构成 `date` 的话，结果会带出时分秒，变成 14 个字符而不是补零
+    的 10 个字符，一声不吭地破坏字典序等于时间序这条地基。
+    """
+    injected = datetime(2026, 9, 10, 8, 30, 0)
+    for name in ("today", "this_week", "last_week", "last_7_days", "last_30_days", "last_90_days"):
+        start, end = resolve_period(name, today=injected)
+        assert len(start) == 10
+        assert len(end) == 10
 
 
 def test_an_unknown_name_is_refused_and_the_message_lists_what_works():

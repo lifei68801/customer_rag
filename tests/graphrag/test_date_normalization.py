@@ -57,9 +57,11 @@ def test_day_first_with_dashes_is_also_refused():
 
 
 def test_an_excel_serial_number_is_refused():
-    """Excel 序列号不认：convert_excel_cell_to_string 已经把日期单元格
-    转成 %Y-%m-%d 了；序列号只在单元格没被格式化成日期时才冒出来，那时
-    它跟一个普通整数在数据上无法区分，认它就是在猜。"""
+    """Excel 序列号不认：序列号本身在数据上跟一个普通整数无法区分，认它
+    就是在猜。（未验证：convert_excel_cell_to_string 是否总是把日期单元格
+    转成统一的 %Y-%m-%d——实际它对零点整的 datetime 转成 %Y-%m-%d，对带
+    时间的转成 %Y-%m-%d %H:%M:%S，两种 normalize_date 都会拒，但不能据此
+    断言序列号只在未格式化时才会出现。）"""
     with pytest.raises(InvalidDateValueError):
         normalize_date("45678")
 
@@ -79,7 +81,14 @@ def test_is_normalized_date_only_accepts_the_padded_iso_form():
     assert is_normalized_date("2026-02-30") is False
 
 
-def test_two_digit_year_is_ambiguous_and_refused():
-    """两位年份是 2026 还是 1926 说不清——这是变异 D 的靶子用例。"""
-    with pytest.raises(InvalidDateValueError):
+def test_two_digit_year_is_not_a_known_spelling_and_is_refused():
+    """两位年份是 2026 还是 1926 说不清，但它走的不是「有歧义」那条专门
+    路径——`_DAY_OR_MONTH_FIRST` 要求年份是结尾的 4 位数，`"26-1-5"` 最后
+    一段是 "5"，不匹配，所以落进通用「认不出」分支，不含「歧义」字样。
+
+    这是变异 D 的靶子用例：`_YEAR_FIRST` 放宽成 `(\\d{1,4})` 后，
+    `date(26, 1, 5)` 会被静默接受成公元 26 年而不报错。
+    """
+    with pytest.raises(InvalidDateValueError) as exc:
         normalize_date("26-1-5")
+    assert "歧义" not in str(exc.value)

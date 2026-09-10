@@ -443,9 +443,11 @@ def test_day_first_with_dashes_is_also_refused():
 
 
 def test_an_excel_serial_number_is_refused():
-    """Excel 序列号不认：convert_excel_cell_to_string 已经把日期单元格
-    转成 %Y-%m-%d 了；序列号只在单元格没被格式化成日期时才冒出来，那时
-    它跟一个普通整数在数据上无法区分，认它就是在猜。"""
+    """Excel 序列号不认：序列号本身在数据上跟一个普通整数无法区分，认它
+    就是在猜。（未验证：convert_excel_cell_to_string 是否总是把日期单元格
+    转成统一的 %Y-%m-%d——实际它对零点整的 datetime 转成 %Y-%m-%d，对带
+    时间的转成 %Y-%m-%d %H:%M:%S，两种 normalize_date 都会拒，但不能据此
+    断言序列号只在未格式化时才会出现。）"""
     with pytest.raises(InvalidDateValueError):
         normalize_date("45678")
 
