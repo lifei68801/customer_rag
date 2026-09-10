@@ -394,12 +394,14 @@ describe('未使用的列', () => {
   })
 })
 
-describe('日期列的限制', () => {
-  it('明说范围过滤做不了', async () => {
-    // 数据模型没有日期类型。不说的话，用户会以为"上个月的订单"这类问题
-    // 能答，直到真去问才发现不行。
+describe('日期列', () => {
+  it('日期列那一节说的是能做什么，不再是「做不了范围过滤」', async () => {
     renderReview()
-    expect((await screen.findByTestId('date-warning')).textContent).toMatch(/范围|区间|过滤/)
+    const section = await screen.findByTestId('date-columns')
+    expect(section.textContent).toMatch(/上个月/)
+    expect(section.textContent).not.toMatch(/做不了/)
+    // 认得的写法要列出来：用户在导入前就该知道 03/04/2026 会被跳过。
+    expect(section.textContent).toMatch(/2026-01-05/)
   })
 })
 

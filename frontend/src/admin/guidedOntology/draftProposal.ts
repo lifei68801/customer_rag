@@ -129,9 +129,7 @@ export function initialDecision(roled: RoledColumn[]): GuidedDecision {
 }
 
 function measureValueType(column: RoledColumn): DraftExtraField['value_type'] {
-  // 日期存成 string：数据模型只有 string/number/integer/number[]，没有
-  // 日期类型。这不是疏忽，是必须向用户明说的限制。
-  if (column.role === 'date') return 'string'
+  if (column.role === 'date') return 'date'
   if (column.role === 'dimension') return 'string'
   if (column.role === 'identifier') {
     // 被用户改判成属性的标识列。它落到这里的典型情形正是"其实是以分为

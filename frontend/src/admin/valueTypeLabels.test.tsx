@@ -110,6 +110,12 @@ describe('取值类型的界面文案', () => {
     expect(valueTypeLabel('geo_point')).toBe('geo_point')
     expect(valueTypeOptionLabel('geo_point')).toBe('geo_point')
   })
+
+  it('date 有中文说法，不是裸的 date', () => {
+    // 认不出的枚举值会原样显示，用户在下拉里看到的就是 "date"。
+    expect(valueTypeLabel('date')).toBe('日期')
+    expect(valueTypeOptionLabel('date')).toMatch(/2026-01-05/)
+  })
 })
 
 describe('本体结构页的类型下拉', () => {
@@ -121,12 +127,13 @@ describe('本体结构页的类型下拉', () => {
     const fieldType = (await screen.findByLabelText('字段类型')) as HTMLSelectElement
     const numberOption = Array.from(fieldType.options).find((o) => o.value === 'number')
     expect(numberOption?.textContent).toBe('小数（如 19.99，售价/金额）')
-    // 存储枚举不动：改了要迁移存量数据。
+    // 存储枚举不动：改了要迁移存量数据。date 是这次新加的可选类型。
     expect(Array.from(fieldType.options).map((o) => o.value)).toEqual([
       'string',
       'number',
       'integer',
       'number[]',
+      'date',
     ])
   })
 

@@ -39,6 +39,7 @@ const VALUE_TYPE_SHORT_LABELS: Record<string, string> = {
   number: '小数',
   integer: '整数',
   'number[]': '小数列表',
+  date: '日期',
 }
 
 const VALUE_TYPE_OPTION_LABELS: Record<string, string> = {
@@ -46,6 +47,7 @@ const VALUE_TYPE_OPTION_LABELS: Record<string, string> = {
   number: '小数（如 19.99，售价/金额）',
   integer: '整数',
   'number[]': '小数列表',
+  date: '日期（如 2026-01-05，可以按「上个月」这类时间范围过滤）',
 }
 
 /** 行内提示用的短说法。认不出的枚举值原样返回——显示成空白更糟。 */

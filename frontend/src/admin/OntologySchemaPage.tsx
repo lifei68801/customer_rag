@@ -98,7 +98,7 @@ function bulkKeys(target: BulkDeleteTarget): string[] {
   return target.mode === 'keys' ? target.keys : []
 }
 
-const VALUE_TYPES = ['string', 'number', 'integer', 'number[]'] as const
+const VALUE_TYPES = ['string', 'number', 'integer', 'number[]', 'date'] as const
 
 const STANDARD_NAME_VALUE_TYPES = ['string', 'number', 'integer'] as const
 

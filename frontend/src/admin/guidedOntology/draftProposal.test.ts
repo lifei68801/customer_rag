@@ -90,11 +90,14 @@ describe('生成草案', () => {
     expect(fieldNames).toContain('purchase_date')
   })
 
-  it('日期属性存成 string——数据模型没有日期类型', () => {
-    const proposal = buildProposal(demoColumns(), initialDecision(demoColumns()))
-    const order = proposal.termTypes.find((t) => t.value === '订单号')!
-    const date = order.extra_fields.find((f) => f.name === 'purchase_date')!
-    expect(date.value_type).toBe('string')
+  it('日期列产出 date 类型，不是 string', () => {
+    // 存成 string 的话，「上个月的订单」在图谱层做不了范围过滤——这正是
+    // 这次改造要修的那件事。
+    const roled = demoColumns()
+    const proposal = buildProposal(roled, initialDecision(roled))
+    const host = proposal.termTypes.find((t) => t.value === '订单号')
+    const field = host?.extra_fields.find((f) => f.label === 'purchase_date')
+    expect(field?.value_type).toBe('date')
   })
 
   it('维度改成属性之后，就不再是实体类型了', () => {

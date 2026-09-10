@@ -333,14 +333,16 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
       </section>
 
       {dateColumns.length > 0 && (
-        <section data-testid="date-warning" className={`${card} flex flex-col gap-1`}>
-          <h2 className={sectionTitle}>日期列的限制</h2>
-          {/* 不说的话，用户会以为"上个月的订单"这类问题能答，直到真去问
-              才发现不行。 */}
-          <p className="text-sm text-ink">
-            {dateColumns.map((c) => c.stats.name).join('、')} 会被存成文本。
-            系统目前没有日期类型，所以**按时间范围过滤**（「上个月的」「今年以来的」）
-            在图谱层做不了，只能精确匹配。
+        <section data-testid="date-columns" className={`${card} flex flex-col gap-1`}>
+          <h2 className={sectionTitle}>日期列</h2>
+          {/* 用户在导入前就该知道认得哪些写法、猜不出先后的写法会被跳过——
+              等数据导进去之后才发现，已经晚了。 */}
+          <p className="text-sm text-ink-soft">
+            {dateColumns.map((c) => c.stats.name).join('、')} 会存成日期类型，可以按时间范围
+            提问（「上个月的」「今年以来的」）。导入时认得这几种写法：2026-01-05、
+            2026/1/5、2026.1.5、2026年1月5日、20260105。像 03/04/2026 这种日和月分不出
+            先后的写法会被跳过并记进报错明细——分不出三月四日还是四月三日，猜错了不会
+            报错，只会让「三月的订单」静默答错。
           </p>
         </section>
       )}
