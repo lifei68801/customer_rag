@@ -18,10 +18,9 @@ from app.graphrag.tenant_personas_store import (
     create_persona,
     delete_persona,
     get_persona,
-    get_personas,
     get_questions,
     get_questions_setting,
-    list_personas,
+    list_faces as list_faces_with_default,
     set_questions,
     upsert_persona,
 )
@@ -87,11 +86,12 @@ async def list_my_personas(
         # 脸是从 active（已经按 accessible 过滤过）逐个租户取的，不是一次
         # 把所有租户的脸都捞出来再拼——后者会把 alice 无权访问的那个租户的
         # 脸也列出来，名字本身就泄露了"这家公司还有一个叫机密的领域"。
-        faces = await list_personas(review_conn, t["tenant_id"])
-        if not faces:
-            # 没配过脸的租户合成一张 default：不合成的话，管理员新建租户并
-            # 授权之后用户看不见它，而没有任何地方告诉他还差一步。
-            faces = [{"persona_id": DEFAULT_PERSONA_ID, "name": "", "avatar": "", "tagline": ""}]
+        #
+        # default 那张由 list_faces 保证一定在（没物化也合成）：不合成的话，
+        # 管理员新建租户并授权之后用户看不见它，而没有任何地方告诉他还差
+        # 一步；只在"一张都没有"时合成也不够——先建了具名脸的租户会把
+        # default 挤没，存量会话全在它下面。
+        faces = await list_faces_with_default(review_conn, t["tenant_id"])
         for face in faces:
             personas.append(
                 Persona(
@@ -319,7 +319,7 @@ async def list_faces(
     tenant_id: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> FaceListResponse:
-    faces = await list_personas(review_conn, tenant_id)
+    faces = await list_faces_with_default(review_conn, tenant_id)
     return FaceListResponse(faces=[FaceSummary(**{k: f[k] for k in ("persona_id", "name", "avatar", "tagline")}) for f in faces])
 
 
@@ -341,6 +341,9 @@ async def add_face(
         )
     except InvalidPersonaError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    # 直接回请求体，不回读：create_persona 对 persona_id / name 只做非空校验、
+    # 不做任何改写（不 trim、不归一化）。哪天 store 层开始改写了，这里必须
+    # 改成读一遍再回，否则回给前端的是没落库的那个值。
     return FaceSummary(persona_id=payload.persona_id, name=payload.name, avatar="", tagline="")
 
 

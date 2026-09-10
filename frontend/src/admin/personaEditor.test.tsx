@@ -400,6 +400,23 @@ describe('数字人编辑页', () => {
     expect(screen.queryByDisplayValue('有哪些无香料的洗发水？')).toBeNull()
   })
 
+  it('后端只回了具名脸时，default 仍然在选择器里', async () => {
+    // 租户从没配过脸、上来就建了一张具名脸：后端表里只有那一张。default
+    // 没物化不等于不存在——存量会话全挂在它下面，选择器里没它就够不到了。
+    faces = [{ persona_id: 'kefu', name: '客服阿May', avatar: '🎧', tagline: '售后的事问我' }]
+    otherFaceDetails.kefu = {
+      tenant_id: 'demo',
+      name: '客服阿May',
+      avatar: '🎧',
+      tagline: '售后的事问我',
+      questions: [],
+      questions_source: 'generated',
+    }
+    await renderPersonaEditor()
+    await screen.findByRole('tab', { name: /客服阿May/ })
+    expect(screen.getByRole('tab', { name: /默认/ })).toBeTruthy()
+  })
+
   it('default 那张脸的删除按钮禁用并给出理由，不是点了静默失败', async () => {
     // 后端对它回 409（存量会话都挂在它下面）。前端禁掉只是不让人白点一次，
     // 但禁了必须说为什么——点不动且不说原因，用户会以为界面坏了。

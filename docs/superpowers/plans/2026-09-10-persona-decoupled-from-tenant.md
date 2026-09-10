@@ -133,6 +133,13 @@ async def test_existing_sessions_backfill_to_the_default_face():
 - `GET|PUT /api/admin/{tenant_id}/persona/{persona_id}`
 - `POST /api/admin/{tenant_id}/personas` 建脸 · `DELETE .../{persona_id}` 删脸
 
+> **实际落地的路由形状与上面不同**（执行时的裁决）：
+> - `GET|PUT /api/admin/{tenant_id}/persona?persona_id=<id>`（查询参数，缺省 `default`）
+> - `GET|POST /api/admin/{tenant_id}/persona/faces` 列脸 / 建脸 · `DELETE .../persona/faces/{persona_id}` 删脸
+>
+> 原因：`/persona/{persona_id}` 会跟已有的 `/persona/stale-questions` 抢路径——FastAPI 按注册顺序匹配，
+> `stale-questions` 会被当成一个 persona_id。对接方以 `app/api/admin_personas_routes.py` 为准。
+
 - [ ] **Step 1: 写失败测试**
 
 ```python

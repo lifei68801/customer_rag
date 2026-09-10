@@ -10,7 +10,6 @@ from app.graphrag.tenant_personas_store import (
     ensure_tenant_personas_schema,
     list_personas,
     get_persona,
-    get_personas,
     get_questions,
     set_questions,
     upsert_persona,
@@ -114,47 +113,12 @@ def test_missing_persona_returns_none_not_a_blank_row():
     asyncio.run(run())
 
 
-def test_get_personas_batches_and_skips_the_unconfigured():
-    """一次问一批：右栏有 N 个数字人，逐个问就是 N 次往返。
-    没配过的不出现在结果里，而不是占一个空位。"""
-
-    async def run():
-        conn = await _conn()
-        try:
-            await upsert_persona(conn, tenant_id="a", avatar="🛍️", tagline="甲")
-            await upsert_persona(conn, tenant_id="b", avatar="🏪", tagline="乙")
-            await upsert_persona(conn, tenant_id="c", avatar="📦", tagline="丙")
-            # 只问 a 和 b，还多问一个没配过的 z。c 配过但没问——它不该出现，
-            # 否则「返回全表」的实现也能变绿。
-            result = await get_personas(conn, ["a", "b", "z"])
-            assert sorted(result) == ["a", "b"]
-            assert result["a"]["tagline"] == "甲"
-        finally:
-            await conn.close()
-
-    asyncio.run(run())
-
-
-def test_get_personas_with_empty_list_does_not_query():
-    """一个都不问时返回空字典。不加这条判断的话 SQL 会拼出
-    `IN ()`，SQLite 上是语法错误。"""
-
-    async def run():
-        conn = await _conn()
-        try:
-            assert await get_personas(conn, []) == {}
-        finally:
-            await conn.close()
-
-    asyncio.run(run())
-
-
 def test_upsert_does_not_touch_questions():
     """变异 C：upsert_persona 的 ON CONFLICT 如果顺手把 questions 也清空
     （比如加上 `questions = '[]'`），改一次头像就会把下一阶段写好的引导
     问题全部清掉。这里手写一条 questions 进库，upsert 头像之后确认它
     还在原地——upsert_persona 目前的公开接口不产生 questions，所以
-    这条断言只能用 SQL 直接验证，不能靠 get_persona/get_personas
+    这条断言只能用 SQL 直接验证，不能靠 get_persona
     （它们本来就不选这一列）。"""
 
     async def run():

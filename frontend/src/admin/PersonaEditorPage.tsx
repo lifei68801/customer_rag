@@ -121,12 +121,13 @@ export function PersonaEditorPage() {
         throw new Error(extractErrorDetail(body, '数字人列表加载失败'))
       }
       const body = (await response.json()) as { faces: FaceSummary[] }
-      // 没配过脸的租户后端一行都没有；这里合成一张 default，跟前台右栏
-      // 看到的一致——否则选择器是空的，而表单编辑的明明就是它。
+      // default 那张后端已经保证一定在；这里再兜一次底是为了对着旧后端也
+      // 不至于让它从选择器里消失——条件是「没有 default」，不是「列表为
+      // 空」：先建了具名脸的租户列表非空，但 default 照样可能没物化。
       setFaces(
-        body.faces.length > 0
+        body.faces.some((f) => f.persona_id === DEFAULT_PERSONA_ID)
           ? body.faces
-          : [{ persona_id: DEFAULT_PERSONA_ID, name: '', avatar: '', tagline: '' }],
+          : [{ persona_id: DEFAULT_PERSONA_ID, name: '', avatar: '', tagline: '' }, ...body.faces],
       )
       setFacesError(null)
     } catch (err) {

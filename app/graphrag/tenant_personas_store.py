@@ -141,6 +141,31 @@ async def list_personas(conn: aiosqlite.Connection, tenant_id: str) -> list[dict
     return [dict(row) for row in await cursor.fetchall()]
 
 
+async def list_faces(conn: aiosqlite.Connection, tenant_id: str) -> list[dict[str, Any]]:
+    """给界面用的脸列表：default 那张**永远在**，且排第一。
+
+    default 是"没指定就落到它"的那张脸（会话回填、agent 请求的缺省值都是
+    它），但它不一定物化成一行——租户从没配过脸、上来就建一张具名脸时，
+    表里只有那一张。这时只看 list_personas 会让 default 从所有列表里蒸发：
+    不是被删，是从没合成过。而存量会话全挂在它下面，界面上从此够不到。
+
+    所以合成的条件是「列表里没有 default」，不是「列表是空的」。
+    """
+    faces = await list_personas(conn, tenant_id)
+    if not any(f["persona_id"] == DEFAULT_PERSONA_ID for f in faces):
+        faces = [
+            {
+                "tenant_id": tenant_id,
+                "persona_id": DEFAULT_PERSONA_ID,
+                "name": "",
+                "avatar": "",
+                "tagline": "",
+            },
+            *faces,
+        ]
+    return faces
+
+
 async def delete_persona(
     conn: aiosqlite.Connection, *, tenant_id: str, persona_id: str
 ) -> None:
@@ -195,27 +220,6 @@ async def get_persona(
     row = await cursor.fetchone()
     return dict(row) if row is not None else None
 
-
-async def get_personas(
-    conn: aiosqlite.Connection, tenant_ids: list[str]
-) -> dict[str, dict[str, Any]]:
-    """一次问一批。右栏有 N 个数字人，逐个问就是 N 次查询。
-
-    空列表直接返回、不发查询：拼出来的 `IN ()` 在 SQLite 上是语法错误。
-
-    row_factory 的理由同 get_persona：不自设的话 `row["tenant_id"]` 会以
-    TypeError 收场（同样已验证过），而不是拿到错的键。
-    """
-    conn.row_factory = aiosqlite.Row
-    if not tenant_ids:
-        return {}
-    placeholders = ",".join("?" for _ in tenant_ids)
-    cursor = await conn.execute(
-        f"SELECT tenant_id, persona_id, name, avatar, tagline FROM tenant_personas "
-        f"WHERE tenant_id IN ({placeholders}) AND persona_id = 'default'",
-        tuple(tenant_ids),
-    )
-    return {row["tenant_id"]: dict(row) for row in await cursor.fetchall()}
 
 
 async def set_questions(

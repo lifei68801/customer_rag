@@ -502,6 +502,25 @@ def test_a_tenant_with_no_face_still_lists_one(personas_conn):
     assert [(p["persona_id"], p["name"]) for p in store] == [("default", "门店")]
 
 
+def test_building_a_named_face_first_does_not_hide_the_default_one(personas_conn):
+    """租户从没配过脸、上来就建一张具名脸：default 仍然在，且排第一。
+
+    default 不一定物化成一行；只在"一张都没有"时合成它的实现会在这里
+    让它蒸发——不是被删，是从没合成过——而存量会话全挂在它下面。
+    这条同时钉住列表接口和 /persona/faces 两个出口。
+    """
+    assert _create_face(
+        personas_conn, tenant_id="muji-store", persona_id="kefu", name="客服",
+    ).status_code == 201
+
+    body = _get_personas(personas_conn, username="alice", role="member")
+    store = [p for p in body["personas"] if p["tenant_id"] == "muji-store"]
+    assert [(p["persona_id"], p["name"]) for p in store] == [("default", "门店"), ("kefu", "客服")]
+
+    faces = _faces_call(personas_conn, "GET", "/api/admin/muji-store/persona/faces").json()["faces"]
+    assert [f["persona_id"] for f in faces] == ["default", "kefu"]
+
+
 def test_faces_of_an_unauthorized_tenant_do_not_appear(personas_conn):
     """**安全核心**：多脸不能成为绕过授权的新路径。
 
