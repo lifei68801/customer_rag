@@ -33,7 +33,14 @@ _VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "numb
 # 实体的名字。两张白名单从此不对称，这是有意的，不是漏了。
 _VALID_STANDARD_NAME_VALUE_TYPES = frozenset({"string", "number", "integer"})
 
-_EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
+#: 字段名格式白名单——声明时校验用，也是全项目"字段名能不能安全拼进
+#: Cypher/索引语句"这条注入防线的权威定义。公开导出（不带前导下划线），
+#: 供确实需要复用同一份正则对象的调用方直接 import（例如
+#: neo4j_client.py::count_non_iso_date_values 在插值前的防御性复检）。
+#: `_EXTRA_FIELD_NAME_PATTERN` 保留作为私有别名，不改动本模块内部的既有
+#: 引用点。
+EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
+_EXTRA_FIELD_NAME_PATTERN = EXTRA_FIELD_NAME_PATTERN
 
 
 class CategoryNotFoundError(Exception):

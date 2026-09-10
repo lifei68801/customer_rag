@@ -17,7 +17,7 @@ from app.graphrag.structured_filter_query import (
     StructuredFilterQueryArgs,
 )
 
-from app.graphrag.ontology_categories import TermTypeCategory
+from app.graphrag.ontology_categories import EXTRA_FIELD_NAME_PATTERN, TermTypeCategory
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +34,11 @@ _RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 # 不做跨模块导入——原因同文件顶部 _RELATION_TYPE_NAME_PATTERN 的说明。
 _RESERVED_FIELD_NAME = "standard_name"
 
-# 与 ontology_categories.py::_EXTRA_FIELD_NAME_PATTERN / structured_filter_query.py::
-# _EXTRA_FIELD_NAME_PATTERN 保持同一份格式约束，独立定义不做跨模块导入——三处校验的
-# 是同一条注入防线契约，但分属"声明字段时的格式校验""把已确认字段名拼进结构化查询
-# Cypher 前的防御性复检"和"把已确认字段名拼进本方法的 Cypher 前的防御性复检"三个
-# 不同职责层，各自独立演化不构成重复劳动。count_non_iso_date_values 用它在插值前
-# 断言 field 合法：这是经过正则校验的字符集，不是无条件拼接，做法与本文件
-# ensure_extra_field_indexes 把字段名插值进 CREATE INDEX 语句一致（字段名同样来源于
-# ontology_categories.py 声明时已校验过的本体定义）。
-_EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
+# count_non_iso_date_values 插值前拿 EXTRA_FIELD_NAME_PATTERN（导入自
+# ontology_categories.py，不在本文件另外定义一份）断言 field 合法。
+# structured_filter_query.py 和 ontology_lifecycle.py 各自独立维护着同名
+# 正则的第二、第三份拷贝（历史遗留，早于本次改动，本次不动它们），本文件
+# 不再新增第四份，直接复用 ontology_categories.py 这份权威定义。
 _CAST_BY_VALUE_TYPE = {"number": "toFloat", "integer": "toInteger"}
 
 # 详情页专用：一跳邻居，带 node_key 和方向。
@@ -643,22 +639,12 @@ RETURN t.{field} AS value
 """
 # 确认本体前扫存量日期值（Task 7：count_non_iso_date_values）。
 #
-# field 走字符串插值拼进语句文本，不是参数化的动态属性访问（t[$field]）——
-# 原先用过 t[$field]，实测确认 Neo4j 5.22 + driver 6.2.0 确实支持这个语法
-# 本身（临时节点写入属性、按参数化属性名读回，读到了写入的值），但那只
-# 证明了语法可用，没有证明性能可接受：动态属性访问在运行时才解析属性名，
-# 规划器没法在规划阶段用上 ensure_extra_field_indexes 为这个字段建的
-# (tenant_id, type, field) 三列索引做仅索引扫描，退化成"先按 (tenant_id,
-# type) 定位节点、再逐个堆访问取属性"——跟 execute_structured_filter_query
-# 文档字符串里对同一技术手段的结论一致（那里插值正是为了避免这种退化）。
-# 没有实测过这退化在几十万节点规模下的确认请求上是否会慢到不可接受，不能
-# 靠"范围已经被索引收窄"这类未经验证的因果来担保，所以改回静态插值这条
-# 已经在本文件 ensure_extra_field_indexes 里验证过的路。
-#
-# 插值前必须先用 _EXTRA_FIELD_NAME_PATTERN 断言 field 合法——这是经过正则
-# 校验的字符集（^[a-zA-Z_][a-zA-Z0-9_]{0,63}$），不是无条件拼接，字段名
-# 来源同样是 ontology_categories.py 声明时已校验过的本体定义，风险性质与
-# ensure_extra_field_indexes 把字段名插值进 CREATE INDEX 语句完全一致。
+# field 走字符串插值拼进语句文本（不是 t[$field] 参数化动态属性访问）。
+# 插值前必须先用 EXTRA_FIELD_NAME_PATTERN（导入自 ontology_categories.py）
+# 断言 field 合法——这是经过正则校验的字符集（^[a-zA-Z_][a-zA-Z0-9_]{0,63}$），
+# 不是无条件拼接，字段名同样来源于 ontology_categories.py 声明时已校验过
+# 的本体定义，跟本文件 ensure_extra_field_indexes 把字段名插值进 CREATE
+# INDEX 语句是同一套做法。
 #
 # 不用 DISTINCT：409 文案说的是"还有 N 个实体的值不是 YYYY-MM-DD"，数字
 # 必须是不合格的实体数，不能是不合格的不同取值数——多个实体共享同一个
@@ -1613,15 +1599,16 @@ class Neo4jGraphClient:
         （admin_ontology_routes.py::_assert_new_date_fields_have_clean_values）
         的 409 文案说的是"还有 N 个实体"，数字必须对得上这句话。
 
-        字段名走字符串插值拼进 Cypher 文本，先用 _EXTRA_FIELD_NAME_PATTERN
-        断言合法——理由同 ensure_extra_field_indexes：字段名来源是
+        字段名走字符串插值拼进 Cypher 文本，先用 EXTRA_FIELD_NAME_PATTERN
+        （导入自 ontology_categories.py，不在本文件另外定义一份）断言
+        合法——理由同 ensure_extra_field_indexes：字段名来源是
         ontology_categories.py 声明时已校验过的本体定义，正则校验过的字符
         集，不是无条件拼接。
 
         判定逻辑放在 Python 侧用 is_normalized_date，不在 Cypher 里写正则：
         写两份「合格」的定义迟早会不一致。
         """
-        if not _EXTRA_FIELD_NAME_PATTERN.match(field):
+        if not EXTRA_FIELD_NAME_PATTERN.match(field):
             raise ValueError(
                 f"字段名 {field!r} 不合法，必须满足 ^[a-zA-Z_][a-zA-Z0-9_]{{0,63}}$"
             )
