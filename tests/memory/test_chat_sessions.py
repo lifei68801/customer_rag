@@ -159,3 +159,124 @@ async def test_delete_session_cannot_delete_another_users_session():
     assert deleted is False
     sessions = await list_sessions(conn, tenant_id="t1", user_id="owner")
     assert len(sessions) == 1
+
+
+# ---- 会话属于哪张脸（ADR-0004 解耦之后）----
+#
+# spec 裁决补充「一个会话属于一个数字人」。persona == tenant 时这是免费的；
+# 解耦之后要显式维护。**persona_id 在这里是「跟谁聊的」，不是「能看什么」**
+# ——它不是权限判据（计划 Ruling P7-1）。
+
+
+async def test_a_session_belongs_to_one_face():
+    """会话记下它属于哪张脸。"""
+    conn = await _connect()
+    try:
+        await touch_session(
+            conn, tenant_id="muji", session_id="s1", user_id="u1",
+            first_message="有无香料洗发水吗", now=datetime(2026, 9, 10, 10, 0, 0),
+            persona_id="daogou",
+        )
+
+        rows = await list_sessions(conn, tenant_id="muji", user_id="u1", persona_id="daogou")
+        assert [r["session_id"] for r in rows] == ["s1"]
+    finally:
+        await conn.close()
+
+
+async def test_listing_sessions_is_filtered_by_face():
+    """切到另一张脸，左栏列的是那张脸的会话。
+
+    同一个租户下两张脸各聊各的——不过滤的话，用户切到「店务老张」会看到
+    一屏跟小美聊的历史，而那些对话的语境完全不同。
+    """
+    conn = await _connect()
+    try:
+        for pid, sid in (("daogou", "s1"), ("dianwu", "s2")):
+            await touch_session(
+                conn, tenant_id="muji", session_id=sid, user_id="u1",
+                first_message=f"问题 {sid}", now=datetime(2026, 9, 10, 10, 0, 0),
+                persona_id=pid,
+            )
+
+        assert [r["session_id"] for r in await list_sessions(
+            conn, tenant_id="muji", user_id="u1", persona_id="daogou")] == ["s1"]
+        assert [r["session_id"] for r in await list_sessions(
+            conn, tenant_id="muji", user_id="u1", persona_id="dianwu")] == ["s2"]
+    finally:
+        await conn.close()
+
+
+async def test_existing_sessions_backfill_to_the_default_face():
+    """这一列之前写进来的会话回填成 'default'。
+
+    它们本来就属于那个租户唯一的那张脸——这是准确的回填，不是猜的。
+    回填成 NULL 的话，每个读取方都要处理一个不存在的状态，而且左栏会
+    整个空掉：按 default 过滤时一条都匹配不上。
+    """
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        # 造一张"加列之前"的表
+        await conn.execute(
+            "CREATE TABLE chat_sessions (tenant_id TEXT NOT NULL, session_id TEXT NOT NULL,"
+            " user_id TEXT NOT NULL, title TEXT NOT NULL,"
+            " created_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            " updated_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            " PRIMARY KEY (tenant_id, session_id))"
+        )
+        await conn.execute(
+            "INSERT INTO chat_sessions (tenant_id, session_id, user_id, title)"
+            " VALUES ('muji','old','u1','老会话')"
+        )
+        await conn.commit()
+
+        await ensure_schema(conn)
+
+        rows = await list_sessions(conn, tenant_id="muji", user_id="u1", persona_id="default")
+        assert [r["session_id"] for r in rows] == ["old"], "存量会话必须落在 default 那张脸下"
+    finally:
+        await conn.close()
+
+
+async def test_the_default_face_is_what_existing_callers_get():
+    """不传 persona_id 的既有调用方读写的都是 default 那张脸。"""
+    conn = await _connect()
+    try:
+        await touch_session(
+            conn, tenant_id="muji", session_id="s1", user_id="u1",
+            first_message="问题", now=datetime(2026, 9, 10, 10, 0, 0),
+        )
+
+        assert [r["session_id"] for r in await list_sessions(
+            conn, tenant_id="muji", user_id="u1")] == ["s1"]
+    finally:
+        await conn.close()
+
+
+async def test_a_session_does_not_move_to_another_face_mid_conversation():
+    """一条会话跟谁聊的，在它被创建的那一刻就定了。
+
+    touch_session 每轮对话都调一次。persona_id 进 DO UPDATE 的话，用户在
+    对话进行中切了一次脸，这条会话会整个跳到另一张脸的历史里——他切回去
+    就找不到刚才聊的东西了，而那些内容并没有消失，只是挂到了别处。
+    """
+    conn = await _connect()
+    try:
+        await touch_session(
+            conn, tenant_id="muji", session_id="s1", user_id="u1",
+            first_message="第一轮", now=datetime(2026, 9, 10, 10, 0, 0),
+            persona_id="daogou",
+        )
+        # 同一条会话的第二轮，调用方传了另一张脸（切脸时的竞态，或者调用方写错）。
+        await touch_session(
+            conn, tenant_id="muji", session_id="s1", user_id="u1",
+            first_message="第二轮", now=datetime(2026, 9, 10, 10, 5, 0),
+            persona_id="dianwu",
+        )
+
+        assert [r["session_id"] for r in await list_sessions(
+            conn, tenant_id="muji", user_id="u1", persona_id="daogou")] == ["s1"]
+        assert await list_sessions(
+            conn, tenant_id="muji", user_id="u1", persona_id="dianwu") == []
+    finally:
+        await conn.close()

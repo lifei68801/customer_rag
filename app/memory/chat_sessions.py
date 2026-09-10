@@ -23,6 +23,7 @@ async def touch_session(
     user_id: str,
     first_message: str,
     now: datetime,
+    persona_id: str = "default",
 ) -> None:
     """记录/刷新左边栏会话列表要用的元信息：首次出现的 session_id 用
     first_message（当轮用户问题）截断出标题并插入一行；已存在则只刷新
@@ -35,23 +36,38 @@ async def touch_session(
     """
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     await conn.execute(
-        "INSERT INTO chat_sessions (tenant_id, session_id, user_id, title, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?) "
+        "INSERT INTO chat_sessions "
+        "(tenant_id, session_id, persona_id, user_id, title, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        # persona_id 不在 DO UPDATE 里：一条会话跟谁聊的，在它被创建的那一刻
+        # 就定了。后续轮次改它的话，一次对话会在切脸之后跳到另一张脸的历史里。
         "ON CONFLICT(tenant_id, session_id) DO UPDATE SET updated_at = excluded.updated_at",
-        (tenant_id, session_id, user_id, _derive_title(first_message), now_str, now_str),
+        (
+            tenant_id, session_id, persona_id, user_id,
+            _derive_title(first_message), now_str, now_str,
+        ),
     )
     await conn.commit()
 
 
 async def list_sessions(
-    conn: aiosqlite.Connection, *, tenant_id: str, user_id: str
+    conn: aiosqlite.Connection, *, tenant_id: str, user_id: str,
+    persona_id: str = "default",
 ) -> list[dict[str, Any]]:
-    """按最近活跃时间倒序返回该租户该用户名下的全部会话。"""
+    """按最近活跃时间倒序返回该租户该用户在**这张脸**下的全部会话。
+
+    按脸过滤是 spec 裁决补充「一个会话属于一个数字人」的落地：不过滤的话，
+    用户切到「店务老张」会看到一屏跟「导购小美」聊的历史，而那些对话的语境
+    完全不同。
+
+    persona_id 在这里是「跟谁聊的」，**不是权限判据**——这个人能不能读这个
+    租户的会话，由 tenant_id 和路由上的授权决定，跟他选了哪张脸无关。
+    """
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute(
         "SELECT session_id, title, created_at, updated_at FROM chat_sessions "
-        "WHERE tenant_id = ? AND user_id = ? ORDER BY updated_at DESC",
-        (tenant_id, user_id),
+        "WHERE tenant_id = ? AND user_id = ? AND persona_id = ? ORDER BY updated_at DESC",
+        (tenant_id, user_id, persona_id),
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]

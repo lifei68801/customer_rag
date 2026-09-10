@@ -67,6 +67,11 @@ CREATE TABLE IF NOT EXISTS memory_history (
 CREATE TABLE IF NOT EXISTS chat_sessions (
     tenant_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
+    -- 这次对话是跟哪张脸聊的（ADR-0004）。
+    --
+    -- **这是归属，不是可见范围**：它决定左栏列不列这条会话，不决定这个人
+    -- 能看到什么数据——后者只由 tenant_id 决定。别拿它当权限判据。
+    persona_id TEXT NOT NULL DEFAULT 'default',
     user_id TEXT NOT NULL,
     title TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -101,6 +106,13 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
     await conn.commit()
     await add_column_if_missing(
         conn, table="memory_history", column="conflict_type", ddl="TEXT",
+    )
+    # 存量会话回填成 'default'——它们本来就属于那个租户唯一的一张脸，
+    # 这是准确的回填，不是猜的。回填成 NULL 的话左栏会整个空掉：按
+    # default 过滤时一条都匹配不上，而用户会以为历史丢了。
+    await add_column_if_missing(
+        conn, table="chat_sessions", column="persona_id",
+        ddl="TEXT NOT NULL DEFAULT 'default'",
     )
     # 已经存在的库要补这一列：上面的 CREATE TABLE 是 IF NOT EXISTS，
     # 对老库不生效。
