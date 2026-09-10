@@ -3,7 +3,12 @@ import asyncio
 import aiosqlite
 
 from app.graphrag.tenant_personas_store import (
+    DEFAULT_PERSONA_ID,
+    InvalidPersonaError,
+    create_persona,
+    delete_persona,
     ensure_tenant_personas_schema,
+    list_personas,
     get_persona,
     get_personas,
     get_questions,
@@ -29,6 +34,10 @@ def test_upsert_then_get():
             persona = await get_persona(conn, "muji-goods")
             assert persona == {
                 "tenant_id": "muji-goods",
+                # 不传 persona_id 的调用方落在 default 那张脸上（ADR-0004
+                # 解耦之后的兼容形态），name 空着——它只在多张脸时才有意义。
+                "persona_id": "default",
+                "name": "",
                 "avatar": "🛍️",
                 "tagline": "我知道商品、口味和产地",
             }
@@ -72,11 +81,15 @@ def test_get_persona_returns_the_requested_tenant_not_another():
 
             assert persona_x == {
                 "tenant_id": "tenant-x",
+                "persona_id": "default",
+                "name": "",
                 "avatar": "🅰️",
                 "tagline": "甲的脸",
             }
             assert persona_y == {
                 "tenant_id": "tenant-y",
+                "persona_id": "default",
+                "name": "",
                 "avatar": "🅱️",
                 "tagline": "乙的脸",
             }
@@ -213,6 +226,149 @@ def test_a_corrupt_questions_column_reads_as_empty_not_as_a_crash():
             )
             await conn.commit()
             assert await get_questions(conn, "t1") == []
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+# ---- 一个租户挂多张脸（ADR-0004：脸是展示单元，租户是隔离单元）----
+#
+# persona_id 只用来定位一张脸，**绝不进任何权限判据**——谁能看什么仍然只由
+# tenant_id 决定。见计划的 Ruling P7-1。
+
+
+def test_one_tenant_can_carry_two_faces():
+    """一个租户两张脸，各自的头像/一句话/引导问题互不干扰。
+
+    这是整个计划的支点：今天主键是 tenant_id 单列，写第二张脸会把第一张
+    覆盖掉——「要几张脸」于是决定了「切几刀隔离」。
+    """
+
+    async def run():
+        conn = await _conn()
+        try:
+            await create_persona(conn, tenant_id="muji", persona_id="daogou", name="导购小美")
+            await create_persona(conn, tenant_id="muji", persona_id="dianwu", name="店务老张")
+            await upsert_persona(
+                conn, tenant_id="muji", persona_id="daogou", avatar="A", tagline="我懂商品"
+            )
+            await upsert_persona(
+                conn, tenant_id="muji", persona_id="dianwu", avatar="B", tagline="我懂门店"
+            )
+            await set_questions(
+                conn, tenant_id="muji", persona_id="daogou", questions=["有无香料洗发水吗"]
+            )
+            await set_questions(
+                conn, tenant_id="muji", persona_id="dianwu", questions=["哪家店缺货"]
+            )
+
+            faces = await list_personas(conn, "muji")
+            assert [f["persona_id"] for f in faces] == ["daogou", "dianwu"]
+            a = await get_persona(conn, "muji", persona_id="daogou")
+            b = await get_persona(conn, "muji", persona_id="dianwu")
+            assert (a["avatar"], a["tagline"]) == ("A", "我懂商品")
+            assert (b["avatar"], b["tagline"]) == ("B", "我懂门店")
+            assert await get_questions(conn, "muji", persona_id="daogou") == ["有无香料洗发水吗"]
+            assert await get_questions(conn, "muji", persona_id="dianwu") == ["哪家店缺货"]
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_faces_are_scoped_to_the_tenant():
+    """两个租户各建一个同名 persona_id，各自只看到自己的。
+
+    复合主键让同名并存是合法的——两个客户都把自己的脸叫 default 是常态。
+    """
+
+    async def run():
+        conn = await _conn()
+        try:
+            await create_persona(conn, tenant_id="muji", persona_id="default", name="小美")
+            await create_persona(conn, tenant_id="acme", persona_id="default", name="Acme 助手")
+
+            assert [f["name"] for f in await list_personas(conn, "muji")] == ["小美"]
+            assert [f["name"] for f in await list_personas(conn, "acme")] == ["Acme 助手"]
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_the_default_face_is_what_existing_callers_get():
+    """不传 persona_id 的既有调用方拿到的是 'default' 那张脸。
+
+    存量代码一行不用改——这是这次解耦能做到零迁移的原因。
+    """
+
+    async def run():
+        conn = await _conn()
+        try:
+            await upsert_persona(conn, tenant_id="muji", avatar="A", tagline="一句话")
+            await set_questions(conn, tenant_id="muji", questions=["问题一"])
+
+            faces = await list_personas(conn, "muji")
+            assert [f["persona_id"] for f in faces] == [DEFAULT_PERSONA_ID]
+            assert (await get_persona(conn, "muji"))["tagline"] == "一句话"
+            assert await get_questions(conn, "muji") == ["问题一"]
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_deleting_a_face_leaves_the_others():
+    async def run():
+        conn = await _conn()
+        try:
+            await create_persona(conn, tenant_id="muji", persona_id="a", name="A")
+            await create_persona(conn, tenant_id="muji", persona_id="b", name="B")
+
+            await delete_persona(conn, tenant_id="muji", persona_id="a")
+
+            assert [f["persona_id"] for f in await list_personas(conn, "muji")] == ["b"]
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_deleting_another_tenants_face_does_nothing():
+    """拿别的租户的 persona_id 过来删不掉。tenant_id 是条件不是断言。"""
+
+    async def run():
+        conn = await _conn()
+        try:
+            await create_persona(conn, tenant_id="acme", persona_id="a", name="A")
+
+            await delete_persona(conn, tenant_id="muji", persona_id="a")
+
+            assert len(await list_personas(conn, "acme")) == 1
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_a_blank_persona_id_is_refused():
+    """空 / 纯空白的 persona_id 拒掉。
+
+    理由同组织那次：空串是合法的主键值，建出来之后在任何按 id 定位的地方
+    都跟"没指定"撞车——而"没指定"走的是 default 那张脸。
+    """
+    import pytest
+
+    async def run():
+        conn = await _conn()
+        try:
+            for bad in ("", "   "):
+                with pytest.raises(InvalidPersonaError):
+                    await create_persona(conn, tenant_id="muji", persona_id=bad, name="X")
+            # 反面：正常的建得成，否则"一律拒绝"的实现也能让上面变绿。
+            await create_persona(conn, tenant_id="muji", persona_id="ok", name="X")
+            assert len(await list_personas(conn, "muji")) == 1
         finally:
             await conn.close()
 
