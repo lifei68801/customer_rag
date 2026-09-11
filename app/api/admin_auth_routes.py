@@ -15,7 +15,9 @@ from app.api.session_cookie import (
     new_csrf_token,
     set_session_cookies,
 )
+from app.api.deps import list_accessible_tenant_ids
 from app.api.tenant_guard import require_active_tenant_or_404
+from app.graphrag.tenants_store import list_tenants
 from app.auth.admin_users_store import (
     get_admin_user,
     set_admin_user_password,
@@ -97,6 +99,7 @@ async def login(
     session_token = session_store.create_session(
         username=user["username"], role=user["role"], tenant_id=user["tenant_id"]
     )
+    await _auto_select_sole_tenant(review_conn, session_store, session_token)
     csrf_token = new_csrf_token()
     set_session_cookies(
         response,
@@ -111,6 +114,58 @@ async def login(
         role=user["role"],
         tenant_id=user["tenant_id"],
     )
+
+
+async def _auto_select_sole_tenant(
+    review_conn: aiosqlite.Connection,
+    session_store: AdminSessionStore,
+    session_token: str,
+) -> None:
+    """可访问的 active 租户恰好一个时，登录就把它定下来。
+
+    admin 的 tenant_id 永远是 None（他是跨租户角色，没有一个非任意的"主场"），
+    所以 current_tenant_id 初值也是 None，界面会拦一道「先选租户」。**只有一个
+    可选项时那不是选择，是噪音**——这个项目在 PersonaRail 里写过同一条规矩。
+
+    多于一个时不替用户决定：admin 的操作都是租户范围内且不可逆的（确认本体、
+    导入数据、删组织），替他挑一个是任意的，而且挑错了不报错——界面上一切
+    正常，改的是另一个租户的数据。
+
+    已经有 current_tenant_id 的（member 有归属租户）原样不动，不是"按 active
+    租户数重新决定"。
+
+    **如实记一句**：这条守卫今天没有任何可达场景能区分它——member 的
+    accessible 就是他自己的租户集合，自动选定只可能选中他已经有的那一个，
+    值相同、观察不到差别。变异测试里去掉它，四条用例全绿。保留它是因为
+    不变量本身成立（"不覆盖用户已有的选择"）且只有一行；但别把它当成
+    有测试保护的东西——它没有。
+
+    停用的租户不数进来：库里常年躺着测试残留的停用租户，数进去的话一个实际
+    只有一个可用租户的部署永远享受不到自动选定。list_tenants 默认就只返回
+    active，这里不传 include_disabled。
+    """
+    session = session_store.get_session(session_token)
+    if session is None or session.current_tenant_id is not None:
+        return
+    try:
+        accessible = await list_accessible_tenant_ids(review_conn, session)
+        active = [t["tenant_id"] for t in await list_tenants(review_conn)]
+    except Exception:
+        # **这层兜底是必须的，不是防御性编程的惯性。**
+        #
+        # 自动选定只是个便利。把登录挂在 tenants 表的可读性上，等于让一张
+        # 表没建好（或者读它出任何错）就没人能登录——为一个便利功能赔上整个
+        # 系统的入口。实测踩到过：tenants 表在部分环境里根本不存在，加上这
+        # 段之后连 CSRF、Cookie 那些跟租户无关的登录用例一起红了。
+        #
+        # 失败时退回的是**原有行为**（current_tenant_id 保持 None，界面拦一道
+        # 「先选租户」），安全且用户看得见，不是静默降级。
+        logger.warning("登录时自动选定租户失败，退回手动选择", exc_info=True)
+        return
+    # accessible 为 None 表示不设限（admin），此时全部 active 租户都算可访问。
+    candidates = active if accessible is None else [t for t in active if t in set(accessible)]
+    if len(candidates) == 1:
+        session_store.set_current_tenant(session_token, candidates[0])
 
 
 @router.get("/whoami", response_model=WhoAmIResponse)

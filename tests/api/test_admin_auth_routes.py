@@ -160,6 +160,96 @@ def test_disabled_account_login_looks_the_same_as_a_wrong_password():
     assert response.json()["detail"] == "用户名或密码不正确"
 
 
+def test_admin_login_auto_selects_the_only_active_tenant():
+    """可访问的 active 租户恰好一个时，登录就把它定下来，不再追问。
+
+    admin 的 tenant_id 永远是 None，所以 current_tenant_id 初值是 None、
+    界面会拦一道「先选租户」。但只有一个可选项时那不是选择，是噪音——这个
+    项目在 PersonaRail 里写过同一条规矩。
+    """
+    conn = _conn()
+    _seed_tenant_row(conn, "only-one")
+
+    # 通过 whoami 断言，不看登录响应：前端有一条明确设计「会话状态只认
+    # whoami 一个来源」，往登录响应里再塞一份会造出第二个真相来源。
+    client, response = _login_with_client(username="admin", password="password1")
+    try:
+        assert response.status_code == 200
+        assert client.get("/api/admin/auth/whoami").json()["current_tenant_id"] == "only-one"
+    finally:
+        _clear_overrides()
+
+
+def test_admin_login_does_not_pick_when_there_is_more_than_one():
+    """多于一个时不替用户决定。
+
+    admin 的操作都是租户范围内且不可逆的（确认本体、导入数据、删组织）。
+    替他挑一个是任意的，而且挑错了不报错——界面上看起来一切正常，改的是
+    另一个租户的数据。
+    """
+    conn = _conn()
+    _seed_tenant_row(conn, "alpha")
+    _seed_tenant_row(conn, "beta")
+
+    client, response = _login_with_client(username="admin", password="password1")
+    try:
+        assert response.status_code == 200
+        assert client.get("/api/admin/auth/whoami").json()["current_tenant_id"] is None
+    finally:
+        _clear_overrides()
+
+
+def test_login_ignores_disabled_tenants_when_counting():
+    """停用的租户不算进「有几个可选」。
+
+    库里常年躺着测试残留的停用租户；把它们数进去的话，一个实际只有一个
+    可用租户的部署永远享受不到自动选定。
+    """
+    conn = _conn()
+    _seed_tenant_row(conn, "live")
+    _seed_tenant_row(conn, "dead-1", status="disabled")
+    _seed_tenant_row(conn, "dead-2", status="disabled")
+
+    client, _ = _login_with_client(username="admin", password="password1")
+    try:
+        assert client.get("/api/admin/auth/whoami").json()["current_tenant_id"] == "live"
+    finally:
+        _clear_overrides()
+
+
+def test_member_login_keeps_its_own_tenant_even_when_several_exist():
+    """member 有归属租户，不受这条规则影响——它本来就不需要选。
+
+    这条是反面：自动选定那段逻辑如果写成「无条件按 active 租户数决定」，
+    会把 member 已经定好的租户覆盖掉。
+    """
+    conn = _conn()
+    _seed_member(conn)
+    _seed_tenant_row(conn, "alpha")
+    _seed_tenant_row(conn, "beta")
+
+    client, _ = _login_with_client(username="alice", password="password1")
+    try:
+        assert client.get("/api/admin/auth/whoami").json()["current_tenant_id"] == "demo"
+    finally:
+        _clear_overrides()
+
+
+def test_login_still_works_when_the_tenants_table_is_missing():
+    """tenants 表读不到时照样能登录，只是不自动选租户。
+
+    自动选定只是便利。把登录挂在一张表的可读性上，等于让那张表没建好就
+    没人能登录——为一个便利功能赔上整个系统的入口。这条钉住那次真实的
+    回归：加自动选定之后，连 CSRF、Cookie 那些跟租户无关的登录用例都红了。
+    """
+    client, response = _login_with_client(username="admin", password="password1")
+    try:
+        assert response.status_code == 200
+        assert client.get("/api/admin/auth/whoami").json()["current_tenant_id"] is None
+    finally:
+        _clear_overrides()
+
+
 def test_login_updates_last_login():
     conn = _conn()
     _seed_member(conn)

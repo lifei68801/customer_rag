@@ -19,11 +19,14 @@ let lastBody: unknown = null
 let loggedIn = false
 
 let loginDetail = '用户名或密码不正确'
+/** whoami 回的 current_tenant_id。null = 登录者还没定下在看哪个租户。 */
+let whoamiTenantId: string | null = 'demo'
 
 function stubLogin(status: number | 'network-error' = 200, detail = '用户名或密码不正确') {
   lastBody = null
   loggedIn = false
   loginDetail = detail
+  whoamiTenantId = 'demo'
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -38,7 +41,7 @@ function stubLogin(status: number | 'network-error' = 200, detail = '用户名�
                   username: 'alice',
                   role: 'member',
                   tenant_id: 'demo',
-                  current_tenant_id: 'demo',
+                  current_tenant_id: whoamiTenantId,
                 }),
                 { status: 200 },
               )
@@ -127,8 +130,12 @@ describe('登录页', () => {
     const user = userEvent.setup()
     await renderLogin()
     await submit(user, 'alice', 'password1')
-    // 登录页在已登录时会跳走，用它确认身份真的读到了。
-    expect(await screen.findByTestId('admin-topbar')).toBeTruthy()
+    // 登录页在已登录时会跳走，用落地页确认身份真的读到了。
+    //
+    // 这里原本断言的是 admin-topbar——那时登录后跳的是 /admin。改成跳 /
+    // 之后探针跟着换成 site-topbar。换的是探针，不是这条用例要证的东西：
+    // 它证的始终是「身份确实从 whoami 读到了」，跳去哪一页只是观察它的手段。
+    expect(await screen.findByTestId('site-topbar')).toBeTruthy()
   })
 
   it('失败时显示错误，且不写入任何身份', async () => {
@@ -191,6 +198,28 @@ describe('登录页', () => {
     expect(alert.textContent).toMatch(/用户名或密码不正确/)
     // 后端那句更具体的原因绝不能透出去。
     expect(alert.textContent).not.toMatch(/用户不存在/)
+  })
+
+  it('登录后落在会话界面，不是后台看板', async () => {
+    // 绝大多数登录者进来是要用问答的，后台是次级入口（会话页右上角进得去）。
+    // 断言 site-topbar 而不是 admin-topbar——后者是后台布局的标记。
+    const user = userEvent.setup()
+    await renderLogin()
+    await submit(user, 'alice', 'password1')
+    expect(await screen.findByTestId('site-topbar')).toBeTruthy()
+    expect(screen.queryByTestId('admin-topbar')).toBeNull()
+  })
+
+  it('还没定下租户时不渲染会话区，而是让人先选', async () => {
+    // 这道守卫是"登录后落到会话页"能成立的前提：TenantContext 在
+    // currentTenantId 为 null 时会回退到硬编码的 'demo'，没有这道守卫的话，
+    // 一个还没选租户的人会在一个看起来正常、实际是 demo 的知识库上问答，
+    // 而他不知道自己在跟哪个租户说话。
+    whoamiTenantId = null
+    const user = userEvent.setup()
+    await renderLogin()
+    await submit(user, 'alice', 'password1')
+    expect(await screen.findByText('请先选择一个租户')).toBeTruthy()
   })
 
   it('密码框是 password 类型', async () => {

@@ -124,9 +124,21 @@ def agent_chat_env(default_admin_users_conn) -> Iterator[FakeLLMProvider]:
             # 切租户走 require_active_tenant_or_404，要有 tenants 表和这一行；
             # 照 test_admin_auth_routes.py 里 _seed_tenant_row 的做法。
             await create_tenants_table(conn)
-            await conn.execute(
+            await conn.executemany(
                 "INSERT OR REPLACE INTO tenants (tenant_id, name, status) VALUES (?, ?, ?)",
-                ("demo", "demo", "active"),
+                [
+                    ("demo", "demo", "active"),
+                    # **第二个 active 租户是必需的，不是凑数。**
+                    #
+                    # 登录时「可访问的 active 租户恰好一个就自动选定」
+                    # （admin_auth_routes._auto_select_sole_tenant）。只留一个
+                    # 的话，admin 一登录就被定上 demo，client_admin 那个
+                    # "current_tenant_id 仍是 None" 的前提就不成立了——
+                    # test_chat_refuses_when_no_current_tenant_is_selected
+                    # 会拿到 200，而它要钉的恰恰是"没选租户必须明确报错、
+                    # 不能悄悄挑一个"。
+                    ("other", "other", "active"),
+                ],
             )
             await conn.commit()
             state["conn"] = conn
@@ -216,7 +228,11 @@ def client_nosy(agent_chat_env) -> TestClient:
 
 @pytest.fixture
 def client_admin(agent_chat_env) -> TestClient:
-    """admin 登录之后 current_tenant_id 仍是 None——它得先显式切租户。"""
+    """admin 登录之后 current_tenant_id 仍是 None——它得先显式切租户。
+
+    这个前提依赖 agent_chat_env 里种了**两个** active 租户：只有一个时登录会
+    自动选定（见那里的注释）。
+    """
     return login_client("admin")
 
 

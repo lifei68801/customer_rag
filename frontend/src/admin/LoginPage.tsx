@@ -13,7 +13,7 @@ export function LoginPage() {
   const [loggingIn, setLoggingIn] = useState(false)
 
   useEffect(() => {
-    document.title = '管理后台登录 · 客服问答 Demo'
+    document.title = '登录 · 客服问答 Demo'
   }, [])
 
   // 会话状态未知时先不画：把登录表单闪给一个其实还登录着的人，他会以为
@@ -22,7 +22,10 @@ export function LoginPage() {
     return null
   }
   if (status === 'authenticated') {
-    return <Navigate to="/admin" replace />
+    // 登录后先进会话界面，不是后台看板：绝大多数登录者进来是要用问答的，
+    // 后台是次级入口（会话页右上角进得去）。这一行同时管"已登录时访问
+    // /admin/login"的重定向，两处语义一致。
+    return <Navigate to="/" replace />
   }
 
   const handleSubmit = async (event: FormEvent) => {
@@ -54,7 +57,7 @@ export function LoginPage() {
         onSubmit={handleSubmit}
         className="flex w-full max-w-sm flex-col gap-4 rounded-panel border border-subtle bg-card p-6"
       >
-        <h1 className="font-mono text-xl font-semibold text-ink">管理后台登录</h1>
+        <h1 className="font-mono text-xl font-semibold text-ink">登录</h1>
         {/* autoComplete 这两个值让浏览器和密码管理器认得出这是一对登录
             字段——写错的话每次登录都得手打。 */}
         <label htmlFor="admin-username" className="text-sm font-bold text-ink">
