@@ -55,15 +55,15 @@ class FakeGraphClient:
     async def merge_relation(
         self,
         *,
-        subject_standard_name,
-        object_standard_name,
+        subject_node_key,
+        object_node_key,
         relation_type,
         source,
         tenant_id,
         provenance,
         recorded_at,
     ) -> None:
-        self.merged.append((subject_standard_name, object_standard_name, relation_type))
+        self.merged.append((subject_node_key, object_node_key, relation_type))
 
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
         self.deleted_nodes.append(node_key)

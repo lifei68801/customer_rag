@@ -52,3 +52,32 @@ def test_each_consumer_protocol_keeps_only_what_it_uses():
         "delete_stale_relations_by_source",
         "count_stale_relations_by_source",
     }
+
+
+def test_merge_relation_takes_node_keys_not_display_names():
+    """参数名必须说出它收的是什么。
+
+    这两个参数曾经叫 subject_standard_name/object_standard_name，而收的值
+    一直是 node_key——接口的名字跟 ADR-0003 直接矛盾。照着名字传展示名不会
+    有任何报错（这个项目不跑类型检查），只会在术语改名之后断边：用旧的
+    展示名去 MERGE，命中不了真实节点，于是新建一个没有 standard_name 属性
+    的幽灵节点。
+
+    名字退回去不会有任何别的测试变红——退回去的那一刻代码还是对的，代价要
+    等到下一个照着名字写调用的人才付。所以在这里钉住。
+    """
+    import inspect
+
+    from app.graphrag.neo4j_client import Neo4jGraphClient
+
+    params = inspect.signature(Neo4jGraphClient.merge_relation).parameters
+    assert "subject_node_key" in params
+    assert "object_node_key" in params
+    assert "subject_standard_name" not in params
+    assert "object_standard_name" not in params
+
+    # 四个协议声明的也得是同一套名字，否则实现和协议对不上而没人发现。
+    for proto in _ALL:
+        proto_params = inspect.signature(proto.merge_relation).parameters
+        assert "subject_node_key" in proto_params, proto.__name__
+        assert "subject_standard_name" not in proto_params, proto.__name__

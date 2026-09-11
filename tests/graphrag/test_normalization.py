@@ -48,8 +48,8 @@ class FakeGraphClient:
     async def merge_relation(
         self,
         *,
-        subject_standard_name,
-        object_standard_name,
+        subject_node_key,
+        object_node_key,
         relation_type,
         source,
         tenant_id,
@@ -63,8 +63,8 @@ class FakeGraphClient:
             raise ValueError("不允许的关系类型")
         self.written.append(
             {
-                "subject": subject_standard_name,
-                "object": object_standard_name,
+                "subject": subject_node_key,
+                "object": object_node_key,
                 "relation_type": relation_type,
                 "source": source,
                 "tenant_id": tenant_id,

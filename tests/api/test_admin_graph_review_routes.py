@@ -230,8 +230,10 @@ def test_approve_review_calls_graph_client_and_moves_to_history(review_conn):
     # 具体值，只断言其它字段+provenance（走的是 human_approved 路径）。
     assert len(graph_client.written) == 1
     written = graph_client.written[0]
-    assert written["subject_standard_name"] == "A"
-    assert written["object_standard_name"] == "B"
+    # 键名是 *_node_key：merge_relation 收的一直是 node_key（ADR-0003），
+    # 2026-09-12 把参数名改成跟值一致。
+    assert written["subject_node_key"] == "A"
+    assert written["object_node_key"] == "B"
     assert written["relation_type"] == "RELATED_TO"
     assert written["source"] == "s.md"
     assert written["tenant_id"] == "t1"
@@ -754,8 +756,11 @@ def test_approve_review_accepts_optional_term_type_hints(review_conn):
 
     assert response.status_code == 200
     assert len(graph_client.written) == 1
-    assert graph_client.written[0]["subject_standard_name"] == "产品:Coffee"
-    assert graph_client.written[0]["object_standard_name"] == "类目:Coffee"
+    # 这两条恰好是最能说明改名理由的断言：传进去的展示名都叫 Coffee，
+    # 写进图里的是两个不同的 node_key。参数名叫 *_standard_name 的时候，
+    # 这行断言读起来像在说"标准名是 产品:Coffee"，而那不是标准名。
+    assert graph_client.written[0]["subject_node_key"] == "产品:Coffee"
+    assert graph_client.written[0]["object_node_key"] == "类目:Coffee"
 
 
 def test_approve_review_with_ambiguous_standard_name_message_mentions_candidate_types(review_conn):

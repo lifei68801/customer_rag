@@ -8,6 +8,7 @@ from typing import Any, Protocol
 import aiosqlite
 
 from app.graphrag.ontology import Term, resolve_term
+from app.graphrag.ontology_constraints import CombinationKey
 from app.graphrag.provenance import AUTO_MERGED
 from app.graphrag.relation_writer import RelationWriterProtocol
 from app.graphrag.review_queue import enqueue_for_review
@@ -102,7 +103,7 @@ async def normalize_and_write_relations(
     tenant_id: str,
     now: datetime,
     confirmed_relation_types: set[str],
-    allowed_combinations: set[tuple[str, str, str]],
+    allowed_combinations: set[CombinationKey],
     review_conn: aiosqlite.Connection | None = None,
 ) -> int:
     """候选关系归一化对齐术语表后写入图谱，返回成功写入数。
@@ -215,7 +216,9 @@ async def normalize_and_write_relations(
             continue
         subject_type = relation.get("subject_type", "")
         object_type = relation.get("object_type", "")
-        combo = (subject_type, relation["relation_type"], object_type)
+        combo = CombinationKey(
+            subject=subject_type, relation=relation["relation_type"], object=object_type
+        )
         if relation["relation_type"] not in confirmed_relation_types or combo not in allowed_combinations:
             logger.info(
                 "关系候选两侧已对齐术语表，但类型组合不在已确认本体范围内，转人工审核 "
@@ -257,8 +260,8 @@ async def normalize_and_write_relations(
             subject_node_key = subject_term.node_key
             object_node_key = object_term.node_key
             await graph_client.merge_relation(
-                subject_standard_name=subject_node_key,
-                object_standard_name=object_node_key,
+                subject_node_key=subject_node_key,
+                object_node_key=object_node_key,
                 relation_type=relation["relation_type"],
                 source=source,
                 tenant_id=tenant_id,

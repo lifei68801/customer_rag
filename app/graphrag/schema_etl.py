@@ -26,7 +26,11 @@ from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.ontology import Term
 from app.graphrag.relation_writer import RelationWriterProtocol
 from app.graphrag.ontology_categories import list_term_types
-from app.graphrag.ontology_constraints import list_allowed_combinations, to_combination_keys
+from app.graphrag.ontology_constraints import (
+    CombinationKey,
+    list_allowed_combinations,
+    to_combination_keys,
+)
 from app.graphrag.ontology_lifecycle import is_ontology_confirmed
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.ontology_store import open_ontology_store_conn
@@ -253,7 +257,7 @@ async def _write_relation_mapping(
     mapping: RelationMapping,
     entity_mappings_by_term_type: dict[str, EntityMapping],
     confirmed_relation_types: set[str],
-    allowed_combinations: set[tuple[str, str, str]],
+    allowed_combinations: set[CombinationKey],
     recorded_at: datetime,
     data_dir: Path,
     report: ETLRunReport,
@@ -267,7 +271,11 @@ async def _write_relation_mapping(
     # graph_extraction.py/review_queue.py 已经在做的同一种组合校验，见
     # docs/superpowers/specs/2026-08-19-data-entry-unification-design.md
     # "不在本次范围内"第 1 条的后续处理。
-    combo = (mapping.subject_term_type, mapping.relation_type, mapping.object_term_type)
+    combo = CombinationKey(
+        subject=mapping.subject_term_type,
+        relation=mapping.relation_type,
+        object=mapping.object_term_type,
+    )
     if combo not in allowed_combinations:
         raise RowProcessingError(
             f"关系类型/实体类型组合不在已确认允许列表里: "
@@ -342,8 +350,8 @@ async def _write_relation_mapping(
                         f"为源里消失、即将被清理）"
                     )
             await graph_client.merge_relation(
-                subject_standard_name=projected.subject_node_key,
-                object_standard_name=projected.object_node_key,
+                subject_node_key=projected.subject_node_key,
+                object_node_key=projected.object_node_key,
                 relation_type=mapping.relation_type, source=mapping.source_file,
                 tenant_id=tenant_id, provenance=provenance.ETL, recorded_at=recorded_at,
             )

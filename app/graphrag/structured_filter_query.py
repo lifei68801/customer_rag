@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Any
 
 from app.graphrag.ontology import Term, resolve_term, resolve_term_or_candidates
 from app.graphrag.ontology_categories import EXTRA_FIELD_NAME_PATTERN, TermTypeCategory
-from app.graphrag.ontology_constraints import AllowedCombination, to_combination_keys
+from app.graphrag.ontology_constraints import (
+    AllowedCombination,
+    CombinationKey,
+    to_combination_keys,
+)
 from app.graphrag.ontology_recall import precision_match_score
 from app.graphrag.date_periods import InvalidPeriodError, resolve_period
 
@@ -523,8 +527,22 @@ def _correct_hop_directions(
     corrected: list[Hop] = []
     current_term_type = start_term_type
     for hop in constraint.hops:
-        forward = (current_term_type, hop.relation_type, hop.target_term_type) in declared
-        backward = (hop.target_term_type, hop.relation_type, current_term_type) in declared
+        forward = (
+            CombinationKey(
+                subject=current_term_type,
+                relation=hop.relation_type,
+                object=hop.target_term_type,
+            )
+            in declared
+        )
+        backward = (
+            CombinationKey(
+                subject=hop.target_term_type,
+                relation=hop.relation_type,
+                object=current_term_type,
+            )
+            in declared
+        )
         if forward != backward:
             corrected.append(replace(hop, direction="outgoing" if forward else "incoming"))
         else:

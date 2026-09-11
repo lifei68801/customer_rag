@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, NamedTuple
 
 import aiosqlite
 
@@ -42,15 +42,30 @@ class AllowedCombination:
     object_term_type: str
 
 
+class CombinationKey(NamedTuple):
+    """便于成员判断的 (主语类型, 关系类型, 宾语类型)。
+
+    **一律用关键字构造**：`CombinationKey(subject=..., relation=..., object=...)`。
+
+    字段顺序是一份契约，而它曾经完全是隐式的：五处调用方各自把列表推导成
+    集合，另有几处校验点各自拼出待查的三元组去比对。任何一处把顺序写反都
+    不会报错，集合只会静默匹配不上，表现为"明明配置了这个组合却被判定不在
+    允许列表里"。
+
+    注意 NamedTuple 跟普通元组相等，所以**类型本身挡不住写反的裸元组**
+    ——真正的防线是构造时写出字段名。`tests/graphrag/test_combination_keys.py`
+    里有一条源码扫描盯着这件事。
+    """
+
+    subject: str
+    relation: str
+    object: str
+
+
 def to_combination_keys(
     combinations: Iterable[AllowedCombination],
-) -> set[tuple[str, str, str]]:
-    """把允许组合列表转成便于成员判断的三元组集合。
-
-    字段顺序 (subject, relation, object) 是一份隐式契约：五处调用方各自把
-    列表推导成集合，另有三处校验点各自拼出待查的三元组去比对。任何一处把
-    顺序写反都不会报错，集合只会静默匹配不上，表现为"明明配置了这个组合却
-    被判定不在允许列表里"。收进这个函数之后顺序只写在一处。
+) -> set[CombinationKey]:
+    """把允许组合列表转成便于成员判断的集合。
 
     调用方拿到的是集合而不是列表，因为它们无一例外都在循环里反复做成员
     判断；schema_etl 和 graph_extraction 还刻意把这次转换提到循环之外，
@@ -58,7 +73,11 @@ def to_combination_keys(
     把 O(n) 的转换推回循环里。
     """
     return {
-        (c.subject_term_type, c.relation_type, c.object_term_type)
+        CombinationKey(
+            subject=c.subject_term_type,
+            relation=c.relation_type,
+            object=c.object_term_type,
+        )
         for c in combinations
     }
 

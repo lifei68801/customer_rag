@@ -1068,8 +1068,8 @@ class Neo4jGraphClient:
     async def merge_relation(
         self,
         *,
-        subject_standard_name: str,
-        object_standard_name: str,
+        subject_node_key: str,
+        object_node_key: str,
         relation_type: str,
         source: str,
         tenant_id: str,
@@ -1089,11 +1089,16 @@ class Neo4jGraphClient:
         租户各自抽取出同一对术语间的关系时，会共用同一对 Neo4j 节点，
         产生跨租户数据污染。
 
-        subject_standard_name/object_standard_name 这两个参数名是历史
-        遗留（不改动，避免连锁改动调用方签名），但它们的值必须是术语的
-        node_key（创建时固定的身份键，改名后不变——ADR-0003），不是当前
-        的展示名 standard_name：两者只在术语刚创建、尚未被改名时恰好
-        相等，改名之后就会不同。调用方（app/graphrag/normalization.py、
+        subject_node_key/object_node_key 收的是术语的 node_key（创建时
+        固定的身份键，改名后不变——ADR-0003），不是当前的展示名
+        standard_name：两者只在术语刚创建、尚未被改名时恰好相等，改名
+        之后就会不同。
+
+        这两个参数曾经叫 subject_standard_name/object_standard_name，而收
+        的值一直是 node_key——接口的名字跟 ADR-0003 直接矛盾，照着名字传
+        展示名不会有任何报错，只会在改名之后断边。2026-09-12 改名对齐。
+
+        调用方（app/graphrag/normalization.py、
         review_queue.py、app/agent/tools/structured_filter_query/tool.py::
         StructuredFilterQueryTool）必须先
         用 resolve_to_standard_name() 等方式解析出 standard_name，再从
@@ -1139,8 +1144,8 @@ class Neo4jGraphClient:
             await session.run(
                 query,
                 {
-                    "subject_name": subject_standard_name,
-                    "object_name": object_standard_name,
+                    "subject_name": subject_node_key,
+                    "object_name": object_node_key,
                     "source": source,
                     "tenant_id": tenant_id,
                     "provenance": provenance,

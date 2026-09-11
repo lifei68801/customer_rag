@@ -28,16 +28,20 @@ from typing import Protocol
 class RelationWriterProtocol(Protocol):
     """能往图谱里写一条关系边。
 
-    subject_standard_name/object_standard_name 这两个参数名是历史遗留，
-    传进来的值必须是 node_key（创建时固定的身份键，改名后不变——ADR-0003），
-    不是当前展示名——详见 neo4j_client.py::merge_relation 的完整说明。
+    subject_node_key/object_node_key 收的是 node_key（创建时固定的身份键，
+    改名后不变——ADR-0003），不是当前展示名——详见
+    neo4j_client.py::merge_relation 的完整说明。
+
+    这两个参数曾经叫 *_standard_name 而收的值一直是 node_key。接口的名字
+    跟 ADR-0003 直接矛盾，是这个项目里最容易照着名字传错值的地方之一：
+    传成展示名不会有任何报错，只会在改名之后断边。
     """
 
     async def merge_relation(
         self,
         *,
-        subject_standard_name: str,
-        object_standard_name: str,
+        subject_node_key: str,
+        object_node_key: str,
         relation_type: str,
         source: str,
         tenant_id: str,

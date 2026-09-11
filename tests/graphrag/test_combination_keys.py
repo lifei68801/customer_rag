@@ -1,4 +1,12 @@
-from app.graphrag.ontology_constraints import AllowedCombination, to_combination_keys
+import ast
+import io
+import pathlib
+
+from app.graphrag.ontology_constraints import (
+    AllowedCombination,
+    CombinationKey,
+    to_combination_keys,
+)
 
 
 def test_field_order_is_subject_relation_object():
@@ -44,3 +52,93 @@ def test_duplicates_collapse():
     )
 
     assert to_combination_keys([combo, combo]) == {("a", "R", "b")}
+
+
+def test_the_key_carries_field_names():
+    """字段能按名字读出来——顺序不再只活在 docstring 里。"""
+    key = to_combination_keys(
+        [
+            AllowedCombination(
+                subject_term_type="订单号", relation_type="SOLD_BY", object_term_type="公司"
+            )
+        ]
+    ).pop()
+
+    assert key.subject == "订单号"
+    assert key.relation == "SOLD_BY"
+    assert key.object == "公司"
+
+
+def test_a_named_key_still_equals_a_plain_tuple():
+    """NamedTuple 跟普通元组相等——所以类型本身挡不住写反的裸元组。
+
+    把这件事写下来，是因为它决定了防线该放在哪：不是类型，而是**构造时
+    写出字段名**。下一条用例扫的就是这个。
+    """
+    key = CombinationKey(subject="a", relation="R", object="b")
+
+    assert key == ("a", "R", "b")
+    # 写反的裸元组照样"是一个合法的比较对象"，只是永远匹配不上。
+    assert key != ("b", "R", "a")
+
+
+def test_membership_checks_build_the_key_with_field_names():
+    """源码扫描：拿去跟允许集合比对的键，必须用关键字构造。
+
+    这条是这个类型真正的防线。历史上这几处各自拼一个裸三元组，谁把顺序写反
+    都不会报错——集合只会静默匹配不上，表现为"明明配置了这个组合却被判定
+    不在允许列表里"。而那种退化在任何单元测试里都不会红：写反的那一处只在
+    真实数据跑过来的时候才错。
+
+    用 AST 而不是正则：正则分不清 `for c in allowed_combinations`（迭代）和
+    `combo in allowed_combinations`（成员判断），也读不了跨行的比较表达式，
+    还会把 `declared_types` 这种同前缀的别的变量一起算进来。这三种误判都
+    出现过——一个会漏报的检查比没有检查更糟，因为它让人以为这里有防线。
+    """
+    haystacks = {"allowed_combinations", "allowed_combinations_set", "declared"}
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    offenders = []
+
+    for path in (repo_root / "app").rglob("*.py"):
+        source = io.open(path, encoding="utf-8").read()
+        tree = ast.parse(source)
+
+        # 哪些变量名是用 CombinationKey(...) 赋出来的
+        keyed_names = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            value = node.value
+            if (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id == "CombinationKey"
+            ):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        keyed_names.add(target.id)
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare):
+                continue
+            for op, right in zip(node.ops, node.comparators):
+                if not isinstance(op, (ast.In, ast.NotIn)):
+                    continue
+                if not (isinstance(right, ast.Name) and right.id in haystacks):
+                    continue
+                left = node.left
+                ok = (
+                    isinstance(left, ast.Call)
+                    and isinstance(left.func, ast.Name)
+                    and left.func.id == "CombinationKey"
+                ) or (isinstance(left, ast.Name) and left.id in keyed_names)
+                if not ok:
+                    offenders.append(
+                        f"{path.relative_to(repo_root)}:{node.lineno}: "
+                        f"{ast.unparse(node)[:80]}"
+                    )
+
+    assert not offenders, (
+        "这些成员判断没有用 CombinationKey(subject=..., relation=..., object=...) "
+        f"构造待查的键，顺序写反不会有任何信号：{offenders}"
+    )

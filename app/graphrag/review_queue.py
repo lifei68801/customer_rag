@@ -9,6 +9,7 @@ from app.db_migrations import add_column_if_missing
 from app.graphrag.provenance import HUMAN_APPROVED
 from app.graphrag.relation_writer import RelationWriterProtocol
 from app.graphrag.ontology import Term, find_candidate_term_types, resolve_term
+from app.graphrag.ontology_constraints import CombinationKey
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS graph_review_queue (
@@ -375,7 +376,7 @@ async def approve_review(
     terms: list[Term],
     now: datetime,
     confirmed_relation_types: set[str],
-    allowed_combinations: set[tuple[str, str, str]],
+    allowed_combinations: set[CombinationKey],
     subject_term_type_hint: str | None = None,
     object_term_type_hint: str | None = None,
 ) -> None:
@@ -425,7 +426,11 @@ async def approve_review(
     # 取 node_key，与 app/graphrag/normalization.py 的做法一致。
     subject_node_key = subject_term.node_key
     object_node_key = object_term.node_key
-    combo = (subject_term.term_type, row["relation_type"], object_term.term_type)
+    combo = CombinationKey(
+        subject=subject_term.term_type,
+        relation=row["relation_type"],
+        object=object_term.term_type,
+    )
     if row["relation_type"] not in confirmed_relation_types or combo not in allowed_combinations:
         raise RelationNotInConfirmedOntologyError(
             f"关系类型 {row['relation_type']!r} 或类型组合 "
@@ -433,8 +438,8 @@ async def approve_review(
             "不在该租户已确认的本体范围内"
         )
     await graph_client.merge_relation(
-        subject_standard_name=subject_node_key,
-        object_standard_name=object_node_key,
+        subject_node_key=subject_node_key,
+        object_node_key=object_node_key,
         relation_type=row["relation_type"],
         source=row["source"],
         tenant_id=tenant_id,

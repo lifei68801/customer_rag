@@ -81,8 +81,8 @@ async def test_merge_relation_sends_expected_query_and_parameters():
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
     await client.merge_relation(
-        subject_standard_name="错误码E502",
-        object_standard_name="登录模块",
+        subject_node_key="错误码E502",
+        object_node_key="登录模块",
         relation_type="RELATED_TO",
         source="a.md",
         tenant_id="t1",
@@ -124,8 +124,8 @@ async def test_merge_relation_rejects_unrecognized_relation_type():
 
     try:
         await client.merge_relation(
-            subject_standard_name="a",
-            object_standard_name="b",
+            subject_node_key="a",
+            object_node_key="b",
             relation_type="DROP TABLE",
             source="a.md",
             tenant_id="t1",
@@ -143,8 +143,8 @@ async def test_merge_relation_rejects_alias_of():
 
     try:
         await client.merge_relation(
-            subject_standard_name="a",
-            object_standard_name="b",
+            subject_node_key="a",
+            object_node_key="b",
             relation_type="ALIAS_OF",
             source="a.md",
             tenant_id="t1",
@@ -234,8 +234,8 @@ async def test_merge_relation_accepts_new_part_of_type():
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
     await client.merge_relation(
-        subject_standard_name="大床房",
-        object_standard_name="酒店",
+        subject_node_key="大床房",
+        object_node_key="酒店",
         relation_type="PART_OF",
         source="a.md",
         tenant_id="t1",
@@ -251,8 +251,8 @@ async def test_merge_relation_accepts_tenant_defined_type_not_in_old_whitelist()
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
     await client.merge_relation(
-        subject_standard_name="Product:1001",
-        object_standard_name="SKU:4901234567890",
+        subject_node_key="Product:1001",
+        object_node_key="SKU:4901234567890",
         relation_type="HAS_SKU",
         source="skus.csv",
         tenant_id="muji",
@@ -571,7 +571,7 @@ async def test_merge_relation_scopes_node_merge_by_tenant():
     client = Neo4jGraphClient(driver=FakeDriver(session))
 
     await client.merge_relation(
-        subject_standard_name="错误码E502", object_standard_name="登录模块",
+        subject_node_key="错误码E502", object_node_key="登录模块",
         relation_type="RELATED_TO", source="a.md", tenant_id="t1",
         provenance="auto_merged", recorded_at=_NOW,
     )
