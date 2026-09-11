@@ -98,6 +98,18 @@ _SCALAR_VALUE_TYPES = {"string", "number", "integer", "date"}
 漏掉它功能照样对，只是日期字段建不出索引，而范围过滤恰恰是最需要索引的那类查询
 ——每次全表扫，压测之前谁也看不出来。
 
+**索引确实用得上，这是实测过的**（2026-09-11，neo4j:5.22-community）：在一个带
+`(tenant_id, type, purchase_date)` 复合索引的标签上，对同一组条件跑 `EXPLAIN`——
+
+| 写法 | 规划器算子 |
+|---|---|
+| 静态插值 `t.purchase_date` | `NodeIndexSeek` |
+| 动态访问 `t[$field]` | `NodeByLabelScan` + `Filter` |
+
+所以凡是按日期字段过滤的查询，字段名都必须静态插值（插值前用
+`EXTRA_FIELD_NAME_PATTERN` 校验）才吃得到这条索引。`count_non_iso_date_values`
+和 `execute_structured_filter_query` 走的都是这条路。
+
 ## 4. 查询层
 
 ### 4.1 算子表

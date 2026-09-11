@@ -639,6 +639,10 @@ RETURN t.{field} AS value
 """
 # 确认本体前扫存量日期值（Task 7：count_non_iso_date_values）。
 #
+# 走静态插值而不是 t[$field] 的理由，见 execute_structured_filter_query 的
+# docstring 里那段实测记录（2026-09-11 在 neo4j:5.22 上跑的 EXPLAIN：静态插值
+# 命中 NodeIndexSeek，动态访问退化成 NodeByLabelScan + Filter）。
+#
 # field 走字符串插值拼进语句文本（不是 t[$field] 参数化动态属性访问）。
 # 插值前必须先用 EXTRA_FIELD_NAME_PATTERN（导入自 ontology_categories.py）
 # 断言 field 合法——这是经过正则校验的字符集（^[a-zA-Z_][a-zA-Z0-9_]{0,63}$），
@@ -916,8 +920,17 @@ class Neo4jGraphClient:
         文本，不做参数化——这是刻意的（且是本方法唯一安全的做法）：Neo4j 对动态
         属性访问 t[$param] 只在运行时解析属性名，查询规划器没法在规划阶段用上
         (tenant_id, type, field) 复合索引（ensure_extra_field_indexes 建的那些），
-        每次属性过滤都会退化成全表按 type 扫描——这正是 Task 2 的索引本该避免的
-        18万+行全表扫描。改成静态插值后规划器才能命中索引。
+        每次属性过滤都会退化成按标签全扫。改成静态插值后规划器才能命中索引。
+
+        **已实测（2026-09-11，neo4j:5.22-community，docker-compose 里的同一个
+        容器）**：在一个带 (tenant_id, type, purchase_date) 复合索引的临时标签上
+        对同一组条件各跑一次 EXPLAIN，规划器给出的算子是——
+
+            静态插值 t.purchase_date  →  NodeIndexSeek
+            动态访问 t[$field]        →  NodeByLabelScan + Filter
+
+        这一条以前是没有证据的机制推断（2026-09-10 的整分支终审点名过），现在
+        换成了实测记录。同文件 count_non_iso_date_values 走静态插值的理由同此。
 
         安全性依赖调用方已经过 validate_structured_filter_query 的双重校验：
         relation_type 过格式校验（^[A-Z][A-Z0-9_]{0,63}$）+ 已确认 tenant_relation_
