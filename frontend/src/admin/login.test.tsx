@@ -222,36 +222,47 @@ describe('登录页', () => {
     expect(await screen.findByText('请先选择一个租户')).toBeTruthy()
   })
 
-  it('代理回 502 时说后端可能没起来，不是笼统的「服务出错」', async () => {
-    // 隔着 Vite 代理时，后端没起来**不会**让 fetch reject——代理会替它回一个
-    // 5xx。所以「连不上服务器」那条分支在开发环境根本走不到，用户看到的是
-    // 通用的「登录服务出错」，仍然不知道该去起后端。
+  it('非 401 的失败要点名「后端可能没起来」这个最常见原因', async () => {
+    // 隔着 Vite 代理时，后端没起来**不会**让 fetch reject——代理替它回一个
+    // 5xx。实测（2026-09-11）：Vite 在上游 ECONNREFUSED 时回的是
+    // **500 + text/plain**，不是 502。
     //
-    // 502/503/504 是网关类状态码，它们说的就是"上游不可用"，可以直说。
-    // 500 不行——那是后端自己抛了异常，跟没起来是两回事。
-    stubLogin(502, '')
-    const user = userEvent.setup()
-    await renderLogin()
-    await submit(user, 'alice', 'whatever')
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toMatch(/后端|服务.*没(起|启动)|未启动/)
-    expect(alert.textContent).not.toMatch(/密码/)
-  })
-
-  it('500 仍然按服务端自己出错说，不假称是没起来', async () => {
-    // 后端起着、但某个依赖炸了，这时说"请确认后端已启动"会把人支到错的
-    // 方向去——他会反复重启一个本来就在跑的服务。
+    // 而 FastAPI 未捕获异常时 Starlette 默认也返回 text/plain 的 500，所以
+    // "代理连不上"和"后端自己抛异常"在响应上**分不开**。分不开就不猜：
+    // 一句话同时点名两种原因，把最常见的那个放前面。这比按状态码猜一个更
+    // 有用——上一版猜的是 502，而真实世界里最常见的那格是 500，于是那次
+    // 修复对开发环境完全没生效。
     stubLogin(500, '')
     const user = userEvent.setup()
     await renderLogin()
     await submit(user, 'alice', 'whatever')
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toMatch(/500/)
-    // 断言的是「连不上」这个说法不出现——502 的文案是"连不上后端服务…请确认
-    // 它已启动"，第一版这里断言的是不含「没启动/未启动」，跟那句话里的
-    // 「已启动」对不上，于是把 500 并进 502 那组的变异照样绿。断言要挑真正
-    // 能区分两者的那个词。
-    expect(alert.textContent).not.toMatch(/连不上/)
+    // 点名最常见的原因，给出能做的事。
+    expect(alert.textContent).toMatch(/后端/)
+    expect(alert.textContent).toMatch(/启动|没起来|在运行/)
+    // 绝不说成凭据问题——那会让人反复试密码。
+    expect(alert.textContent).not.toMatch(/密码/)
+  })
+
+  it('502 这类网关码走同一条路，不因为状态码不同而说法不同', async () => {
+    // 换个反向代理（nginx 之类）上游不可用时回的是 502。按状态码分支的话
+    // 每换一个部署方式就要补一格，而每一格漏了都是同一种坑。判据是"非 401
+    // 的失败"，跟具体状态码无关。
+    stubLogin(502, '')
+    const user = userEvent.setup()
+    await renderLogin()
+    await submit(user, 'alice', 'whatever')
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toMatch(/后端/)
+    expect(alert.textContent).not.toMatch(/密码/)
+  })
+
+  it('文案里带上状态码，排查时用得上', async () => {
+    stubLogin(500, '')
+    const user = userEvent.setup()
+    await renderLogin()
+    await submit(user, 'alice', 'whatever')
+    expect((await screen.findByRole('alert')).textContent).toMatch(/500/)
   })
 
   it('密码框是 password 类型', async () => {

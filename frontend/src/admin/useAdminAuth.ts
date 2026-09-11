@@ -180,17 +180,21 @@ export function useAdminAuth() {
       const body = (await response.json().catch(() => ({}))) as { detail?: unknown }
       const detail = typeof body.detail === 'string' ? body.detail : ''
       if (detail) throw new Error(detail)
-      // 502/503/504 是网关类状态码，说的就是"上游不可用"。开发时后端没起来
-      // 走的正是这条：隔着 Vite 代理，上游连不上**不会**让 fetch reject，代理
-      // 会替它回一个 5xx——所以上面那条"连不上服务器"在开发环境根本走不到，
-      // 用户看到通用文案仍然不知道该去起后端。
+      // 走到这里 = 非 401、且后端没给出可读的 detail。**不按状态码分支。**
       //
-      // **500 不并进来**：那是后端起着、自己抛了异常，跟没起来是两回事。
-      // 说成"请确认后端已启动"会把人支去反复重启一个本来就在跑的服务。
-      if ([502, 503, 504].includes(response.status)) {
-        throw new Error('连不上后端服务（网关返回 ' + response.status + '），请确认它已启动后重试')
-      }
-      throw new Error(`登录服务出错（HTTP ${response.status}），请稍后重试`)
+      // 两种原因在响应上分不开，实测过（2026-09-11）：
+      //   - 反向代理连不上后端：Vite 回 500 + text/plain（不是想当然的 502）
+      //   - 后端起着但抛了未捕获异常：Starlette 默认也回 500 + text/plain
+      // 分不开就不猜。上一版猜的是 502，而真实世界里最常见的那格恰恰是 500,
+      // 于是那次修复对开发环境完全没生效——用户看到的还是笼统的"服务出错"。
+      //
+      // 所以一句话同时点名两种原因，最常见的放前面，两边都给出能做的事。
+      // 它永远不会说谎，也不会把人支去重启一个本来就在跑的服务。
+      throw new Error(
+        `登录服务暂时不可用（HTTP ${response.status}）。` +
+          '最常见的原因是后端服务没有启动——确认它在运行后重试；' +
+          '如果它确实在运行，请查看后端日志。',
+      )
     }
     // 登录响应里也带着 username/role，但会话状态只认 whoami 一个来源：
     // 两条路径各自解析同一份身份，早晚会读出两个不一样的答案。
