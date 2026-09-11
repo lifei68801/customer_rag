@@ -10,9 +10,30 @@ from app.graphrag.ontology import Term, load_terminology
 
 
 def _default_driver_factory(uri: str, *, auth: tuple[str, str]) -> Neo4jDriverProtocol:
-    from neo4j import AsyncGraphDatabase
+    from neo4j import AsyncGraphDatabase, NotificationDisabledClassification
 
-    return AsyncGraphDatabase.driver(uri, auth=auth)
+    # 关掉 UNRECOGNIZED 这一类通知（"你查的标签/类型/属性在库里不存在"）。
+    #
+    # 本体图页面会拿**草稿里**的关系类型去图里探扇出，而那些类型在数据导入
+    # 之前根本不存在。这是预期内的状态——探测失败退回"未知"，见
+    # admin_ontology_routes 里 fanout 端点的 docstring。但驱动会为每一次这样的
+    # 查询打一条极长的通知对象，刷一次页面就是十几条，把 stderr 淹掉；真出错
+    # 的那条堆栈混在里面根本看不见。
+    #
+    # **只关这一类。** DEPRECATION / PERFORMANCE / SECURITY 那些是真该看见的，
+    # 一起关掉等于把日志变成哑巴。
+    #
+    # 实测依据（2026-09-11，neo4j:5.22-community + 驱动 6.2.0）：对一个不存在的
+    # 关系类型跑一次查询，默认产出 1 条通知 / 873 字节日志；加上这个设置之后
+    # 是 0 条 / 0 字节。参数名在驱动 6.x 叫 notifications_disabled_classifications
+    # （5.x 那个 ..._categories 已废弃），同样是实测确认的。
+    return AsyncGraphDatabase.driver(
+        uri,
+        auth=auth,
+        notifications_disabled_classifications=[
+            NotificationDisabledClassification.UNRECOGNIZED
+        ],
+    )
 
 
 def _default_neptune_client_factory(endpoint: str, *, port: int) -> NeptuneClientProtocol:

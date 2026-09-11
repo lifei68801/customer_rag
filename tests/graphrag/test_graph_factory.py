@@ -106,3 +106,48 @@ def test_build_graph_client_from_settings_neptune_without_injected_factory_raise
 
     with pytest.raises(NotImplementedError):
         build_graph_client_from_settings(settings)
+
+
+def test_default_driver_factory_silences_unrecognized_notifications():
+    """默认驱动要关掉 UNRECOGNIZED 这一类通知。
+
+    本体图页面会拿**草稿里**的关系类型去图里探扇出，而那些类型在数据导入
+    之前根本不存在。这是预期内的状态——探测失败就退回"未知"，代码里明写了
+    （admin_ontology_routes 的 fanout 端点）。但 Neo4j 驱动会为每一次这样的
+    查询打一条极长的通知对象，一次刷新就是十几条，把 stderr 淹掉；真出错的
+    那条堆栈混在里面根本看不见。
+
+    只关 UNRECOGNIZED 这一类（"你查的标签/类型/属性在库里不存在"），不动
+    DEPRECATION/PERFORMANCE/SECURITY 那些——那些是真该看见的。
+
+    实测依据（2026-09-11，neo4j:5.22-community + 驱动 6.2.0）：对一个不存在的
+    关系类型跑一次查询，默认产出 1 条通知 / 873 字节日志；加上这个设置之后是
+    0 条 / 0 字节。
+    """
+    from neo4j import NotificationDisabledClassification
+
+    from app.graphrag.factory import _default_driver_factory
+
+    captured: dict = {}
+
+    class _FakeDriver:
+        pass
+
+    def fake_async_graph_database_driver(uri, auth=None, **kwargs):
+        captured["kwargs"] = kwargs
+        return _FakeDriver()
+
+    import neo4j
+
+    original = neo4j.AsyncGraphDatabase.driver
+    neo4j.AsyncGraphDatabase.driver = fake_async_graph_database_driver
+    try:
+        _default_driver_factory("bolt://x:7687", auth=("u", "p"))
+    finally:
+        neo4j.AsyncGraphDatabase.driver = original
+
+    disabled = captured["kwargs"].get("notifications_disabled_classifications")
+    assert disabled is not None, "默认驱动没有关掉任何通知分类"
+    assert NotificationDisabledClassification.UNRECOGNIZED in disabled
+    # 只关这一类：把 DEPRECATION 之类也关掉的话，真正该看见的警告会一起消失。
+    assert NotificationDisabledClassification.DEPRECATION not in disabled

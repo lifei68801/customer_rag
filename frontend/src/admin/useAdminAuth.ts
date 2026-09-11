@@ -179,7 +179,18 @@ export function useAdminAuth() {
       // 任何人，只坑真正的用户。
       const body = (await response.json().catch(() => ({}))) as { detail?: unknown }
       const detail = typeof body.detail === 'string' ? body.detail : ''
-      throw new Error(detail || `登录服务出错（HTTP ${response.status}），请稍后重试`)
+      if (detail) throw new Error(detail)
+      // 502/503/504 是网关类状态码，说的就是"上游不可用"。开发时后端没起来
+      // 走的正是这条：隔着 Vite 代理，上游连不上**不会**让 fetch reject，代理
+      // 会替它回一个 5xx——所以上面那条"连不上服务器"在开发环境根本走不到，
+      // 用户看到通用文案仍然不知道该去起后端。
+      //
+      // **500 不并进来**：那是后端起着、自己抛了异常，跟没起来是两回事。
+      // 说成"请确认后端已启动"会把人支去反复重启一个本来就在跑的服务。
+      if ([502, 503, 504].includes(response.status)) {
+        throw new Error('连不上后端服务（网关返回 ' + response.status + '），请确认它已启动后重试')
+      }
+      throw new Error(`登录服务出错（HTTP ${response.status}），请稍后重试`)
     }
     // 登录响应里也带着 username/role，但会话状态只认 whoami 一个来源：
     // 两条路径各自解析同一份身份，早晚会读出两个不一样的答案。
