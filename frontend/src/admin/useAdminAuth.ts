@@ -149,16 +149,37 @@ export function useAdminAuth() {
   }, [state.status])
 
   const login = useCallback(async (name: string, password: string) => {
-    const response = await fetch('/api/admin/auth/login', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: name, password }),
-    })
-    if (!response.ok) {
-      // 后端刻意不区分"用户不存在/密码错/账号禁用"（那会把登录接口变成
-      // 用户名枚举器），前端也不该编一个更具体的说法。
+    let response: Response
+    try {
+      response = await fetch('/api/admin/auth/login', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: name, password }),
+      })
+    } catch {
+      // fetch 只在网络层失败时 reject（后端没起来、代理连不上）。这跟凭据
+      // 不对是两回事，说成"密码不正确"会让用户反复试密码、怀疑自己记错，
+      // 而真正要做的是去看服务起没起——2026-09-11 真实发生过一次。
+      throw new Error('连不上服务器，请确认后端服务已启动后重试')
+    }
+    if (response.status === 401) {
+      // 只有 401 沿用这句笼统的说法：后端刻意不区分"用户不存在/密码错/
+      // 账号禁用"（那会把登录接口变成用户名枚举器），前端也不该编一个更
+      // 具体的说法。**下面几种非凭据失败不适用这条理由。**
       throw new Error('用户名或密码不正确')
+    }
+    if (!response.ok) {
+      // 429（连错多次被锁）这类失败要把后端那句话原样转达：它说的是"锁到
+      // 什么时候"，用户照着等就行；说成"密码不正确"他会继续试，而每次尝试
+      // 都在把锁定时间续上，永远出不来。
+      //
+      // 429 确实暴露了"这个用户名存在"（后端只对存在的用户计数），但状态码
+      // 本身就带着这个信息，攻击者直接读状态码不看界面——前端瞒着它保护不了
+      // 任何人，只坑真正的用户。
+      const body = (await response.json().catch(() => ({}))) as { detail?: unknown }
+      const detail = typeof body.detail === 'string' ? body.detail : ''
+      throw new Error(detail || `登录服务出错（HTTP ${response.status}），请稍后重试`)
     }
     // 登录响应里也带着 username/role，但会话状态只认 whoami 一个来源：
     // 两条路径各自解析同一份身份，早晚会读出两个不一样的答案。

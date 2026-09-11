@@ -31,10 +31,18 @@ export function LoginPage() {
     setLoggingIn(true)
     try {
       await login(username, password)
-    } catch {
-      // 不比后端更具体：后端刻意不区分"用户不存在/密码错/账号禁用"，
-      // 前端编一个更细的说法等于把那份克制作废。
-      setError('用户名或密码不正确')
+    } catch (err) {
+      // 原样转达 useAdminAuth.login 给的消息，**不在这里另编一句**。
+      //
+      // 这里以前硬编码 '用户名或密码不正确'，把所有失败都说成凭据错误：
+      // 后端没起来说成密码错（用户反复试密码，而真正的问题是服务没跑）、
+      // 被限流锁 15 分钟也说成密码错（用户继续试，每次都在把锁定时间续上）。
+      // 2026-09-11 真实踩到过前一种。
+      //
+      // "不比后端更具体"这条克制仍然成立，但它只适用于 401，现在由
+      // useAdminAuth.login 在那一处兑现——同一句话散落两处的结果就是修了
+      // 一处、另一处照旧覆盖掉。
+      setError(err instanceof Error ? err.message : '登录失败，请稍后重试')
     } finally {
       setLoggingIn(false)
     }
