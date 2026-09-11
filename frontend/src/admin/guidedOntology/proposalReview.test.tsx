@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { ProposalReview } from './ProposalReview'
 import { buildProposal, initialDecision } from './draftProposal'
 import { assignRoles } from './columnRoles'
+import type { PairReport } from './columnStats'
 import { accumulateRow, createAccumulator, finalizeStats } from './columnStats'
 import type { ColumnStats, GuidedDecision, Proposal, RoledColumn } from './types'
 
@@ -91,6 +92,7 @@ function renderReview(
     decision: GuidedDecision
     onDecisionChange: (next: GuidedDecision) => void
     proposal: Proposal
+    pairReport: PairReport
   }> = {},
 ) {
   const props = {
@@ -98,6 +100,8 @@ function renderReview(
     decision: baseDecision,
     onDecisionChange: vi.fn(),
     proposal: baseProposal,
+    // 默认「检测过、没发现冲突」——大多数用例不关心这一层。
+    pairReport: { skipped: false, violationOf: () => null } as PairReport,
     ...overrides,
   }
   return render(<ProposalReview {...props} />)
@@ -221,6 +225,7 @@ describe('被当成标识的列', () => {
         decision={decision}
         onDecisionChange={onChange}
         proposal={proposal}
+      pairReport={{ skipped: false, violationOf: () => null }}
       />,
     )
     const block = await screen.findByTestId('identifier-金额分')
@@ -303,6 +308,140 @@ describe('选中心', () => {
     renderReview()
     await screen.findByTestId('identifier-订单号')
     expect(screen.queryByRole('radio', { name: /设为中心/ })).toBeNull()
+  })
+})
+
+describe('属性挂在哪个实体下面', () => {
+  /** 一张同时携带两类实体属性的表：订单是中心，客户等级其实属于客户。 */
+  function twoHostStats(): ColumnStats[] {
+    return [
+      stat('订单号', 9998),
+      stat('客户', 800),
+      stat('revenue', 500, 'number'),
+      stat('客户等级', 4, 'number'),
+    ]
+  }
+  const hostRoled = assignRoles(twoHostStats())
+  const hostDecision = initialDecision(hostRoled)
+  const hostProposal = buildProposal(hostRoled, hostDecision)
+
+  it('每个属性列有一个下拉，能选挂在哪个实体下面', async () => {
+    renderReview({ roled: hostRoled, decision: hostDecision, proposal: hostProposal })
+    const select = (await screen.findByLabelText(/客户等级.*挂在/)) as HTMLSelectElement
+    const options = [...select.options].map((o) => o.value)
+    // 全部实体都能选，中心也在里面。
+    expect(options).toContain('订单号')
+    expect(options).toContain('客户')
+  })
+
+  it('默认选中的是中心', async () => {
+    renderReview({ roled: hostRoled, decision: hostDecision, proposal: hostProposal })
+    const select = (await screen.findByLabelText(/客户等级.*挂在/)) as HTMLSelectElement
+    expect(select.value).toBe(hostProposal.rootName)
+  })
+
+  it('已经指定过宿主时，下拉显示的是那个宿主而不是列表第一项', async () => {
+    // 上一条里中心恰好是选项列表的第一项，分不出实现读的是 host 还是
+    // entityNames[0]。这条用一个**不是**第一项的宿主把两者分开。
+    const decision: GuidedDecision = {
+      ...hostDecision,
+      attributeHostOf: { 客户等级: '客户' },
+    }
+    renderReview({ roled: hostRoled, decision, proposal: buildProposal(hostRoled, decision) })
+    const select = (await screen.findByLabelText(/客户等级.*挂在/)) as HTMLSelectElement
+    expect(select.value).toBe('客户')
+    expect(select.value).not.toBe(hostProposal.rootName)
+  })
+
+  it('中心是猜出来的维度列时，它自己的冲突也要报', async () => {
+    // 中心是标识列时每行一个实例、不可能冲突；但纯维度表没有标识列，中心
+    // 是猜出来的维度列，它的值会重复、真的可能冲突。把中心豁免掉的实现会
+    // 把这个真实冲突藏起来。
+    const roled = assignRoles(noIdentifierStats())
+    const decision = initialDecision(roled)
+    const proposal = buildProposal(roled, decision)
+    renderReview({
+      roled,
+      decision,
+      proposal,
+      pairReport: {
+        skipped: false,
+        violationOf: (host: string, attr: string) =>
+          host === proposal.rootName && attr === 'revenue'
+            ? { hostValue: '咖啡', rowCount: 9, distinctCount: 2, samples: ['12.5', '13.0'] }
+            : null,
+      },
+    })
+    const warning = await screen.findByTestId('attribute-host-conflict-revenue')
+    expect(warning.textContent).toMatch(/咖啡/)
+  })
+
+  it('改选之后 attributeHostOf 跟着变', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    renderReview({
+      roled: hostRoled,
+      decision: hostDecision,
+      proposal: hostProposal,
+      onDecisionChange: onChange,
+    })
+    const select = await screen.findByLabelText(/客户等级.*挂在/)
+    await user.selectOptions(select, '客户')
+    const next = onChange.mock.calls[onChange.mock.calls.length - 1][0] as GuidedDecision
+    expect(next.attributeHostOf?.['客户等级']).toBe('客户')
+  })
+
+  it('选了会冲突的宿主，就地给出带具体数字的提示', async () => {
+    // 只说"会冲突"用户判断不了那是数据脏了还是业务上真的会变——必须说出
+    // 是哪个宿主值、出现在几行、有几个不同取值。
+    const decision: GuidedDecision = {
+      ...hostDecision,
+      attributeHostOf: { 客户等级: '客户' },
+    }
+    renderReview({
+      roled: hostRoled,
+      decision,
+      proposal: buildProposal(hostRoled, decision),
+      pairReport: {
+        skipped: false,
+        violationOf: (host: string, attr: string) =>
+          host === '客户' && attr === '客户等级'
+            ? { hostValue: 'A', rowCount: 12, distinctCount: 3, samples: ['金卡', '银卡'] }
+            : null,
+      },
+    })
+    const warning = await screen.findByTestId('attribute-host-conflict-客户等级')
+    expect(warning.textContent).toMatch(/A/)
+    expect(warning.textContent).toMatch(/12/)
+    expect(warning.textContent).toMatch(/3/)
+    expect(warning.textContent).toMatch(/金卡/)
+  })
+
+  it('宿主不冲突时不出提示', async () => {
+    const decision: GuidedDecision = {
+      ...hostDecision,
+      attributeHostOf: { 客户等级: '客户' },
+    }
+    renderReview({
+      roled: hostRoled,
+      decision,
+      proposal: buildProposal(hostRoled, decision),
+      pairReport: { skipped: false, violationOf: () => null },
+    })
+    await screen.findByLabelText(/客户等级.*挂在/)
+    expect(screen.queryByTestId('attribute-host-conflict-客户等级')).toBeNull()
+  })
+
+  it('没做检测时如实说没检测，不是装成没冲突', async () => {
+    // 「没检测」和「检测了没发现」在界面上必须分得开——说成后者就是撒谎。
+    renderReview({
+      roled: hostRoled,
+      decision: hostDecision,
+      proposal: hostProposal,
+      pairReport: { skipped: true, violationOf: () => null },
+    })
+    const notice = await screen.findByTestId('conflict-scan-skipped')
+    expect(notice.textContent).toMatch(/没(做|检测)/)
   })
 })
 
@@ -519,6 +658,7 @@ function renderWithRootDropped() {
       decision={staleDecision}
       onDecisionChange={vi.fn()}
       proposal={proposal}
+    pairReport={{ skipped: false, violationOf: () => null }}
     />,
   )
 }
@@ -578,6 +718,7 @@ describe('猜测根提示的文案只承诺界面做得到的事', () => {
         decision={guessedDecision}
         onDecisionChange={vi.fn()}
         proposal={buildProposal(guessedRoled, guessedDecision)}
+      pairReport={{ skipped: false, violationOf: () => null }}
       />,
     )
     return screen.getByRole('alert').textContent ?? ''
@@ -616,6 +757,7 @@ describe('所有维度列都被改判成属性之后，一个实体都不剩', (
         decision={guessedDecision}
         onDecisionChange={vi.fn()}
         proposal={proposal}
+      pairReport={{ skipped: false, violationOf: () => null }}
       />,
     )
   }
@@ -690,6 +832,7 @@ describe('没有用到的列，各自的原因要能看见', () => {
         decision={decision}
         onDecisionChange={vi.fn()}
         proposal={proposal}
+      pairReport={{ skipped: false, violationOf: () => null }}
       />,
     )
     const unused = await screen.findByTestId('unused-columns')
@@ -752,6 +895,7 @@ describe('单选按钮按列分组', () => {
         decision={current}
         onDecisionChange={setCurrent}
         proposal={buildProposal(roled, current)}
+      pairReport={{ skipped: false, violationOf: () => null }}
       />
     )
   }

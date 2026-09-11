@@ -261,15 +261,73 @@ export const TEXT_CHUNK_BYTES = 1024 * 1024
  * 上限；超过就抛错并说明原因，不能让页面静静地卡住。
  */
 export async function scanTableFile(file: File): Promise<ColumnStats[]> {
-  const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
-  if (extension === '.xlsx' || extension === '.xls') {
-    return scanExcelFile(file)
-  }
-  const delimiter = extension === '.tsv' ? '\t' : ','
-  return scanDelimitedFile(file, delimiter)
+  let acc: StatsAccumulator | null = null
+  await readTableRows(
+    file,
+    (columns) => {
+      acc = createAccumulator(columns)
+    },
+    (row) => {
+      if (acc !== null) accumulateRow(acc, row)
+    },
+  )
+  if (acc === null) return []
+  return finalizeStats(acc)
 }
 
-async function scanExcelFile(file: File): Promise<ColumnStats[]> {
+/**
+ * 第二遍：算每一对（候选宿主列，属性列）是不是单值。
+ *
+ * 在 assignRoles 之后调用——那时才知道哪些列是宿主、哪些是属性，只算真正
+ * 需要的那些对，而不是所有列两两配对。
+ */
+export async function scanPairs(
+  file: File,
+  options: { hostColumns: string[]; attributeColumns: string[] },
+): Promise<PairReport> {
+  let acc: PairsAccumulator | null = null
+  await readTableRows(
+    file,
+    (columns) => {
+      acc = createPairsAccumulator({ columns, ...options })
+    },
+    (row) => {
+      if (acc !== null) accumulatePairRow(acc, row)
+    },
+  )
+  if (acc === null) return { skipped: false, violationOf: () => null }
+  return finalizePairs(acc)
+}
+
+/**
+ * 逐行读一张表，把表头和每一行交给回调。
+ *
+ * 抽出来是因为文件要读**两遍**：第一遍统计各列基数、推断类型，`assignRoles`
+ * 据此定出哪些列是候选宿主、哪些是属性；第二遍才算得了「这个宿主的每个值
+ * 是不是只对应一个属性值」——第一遍时角色还不知道，要一遍算完就得追踪所有
+ * 列两两配对，内存上限不可控。
+ *
+ * 两遍的代价是扫描耗时约翻倍。CSV 是分块流式读的，xlsx 第二遍能复用已经
+ * 解析好的工作簿（见 readExcelRows 的参数）。
+ */
+async function readTableRows(
+  file: File,
+  onHeader: (columns: string[]) => void,
+  onRow: (row: string[]) => void,
+): Promise<void> {
+  const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
+  if (extension === '.xlsx' || extension === '.xls') {
+    await readExcelRows(file, onHeader, onRow)
+    return
+  }
+  await readDelimitedRows(file, extension === '.tsv' ? '\t' : ',', onHeader, onRow)
+}
+
+async function readExcelRows(
+  file: File,
+  onHeader: (columns: string[]) => void,
+  onRow: (row: string[]) => void,
+): Promise<void> {
   if (file.size > MAX_XLSX_BYTES) {
     throw new Error(
       `xlsx 文件过大（${file.size} 字节，上限 ${MAX_XLSX_BYTES} 字节）：xlsx 是二进制容器格式，` +
@@ -288,16 +346,14 @@ async function scanExcelFile(file: File): Promise<ColumnStats[]> {
   // 不再被认成日期列，后续按日期列做的范围过滤处理也就用不上了。
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: true })
   const firstSheetName = workbook.SheetNames[0]
-  if (!firstSheetName) return []
+  if (!firstSheetName) return
   const sheet = workbook.Sheets[firstSheetName]
   const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 })
   const [headerRow, ...dataRows] = rows
-  const columns = (headerRow ?? []).map((cell) => cellToString(cell).trim())
-  const acc = createAccumulator(columns)
+  onHeader((headerRow ?? []).map((cell) => cellToString(cell).trim()))
   for (const row of dataRows) {
-    accumulateRow(acc, row.map(cellToString))
+    onRow(row.map(cellToString))
   }
-  return finalizeStats(acc)
 }
 
 function cellToString(cell: unknown): string {
@@ -313,23 +369,27 @@ function cellToString(cell: unknown): string {
  * `TextDecoder` 实例（`{ stream: true }`）——这样即使某次切片正好切在一个
  * 多字节 UTF-8 字符中间，解码器也会把半个字符缓存到下一块，不会产生乱码。
  */
-async function scanDelimitedFile(file: File, delimiter: string): Promise<ColumnStats[]> {
+async function readDelimitedRows(
+  file: File,
+  delimiter: string,
+  onHeader: (columns: string[]) => void,
+  onRow: (row: string[]) => void,
+): Promise<void> {
   const decoder = new TextDecoder('utf-8')
   let pending = ''
-  let columns: string[] | null = null
-  let acc: StatsAccumulator | null = null
+  let sawHeader = false
 
   const consumeLine = (line: string) => {
     // 跳过完全空白的行（比如文件末尾的换行符），但不跳过"看起来空但有
     // 分隔符"的行——那是真实的空值行，短行补齐已经在 accumulateRow 里处理。
     if (line === '') return
     const fields = parseDelimitedHeaderLine(line, delimiter)
-    if (columns === null) {
-      columns = fields.map((f) => f.trim())
-      acc = createAccumulator(columns)
+    if (!sawHeader) {
+      sawHeader = true
+      onHeader(fields.map((f) => f.trim()))
       return
     }
-    accumulateRow(acc as StatsAccumulator, fields)
+    onRow(fields)
   }
 
   let offset = 0
@@ -349,7 +409,4 @@ async function scanDelimitedFile(file: File, delimiter: string): Promise<ColumnS
   }
   pending += decoder.decode()
   if (pending !== '') consumeLine(pending)
-
-  if (columns === null || acc === null) return []
-  return finalizeStats(acc)
 }

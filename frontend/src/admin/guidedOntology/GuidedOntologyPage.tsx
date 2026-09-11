@@ -6,7 +6,8 @@ import { useAdminAuth } from '../useAdminAuth'
 import { useAdminTenant } from '../TenantContext'
 import { useConfirm } from '../ConfirmContext'
 import { buildConfigYaml } from '../schemaEtlConfigBuilder/buildConfigYaml'
-import { scanTableFile } from './columnStats'
+import { scanPairs, scanTableFile } from './columnStats'
+import type { PairReport } from './columnStats'
 import { assignRoles } from './columnRoles'
 import { buildProposal, initialDecision, toEtlBuilder } from './draftProposal'
 import { ProposalReview } from './ProposalReview'
@@ -35,6 +36,9 @@ const GUIDED_FILE_ID = 'guided-upload'
  * 用户会以为页面卡了，然后重复点击或刷新，所以扫描中必须显示进度。
  * 扫描失败（比如 xlsx 超过体积上限）也必须说清原因，不能静静停住。
  */
+/** 「检测过、没发现冲突」的空报告。扫描前和扫描失败时都用它。 */
+const EMPTY_PAIR_REPORT: PairReport = { skipped: false, violationOf: () => null }
+
 export function GuidedOntologyPage() {
   const { role, sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
@@ -44,6 +48,9 @@ export function GuidedOntologyPage() {
   const [roled, setRoled] = useState<RoledColumn[] | null>(null)
   const [decision, setDecision] = useState<GuidedDecision | null>(null)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
+  // 单值预检的结果。扫描失败或还没跑时给一个「检测过、没发现」的空报告：
+  // 界面永远拿得到一个可用的对象，不用到处判 null。
+  const [pairReport, setPairReport] = useState<PairReport>(EMPTY_PAIR_REPORT)
 
   if (role !== 'admin') {
     return (
@@ -67,6 +74,18 @@ export function GuidedOntologyPage() {
       const stats = await scanTableFile(file)
       const roledColumns = assignRoles(stats)
       const initial = initialDecision(roledColumns)
+      // 第二遍：角色已知了，只算「候选宿主 × 属性」这些真正需要的配对。
+      // 候选宿主是能成为实体的列，属性是会挂在实体下面的那些。
+      setPairReport(
+        await scanPairs(file, {
+          hostColumns: roledColumns
+            .filter((c) => c.role === 'identifier' || c.role === 'dimension')
+            .map((c) => c.stats.name),
+          attributeColumns: roledColumns
+            .filter((c) => c.role === 'measure' || c.role === 'date')
+            .map((c) => c.stats.name),
+        }),
+      )
       setRoled(roledColumns)
       setDecision(initial)
       setStep('review')
@@ -259,6 +278,7 @@ export function GuidedOntologyPage() {
             decision={decision}
             onDecisionChange={setDecision}
             proposal={buildProposal(roled, decision)}
+            pairReport={pairReport}
           />
           <button
             type="button"

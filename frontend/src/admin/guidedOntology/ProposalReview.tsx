@@ -1,4 +1,5 @@
 import { isEntityColumn } from './draftProposal'
+import type { PairReport } from './columnStats'
 import type { GuidedDecision, Proposal, RoledColumn } from './types'
 
 const card = 'rounded-card border border-subtle bg-card p-4'
@@ -11,9 +12,20 @@ interface Props {
   decision: GuidedDecision
   onDecisionChange: (next: GuidedDecision) => void
   proposal: Proposal
+  /**
+   * 单值预检的结果：属性挂到非中心实体上时，同一个宿主值会不会对应多个
+   * 属性值。中心不需要它——中心每行一个实例，天然单值。
+   */
+  pairReport: PairReport
 }
 
-export function ProposalReview({ roled, decision, onDecisionChange, proposal }: Props) {
+export function ProposalReview({
+  roled,
+  decision,
+  onDecisionChange,
+  proposal,
+  pairReport,
+}: Props) {
   const dimensions = roled.filter((c) => c.role === 'dimension')
   const identifiers = roled.filter((c) => c.role === 'identifier')
   const dateColumns = roled.filter((c) => c.role === 'date')
@@ -359,19 +371,80 @@ export function ProposalReview({ roled, decision, onDecisionChange, proposal }: 
         <section data-testid="attribute-columns" className={`${card} flex flex-col gap-1`}>
           <h2 className={sectionTitle}>会成为属性的列</h2>
           <p className="text-sm text-ink-soft">
-            这些列挂在中心「{proposal.rootName}」上，只能当过滤条件，问不出
-            「哪个最多」这类问题。如果其中有一列你想建成实体，建完草稿后去
-            「本体结构」页加。
+            这些列只能当过滤条件，问不出「哪个最多」这类问题。默认挂在中心
+            「{proposal.rootName}」上；一张表如果同时带着两类实体的属性
+            （金额属于订单、客户等级属于客户），可以逐列改挂。如果其中有一列
+            你想建成实体，建完草稿后去「本体结构」页加。
           </p>
-          <ul className="flex flex-col gap-1">
-            {proposal.attributeColumns.map((name, index) => (
-              <li key={`${name}-${index}`} className="flex flex-wrap items-baseline gap-2 text-xs">
-                <code className="rounded-chip border border-subtle bg-paper px-2 py-0.5 font-mono text-ink-soft">
-                  {name}
-                </code>
-                <span className="text-ink-soft">{reasonByColumn.get(name)}</span>
-              </li>
-            ))}
+          {pairReport.skipped && (
+            // 「没检测」和「检测了没发现」必须分得开——说成后者就是撒谎。
+            <p
+              role="status"
+              data-testid="conflict-scan-skipped"
+              className="text-xs text-ink-soft"
+            >
+              列太多，这次没做「同一个实体会不会拿到多个值」的预检。改挂到
+              非中心实体上时，导入后可能出现待决议的属性冲突。
+            </p>
+          )}
+          <ul className="flex flex-col gap-2">
+            {proposal.attributeColumns.map((name, index) => {
+              const host = decision.attributeHostOf?.[name] ?? proposal.rootName
+              // 中心不豁免。中心是标识列时每行一个实例、本来就不可能冲突，
+              // 查一次是无害的空转；但中心是**猜出来的维度列**时（纯维度表
+              // 没有标识列）它的值会重复、真的可能冲突——豁免会把一个真实
+              // 冲突藏起来。让 pairReport 自己回答。
+              const violation = pairReport.violationOf(host, name)
+              return (
+                <li key={`${name}-${index}`} className="flex flex-col gap-1">
+                  <div className="flex flex-wrap items-baseline gap-2 text-xs">
+                    <code className="rounded-chip border border-subtle bg-paper px-2 py-0.5 font-mono text-ink-soft">
+                      {name}
+                    </code>
+                    <span className="text-ink-soft">{reasonByColumn.get(name)}</span>
+                  </div>
+                  <label className="flex flex-wrap items-center gap-2 text-xs text-ink-soft">
+                    <span>{name} 挂在</span>
+                    <select
+                      aria-label={`${name} 挂在哪个实体下面`}
+                      className="rounded-control border border-subtle bg-paper px-2 py-1 text-sm text-ink"
+                      value={host}
+                      onChange={(e) =>
+                        setDecision({
+                          attributeHostOf: {
+                            ...decision.attributeHostOf,
+                            [name]: e.target.value,
+                          },
+                        })
+                      }
+                    >
+                      {entityNames.map((entity) => (
+                        <option key={entity} value={entity}>
+                          {entity}
+                          {entity === proposal.rootName ? '（中心）' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <span>下面</span>
+                  </label>
+                  {violation !== null && (
+                    // 只说"会冲突"用户判断不了那是数据脏了还是业务上真的会
+                    // 变（客户等级升降就是后者）。说出具体是哪个值、几行、
+                    // 几个取值，他才决定得了要不要换个宿主。
+                    <p
+                      role="alert"
+                      data-testid={`attribute-host-conflict-${name}`}
+                      className="text-xs text-status-error-strong"
+                    >
+                      「{host}」的 {violation.hostValue} 在 {violation.rowCount} 行里有{' '}
+                      {violation.distinctCount} 个不同的「{name}」值（如{' '}
+                      {violation.samples.join('、')}）。导入后它会变成一条待决议的
+                      属性冲突，要在「属性冲突」页挑一个值。
+                    </p>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         </section>
       )}
