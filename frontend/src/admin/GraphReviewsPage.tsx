@@ -18,6 +18,7 @@ import { StandardNameInput } from './StandardNameInput'
 import { TaskStatusBadge } from './TaskStatusBadge'
 import { fetchGraphTerms, createTerm, type GraphTerm } from './termsApi'
 import { useLatestRequestGuard } from './useLatestRequestGuard'
+import { useReviewEdits } from './useReviewEdits'
 import { PAGE_TITLES } from '../adminRoutes'
 
 const PAGE_SIZE = 20
@@ -100,15 +101,19 @@ export function GraphReviewsPage() {
   // 就地修复的三份状态。按 review_id 分开存：一屏里有十几条，共用一份的话
   // 一条出错会让所有行都显示同一句报错。
   const [fixingId, setFixingId] = useState<number | null>(null)
-  const [fixErrors, setFixErrors] = useState<Record<number, string>>({})
-  const [fixNotes, setFixNotes] = useState<Record<number, string>>({})
+  // 每条待审记录的编辑态收在一个对象里，见 useReviewEdits 的模块文档。
+  //
+  // 几个 mutator 单独解构出来：它们的身份是稳定的（hook 里用 [] 依赖的
+  // useCallback 包过），可以安全地进下面几个 useCallback 的依赖数组。
+  // 整个 edits 对象不行——它里面的 get 随状态变化，把它放进 refreshPending
+  // 的依赖里会让列表在每一次击键之后重新拉一遍。
+  const edits = useReviewEdits()
+  const { reset: resetEdits, patch: patchEdit } = edits
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [pending, setPending] = useState<PendingReview[]>([])
   const [pendingLoaded, setPendingLoaded] = useState(false)
   const [history, setHistory] = useState<ResolvedReview[]>([])
   const [historyLoaded, setHistoryLoaded] = useState(false)
-  const [drafts, setDrafts] = useState<Record<number, { subject: string; object: string }>>({})
-  const [rejectNotes, setRejectNotes] = useState<Record<number, string>>({})
   const [error, setError] = useState<string | null>(null)
   // 任意一条正在批准/驳回时，全部行的按钮一起禁用——不是只禁用被点的那一行。
   // 只锁一行的话，点另一行会因为下面的 processingId 二次校验静默 return，
@@ -135,12 +140,10 @@ export function GraphReviewsPage() {
   // 批准时要用这个真实类型覆盖 LLM 猜的 subject_type_candidate/
   // object_type_candidate，见 handleApprove/handleBatchApprove 里
   // resolveApprovalTermType 的说明。
-  const [justCreated, setJustCreated] = useState<Record<number, { subject?: string; object?: string }>>({})
   // 审核员在"歧义选择器"（见 candidateTermTypesFor）里显式选中的类型——
   // 跟 justCreated 是两回事：justCreated 只在走过内联创建实体流程时才
   // 有值，这里是"标准名已经存在、但同名不同类型有 2 条以上，需要手动
   // 挑一条"的场景。两者共用同一个 resolveApprovalTermType 优先级链。
-  const [ambiguityPick, setAmbiguityPick] = useState<Record<number, { subject?: string; object?: string }>>({})
 
   useEffect(() => {
     document.title = '文档抽取 · 管理后台'
@@ -223,16 +226,12 @@ export function GraphReviewsPage() {
       if (!pendingGuard.isLatest(requestId)) return
       setPending(data.reviews)
       setPendingTotal(data.total)
-      setDrafts(
-        Object.fromEntries(
-          data.reviews.map((review) => [
-            review.review_id,
-            {
-              subject: review.suggested_subject_standard_name ?? '',
-              object: review.suggested_object_standard_name ?? '',
-            },
-          ]),
-        ),
+      resetEdits(
+        data.reviews.map((review) => ({
+          reviewId: review.review_id,
+          subject: review.suggested_subject_standard_name ?? '',
+          object: review.suggested_object_standard_name ?? '',
+        })),
       )
     } catch (err) {
       if (!pendingGuard.isLatest(requestId)) return
@@ -242,7 +241,7 @@ export function GraphReviewsPage() {
         setPendingLoaded(true)
       }
     }
-  }, [sessionToken, tenantId, pendingPage, reviewTab, pendingGuard])
+  }, [sessionToken, tenantId, pendingPage, reviewTab, pendingGuard, resetEdits])
 
   // 四个分页的角标。跟列表分开拉：列表按分页只取一页的内容，而角标要
   // 回答"别的几页有没有活"——合成一个请求的话，切一次分页就要把四个数字
@@ -276,7 +275,7 @@ export function GraphReviewsPage() {
     async (reviewId: number, path: string, body: unknown, fallback: string) => {
       if (!sessionToken) return
       setFixingId(reviewId)
-      setFixErrors((prev) => ({ ...prev, [reviewId]: '' }))
+      patchEdit(reviewId, { fixError: '' })
       try {
         const response = await adminFetch(
           `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews/${reviewId}${path}`,
@@ -291,16 +290,15 @@ export function GraphReviewsPage() {
         }
         return payload as Record<string, unknown>
       } catch (err) {
-        setFixErrors((prev) => ({
-          ...prev,
-          [reviewId]: err instanceof Error ? err.message : fallback,
-        }))
+        patchEdit(reviewId, {
+          fixError: err instanceof Error ? err.message : fallback,
+        })
         return null
       } finally {
         setFixingId(null)
       }
     },
-    [sessionToken, tenantId],
+    [sessionToken, tenantId, patchEdit],
   )
 
   const handleCreateMissingTerm = useCallback(
@@ -331,9 +329,9 @@ export function GraphReviewsPage() {
       // 不刷新列表：这条待审**还在队列里**（后端只把组合加进了草稿）。刷新
       // 会让它原地重绘，看起来像什么都没发生。把下一步说出来才是这一步的
       // 全部产出。
-      setFixNotes((prev) => ({ ...prev, [review.review_id]: String(result.next_step ?? '') }))
+      patchEdit(review.review_id, { fixNote: String(result.next_step ?? '') })
     },
-    [runFix],
+    [runFix, patchEdit],
   )
 
   // 只清选中状态，不清 batchResult——batchResult 要留到用户看到汇总为止。
@@ -345,7 +343,7 @@ export function GraphReviewsPage() {
   }, [pending])
 
   // 批准请求里 subject_term_type/object_term_type 优先用评审员通过内联
-  // 创建实体流程实际确认过的类型（justCreated[reviewId][field]）——不能
+  // 创建实体流程实际确认过的类型（edits.get(reviewId).justCreated[field]）——不能
   // 直接信 LLM 抽取阶段给出的 candidateType（subject_type_candidate/
   // object_type_candidate）。原因跟 handleOpenCreateEntity 里的注释一样：
   // candidateType 只是未经校验的猜测值。如果评审员用内联创建给这一侧建了
@@ -370,9 +368,9 @@ export function GraphReviewsPage() {
     field: 'subject' | 'object',
     candidateType: string | null | undefined,
   ): string | undefined => {
-    const confirmedType = justCreated[reviewId]?.[field]
+    const confirmedType = edits.get(reviewId).justCreated[field]
     if (confirmedType) return confirmedType
-    const pickedType = ambiguityPick[reviewId]?.[field]
+    const pickedType = edits.get(reviewId).ambiguityPick[field]
     if (pickedType) return pickedType
     return candidateType ?? undefined
   }
@@ -403,15 +401,15 @@ export function GraphReviewsPage() {
         // 同上：不按入队时的 reason 排除 not_in_confirmed_ontology。
         // 批量批准里后端逐条校验，不通过的那几条会各自带回自己的报错。
         review.reason !== 'invalid_relation_type' &&
-        drafts[review.review_id]?.subject &&
-        drafts[review.review_id]?.object &&
+        edits.get(review.review_id).subject &&
+        edits.get(review.review_id).object &&
         !(
-          candidateTermTypesFor(drafts[review.review_id]?.subject ?? '').length >= 2 &&
-          !(justCreated[review.review_id]?.subject ?? ambiguityPick[review.review_id]?.subject)
+          candidateTermTypesFor(edits.get(review.review_id).subject).length >= 2 &&
+          !(edits.get(review.review_id).justCreated.subject ?? edits.get(review.review_id).ambiguityPick.subject)
         ) &&
         !(
-          candidateTermTypesFor(drafts[review.review_id]?.object ?? '').length >= 2 &&
-          !(justCreated[review.review_id]?.object ?? ambiguityPick[review.review_id]?.object)
+          candidateTermTypesFor(edits.get(review.review_id).object).length >= 2 &&
+          !(edits.get(review.review_id).justCreated.object ?? edits.get(review.review_id).ambiguityPick.object)
         ),
     )
 
@@ -530,7 +528,7 @@ export function GraphReviewsPage() {
     // UI 上按钮已经用 disabled 挡了，这里再查一次 processingId 是双保险：
     // disabled 只挡鼠标/键盘触发，挡不住代码里其它路径直接调这个函数。
     if (processingId !== null || batchProcessing) return
-    const draft = drafts[reviewId]
+    const draft = edits.get(reviewId)
     if (!draft?.subject || !draft?.object) return
     const review = pending.find((r) => r.review_id === reviewId)
     setError(null)
@@ -579,7 +577,7 @@ export function GraphReviewsPage() {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ note: rejectNotes[reviewId] || null }),
+          body: JSON.stringify({ note: edits.get(reviewId).rejectNote || null }),
         },
       )
       if (!response.ok) {
@@ -587,11 +585,7 @@ export function GraphReviewsPage() {
         throw new Error(extractErrorDetail(body, '驳回失败'))
       }
       showToast('已驳回')
-      setRejectNotes((prev) => {
-        const next = { ...prev }
-        delete next[reviewId]
-        return next
-      })
+      edits.patch(reviewId, { rejectNote: '' })
       await refreshPending()
     } catch (err) {
       setError(err instanceof Error ? err.message : '驳回失败')
@@ -608,7 +602,7 @@ export function GraphReviewsPage() {
     const failures: { id: number; error: string }[] = []
     let success = 0
     for (const review of selectedReviews) {
-      const draft = drafts[review.review_id]
+      const draft = edits.get(review.review_id)
       try {
         const response = await adminFetch(
           `/api/admin/${encodeURIComponent(tenantId)}/graph-reviews/${review.review_id}/approve`,
@@ -724,14 +718,10 @@ export function GraphReviewsPage() {
         source: 'review',
       })
       const { reviewId, field, standardName } = createDraft
-      setDrafts((prev) => ({
-        ...prev,
-        [reviewId]: { ...prev[reviewId], [field]: standardName },
-      }))
-      setJustCreated((prev) => ({
-        ...prev,
-        [reviewId]: { ...prev[reviewId], [field]: createDraft.termType },
-      }))
+      // 顺序有讲究：setEndpoint 会作废这一侧的「新建」标记（改名意味着
+      // 之前那个标记指的是另一个实体），所以标记必须写在它之后。
+      edits.setEndpoint(reviewId, field, standardName)
+      edits.markJustCreated(reviewId, field, createDraft.termType)
       showToast('已创建实体候选')
       setCreateDraft(null)
       // 创建成功后立即重新拉取本页 graphTerms，让同页其它引用同一新实体
@@ -978,11 +968,11 @@ export function GraphReviewsPage() {
         pendingLoaded &&
         pending.map((review) => {
           const subjectAmbiguous =
-            candidateTermTypesFor(drafts[review.review_id]?.subject ?? '').length >= 2 &&
-            !(justCreated[review.review_id]?.subject ?? ambiguityPick[review.review_id]?.subject)
+            candidateTermTypesFor(edits.get(review.review_id).subject).length >= 2 &&
+            !(edits.get(review.review_id).justCreated.subject ?? edits.get(review.review_id).ambiguityPick.subject)
           const objectAmbiguous =
-            candidateTermTypesFor(drafts[review.review_id]?.object ?? '').length >= 2 &&
-            !(justCreated[review.review_id]?.object ?? ambiguityPick[review.review_id]?.object)
+            candidateTermTypesFor(edits.get(review.review_id).object).length >= 2 &&
+            !(edits.get(review.review_id).justCreated.object ?? edits.get(review.review_id).ambiguityPick.object)
           const isFocused = pending[focusedIndex]?.review_id === review.review_id
           return (
           <div
@@ -1020,7 +1010,7 @@ export function GraphReviewsPage() {
                 review={review}
                 termTypeOptions={termTypeOptions}
                 busy={fixingId === review.review_id}
-                error={fixErrors[review.review_id]}
+                error={edits.get(review.review_id).fixError}
                 onSubmit={(termType) => void handleCreateMissingTerm(review, termType)}
               />
             )}
@@ -1028,8 +1018,8 @@ export function GraphReviewsPage() {
               <InlineAllowCombination
                 review={review}
                 busy={fixingId === review.review_id}
-                error={fixErrors[review.review_id]}
-                note={fixNotes[review.review_id]}
+                error={edits.get(review.review_id).fixError}
+                note={edits.get(review.review_id).fixNote}
                 onSubmit={() => void handleAllowCombination(review)}
               />
             )}
@@ -1042,45 +1032,31 @@ export function GraphReviewsPage() {
             <div className="flex gap-3">
               <div className="flex flex-1 items-center gap-2">
                 <StandardNameInput
-                  value={drafts[review.review_id]?.subject ?? ''}
+                  value={edits.get(review.review_id).subject}
                   onChange={(value) => {
-                    setDrafts((prev) => ({
-                      ...prev,
-                      [review.review_id]: {
-                        ...prev[review.review_id],
-                        subject: value,
-                      },
-                    }))
-                    setAmbiguityPick((prev) => ({
-                      ...prev,
-                      [review.review_id]: { ...prev[review.review_id], subject: undefined },
-                    }))
-                    setJustCreated((prev) => ({
-                      ...prev,
-                      [review.review_id]: { ...prev[review.review_id], subject: undefined },
-                    }))
+                    // 作废那一侧的消歧选择和「新建」标记这件事收在
+                    // setEndpoint 里——此前是三个 setState 连着写，两侧各抄
+                    // 一遍，漏掉任何一个都不会报错。
+                    edits.setEndpoint(review.review_id, 'subject', value)
                   }}
                   terms={graphTerms}
                   placeholder="subject 标准名"
                   ariaLabel="subject 标准名"
                   onCreateNew={(query) => handleOpenCreateEntity(review.review_id, 'subject', query)}
                 />
-                {justCreated[review.review_id]?.subject && (
+                {edits.get(review.review_id).justCreated.subject && (
                   <span className="rounded-chip border border-status-success px-1.5 py-0.5 text-xs text-status-success">
                     新建
                   </span>
                 )}
                 {(() => {
-                  const candidateTypes = candidateTermTypesFor(drafts[review.review_id]?.subject ?? '')
-                  if (candidateTypes.length < 2 || justCreated[review.review_id]?.subject) return null
+                  const candidateTypes = candidateTermTypesFor(edits.get(review.review_id).subject)
+                  if (candidateTypes.length < 2 || edits.get(review.review_id).justCreated.subject) return null
                   return (
                     <select
-                      value={ambiguityPick[review.review_id]?.subject ?? ''}
+                      value={edits.get(review.review_id).ambiguityPick.subject ?? ''}
                       onChange={(event) =>
-                        setAmbiguityPick((prev) => ({
-                          ...prev,
-                          [review.review_id]: { ...prev[review.review_id], subject: event.target.value },
-                        }))
+                        edits.pickType(review.review_id, 'subject', event.target.value)
                       }
                       aria-label="subject 类型（有歧义，需选择）"
                       className={`rounded-control border border-status-error bg-paper px-2 py-1 text-xs text-ink focus:outline-none ${focusRing}`}
@@ -1097,45 +1073,31 @@ export function GraphReviewsPage() {
               </div>
               <div className="flex flex-1 items-center gap-2">
                 <StandardNameInput
-                  value={drafts[review.review_id]?.object ?? ''}
+                  value={edits.get(review.review_id).object}
                   onChange={(value) => {
-                    setDrafts((prev) => ({
-                      ...prev,
-                      [review.review_id]: {
-                        ...prev[review.review_id],
-                        object: value,
-                      },
-                    }))
-                    setAmbiguityPick((prev) => ({
-                      ...prev,
-                      [review.review_id]: { ...prev[review.review_id], object: undefined },
-                    }))
-                    setJustCreated((prev) => ({
-                      ...prev,
-                      [review.review_id]: { ...prev[review.review_id], object: undefined },
-                    }))
+                    // 作废那一侧的消歧选择和「新建」标记这件事收在
+                    // setEndpoint 里——此前是三个 setState 连着写，两侧各抄
+                    // 一遍，漏掉任何一个都不会报错。
+                    edits.setEndpoint(review.review_id, 'object', value)
                   }}
                   terms={graphTerms}
                   placeholder="object 标准名"
                   ariaLabel="object 标准名"
                   onCreateNew={(query) => handleOpenCreateEntity(review.review_id, 'object', query)}
                 />
-                {justCreated[review.review_id]?.object && (
+                {edits.get(review.review_id).justCreated.object && (
                   <span className="rounded-chip border border-status-success px-1.5 py-0.5 text-xs text-status-success">
                     新建
                   </span>
                 )}
                 {(() => {
-                  const candidateTypes = candidateTermTypesFor(drafts[review.review_id]?.object ?? '')
-                  if (candidateTypes.length < 2 || justCreated[review.review_id]?.object) return null
+                  const candidateTypes = candidateTermTypesFor(edits.get(review.review_id).object)
+                  if (candidateTypes.length < 2 || edits.get(review.review_id).justCreated.object) return null
                   return (
                     <select
-                      value={ambiguityPick[review.review_id]?.object ?? ''}
+                      value={edits.get(review.review_id).ambiguityPick.object ?? ''}
                       onChange={(event) =>
-                        setAmbiguityPick((prev) => ({
-                          ...prev,
-                          [review.review_id]: { ...prev[review.review_id], object: event.target.value },
-                        }))
+                        edits.pickType(review.review_id, 'object', event.target.value)
                       }
                       aria-label="object 类型（有歧义，需选择）"
                       className={`rounded-control border border-status-error bg-paper px-2 py-1 text-xs text-ink focus:outline-none ${focusRing}`}
@@ -1152,9 +1114,9 @@ export function GraphReviewsPage() {
               </div>
             </div>
             <textarea
-              value={rejectNotes[review.review_id] ?? ''}
+              value={edits.get(review.review_id).rejectNote}
               onChange={(event) =>
-                setRejectNotes((prev) => ({ ...prev, [review.review_id]: event.target.value }))
+                edits.patch(review.review_id, { rejectNote: event.target.value })
               }
               placeholder="驳回备注（可选，仅驳回时提交）"
               aria-label="驳回备注"
@@ -1166,8 +1128,8 @@ export function GraphReviewsPage() {
                 type="button"
                 onClick={() => handleApprove(review.review_id)}
                 disabled={
-                  !drafts[review.review_id]?.subject ||
-                  !drafts[review.review_id]?.object ||
+                  !edits.get(review.review_id).subject ||
+                  !edits.get(review.review_id).object ||
                   review.reason === 'invalid_relation_type' ||
                   // **不按 not_in_confirmed_ontology 写死禁用。** reason 是
                   // 入队时的列，用户按上面那条 next_step 去确认了本体草稿
