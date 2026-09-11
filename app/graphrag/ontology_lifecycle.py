@@ -10,6 +10,7 @@ from app.graphrag.ontology_categories import (
     EXTRA_FIELD_NAME_PATTERN,
     InvalidExtraFieldTypeError,
     ensure_categories_schema,
+    list_term_types,
 )
 from app.graphrag.ontology_change_log import (
     ACTION_CONFIRM,
@@ -316,7 +317,38 @@ async def confirm_ontology(conn: aiosqlite.Connection, tenant_id: str, *, actor:
 
 
 async def is_ontology_confirmed(conn: aiosqlite.Connection, tenant_id: str) -> bool:
+    """这个租户**曾经确认过**本体吗。
+
+    这是**闸门**：能不能跑 ETL。它有意不问"当前草稿确认了没有"——有一份编辑
+    中的草稿不该挡住 ETL，ETL 跑的本来就是已确认版本。想知道"草稿和已确认是不是
+    同一批"，用 has_unconfirmed_term_type_changes，那是**提示**不是闸门。
+    """
     return await _has_any_row(conn, "tenant_relation_types", tenant_id, "confirmed")
+
+
+async def has_unconfirmed_term_type_changes(
+    conn: aiosqlite.Connection, tenant_id: str
+) -> bool:
+    """草稿里的实体类型和已确认的是不是同一批。
+
+    为什么需要它：表格导入页的实体类型下拉读的是**已确认**那批，而用户走完
+    引导建模之后以为读的是自己刚落下来的那批。两者不一致时如果不说，他会把
+    这张表的列映射到另一份数据集的实体类型上——ETL 要么"成功"产出垃圾，要么
+    在跑起来之后才以一个指不到根因的方式失败。屏幕上一切正常，这是静默失败。
+
+    **为什么比的是集合而不是"有没有草稿行"**：checkout_draft 首次检出时会把
+    已确认版本原样复制成草稿，所以"有草稿行"在用户只是打开一眼本体页之后就为
+    真。会误报的提示等于没有提示——用户学会忽略它之后，真出问题那次也一起被
+    忽略了。复制出来的草稿跟已确认是同一批，集合相等，这个判据不会响。
+
+    **范围仅限实体类型的名字集合**，不含 extra_fields、关系类型、约束的差异。
+    那些改动也是"待确认"的，但它们不会让导入页的下拉给出一份错的清单——而这
+    正是这个判据要防的那个伤害。名字相同但 extra_fields 改了的情况这里答 False，
+    如实记在这里，不是漏了。
+    """
+    draft = {t.value for t in await list_term_types(conn, tenant_id, status="draft")}
+    confirmed = {t.value for t in await list_term_types(conn, tenant_id, status="confirmed")}
+    return draft != confirmed and bool(draft)
 
 
 async def replace_draft(

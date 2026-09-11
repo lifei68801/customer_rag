@@ -30,7 +30,10 @@ from app.graphrag.etl_runs_store import (
 )
 from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.ontology_constraints import list_allowed_combinations
-from app.graphrag.ontology_lifecycle import is_ontology_confirmed
+from app.graphrag.ontology_lifecycle import (
+    has_unconfirmed_term_type_changes,
+    is_ontology_confirmed,
+)
 from app.graphrag.schema_etl import SchemaEtlGraphProtocol, run_schema_etl
 from app.graphrag.schema_etl_config import load_schema_etl_config
 from app.graphrag.schema_etl_sample import (
@@ -87,7 +90,11 @@ def _validate_data_file_extensions(data_files: list[UploadFile]) -> None:
 
 
 class StatusResponse(BaseModel):
+    #: 曾经确认过本体吗。**闸门**：没有就跑不了 ETL。
     ontology_confirmed: bool
+    #: 草稿里的实体类型跟已确认的不是同一批吗。**提示**不是闸门——导入页的
+    #: 类型下拉读的是已确认那批，两者不一致时用户得知道。
+    has_unconfirmed_term_type_changes: bool = False
 
 
 class StartRunResponse(BaseModel):
@@ -144,7 +151,12 @@ async def _build_sample_files(
 async def get_schema_etl_status(
     tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn)
 ) -> StatusResponse:
-    return StatusResponse(ontology_confirmed=await is_ontology_confirmed(review_conn, tenant_id))
+    return StatusResponse(
+        ontology_confirmed=await is_ontology_confirmed(review_conn, tenant_id),
+        has_unconfirmed_term_type_changes=await has_unconfirmed_term_type_changes(
+            review_conn, tenant_id
+        ),
+    )
 
 
 async def _run_schema_etl_job(

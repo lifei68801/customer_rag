@@ -11,6 +11,7 @@ from app.graphrag.ontology_categories import (
 )
 from app.graphrag.ontology_lifecycle import (
     checkout_draft,
+    has_unconfirmed_term_type_changes,
     confirm_ontology,
     ensure_ontology_schema,
     is_ontology_confirmed,
@@ -504,3 +505,67 @@ async def test_replace_draft_rejects_date_as_standard_name_value_type():
             relation_types=[],
             constraints=[],
         actor="alice")
+
+
+async def test_no_unconfirmed_changes_right_after_confirm():
+    """刚确认完，草稿和已确认一致——没有待确认的改动。"""
+    conn = await _conn()
+    try:
+        await checkout_draft(conn, "t1")
+        await create_term_type(conn, "t1", value="订单", extra_fields=[], actor="a")
+        await confirm_ontology(conn, "t1", actor="a")
+
+        assert await has_unconfirmed_term_type_changes(conn, "t1") is False
+    finally:
+        await conn.close()
+
+
+async def test_a_mere_checkout_is_not_an_unconfirmed_change():
+    """**这条是防误报的那条。**
+
+    checkout_draft 在首次检出时会把已确认版本原样复制成草稿。拿"有没有草稿行"
+    当信号的话，用户只是打开一眼本体页就会看到"你有未确认的改动"——而他什么
+    都没改。会误报的提示等于没有提示，用户学会忽略它之后，真出问题那次也一起
+    被忽略了。
+    """
+    conn = await _conn()
+    try:
+        await checkout_draft(conn, "t1")
+        await create_term_type(conn, "t1", value="订单", extra_fields=[], actor="a")
+        await confirm_ontology(conn, "t1", actor="a")
+        # 确认之后再检出一次：草稿被原样复制回来，内容跟已确认完全一致。
+        await checkout_draft(conn, "t1")
+
+        assert await has_unconfirmed_term_type_changes(conn, "t1") is False
+    finally:
+        await conn.close()
+
+
+async def test_a_draft_with_different_term_types_is_an_unconfirmed_change():
+    """草稿里的实体类型跟已确认的不是同一批——这正是引导建模之后的状态。
+
+    表格导入的下拉读的是已确认那批，用户以为读的是自己刚建模落下来的那批。
+    """
+    conn = await _conn()
+    try:
+        await checkout_draft(conn, "t1")
+        await create_term_type(conn, "t1", value="订单", extra_fields=[], actor="a")
+        await confirm_ontology(conn, "t1", actor="a")
+        await checkout_draft(conn, "t1")
+        await create_term_type(conn, "t1", value="Order ID", extra_fields=[], actor="a")
+
+        assert await has_unconfirmed_term_type_changes(conn, "t1") is True
+    finally:
+        await conn.close()
+
+
+async def test_a_brand_new_tenant_with_only_a_draft_counts_as_unconfirmed():
+    """从没确认过、只有草稿的租户：那份草稿当然是待确认的。"""
+    conn = await _conn()
+    try:
+        await checkout_draft(conn, "fresh")
+        await create_term_type(conn, "fresh", value="订单", extra_fields=[], actor="a")
+
+        assert await has_unconfirmed_term_type_changes(conn, "fresh") is True
+    finally:
+        await conn.close()

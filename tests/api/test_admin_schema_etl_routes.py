@@ -96,10 +96,15 @@ async def _confirm_muji_schema(review_conn: aiosqlite.Connection) -> None:
     await confirm_ontology(review_conn, "muji", actor="alice")
 
 
+async def _add_draft_term_type(conn, tenant_id: str, value: str) -> None:
+    await checkout_draft(conn, tenant_id)
+    await create_term_type(conn, tenant_id, value=value, extra_fields=[], actor="alice")
+
+
 def test_status_returns_false_when_schema_not_confirmed(client):
     response = client.get("/api/admin/unconfirmed_tenant/schema-etl/status")
     assert response.status_code == 200
-    assert response.json() == {"ontology_confirmed": False}
+    assert response.json()["ontology_confirmed"] is False
 
 
 def test_status_returns_true_after_confirm(client, review_conn):
@@ -107,7 +112,37 @@ def test_status_returns_true_after_confirm(client, review_conn):
 
     response = client.get("/api/admin/muji/schema-etl/status")
 
-    assert response.json() == {"ontology_confirmed": True}
+    assert response.json()["ontology_confirmed"] is True
+
+
+def test_status_reports_an_unconfirmed_draft_separately_from_confirmed(client, review_conn):
+    """「曾经确认过」和「当前草稿已确认」是两件事，状态接口要分别给出。
+
+    ontology_confirmed 是**闸门**（能不能跑 ETL），它只问"有没有已确认版本"，
+    这个语义不能改——有未确认草稿时 ETL 照样该能跑在已确认版本上。
+
+    但表格导入页的实体类型下拉读的是已确认那批，而用户走完引导建模之后以为
+    读的是自己刚落下来的那批。那两批不是一回事的时候必须说出来，否则他会把
+    这张表的列映射到另一份数据集的实体类型上，而屏幕上一切正常。
+    """
+    asyncio.run(_confirm_muji_schema(review_conn))
+    # 确认之后再检出并加一个新类型：草稿和已确认从此不是同一批。
+    asyncio.run(_add_draft_term_type(review_conn, "muji", "Order ID"))
+
+    body = client.get("/api/admin/muji/schema-etl/status").json()
+
+    assert body["ontology_confirmed"] is True
+    assert body["has_unconfirmed_term_type_changes"] is True
+
+
+def test_status_does_not_report_changes_after_a_mere_checkout(client, review_conn):
+    """只是检出看一眼，不算待确认的改动——见 store 层那条同名用例的理由。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    asyncio.run(checkout_draft(review_conn, "muji"))
+
+    body = client.get("/api/admin/muji/schema-etl/status").json()
+
+    assert body["has_unconfirmed_term_type_changes"] is False
 
 
 def test_start_run_returns_404_for_unknown_tenant(client):

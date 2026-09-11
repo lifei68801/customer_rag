@@ -76,6 +76,9 @@ export function SchemaEtlPage() {
   const { tenantId } = useAdminTenant()
   const showToast = useToast()
   const [confirmed, setConfirmed] = useState<boolean | null>(null)
+  // 草稿里的实体类型跟已确认的不是同一批。跟 confirmed 是两件事：那个是闸门
+  // （能不能跑 ETL），这个是提示（下拉里的类型是不是用户以为的那批）。
+  const [hasUnconfirmedDraft, setHasUnconfirmedDraft] = useState(false)
   // undefined = 还没读到（未知态，不许折叠进「有」或「没有」）；
   // null = 读到了、确实没有；EtlMapping = 引导流程已经配好了一份。
   const [mapping, setMapping] = useState<EtlMapping | null | undefined>(undefined)
@@ -122,8 +125,12 @@ export function SchemaEtlPage() {
       `/api/admin/${encodeURIComponent(tenantId)}/schema-etl/status`,
       sessionToken,
     )
-    const data = (await response.json()) as { ontology_confirmed: boolean }
+    const data = (await response.json()) as {
+      ontology_confirmed: boolean
+      has_unconfirmed_term_type_changes?: boolean
+    }
     setConfirmed(data.ontology_confirmed)
+    setHasUnconfirmedDraft(data.has_unconfirmed_term_type_changes === true)
   }, [sessionToken, tenantId])
 
   const refreshRuns = useCallback(async () => {
@@ -390,6 +397,33 @@ export function SchemaEtlPage() {
       {confirmed === false && (
         <div className="rounded-card border border-accent-secondary bg-card px-3 py-2 text-sm text-ink">
           该租户本体 schema 尚未确认，请先完成本体 schema 确认后再触发 ETL。
+        </div>
+      )}
+
+      {hasUnconfirmedDraft && (
+        // 引导建模落下来的是**草稿**，而这一页的实体类型下拉读的是**已确认**
+        // 那批。两者不一致时不说的话，用户会把这张表的列映射到另一份数据集的
+        // 实体类型上——ETL 要么"成功"产出垃圾，要么在跑起来之后才以一个指不到
+        // 根因的方式失败，而屏幕上一切正常。
+        //
+        // 这里**不挡住**操作：已确认版本仍然是能跑的，挡住等于替用户决定他一定
+        // 是想用那份草稿。说清楚、给条路，让他自己选。
+        <div
+          role="status"
+          data-testid="unconfirmed-draft-notice"
+          className="flex flex-wrap items-center gap-2 rounded-card border border-accent-secondary bg-card px-3 py-2 text-sm text-ink"
+        >
+          <span>
+            这个本体有一份<strong>未确认的草稿</strong>，里面的实体类型跟当前已确认的
+            不是同一批。下面能选的是<strong>已确认</strong>那批——如果你刚走完引导
+            建模，那份结果还没生效。去核对并确认：
+          </span>
+          {/* 链接文字用目的地的名字（导航里那一页就叫「本体结构」），不是
+              「去核对并确认」这类动作描述——emptyStateLinks.test.tsx 那条守卫
+              要的就是"点之前就知道去哪"。要说的动作放在上面那句话里。 */}
+          <Link to={ADMIN_ROUTES.ontology} className="font-bold text-ink underline">
+            本体结构
+          </Link>
         </div>
       )}
 

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
@@ -45,6 +45,8 @@ function signIn(role: 'admin' | 'member') {
  * fetchEtlMapping 读取接口，本任务是第一个消费方。
  */
 
+/** 后端说的「草稿里的实体类型跟已确认的不是同一批」。 */
+let hasUnconfirmedChanges = false
 let etlMappingStubbed = false
 let etlMappingValue: EtlMapping | null = null
 let runsListResponse: { run_id: string; status: string; started_at: string; finished_at: string | null }[] = []
@@ -64,7 +66,10 @@ function stubApi() {
         return json({ pending_relations: 0, pending_duplicates: 0, total_terms: 0 })
       }
       if (url.includes('/schema-etl/status')) {
-        return json({ ontology_confirmed: true })
+        return json({
+          ontology_confirmed: true,
+          has_unconfirmed_term_type_changes: hasUnconfirmedChanges,
+        })
       }
       if (/\/promote$/.test(url)) {
         return json({ run_id: 'promoted-run' })
@@ -135,6 +140,7 @@ beforeEach(() => {
   resetAdminSession()
   sessionStorage.clear()
   localStorage.clear()
+  hasUnconfirmedChanges = false
   etlMappingStubbed = false
   etlMappingValue = null
   runsListResponse = []
@@ -156,6 +162,35 @@ function renderAt(path: string) {
     </SkinProvider>,
   )
 }
+
+describe('本体草稿未确认的提示', () => {
+  it('草稿和已确认不是同一批时说出来，并指路去确认', async () => {
+    // 引导建模落下来的是**草稿**，而这一页的实体类型下拉读的是**已确认**那批。
+    // 两者不一致时不说的话，用户会把这张表的列映射到另一份数据集的实体类型上
+    // ——ETL 要么"成功"产出垃圾，要么在跑起来之后才以一个指不到根因的方式失败，
+    // 而屏幕上一切正常。
+    hasUnconfirmedChanges = true
+    signIn('admin')
+    renderAt(ADMIN_ROUTES.etl)
+    const notice = await screen.findByTestId('unconfirmed-draft-notice')
+    // 要说清"下拉里是旧的那批"，只说"有未确认草稿"用户不知道它跟眼前这个
+    // 下拉有什么关系。
+    expect(notice.textContent).toMatch(/草稿/)
+    expect(notice.textContent).toMatch(/已确认|生效/)
+    // 给一个能点过去的入口，不是让他自己找。
+    expect(within(notice).getByRole('link')).toBeTruthy()
+  })
+
+  it('草稿和已确认一致时不出这条提示', async () => {
+    // 会误报的提示等于没有提示。只是打开一眼本体页（checkout 会复制一份
+    // 一模一样的草稿）不该触发它——判据在后端，这里钉住前端如实转达。
+    hasUnconfirmedChanges = false
+    signIn('admin')
+    renderAt(ADMIN_ROUTES.etl)
+    await screen.findByTestId('admin-topbar')
+    expect(screen.queryByTestId('unconfirmed-draft-notice')).toBeNull()
+  })
+})
 
 describe('表格导入页首屏', () => {
   it('本体带着引导配好的映射时，只要数据文件，不邀请他重配', async () => {
