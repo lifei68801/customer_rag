@@ -252,7 +252,7 @@ async def list_inconsistent_term_relations(
     node_key: str,
     session: AdminSession = Depends(deps.require_admin_session),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> InconsistentTermRelationListResponse:
     """这个实体身上租户标记异常的关系边——详情页那份关系清单看不到的那些。
 
@@ -296,7 +296,7 @@ async def delete_inconsistent_term_relation_edge(
     direction: Literal["out", "in"],
     session: AdminSession = Depends(deps.require_admin_session),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> dict[str, int]:
     """删掉一条租户标记异常的边，返回实际删掉的条数。
 
@@ -363,7 +363,7 @@ async def get_term_detail(
     tenant_id: str,
     node_key: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> TermDetailResponse:
     """实体详情：属性 + 它在图谱里连着什么。
 
@@ -514,7 +514,7 @@ async def create_new_term(
     tenant_id: str,
     payload: TermWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
     session: AdminSession = Depends(deps.require_admin_session),
 ) -> TermResponse:
     """新增术语。Task 4 起改写编辑层：不再往 terms 表插入新行，而是给
@@ -670,7 +670,7 @@ async def update_existing_term(
     node_key: str,
     payload: TermWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
     session: AdminSession = Depends(deps.require_admin_session),
 ) -> TermResponse:
     """编辑术语。Task 4 起改写编辑层：不再 UPDATE terms 表那一行，而是
@@ -774,7 +774,7 @@ async def delete_term_relation_edge(
     other_node_key: str,
     direction: Literal["out", "in"],
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> dict[str, int]:
     """删掉这个术语参与的一条关系边，返回实际删掉的条数。
 
@@ -863,7 +863,7 @@ async def bulk_delete_term_relation_edges(
     node_key: str,
     payload: BulkDeleteTermRelationsRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> BulkDeleteResult:
     """批量删这个实体参与的关系边。
 
@@ -905,7 +905,7 @@ async def bulk_delete_inconsistent_term_relation_edges(
     payload: BulkDeleteInconsistentTermRelationsRequest,
     session: AdminSession = Depends(deps.require_admin_session),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> BulkDeleteResult:
     """批量删租户标记异常的关系边。
 
@@ -1018,7 +1018,7 @@ async def preview_bulk_delete_terms(
     tenant_id: str,
     payload: BulkDeleteTermsRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> TermDeletePreview:
     """算一算这次删除会波及什么，不做任何写入。
 
@@ -1051,7 +1051,7 @@ async def bulk_delete_terms(
     tenant_id: str,
     payload: BulkDeleteTermsRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
     session: AdminSession = Depends(deps.require_admin_session),
 ) -> BulkDeleteResult:
     """批量删除实体。语义跟单条删除（DELETE /{node_key}）逐条相同——写
@@ -1102,7 +1102,7 @@ async def delete_existing_term(
     tenant_id: str,
     node_key: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
     session: AdminSession = Depends(deps.require_admin_session),
 ) -> Response:
     """删除术语。Task 4 起改写编辑层：不再 DELETE terms 表那一行，只写

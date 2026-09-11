@@ -296,7 +296,7 @@ async def sync_source(
     source_id: str,
     payload: SyncRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: Neo4jGraphClient = Depends(deps.get_neo4j_graph_client),
 ) -> SyncResponse:
     """按存下来的 SQL 和映射再跑一次。
 

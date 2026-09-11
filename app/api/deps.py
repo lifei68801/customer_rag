@@ -60,6 +60,7 @@ __all__ = [
     "get_embedding_registry",
     "get_gateway_tenant_id",
     "get_graph_client",
+    "get_neo4j_graph_client",
     "get_ingestion_conn",
     "get_llm_registry",
     "get_login_throttle",
@@ -228,6 +229,48 @@ async def get_graph_client(
                 await client.ensure_tenant_scoped_schema()
                 _graph_client_cache = client
     return _graph_client_cache
+
+
+async def get_neo4j_graph_client(
+    settings: Settings = Depends(get_settings),
+    client: Neo4jGraphClient | NeptuneGraphClient = Depends(get_graph_client),
+) -> Neo4jGraphClient:
+    """要一个 Neo4j 图客户端——后台管理、ETL、审核批准这些路径都用它。
+
+    这条依赖存在的理由是**把一次失败提前到一个说得清的地方**。
+
+    图谱这边只有一个真接缝：`GraphReadProtocol`（见
+    app/graphrag/graph_read.py），两个适配器都实现了它。除此之外的十几个
+    方法只有 Neo4jGraphClient 有，`NeptuneGraphClient` 上是显式存根。所以
+    界线不是"读 vs 写"——Neptune 连 `list_tenant_dirty_edges`、
+    `query_neighborhood` 这两个读方法也没有——而是"读接缝里的那几个方法"
+    对"其余全部"。
+
+    在这条依赖出现之前，拿着 neptune 后端点开后台任意一个页面，得到的是
+    十五种不同的 NotImplementedError 之一，深在某个请求的中途，消息里还
+    指着一个不存在的文档路径。现在它在依赖注入这一层就说清楚：这个后端
+    今天只支持问答/Agent 的查询路径。
+
+    这不是新的限制，是把既有的限制说出来。见
+    docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md
+    "未决风险"一节——那里把"只有一半可插拔"记成了待办，这就是它。
+    """
+    # 判据是**配置**，不是 isinstance(client, Neo4jGraphClient)。测试到处注入
+    # 假图客户端（它们不是 Neo4jGraphClient 的子类），按实例类型判会把每个
+    # 假对象都判成 501——这条依赖就从"部署配置的闸"退化成"测试里的障碍"，
+    # 而真正要拦的那件事（有人把 graph_backend 配成 neptune 然后点开后台）
+    # 一样拦不住，因为那时它拿到的确实是一个 NeptuneGraphClient 实例、
+    # 但错误早已被无数假对象的误报淹没。
+    if settings.graph_backend != "neo4j":
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"当前配置的图后端是 {settings.graph_backend!r}，它只实现了问答/"
+                "Agent 用的查询路径，没有实现后台管理、ETL、审核批准要用的图写入"
+                "和迁移方法。这些功能需要 graph_backend='neo4j'。"
+            ),
+        )
+    return client  # type: ignore[return-value]
 
 
 async def get_memory_conn(

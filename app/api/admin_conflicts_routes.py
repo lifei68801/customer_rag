@@ -68,7 +68,7 @@ async def resolve_attribute_conflict(
     payload: ResolveRequest,
     session: AdminSession = Depends(deps.require_admin_session),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: Neo4jGraphClient = Depends(deps.get_neo4j_graph_client),
 ) -> dict[str, str]:
     """定下这条冲突用哪个值：写回 terms、同步图谱、标记已决议。
 

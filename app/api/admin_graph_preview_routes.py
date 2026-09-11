@@ -57,7 +57,7 @@ async def get_neighborhood(
     tenant_id: str,
     node_key: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: Neo4jGraphClient = Depends(deps.get_neo4j_graph_client),
 ) -> NeighborhoodResponse:
     """以这个实体为中心的邻域图（spec D6）。
 

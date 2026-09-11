@@ -10,7 +10,7 @@ import yaml
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.ontology_constraints import AllowedCombination
-from app.graphrag.term_guard import GraphClientProtocol
+from app.graphrag.graph_read import GraphReadProtocol
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
 from app.providers.rerank import RerankProvider
@@ -47,7 +47,7 @@ class ToolContext:
     rerank_provider: RerankProvider | None
     query_rewrite_enabled: bool
     terms: list[Term]
-    graph_client: GraphClientProtocol | None
+    graph_client: GraphReadProtocol | None
     confirmed_relation_types: set[str]
     term_type_schema: dict[str, TermTypeCategory]
     allowed_combinations: list[AllowedCombination]

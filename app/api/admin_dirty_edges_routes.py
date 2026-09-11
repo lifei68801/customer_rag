@@ -37,7 +37,7 @@ async def list_dirty_edges(
     tenant_id: str,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=2000),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: Neo4jGraphClient = Depends(deps.get_neo4j_graph_client),
 ) -> DirtyEdgesResponse:
     """整个租户的脏边。
 

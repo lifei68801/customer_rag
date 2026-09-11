@@ -96,7 +96,7 @@ async def get_domain_stats(
     tenant_id: str,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     ingestion_conn: aiosqlite.Connection = Depends(deps.get_ingestion_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> DomainStats:
     """一个领域的四个数字。全部实时算（spec D5）。
 

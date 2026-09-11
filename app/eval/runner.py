@@ -18,7 +18,7 @@ from app.graphrag.factory import build_graph_client_from_settings
 from app.graphrag.neo4j_client import Neo4jGraphClient
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_store import open_ontology_store_conn
-from app.graphrag.term_guard import GraphClientProtocol
+from app.graphrag.graph_read import GraphReadProtocol
 from app.graphrag.terms_store import list_terms_merged
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
@@ -139,7 +139,7 @@ async def run_eval_suite(
     rerank_provider: RerankProvider | None = None,
     query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
-    graph_client: GraphClientProtocol | None = None,
+    graph_client: GraphReadProtocol | None = None,
     # 评测跑的是同一条问答路径，链式关系类型同样要由调用方给出——不给
     # （None）时 answer_question 会警告并只查 1 跳。
     chain_query_relation_types: set[str] | None = None,
@@ -259,7 +259,7 @@ async def compare_planner_modes(
     rerank_provider: RerankProvider | None = None,
     query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
-    graph_client: GraphClientProtocol | None = None,
+    graph_client: GraphReadProtocol | None = None,
     chain_query_relation_types: set[str] | None = None,
     top_k: int = 3,
     max_tool_call_rounds: int = 3,

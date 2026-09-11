@@ -1,32 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Protocol
+from typing import Any
 
+from app.graphrag.graph_read import GraphReadProtocol
 from app.graphrag.ontology import Term
-from app.graphrag.ontology_categories import TermTypeCategory
-from app.graphrag.structured_filter_query import ResolvedAnchor, StructuredFilterQueryArgs
 from app.graphrag.term_matcher import match_terms
-
-
-class GraphClientProtocol(Protocol):
-    async def query_subgraph(
-        self, node_key: str, *, tenant_id: str, chain_query_relation_types: set[str]
-    ) -> list[dict[str, Any]]: ...
-
-    async def execute_structured_filter_query(
-        self,
-        args: StructuredFilterQueryArgs,
-        *,
-        resolved: ResolvedAnchor,
-        tenant_id: str,
-        term_type_schema: dict[str, TermTypeCategory],
-    ) -> dict[str, Any]: ...
-
-    async def probe_relation_fanout(
-        self, *, tenant_id: str, relation_type: str,
-        from_term_type: str, to_term_type: str, direction: str,
-    ) -> int: ...
 
 
 _MAX_NEIGHBORS_PER_TERM = 20
@@ -46,7 +25,7 @@ async def build_term_guard_context(
     *,
     terms: list[Term],
     tenant_id: str,
-    graph_client: GraphClientProtocol,
+    graph_client: GraphReadProtocol,
     chain_query_relation_types: set[str],
 ) -> str | None:
     """术语安全网：命中术语表则强制查图谱并生成上下文，未命中返回 None。

@@ -113,7 +113,7 @@ async def create_term_type_category(
     tenant_id: str,
     payload: TermTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
     session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
@@ -152,7 +152,7 @@ async def update_term_type_category(
     value: str,
     payload: TermTypeWriteRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
     session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
@@ -228,7 +228,7 @@ async def migrate_tenant_term_type(
     tenant_id: str,
     payload: MigrateTermTypeRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> MigrateTermTypeResponse:
     await require_active_tenant_or_404(review_conn, tenant_id)
     terms_migrated = await migrate_term_type(
@@ -350,7 +350,7 @@ async def delete_tenant_relation_type(
 @router.post("/{tenant_id}/relation-types/migrate")
 async def migrate_tenant_relation_type(
     tenant_id: str, payload: MigrateRelationTypeRequest,
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
 ) -> dict:
     await require_active_tenant_or_404(review_conn, tenant_id)
@@ -367,7 +367,7 @@ async def migrate_tenant_relation_type(
 async def load_tenant_graph_overlay(
     tenant_id: str, status: str = "draft",
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> dict:
     """本体图的叠加信息：每条约束的真实扇出度 + 每个实体类型的实体数量。
 
@@ -648,7 +648,7 @@ async def _assert_new_date_fields_have_clean_values(
 @router.post("/{tenant_id}/confirm")
 async def confirm_tenant_ontology(
     tenant_id: str, review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
     session: AdminSession = Depends(deps.require_admin_session),
 ) -> dict:
     """确认草稿本体，把它提升为 confirmed。

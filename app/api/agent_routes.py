@@ -14,7 +14,7 @@ from app.agent.graph import build_agent_graph
 from app.agent.tool_registry import ToolRegistry
 from app.api import deps
 from app.config.settings import Settings
-from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.graph_read import GraphReadProtocol
 from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.ontology_constraints import list_allowed_combinations
 from app.graphrag.ontology_relations import list_relation_types
@@ -65,7 +65,7 @@ async def agent_chat_endpoint(
     bm25_index: BM25Index = Depends(deps.get_bm25_index),
     llm_registry: ProviderRegistry = Depends(deps.get_llm_registry),
     rerank_provider: RerankProvider | None = Depends(deps.get_rerank_provider),
-    graph_client: Neo4jGraphClient | None = Depends(deps.get_graph_client),
+    graph_client: GraphReadProtocol | None = Depends(deps.get_graph_client),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     memory_conn: aiosqlite.Connection = Depends(deps.get_memory_conn),
     tts_provider: TTSProvider | None = Depends(deps.get_tts_provider),

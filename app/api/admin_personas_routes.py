@@ -186,7 +186,7 @@ async def get_my_persona(
     tenant_id: str,
     persona_id: str = DEFAULT_PERSONA_ID,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: GraphWriteProtocol = Depends(deps.get_graph_client),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> PersonaDetail:
     """当前这一个数字人的完整信息，含引导问题。
 

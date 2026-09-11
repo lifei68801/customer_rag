@@ -5,7 +5,8 @@ import logging
 from dataclasses import dataclass
 
 from app.graphrag.ontology import Term
-from app.graphrag.term_guard import GraphClientProtocol, build_term_guard_context
+from app.graphrag.graph_read import GraphReadProtocol
+from app.graphrag.term_guard import build_term_guard_context
 from app.providers.base import ProviderCapability, ProviderRequest
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.registry import ProviderRegistry
@@ -50,7 +51,7 @@ async def answer_question(
     rerank_provider: RerankProvider | None = None,
     query_rewrite_enabled: bool = True,
     terms: list[Term] | None = None,
-    graph_client: GraphClientProtocol | None = None,
+    graph_client: GraphReadProtocol | None = None,
     # 该租户勾了「支持链式查询」的已确认关系类型，透传给 term_guard 的
     # 2 跳子图查询。None = 调用方没接这条注入路径（会警告并退化成只查
     # 1 跳），空集合 = 该租户确实一个都没勾（是配置结果，不警告）。

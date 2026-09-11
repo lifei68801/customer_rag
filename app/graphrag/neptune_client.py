@@ -239,7 +239,8 @@ _EXPAND_RETURN_FRAGMENT = (
 
 
 class NeptuneGraphClient:
-    """AWS Neptune 图查询封装，满足 GraphClientProtocol。跟 Neo4jGraphClient
+    """AWS Neptune 图查询封装，满足 GraphReadProtocol（app/graphrag/graph_read.py
+    ——那是这个项目里唯一一个有两个真适配器的图谱接缝）。跟 Neo4jGraphClient
     是两个完全独立的实现——即使查询文本高度相似，也不 import 共享任何
     内部细节，等真的接入 Neptune 环境实测、确认两边查询语义完全一致之后，
     再决定要不要重构出共享部分（YAGNI）。
@@ -402,18 +403,28 @@ class NeptuneGraphClient:
             await self._client.execute_open_cypher(query)
         await self._client.execute_open_cypher(_BACKFILL_LEGACY_TERM_NODES_QUERY)
 
-    # 以下 15 个方法是 GraphWriteProtocol（neo4j_client.py）声明的后台管理写
-    # 接口——NeptuneGraphClient 尚未实现，显式存根报 NotImplementedError，
-    # 而不是任由调用方撞上一个没有说明的 AttributeError。收窄 GraphWriteProtocol
-    # 本身不会在 CI 里拦住误接的调用（本项目 CI 只跑 pytest，不跑类型检查），
-    # 这几个存根才是运行时真正生效的防线——见
-    # docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md 的
+    # 以下 15 个方法 NeptuneGraphClient 尚未实现，显式存根报
+    # NotImplementedError，而不是任由调用方撞上一个没有说明的 AttributeError。
+    # 收窄协议本身不会在 CI 里拦住误接的调用（本项目 CI 只跑 pytest，不跑类型
+    # 检查），这几个存根是运行时的第二道防线。
+    #
+    # 第一道防线现在在依赖注入那一层：app/api/deps.py::get_neo4j_graph_client
+    # 直接拒绝非 Neo4j 后端，并说清"这个后端只支持问答/Agent 的查询路径"。
+    # 在它出现之前，拿着 neptune 后端点开后台任意页面得到的是这十五种报错
+    # 之一，深在某个请求中途。
+    #
+    # 注意这十五个里有 list_tenant_dirty_edges / query_neighborhood /
+    # count_non_iso_date_values 这几个**读**方法——所以 Neptune 的能力边界
+    # 不是"只读不写"，而恰好就是 GraphReadProtocol 声明的那几个方法。
+    #
+    # 见
+    # docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md 的
     # "未决风险"一节，以及 2026-08-27 架构评审的讨论。
 
     async def sync_term(self, term: Term) -> None:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 sync_term——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def rename_term_node(
@@ -421,13 +432,13 @@ class NeptuneGraphClient:
     ) -> None:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 rename_term_node——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def delete_term_node(self, *, tenant_id: str, node_key: str) -> None:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 delete_term_node——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def summarize_relation_edges_for_terms(
@@ -435,7 +446,7 @@ class NeptuneGraphClient:
     ) -> list[dict[str, Any]]:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 summarize_relation_edges_for_terms——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def list_tenant_dirty_edges(
@@ -443,7 +454,7 @@ class NeptuneGraphClient:
     ) -> tuple[list[dict[str, Any]], bool]:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 list_tenant_dirty_edges——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def query_neighborhood(
@@ -451,19 +462,19 @@ class NeptuneGraphClient:
     ) -> list[dict[str, Any]]:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 query_neighborhood——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def count_relation_edges_for_tenant(self, *, tenant_id: str) -> int:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 count_relation_edges_for_tenant——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def delete_term_nodes(self, *, tenant_id: str, node_keys: list[str]) -> None:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 delete_term_nodes——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def delete_relation_edge(
@@ -472,7 +483,7 @@ class NeptuneGraphClient:
     ) -> int:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 delete_relation_edge——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def list_inconsistent_relation_edges(
@@ -480,7 +491,7 @@ class NeptuneGraphClient:
     ) -> list[dict[str, Any]]:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 list_inconsistent_relation_edges——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def delete_inconsistent_relation_edge(
@@ -489,7 +500,7 @@ class NeptuneGraphClient:
     ) -> int:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 delete_inconsistent_relation_edge——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def probe_relation_fanout(
@@ -533,7 +544,7 @@ class NeptuneGraphClient:
     ) -> None:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 ensure_extra_field_indexes——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def migrate_relation_type_edges(
@@ -541,7 +552,7 @@ class NeptuneGraphClient:
     ) -> int:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 migrate_relation_type_edges——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def migrate_term_type_nodes(
@@ -549,7 +560,7 @@ class NeptuneGraphClient:
     ) -> int:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 migrate_term_type_nodes——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )
 
     async def count_non_iso_date_values(
@@ -557,5 +568,5 @@ class NeptuneGraphClient:
     ) -> tuple[int, list[str]]:
         raise NotImplementedError(
             "NeptuneGraphClient 尚未实现 count_non_iso_date_values——见 "
-            "docs/superpowers/plans/2026-08-26-pluggable-graph-backend.md"
+            "docs/superpowers/specs/2026-08-26-pluggable-graph-backend-design.md"
         )

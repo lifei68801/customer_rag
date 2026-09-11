@@ -261,7 +261,7 @@ async def start_schema_etl_run(
     allow_large_sweep: bool = Form(False),
     upload_dir: Path = Depends(deps.get_upload_dir),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: SchemaEtlGraphProtocol = Depends(deps.get_graph_client),
+    graph_client: SchemaEtlGraphProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> StartRunResponse:
     await require_active_tenant_or_404(review_conn, tenant_id)
     if not await is_ontology_confirmed(review_conn, tenant_id):
@@ -361,7 +361,7 @@ async def promote_dry_run(
     background_tasks: BackgroundTasks,
     upload_dir: Path = Depends(deps.get_upload_dir),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: SchemaEtlGraphProtocol = Depends(deps.get_graph_client),
+    graph_client: SchemaEtlGraphProtocol = Depends(deps.get_neo4j_graph_client),
 ) -> StartRunResponse:
     """把一次预演按原样正式执行一遍，复用它已经保存在磁盘上的输入。
 

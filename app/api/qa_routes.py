@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from app.api import deps
 from app.config.settings import Settings
-from app.graphrag.neo4j_client import Neo4jGraphClient
+from app.graphrag.graph_read import GraphReadProtocol
 from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.terms_store import list_terms_merged
 from app.providers.embedding import EmbeddingRegistry
@@ -51,7 +51,7 @@ async def qa_endpoint(
     bm25_index: BM25Index = Depends(deps.get_bm25_index),
     llm_registry: ProviderRegistry = Depends(deps.get_llm_registry),
     rerank_provider: RerankProvider | None = Depends(deps.get_rerank_provider),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: GraphReadProtocol = Depends(deps.get_graph_client),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     settings: Settings = Depends(deps.get_settings),
 ) -> QAResponse:

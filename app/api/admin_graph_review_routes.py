@@ -175,7 +175,7 @@ async def approve(
     review_id: int,
     payload: ApproveRequest,
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: Neo4jGraphClient = Depends(deps.get_neo4j_graph_client),
 ) -> dict[str, bool]:
     await require_active_tenant_or_404(review_conn, tenant_id)
     return await _approve_with_names(
@@ -286,7 +286,7 @@ async def create_missing_term(
     payload: CreateMissingTermRequest,
     session: AdminSession = Depends(deps.require_admin_session),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
-    graph_client: Neo4jGraphClient = Depends(deps.get_graph_client),
+    graph_client: Neo4jGraphClient = Depends(deps.get_neo4j_graph_client),
 ) -> dict[str, bool]:
     """给「一端对不上」的那一条建出缺的实体，然后批准它。
 
