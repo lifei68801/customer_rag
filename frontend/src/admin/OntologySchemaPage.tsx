@@ -11,6 +11,7 @@ import { useToast } from './ToastContext'
 import { buildOntologyDiff, type OntologyDiff } from './ontologyDiff'
 import { BulkDeleteOutcome, BulkSelectionBar } from './BulkSelectionBar'
 import { useBulkSelection } from './useBulkSelection'
+import { useEditableList } from './useEditableList'
 import {
   buildBulkDeleteConfirmMessage,
   requestBulkDelete,
@@ -542,14 +543,13 @@ function TermTypesTab({
   const { density } = useAdminDensity()
   const [items, setItems] = useState<TermType[]>([])
   const [loaded, setLoaded] = useState(false)
-  const [editingValue, setEditingValue] = useState<string | null>(null)
+  // 表单开着哪个、有没有请求在飞，都归 useEditableList 管——「同一时刻只能
+  // 有一个操作在飞」这条不变量此前散在十几个 disabled 表达式里，而且并不
+  // 一致（删除在飞时迁移按钮照样能点）。草稿和迁移目标是数据不是状态机，
+  // 留在这里。
+  const list = useEditableList()
   const [draft, setDraft] = useState<TermType>(emptyTermTypeDraft())
-  const [creating, setCreating] = useState(false)
-  const [savingValue, setSavingValue] = useState<string | null>(null)
-  const [deletingValue, setDeletingValue] = useState<string | null>(null)
-  const [migratingFrom, setMigratingFrom] = useState<string | null>(null)
   const [migrateTarget, setMigrateTarget] = useState('')
-  const [migrating, setMigrating] = useState(false)
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
@@ -587,17 +587,17 @@ function TermTypesTab({
   }, [refresh, confirmVersion])
 
   const startEdit = (item: TermType) => {
-    setEditingValue(item.value)
+    list.openEdit(item.value)
     setDraft({ ...item, extra_fields: item.extra_fields.map((f) => ({ ...f })) })
   }
 
   const startCreate = () => {
-    setEditingValue('')
+    list.openCreate()
     setDraft(emptyTermTypeDraft())
   }
 
   const cancelEdit = () => {
-    setEditingValue(null)
+    list.close()
     setDraft(emptyTermTypeDraft())
   }
 
@@ -621,33 +621,34 @@ function TermTypesTab({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (!sessionToken || editingValue === null) return
-    const isCreate = editingValue === ''
+    const form = list.form
+    if (!sessionToken || (form.kind !== 'creating' && form.kind !== 'editing')) return
+    const isCreate = form.kind === 'creating'
+    const key = isCreate ? '' : form.key
     onError(null)
-    if (isCreate) setCreating(true)
-    else setSavingValue(editingValue)
-    try {
-      const url = isCreate
-        ? `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`
-        : `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types/${encodeURIComponent(editingValue)}`
-      const response = await adminFetch(url, sessionToken, {
-        method: isCreate ? 'POST' : 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(draft),
-      })
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
-        throw new Error(extractErrorDetail(body, isCreate ? '新增实体类型失败' : '更新实体类型失败'))
+    await list.run('save', key, async () => {
+      try {
+        const url = isCreate
+          ? `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types`
+          : `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types/${encodeURIComponent(key)}`
+        const response = await adminFetch(url, sessionToken, {
+          method: isCreate ? 'POST' : 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(draft),
+        })
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(
+            extractErrorDetail(body, isCreate ? '新增实体类型失败' : '更新实体类型失败'),
+          )
+        }
+        cancelEdit()
+        await refresh()
+        onDataChanged()
+      } catch (err) {
+        onError(err instanceof Error ? err.message : '保存失败')
       }
-      cancelEdit()
-      await refresh()
-      onDataChanged()
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '保存失败')
-    } finally {
-      setCreating(false)
-      setSavingValue(null)
-    }
+    })
   }
 
   const bulk = useBulkSelection()
@@ -683,73 +684,77 @@ function TermTypesTab({
   }
 
   const handleDelete = async (value: string) => {
-    if (!sessionToken || deletingValue !== null) return
+    if (!sessionToken || list.busy) return
     if (!(await confirm(`确定要删除实体类型「${value}」吗？此操作不可撤销。`))) return
     onError(null)
-    setDeletingValue(value)
-    try {
-      const response = await adminFetch(
-        `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types/${encodeURIComponent(value)}`,
-        sessionToken,
-        { method: 'DELETE' },
-      )
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
-        // 409 会带一份结构化的挡路术语（见 app/api/admin_ontology_routes.py
-        // ::delete_term_type_category）。有 node_keys 才说明真的是被术语挡住
-        // 的——只被草稿约束挡住时实体明细里没东西可处理，不该给这条链接。
-        const blocking = (body as { blocking_terms?: { term_type?: string; node_keys?: string[] } })
-          .blocking_terms
-        if (blocking?.term_type && (blocking.node_keys?.length ?? 0) > 0) {
-          onDeleteBlocked(blocking.term_type)
+    await list.run('delete', value, async () => {
+      try {
+        const response = await adminFetch(
+          `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types/${encodeURIComponent(value)}`,
+          sessionToken,
+          { method: 'DELETE' },
+        )
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          // 409 会带一份结构化的挡路术语（见 app/api/admin_ontology_routes.py
+          // ::delete_term_type_category）。有 node_keys 才说明真的是被术语挡住
+          // 的——只被草稿约束挡住时实体明细里没东西可处理，不该给这条链接。
+          const blocking = (
+            body as { blocking_terms?: { term_type?: string; node_keys?: string[] } }
+          ).blocking_terms
+          if (blocking?.term_type && (blocking.node_keys?.length ?? 0) > 0) {
+            onDeleteBlocked(blocking.term_type)
+          }
+          throw new Error(extractErrorDetail(body, '删除实体类型失败'))
         }
-        throw new Error(extractErrorDetail(body, '删除实体类型失败'))
+        showToast('已删除实体类型')
+        await refresh()
+        onDataChanged()
+      } catch (err) {
+        onError(err instanceof Error ? err.message : '删除失败')
       }
-      showToast('已删除实体类型')
-      await refresh()
-      onDataChanged()
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '删除失败')
-    } finally {
-      setDeletingValue(null)
-    }
+    })
   }
 
   const handleMigrate = async (event: FormEvent) => {
     event.preventDefault()
-    if (!sessionToken || migratingFrom === null || migrating) return
+    const form = list.form
+    if (!sessionToken || form.kind !== 'migrating' || list.busy) return
+    const from = form.from
     if (
       !(await confirm(
-        `这会把租户「${tenantId}」所有 term_type 为「${migratingFrom}」的真实术语和图谱节点批量改成「${migrateTarget}」，不可逆。确定要继续吗？`,
+        `这会把租户「${tenantId}」所有 term_type 为「${from}」的真实术语和图谱节点批量改成「${migrateTarget}」，不可逆。确定要继续吗？`,
       ))
     ) {
       return
     }
     onError(null)
-    setMigrating(true)
-    try {
-      const response = await adminFetch(
-        `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types/migrate`,
-        sessionToken,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ old_type: migratingFrom, new_type: migrateTarget }),
-        },
-      )
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
-        throw new Error(extractErrorDetail(body, '迁移实体类型失败'))
+    await list.run('migrate', from, async () => {
+      try {
+        const response = await adminFetch(
+          `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types/migrate`,
+          sessionToken,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ old_type: from, new_type: migrateTarget }),
+          },
+        )
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(extractErrorDetail(body, '迁移实体类型失败'))
+        }
+        const data = (await response.json()) as {
+          terms_migrated: number
+          graph_nodes_migrated: number
+        }
+        showToast(`已迁移 ${data.terms_migrated} 条术语、${data.graph_nodes_migrated} 个图谱节点`)
+        list.close()
+        setMigrateTarget('')
+      } catch (err) {
+        onError(err instanceof Error ? err.message : '迁移实体类型失败')
       }
-      const data = (await response.json()) as { terms_migrated: number; graph_nodes_migrated: number }
-      showToast(`已迁移 ${data.terms_migrated} 条术语、${data.graph_nodes_migrated} 个图谱节点`)
-      setMigratingFrom(null)
-      setMigrateTarget('')
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '迁移实体类型失败')
-    } finally {
-      setMigrating(false)
-    }
+    })
   }
 
   const cellPadding = density === 'compact' ? 'px-2 py-1' : 'px-3 py-2'
@@ -757,7 +762,7 @@ function TermTypesTab({
   return (
     <div className="flex flex-col gap-4">
       {!loaded && <Skeleton variant="table-rows" count={4} />}
-      {loaded && items.length === 0 && editingValue === null && (
+      {loaded && items.length === 0 && list.form.kind === 'idle' && (
         <EmptyState
           icon={Boxes}
           title={`还没有任何${view === 'draft' ? '草稿' : '已确认的'}实体类型`}
@@ -823,7 +828,7 @@ function TermTypesTab({
                         type="button"
                         className={`mr-2 font-bold underline disabled:opacity-50 ${focusRing}`}
                         onClick={() => startEdit(item)}
-                        disabled={editingValue !== null}
+                        disabled={list.form.kind !== 'idle' || list.busy}
                       >
                         编辑
                       </button>
@@ -831,10 +836,10 @@ function TermTypesTab({
                         type="button"
                         className={`mr-2 font-bold underline disabled:opacity-50 ${focusRing}`}
                         onClick={() => {
-                          setMigratingFrom(item.value)
+                          list.openMigrate(item.value)
                           setMigrateTarget('')
                         }}
-                        disabled={migrating}
+                        disabled={list.form.kind !== 'idle' || list.busy}
                       >
                         迁移实体类型…
                       </button>
@@ -842,9 +847,9 @@ function TermTypesTab({
                         type="button"
                         className={`font-bold text-status-error underline disabled:opacity-50 ${focusRing}`}
                         onClick={() => handleDelete(item.value)}
-                        disabled={deletingValue !== null || editingValue !== null}
+                        disabled={list.form.kind !== 'idle' || list.busy}
                       >
-                        {deletingValue === item.value ? '删除中…' : '删除'}
+                        {list.isDeleting(item.value) ? '删除中…' : '删除'}
                       </button>
                     </td>
                   )}
@@ -862,7 +867,7 @@ function TermTypesTab({
         </p>
       )}
 
-      {view === 'draft' && editingValue === null && (
+      {view === 'draft' && list.form.kind === 'idle' && (
         <button
           type="button"
           onClick={startCreate}
@@ -872,7 +877,8 @@ function TermTypesTab({
         </button>
       )}
 
-      {view === 'draft' && editingValue !== null && (
+      {view === 'draft' &&
+        (list.form.kind === 'creating' || list.form.kind === 'editing') && (
         <form onSubmit={submit} className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4">
           <label className="flex flex-col gap-1 text-sm font-bold text-ink">
             类型名
@@ -962,10 +968,10 @@ function TermTypesTab({
           <div className="flex gap-2">
             <button
               type="submit"
-              disabled={creating || savingValue !== null}
+              disabled={list.busy}
               className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-4 py-2 text-sm font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
-              {creating || savingValue !== null ? '保存中…' : '保存'}
+              {list.busy ? '保存中…' : '保存'}
             </button>
             <button
               type="button"
@@ -978,13 +984,13 @@ function TermTypesTab({
         </form>
       )}
 
-      {migratingFrom !== null && (
+      {list.form.kind === 'migrating' && (
         <form
           onSubmit={handleMigrate}
           className="flex flex-col gap-3 rounded-panel border border-status-error bg-card p-4"
         >
           <p className="text-sm text-ink">
-            把租户「{tenantId}」所有 term_type 为「{migratingFrom}」的真实术语和图谱节点迁移成：
+            把租户「{tenantId}」所有 term_type 为「{list.form.from}」的真实术语和图谱节点迁移成：
           </p>
           <select
             required
@@ -995,7 +1001,7 @@ function TermTypesTab({
           >
             <option value="">请选择新类型</option>
             {items
-              .filter((item) => item.value !== migratingFrom)
+              .filter((item) => list.form.kind !== 'migrating' || item.value !== list.form.from)
               .map((item) => (
                 <option key={item.value} value={item.value}>
                   {item.value}
@@ -1005,15 +1011,15 @@ function TermTypesTab({
           <div className="flex gap-2">
             <button
               type="submit"
-              disabled={migrating}
+              disabled={list.busy}
               className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-error-strong px-4 py-2 text-sm font-bold text-white transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
-              {migrating ? '迁移中…' : '确认迁移'}
+              {list.busy ? '迁移中…' : '确认迁移'}
             </button>
             <button
               type="button"
               onClick={() => {
-                setMigratingFrom(null)
+                list.close()
               }}
               className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 ${focusRing}`}
             >
@@ -1050,14 +1056,10 @@ function RelationTypesTab({
   const { density } = useAdminDensity()
   const [items, setItems] = useState<RelationType[]>([])
   const [loaded, setLoaded] = useState(false)
-  const [editingType, setEditingType] = useState<string | null>(null)
+  // 跟实体类型 tab 共用同一个编辑状态机，见 useEditableList 的模块文档。
+  const list = useEditableList()
   const [draft, setDraft] = useState<RelationType>(emptyRelationTypeDraft())
-  const [creating, setCreating] = useState(false)
-  const [savingType, setSavingType] = useState<string | null>(null)
-  const [deletingType, setDeletingType] = useState<string | null>(null)
-  const [migratingFrom, setMigratingFrom] = useState<string | null>(null)
   const [migrateTarget, setMigrateTarget] = useState('')
-  const [migrating, setMigrating] = useState(false)
 
   const refresh = useCallback(async () => {
     if (!sessionToken) return
@@ -1092,54 +1094,55 @@ function RelationTypesTab({
   }, [refresh, confirmVersion])
 
   const startEdit = (item: RelationType) => {
-    setEditingType(item.relation_type)
+    list.openEdit(item.relation_type)
     setDraft({ ...item })
   }
 
   const startCreate = () => {
-    setEditingType('')
+    list.openCreate()
     setDraft(emptyRelationTypeDraft())
   }
 
   const cancelEdit = () => {
-    setEditingType(null)
+    list.close()
     setDraft(emptyRelationTypeDraft())
   }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (!sessionToken || editingType === null) return
-    const isCreate = editingType === ''
+    const form = list.form
+    if (!sessionToken || (form.kind !== 'creating' && form.kind !== 'editing')) return
+    const isCreate = form.kind === 'creating'
+    const key = isCreate ? '' : form.key
     onError(null)
-    if (isCreate) setCreating(true)
-    else setSavingType(editingType)
-    try {
-      const url = isCreate
-        ? `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types`
-        : `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types/${encodeURIComponent(editingType)}`
-      const response = await adminFetch(url, sessionToken, {
-        method: isCreate ? 'POST' : 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          relation_type: draft.relation_type,
-          example_phrase: draft.example_phrase,
-          description: draft.description,
-          allow_chain_query: draft.allow_chain_query,
-        }),
-      })
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
-        throw new Error(extractErrorDetail(body, isCreate ? '新增关系类型失败' : '更新关系类型失败'))
+    await list.run('save', key, async () => {
+      try {
+        const url = isCreate
+          ? `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types`
+          : `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types/${encodeURIComponent(key)}`
+        const response = await adminFetch(url, sessionToken, {
+          method: isCreate ? 'POST' : 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            relation_type: draft.relation_type,
+            example_phrase: draft.example_phrase,
+            description: draft.description,
+            allow_chain_query: draft.allow_chain_query,
+          }),
+        })
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(
+            extractErrorDetail(body, isCreate ? '新增关系类型失败' : '更新关系类型失败'),
+          )
+        }
+        cancelEdit()
+        await refresh()
+        onDataChanged()
+      } catch (err) {
+        onError(err instanceof Error ? err.message : '保存失败')
       }
-      cancelEdit()
-      await refresh()
-      onDataChanged()
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '保存失败')
-    } finally {
-      setCreating(false)
-      setSavingType(null)
-    }
+    })
   }
 
   const bulk = useBulkSelection()
@@ -1172,65 +1175,65 @@ function RelationTypesTab({
   }
 
   const handleDelete = async (relationType: string) => {
-    if (!sessionToken || deletingType !== null) return
+    if (!sessionToken || list.busy) return
     if (!(await confirm(`确定要删除关系类型「${relationType}」吗？此操作不可撤销。`))) return
     onError(null)
-    setDeletingType(relationType)
-    try {
-      const response = await adminFetch(
-        `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types/${encodeURIComponent(relationType)}`,
-        sessionToken,
-        { method: 'DELETE' },
-      )
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
-        throw new Error(extractErrorDetail(body, '删除关系类型失败'))
+    await list.run('delete', relationType, async () => {
+      try {
+        const response = await adminFetch(
+          `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types/${encodeURIComponent(relationType)}`,
+          sessionToken,
+          { method: 'DELETE' },
+        )
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(extractErrorDetail(body, '删除关系类型失败'))
+        }
+        showToast('已删除关系类型')
+        await refresh()
+        onDataChanged()
+      } catch (err) {
+        onError(err instanceof Error ? err.message : '删除失败')
       }
-      showToast('已删除关系类型')
-      await refresh()
-      onDataChanged()
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '删除失败')
-    } finally {
-      setDeletingType(null)
-    }
+    })
   }
 
   const handleMigrate = async (event: FormEvent) => {
     event.preventDefault()
-    if (!sessionToken || migratingFrom === null || migrating) return
+    const form = list.form
+    if (!sessionToken || form.kind !== 'migrating' || list.busy) return
+    const from = form.from
     if (
       !(await confirm(
-        `这会遍历租户「${tenantId}」在 Neo4j 图谱里所有类型为「${migratingFrom}」的边，批量改成「${migrateTarget}」，不可逆。确定要继续吗？`,
+        `这会遍历租户「${tenantId}」在 Neo4j 图谱里所有类型为「${from}」的边，批量改成「${migrateTarget}」，不可逆。确定要继续吗？`,
       ))
     ) {
       return
     }
     onError(null)
-    setMigrating(true)
-    try {
-      const response = await adminFetch(
-        `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types/migrate`,
-        sessionToken,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ old_type: migratingFrom, new_type: migrateTarget }),
-        },
-      )
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
-        throw new Error(extractErrorDetail(body, '迁移图谱边失败'))
+    await list.run('migrate', from, async () => {
+      try {
+        const response = await adminFetch(
+          `/api/admin/ontology/${encodeURIComponent(tenantId)}/relation-types/migrate`,
+          sessionToken,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ old_type: from, new_type: migrateTarget }),
+          },
+        )
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(extractErrorDetail(body, '迁移图谱边失败'))
+        }
+        const data = (await response.json()) as { migrated_count: number }
+        showToast(`已迁移 ${data.migrated_count} 条边`)
+        list.close()
+        setMigrateTarget('')
+      } catch (err) {
+        onError(err instanceof Error ? err.message : '迁移图谱边失败')
       }
-      const data = (await response.json()) as { migrated_count: number }
-      showToast(`已迁移 ${data.migrated_count} 条边`)
-      setMigratingFrom(null)
-      setMigrateTarget('')
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '迁移图谱边失败')
-    } finally {
-      setMigrating(false)
-    }
+    })
   }
 
   const cellPadding = density === 'compact' ? 'px-2 py-1' : 'px-3 py-2'
@@ -1306,7 +1309,7 @@ function RelationTypesTab({
                         type="button"
                         className={`mr-2 font-bold underline disabled:opacity-50 ${focusRing}`}
                         onClick={() => startEdit(item)}
-                        disabled={editingType !== null}
+                        disabled={list.form.kind !== 'idle' || list.busy}
                       >
                         改名/编辑
                       </button>
@@ -1314,10 +1317,10 @@ function RelationTypesTab({
                         type="button"
                         className={`mr-2 font-bold underline disabled:opacity-50 ${focusRing}`}
                         onClick={() => {
-                          setMigratingFrom(item.relation_type)
+                          list.openMigrate(item.relation_type)
                           setMigrateTarget('')
                         }}
-                        disabled={migrating}
+                        disabled={list.form.kind !== 'idle' || list.busy}
                       >
                         迁移图谱边…
                       </button>
@@ -1325,9 +1328,9 @@ function RelationTypesTab({
                         type="button"
                         className={`font-bold text-status-error underline disabled:opacity-50 ${focusRing}`}
                         onClick={() => handleDelete(item.relation_type)}
-                        disabled={deletingType !== null}
+                        disabled={list.form.kind !== 'idle' || list.busy}
                       >
-                        {deletingType === item.relation_type ? '删除中…' : '删除'}
+                        {list.isDeleting(item.relation_type) ? '删除中…' : '删除'}
                       </button>
                     </td>
                   )}
@@ -1344,7 +1347,7 @@ function RelationTypesTab({
         </p>
       )}
 
-      {view === 'draft' && editingType === null && (
+      {view === 'draft' && list.form.kind === 'idle' && (
         <button
           type="button"
           onClick={startCreate}
@@ -1354,7 +1357,8 @@ function RelationTypesTab({
         </button>
       )}
 
-      {view === 'draft' && editingType !== null && (
+      {view === 'draft' &&
+        (list.form.kind === 'creating' || list.form.kind === 'editing') && (
         <form onSubmit={submit} className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4">
           <label className="flex flex-col gap-1 text-sm font-bold text-ink">
             关系类型名（大写字母/数字/下划线）
@@ -1396,10 +1400,10 @@ function RelationTypesTab({
           <div className="flex gap-2">
             <button
               type="submit"
-              disabled={creating || savingType !== null}
+              disabled={list.busy}
               className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-accent-primary px-4 py-2 text-sm font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
-              {creating || savingType !== null ? '保存中…' : '保存'}
+              {list.busy ? '保存中…' : '保存'}
             </button>
             <button
               type="button"
@@ -1412,13 +1416,13 @@ function RelationTypesTab({
         </form>
       )}
 
-      {migratingFrom !== null && (
+      {list.form.kind === 'migrating' && (
         <form
           onSubmit={handleMigrate}
           className="flex flex-col gap-3 rounded-panel border border-status-error bg-card p-4"
         >
           <p className="text-sm text-ink">
-            把租户「{tenantId}」图谱里所有类型为「{migratingFrom}」的边迁移成：
+            把租户「{tenantId}」图谱里所有类型为「{list.form.from}」的边迁移成：
           </p>
           <select
             required
@@ -1429,7 +1433,9 @@ function RelationTypesTab({
           >
             <option value="">请选择新类型</option>
             {items
-              .filter((item) => item.relation_type !== migratingFrom)
+              .filter(
+                (item) => list.form.kind !== 'migrating' || item.relation_type !== list.form.from,
+              )
               .map((item) => (
                 <option key={item.relation_type} value={item.relation_type}>
                   {item.relation_type}
@@ -1439,15 +1445,15 @@ function RelationTypesTab({
           <div className="flex gap-2">
             <button
               type="submit"
-              disabled={migrating}
+              disabled={list.busy}
               className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-error-strong px-4 py-2 text-sm font-bold text-white transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
             >
-              {migrating ? '迁移中…' : '确认迁移'}
+              {list.busy ? '迁移中…' : '确认迁移'}
             </button>
             <button
               type="button"
               onClick={() => {
-                setMigratingFrom(null)
+                list.close()
               }}
               className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-paper px-4 py-2 text-sm font-bold text-ink transition active:scale-95 active:opacity-90 ${focusRing}`}
             >
