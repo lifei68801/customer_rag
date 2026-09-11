@@ -195,13 +195,18 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     !roled.some((c) => c.role === 'identifier' && c.stats.name === rootName)
 
   const renamedFields: Record<string, string> = {}
-  const hostFields: DraftExtraField[] = []
+  // 宿主实体名 → 挂在它下面的字段。属性不再一律挂中心：一张表可能同时
+  // 带着两类实体的属性（订单的金额、客户的等级）。
+  const fieldsByHost = new Map<string, DraftExtraField[]>()
   const unusedColumns: string[] = []
   // 原列名，给审阅视图用：度量列和日期列在界面上此前一处都不出现，判错了
   // 用户也看不见。字段名清洗过之后 extra_fields 里的名字可能跟列名对不上，
   // 所以这里按原列名单独记一份，而不是让 UI 去猜。
   const attributeColumns: string[] = []
-  const usedFieldNames = new Set<string>()
+  // 字段名唯一性是**每个实体各自**的事：两个实体各有一个 name 字段不冲突，
+  // 它们在不同的 term_type 下。全局去重会把第二个硬改成 name_2，而那个
+  // 名字是凭空造出来的，用户在实体明细里找不到自己配的那一列。
+  const usedFieldNamesByHost = new Map<string, Set<string>>()
   // 撞过名、因此被加了序号后缀的列（原列名）。要在界面上说出来：并排显示
   // 改名前后不足以让用户看出"这两行撞了"，而真正的后果（ETL 少加载一列）
   // 发生在下载 YAML 之后。
@@ -224,6 +229,16 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
       unusedColumns.push(name)
       return
     }
+    // 用户指定的宿主优先，但只在它还是实体时生效——先把客户等级挂到
+    // 「客户」上、又把「客户」改判成属性的话，照单全收会把字段挂到一个
+    // 不在 termTypes 里的名字上，提交出去是孤儿。
+    const chosenHost = decision.attributeHostOf?.[name]
+    const host = chosenHost !== undefined && entityNames.has(chosenHost) ? chosenHost : attributeHost
+    let usedFieldNames = usedFieldNamesByHost.get(host)
+    if (usedFieldNames === undefined) {
+      usedFieldNames = new Set()
+      usedFieldNamesByHost.set(host, usedFieldNames)
+    }
     const base = sanitizeFieldName(name, index)
     const fieldName = uniqueFieldName(base, usedFieldNames)
     if (fieldName !== base) collidedFields.push(name)
@@ -232,15 +247,18 @@ export function buildProposal(roled: RoledColumn[], decision: GuidedDecision): P
     // 显示名记原始列名：sanitizeFieldName 对中文列名只能兜底成 field_N
     // 这种占位名，不记的话用户在界面上再也见不到自己写的那个列名。内部名
     // 仍然是清洗后的名字——它要进 Cypher 和索引。
-    hostFields.push({ name: fieldName, value_type: measureValueType(column), label: name })
+    const bucket = fieldsByHost.get(host)
+    const field = { name: fieldName, value_type: measureValueType(column), label: name }
+    if (bucket === undefined) fieldsByHost.set(host, [field])
+    else bucket.push(field)
     attributeColumns.push(name)
   })
 
   const termTypes: DraftTermType[] = [...entityNames].map((value) => ({
     value,
-    // 属性只挂在 attributeHost 上。别的实体是维度，它们自己的属性得从
-    // 别的表来。
-    extra_fields: value === attributeHost ? hostFields : [],
+    // 各实体取自己那份。默认全在中心（attributeHost）下，用户可以在审阅
+    // 视图里把某一列改挂到别的实体上。
+    extra_fields: fieldsByHost.get(value) ?? [],
     standard_name_value_type: 'string',
   }))
 

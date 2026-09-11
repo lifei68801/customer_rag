@@ -341,6 +341,77 @@ describe('选中心', () => {
   })
 })
 
+describe('属性挂在哪个实体下面', () => {
+  /** 一张同时携带两类实体属性的表：订单是中心，客户等级其实属于客户。 */
+  function twoHostColumns(): RoledColumn[] {
+    return [
+      makeColumn('订单号', 'identifier', 9998),
+      makeColumn('客户', 'dimension', 800),
+      makeColumn('revenue', 'measure', 500),
+      makeColumn('客户等级', 'measure', 4),
+    ]
+  }
+
+  it('没指定时属性挂在中心上——默认行为不变', () => {
+    const roled = twoHostColumns()
+    const proposal = buildProposal(roled, initialDecision(roled))
+    const center = proposal.termTypes.find((t) => t.value === '订单号')
+    expect(center?.extra_fields.map((f) => f.label)).toEqual(['revenue', '客户等级'])
+  })
+
+  it('指定宿主之后，属性挂到那个实体上，不再挂中心', () => {
+    const roled = twoHostColumns()
+    const decision = initialDecision(roled)
+    decision.attributeHostOf = { 客户等级: '客户' }
+    const proposal = buildProposal(roled, decision)
+
+    const center = proposal.termTypes.find((t) => t.value === '订单号')
+    const customer = proposal.termTypes.find((t) => t.value === '客户')
+    expect(center?.extra_fields.map((f) => f.label)).toEqual(['revenue'])
+    expect(customer?.extra_fields.map((f) => f.label)).toEqual(['客户等级'])
+  })
+
+  it('指定的宿主已经不是实体时，回落到中心，不挂到一个不存在的名字上', () => {
+    // 用户先把客户等级挂到客户上，又把客户改判成了属性。照单全收的话，
+    // 这个字段会挂到一个不在 termTypes 里的名字上——提交出去是孤儿。
+    const roled = twoHostColumns()
+    const decision = initialDecision(roled)
+    decision.attributeHostOf = { 客户等级: '客户' }
+    decision.dimensionsAsEntity['客户'] = false
+    const proposal = buildProposal(roled, decision)
+
+    const center = proposal.termTypes.find((t) => t.value === '订单号')
+    expect(center?.extra_fields.map((f) => f.label)).toEqual(
+      expect.arrayContaining(['revenue', '客户等级', '客户']),
+    )
+    expect(proposal.termTypes.map((t) => t.value)).not.toContain('客户')
+  })
+
+  it('两个实体各有一个同名字段时，谁都不加后缀', () => {
+    // 字段名唯一性是**每个实体各自**的事：它们在不同的 term_type 下，
+    // 本来就不冲突。全局去重会把第二个硬改成 name_2，而那个名字是凭空
+    // 造出来的，用户在实体明细里找不到自己配的那一列。
+    // 用真实的撞名场景：两个中文列名清洗后都变成 'a__'（sanitizeFieldName
+    // 把非法字符换成下划线）。这正是 uniqueFieldName 文档里说的那个坑。
+    const roled = [
+      makeColumn('订单号', 'identifier', 9998),
+      makeColumn('客户', 'dimension', 800),
+      makeColumn('a订单', 'measure', 100),
+      makeColumn('a客户', 'measure', 100),
+    ]
+    const decision = initialDecision(roled)
+    decision.attributeHostOf = { a客户: '客户' }
+    const proposal = buildProposal(roled, decision)
+
+    const center = proposal.termTypes.find((t) => t.value === '订单号')
+    const customer = proposal.termTypes.find((t) => t.value === '客户')
+    // 各自宿主下都只有一个字段，谁都不该被加 _2 后缀。
+    expect(center?.extra_fields.map((f) => f.name)).toEqual(['a__'])
+    expect(customer?.extra_fields.map((f) => f.name)).toEqual(['a__'])
+    expect(proposal.collidedFields).toEqual([])
+  })
+})
+
 describe('会成为属性的列要能被界面点名', () => {
   it('attributeColumns 按原列名列出度量列和日期列', () => {
     const roled = demoColumns()
