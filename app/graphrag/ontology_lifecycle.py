@@ -27,6 +27,10 @@ from app.graphrag.ontology_relations import (
     seed_default_relation_types,
 )
 from app.graphrag.tenant_ingestion_config import ensure_ingestion_config_schema, get_ingestion_mode
+from app.graphrag.value_types import (
+    EXTRA_FIELD_VALUE_TYPES,
+    STANDARD_NAME_VALUE_TYPES,
+)
 
 # 下面这几条正则/常量、_validate_draft_* 三个函数，是 ontology_categories.py 的
 # _validate_extra_field_specs/_validate_standard_name_value_type 和
@@ -50,10 +54,10 @@ from app.graphrag.tenant_ingestion_config import ensure_ingestion_config_schema,
 # value_type 枚举已经造成两条 Critical，正则副本是同一种形状：契约一变要多处
 # 同步，漏一处就是校验口径不一致，而这一条漏了是**注入防线出现缺口**。
 _EXTRA_FIELD_NAME_PATTERN = EXTRA_FIELD_NAME_PATTERN
-_VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]", "date"})
-# date 有意**不**进下面这张表，跟 ontology_categories.py 那份原件保持一致的
-# 不对称：standard_name 是实体的名字，一个日期不该当实体的名字。
-_VALID_STANDARD_NAME_VALUE_TYPES = frozenset({"string", "number", "integer"})
+# 跟 ontology_categories 查的是同一张表——此前这里是一份独立副本，正是本
+# 模块顶部那段注释预言过的不一致来源（单条接口放行、引导页拒绝）。
+_VALID_EXTRA_FIELD_VALUE_TYPES = EXTRA_FIELD_VALUE_TYPES
+_VALID_STANDARD_NAME_VALUE_TYPES = STANDARD_NAME_VALUE_TYPES
 _RELATION_TYPE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 
 

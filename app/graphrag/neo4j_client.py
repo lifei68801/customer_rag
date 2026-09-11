@@ -18,6 +18,7 @@ from app.graphrag.structured_filter_query import (
 )
 
 from app.graphrag.ontology_categories import EXTRA_FIELD_NAME_PATTERN, TermTypeCategory
+from app.graphrag.value_types import GRAPH_INDEXABLE_VALUE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -1530,12 +1531,12 @@ class Neo4jGraphClient:
         列表匹配已有索引定义，同一个 (tenant_id, type, field) 三元组重复调用一样会
         no-op。
         """
-        # date 也建索引：它在 Neo4j 里是字符串属性（字典序即时间序），
-        # 范围过滤全指着这个索引。
-        _SCALAR_VALUE_TYPES = {"string", "number", "integer", "date"}
+        # 哪些类型该建索引记在 value_types 那张表的 graph_indexable 上，
+        # 连同理由（date 在图里是字符串属性、字典序即时间序，范围过滤全指着
+        # 这个索引；number[] 不建，数组属性上的复合索引不服务范围过滤）。
         async with self._driver.session() as session:
             for spec in extra_fields:
-                if spec.value_type not in _SCALAR_VALUE_TYPES:
+                if spec.value_type not in GRAPH_INDEXABLE_VALUE_TYPES:
                     continue
                 await session.run(
                     f"CREATE INDEX IF NOT EXISTS FOR (t:Term) ON "

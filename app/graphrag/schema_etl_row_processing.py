@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from app.graphrag.date_normalization import InvalidDateValueError, normalize_date
 from app.graphrag.etl_stable_code_registry import allocate_stable_code, lookup_stable_code
+from app.graphrag.value_types import convert_source_text
 from app.graphrag.ontology_categories import ExtraFieldSpec
 from app.graphrag.schema_etl_config import AllocatedCodeNodeKeyPart, ColumnNodeKeyPart
 
@@ -76,31 +76,12 @@ def convert_field_value(
         raise RowProcessingError(f"字段 {field_name!r} 没有在 term_type 的 schema 里声明")
     value_type = extra_field_specs[field_name].value_type
     try:
-        if value_type == "string":
-            return raw_value
-        if value_type == "number":
-            return float(raw_value)
-        if value_type == "integer":
-            return int(raw_value)
-        if value_type == "number[]":
-            return [float(item) for item in raw_value.split(";") if item.strip()]
-        if value_type == "date":
-            # 归一化的理由见 date_normalization 模块文档：图里的日期是字符串，
-            # 范围过滤靠字典序，不补零就排错序而且一声不吭。
-            #
-            # 这个分支放在 try/except ValueError 里面是安全的：
-            # InvalidDateValueError 是 ValueError 的子类，会被下面那个
-            # except 接住——但那句话太笼统（"无法转换成声明的类型"），
-            # 丢掉了"为什么"。所以在这里就地转成 RowProcessingError。
-            try:
-                return normalize_date(raw_value)
-            except InvalidDateValueError as exc:
-                raise RowProcessingError(f"字段 {field_name!r}：{exc}") from None
-    except ValueError:
-        raise RowProcessingError(
-            f"字段 {field_name!r} 的值 {raw_value!r} 无法转换成声明的类型 {value_type!r}"
-        )
-    raise RowProcessingError(f"字段 {field_name!r} 声明了未知的 value_type: {value_type!r}")
+        return convert_source_text(value_type, raw_value)
+    except ValueError as exc:
+        # UnknownValueTypeError 和 ValueTypeConversionError 都是 ValueError，
+        # 在这里一起收口：两者对这一行数据的归宿相同（跳过行明细），而它们
+        # 各自的消息已经说清了是"类型不认识"还是"值转不动"。
+        raise RowProcessingError(f"字段 {field_name!r}：{exc}") from None
 
 
 def convert_excel_cell_to_string(value: object) -> str:

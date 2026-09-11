@@ -9,7 +9,6 @@ import aiosqlite
 
 from app.db_migrations import add_column_if_missing
 from app.graphrag.attribute_conflicts import record_conflict
-from app.graphrag.date_normalization import is_normalized_date
 from app.graphrag.ontology import Term, load_terminology
 from app.graphrag.ontology_categories import (
     ensure_categories_schema,
@@ -23,6 +22,7 @@ from app.graphrag.term_edits_store import (
     upsert_term_edit,
 )
 from app.graphrag.term_merge import apply_edits
+from app.graphrag.value_types import convert_admin_text, value_matches_type
 
 logger = logging.getLogger(__name__)
 
@@ -321,25 +321,13 @@ async def _bridge_seed_categories_from_existing_terms(
 
 
 def _extra_property_value_matches_type(value: object, value_type: str) -> bool:
-    if value_type == "string":
-        return isinstance(value, str)
-    if value_type == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if value_type == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if value_type == "number[]":
-        return isinstance(value, list) and all(
-            isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
-        )
-    if value_type == "date":
-        # 判的是"已经是补零 ISO"，不是"能不能归一"——这是写库前的最后一道闸，
-        # 放行一个没补零的值就等于把破坏字典序的数据放进图里（见
-        # date_normalization.is_normalized_date 的说明）。ETL 路径下
-        # convert_field_value 已经归一化过，这里理应总是符合；但校验不能因为
-        # "调用方应该已经做对了"就跳过，别的写入路径（如 admin_terms_routes.py
-        # 的手工编辑）不经过 convert_field_value。
-        return isinstance(value, str) and is_normalized_date(value)
-    return False
+    """写库前的最后一道类型闸。判据在 value_types 那张表里。
+
+    ETL 路径下 convert_field_value 已经转换过，这里理应总是符合；但校验不能
+    因为"调用方应该已经做对了"就跳过——别的写入路径（如
+    admin_terms_routes.py 的手工编辑）不经过 convert_field_value。
+    """
+    return value_matches_type(value, value_type)
 
 
 def _row_to_term(row: aiosqlite.Row) -> Term:
@@ -1034,34 +1022,14 @@ async def _coerce_to_declared_type(
         for f in t.extra_fields
     }
     value_type = declared.get(field)
-    if value_type in (None, "string"):
+    if value_type is None:
         return value
-    if value_type == "date":
-        # 这里是写库前的类型闸，职责是判定，不是转换：即使 value 能被
-        # normalize_date 归一（比如 '2026/1/15'），也不在这里帮着转——
-        # 界面上输入 A 存进去 B 会让管理员摸不着头脑。判不合格就报错，
-        # 报错里给出正确格式的例子，让管理员照着改。
-        if is_normalized_date(value):
-            return value
-        raise ValueError(
-            f"{field!r} 声明的类型是 date，但 {value!r} 不是补零的 "
-            f"YYYY-MM-DD 格式，例如 2026-01-05。请改成这个格式再提交。"
-        )
     try:
-        if value_type == "integer":
-            return int(value)
-        if value_type == "number":
-            parsed = float(value)
-            # 42.0 存成 42：整数值存成浮点的话，下次 ETL 写 42（int）时
-            # 42.0 != 42 又是一条冲突。
-            return int(parsed) if parsed.is_integer() else parsed
-    except ValueError:
-        raise ValueError(
-            f"{field!r} 声明的类型是 {value_type}，而 {value!r} 不是一个{value_type}。"
-        ) from None
-    # number[] 之类的复合类型：界面上还没有填它们的入口，走到这里说明
-    # 调用方在用一个没设计过的路径，明确拒绝而不是猜一个解析方式。
-    raise ValueError(f"{field!r} 声明的类型是 {value_type}，这个类型还不支持在界面上直接改。")
+        return convert_admin_text(value_type, value)
+    except ValueError as exc:
+        # 字段名由这里拼在外面：value_types 只知道"值转不成这个类型"，
+        # 不知道该管它叫字段还是列。
+        raise ValueError(f"{field!r}：{exc}") from None
 
 
 async def set_extra_property(

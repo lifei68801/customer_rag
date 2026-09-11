@@ -9,6 +9,7 @@ import yaml
 
 from app.graphrag.ontology_categories import TermTypeCategory
 from app.graphrag.ontology_constraints import AllowedCombination
+from app.graphrag.value_types import example_values_for
 
 
 class EmptySchemaError(Exception):
@@ -36,30 +37,15 @@ def _sanitize_filename_component(name: str) -> str:
     return sanitized
 
 
-_STRING_EXAMPLE_VALUES = ("示例文本1", "示例文本2")
-_NUMBER_EXAMPLE_VALUES = ("1.5", "2.5")
-_INTEGER_EXAMPLE_VALUES = ("1", "2")
-_NUMBER_ARRAY_EXAMPLE_VALUES = ("1.5;2.5", "3.5;4.5")
-# 给两个不同的补零 ISO 日期，而不是同一天写两次——同一份示例文件里两行的
-# 其他字段（编号、名称）本来就是递增的两个不同示例，日期给成一样反而不像
-# 示例数据。写法本身就是 convert_field_value 认识的写法之一，不需要额外转换。
-_DATE_EXAMPLE_VALUES = ("2026-01-05", "2026-02-10")
-
-
 def _example_values_for(value_type: str) -> tuple[str, str]:
-    """跟 app/graphrag/schema_etl_row_processing.py::convert_field_value 的
-    转换规则对齐（number[] 用分号分隔，对应 raw_value.split(";")）。"""
-    if value_type == "string":
-        return _STRING_EXAMPLE_VALUES
-    if value_type == "number":
-        return _NUMBER_EXAMPLE_VALUES
-    if value_type == "integer":
-        return _INTEGER_EXAMPLE_VALUES
-    if value_type == "number[]":
-        return _NUMBER_ARRAY_EXAMPLE_VALUES
-    if value_type == "date":
-        return _DATE_EXAMPLE_VALUES
-    raise ValueError(f"未知的 value_type: {value_type!r}")
+    """示例值跟转换规则住在同一张表里（value_types.ValueTypeSpec）。
+
+    它们必须对得上：给出一份 ETL 自己都读不进去的示例文件，用户照着填完
+    才发现导入失败，而错误信息指向的是他自己的数据。此前这两者分在两个
+    模块里各写一份 if/elif，谁也不保证对齐——现在有一条测试拿每个类型的
+    示例值真跑一遍 convert_source_text。
+    """
+    return example_values_for(value_type)
 
 
 def _node_key_column(term_type: str) -> str:

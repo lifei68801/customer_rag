@@ -7,6 +7,10 @@ from dataclasses import dataclass
 import aiosqlite
 
 from app.db_migrations import add_column_if_missing
+from app.graphrag.value_types import (
+    EXTRA_FIELD_VALUE_TYPES,
+    STANDARD_NAME_VALUE_TYPES,
+)
 from app.graphrag.ontology_change_log import (
     ACTION_CREATE,
     ACTION_DELETE,
@@ -28,10 +32,11 @@ CREATE TABLE IF NOT EXISTS ontology_term_types (
 );
 """
 
-_VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]", "date"})
-# date 有意**不**进下面这张表：standard_name 是实体的名字，一个日期不该当
-# 实体的名字。两张白名单从此不对称，这是有意的，不是漏了。
-_VALID_STANDARD_NAME_VALUE_TYPES = frozenset({"string", "number", "integer"})
+# 两张白名单都来自 value_types 的那张表，不在这里再维护一份副本。
+# 这两张表的不对称（date/number[] 不能当 standard_name）也记在那边的
+# ValueTypeSpec.allowed_for_standard_name 上，连同理由。
+_VALID_EXTRA_FIELD_VALUE_TYPES = EXTRA_FIELD_VALUE_TYPES
+_VALID_STANDARD_NAME_VALUE_TYPES = STANDARD_NAME_VALUE_TYPES
 
 #: 字段名格式白名单——声明时校验用，也是全项目"字段名能不能安全拼进
 #: Cypher/索引语句"这条注入防线的权威定义。公开导出（不带前导下划线），
