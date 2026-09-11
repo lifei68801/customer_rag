@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import * as XLSX from 'xlsx'
 import {
   DISTINCT_LIMIT,
+  detectSingleValued,
   MAX_XLSX_BYTES,
   TEXT_CHUNK_BYTES,
   accumulateRow,
@@ -19,6 +20,110 @@ function statsOf(columns: string[], rows: string[][]) {
 
 const byName = (columns: string[], rows: string[][]) =>
   Object.fromEntries(statsOf(columns, rows).map((s) => [s.name, s]))
+
+describe('单值检测：一个宿主的每个值是不是只对应一个属性值', () => {
+  /** 造检测结果：列名 + 行，指明哪些列是候选宿主、哪些是属性。 */
+  function detect(
+    columns: string[],
+    rows: string[][],
+    hosts: string[],
+    attrs: string[],
+  ) {
+    return detectSingleValued({ columns, rows, hostColumns: hosts, attributeColumns: attrs })
+  }
+
+  it('同一个宿主值对应同一个属性值时，判为单值', () => {
+    const result = detect(
+      ['客户', '等级'],
+      [['A', '金卡'], ['B', '银卡'], ['A', '金卡']],
+      ['客户'],
+      ['等级'],
+    )
+    expect(result.violationOf('客户', '等级')).toBeNull()
+  })
+
+  it('同一个宿主值对应多个属性值时，给出具体的反例', () => {
+    // 只说"会冲突"没用——用户要知道是哪个客户、有几个值、分别是什么，
+    // 才判断得了这是数据脏了还是业务上真的会变。
+    const result = detect(
+      ['客户', '等级'],
+      // A 出现 4 行但只有 3 个不同的等级（金卡重复了一次）——行数和
+      // 取值数**故意不相等**：相等的话，一个拿 distinctCount 冒充 rowCount
+      // 的实现照样能绿。
+      [['A', '金卡'], ['A', '银卡'], ['A', '白金'], ['A', '金卡'], ['B', '银卡']],
+      ['客户'],
+      ['等级'],
+    )
+    const violation = result.violationOf('客户', '等级')
+    expect(violation).not.toBeNull()
+    expect(violation!.hostValue).toBe('A')
+    expect(violation!.rowCount).toBe(4)
+    expect(violation!.distinctCount).toBe(3)
+    // 样例要够用户认出是哪几个值，两个就够了。
+    expect(violation!.samples.length).toBeGreaterThanOrEqual(2)
+    expect(violation!.samples).toContain('金卡')
+  })
+
+  it('每行一个值的宿主（标识列）永远不冲突', () => {
+    // 订单号这种每行唯一的宿主，一个值只出现一次，不可能对应两个属性值。
+    const result = detect(
+      ['订单号', '金额'],
+      [['O1', '10'], ['O2', '20'], ['O3', '30']],
+      ['订单号'],
+      ['金额'],
+    )
+    expect(result.violationOf('订单号', '金额')).toBeNull()
+  })
+
+  it('空值不参与判定', () => {
+    // 一个客户有一行没填等级，不该被当成"两个不同的等级"。
+    const result = detect(
+      ['客户', '等级'],
+      [['A', '金卡'], ['A', ''], ['A', '金卡']],
+      ['客户'],
+      ['等级'],
+    )
+    expect(result.violationOf('客户', '等级')).toBeNull()
+  })
+
+  it('多个宿主多个属性，各对各自判定', () => {
+    const result = detect(
+      ['客户', '门店', '等级', '面积'],
+      [
+        ['A', 'S1', '金卡', '100'],
+        ['A', 'S1', '银卡', '100'],
+        ['B', 'S1', '银卡', '100'],
+      ],
+      ['客户', '门店'],
+      ['等级', '面积'],
+    )
+    // 客户 A 的等级变了 → 冲突
+    expect(result.violationOf('客户', '等级')).not.toBeNull()
+    // 门店 S1 的面积一直是 100 → 不冲突
+    expect(result.violationOf('门店', '面积')).toBeNull()
+    // 门店 S1 下有两个等级 → 冲突
+    expect(result.violationOf('门店', '等级')).not.toBeNull()
+  })
+
+  it('配对数超过上限时如实说没检测，不是说没冲突', () => {
+    // 「没检测」和「检测了没发现」在界面上必须分得开——说成后者就是撒谎。
+    const manyHosts = Array.from({ length: 30 }, (_, i) => `h${i}`)
+    const manyAttrs = Array.from({ length: 30 }, (_, i) => `a${i}`)
+    const result = detect(
+      [...manyHosts, ...manyAttrs],
+      [[...manyHosts.map(() => 'x'), ...manyAttrs.map(() => 'y')]],
+      manyHosts,
+      manyAttrs,
+    )
+    expect(result.skipped).toBe(true)
+    expect(result.violationOf('h0', 'a0')).toBeNull()
+  })
+
+  it('没超上限时 skipped 是 false', () => {
+    const result = detect(['客户', '等级'], [['A', '金卡']], ['客户'], ['等级'])
+    expect(result.skipped).toBe(false)
+  })
+})
 
 describe('基数统计', () => {
   it('数出不同值的个数', () => {

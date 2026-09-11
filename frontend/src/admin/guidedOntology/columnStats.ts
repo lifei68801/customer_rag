@@ -37,6 +37,149 @@ export interface StatsAccumulator {
 
 const DATE_PATTERN = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T].*)?$/
 
+/**
+ * 单值检测最多算这么多对（宿主 × 属性）。
+ *
+ * 每一对要维护一个「宿主值 → 第一次见到的属性值」的 Map，内存随对数线性
+ * 增长。300 对够覆盖真实业务表（十来个维度列 × 十来个度量列）；超过之后
+ * 宁可如实说「没检测」，也不要为了给个结论而去采样——采样得到的「没发现
+ * 冲突」和真的没冲突在界面上长得一模一样。
+ */
+export const MAX_PAIRS = 300
+
+/** 一个宿主值对应了多个属性值——导入后它会变成一条待决议冲突。 */
+export interface PairViolation {
+  /** 是哪个宿主值，比如客户 'A'。 */
+  hostValue: string
+  /** 这个宿主值出现在多少行里（属性非空的那些行）。 */
+  rowCount: number
+  /** 这些行里属性有几个不同的取值。 */
+  distinctCount: number
+  /** 其中几个取值，给用户认。 */
+  samples: string[]
+}
+
+export interface PairReport {
+  /** 对数超过 MAX_PAIRS，整个检测没做。**这不等于没冲突。** */
+  skipped: boolean
+  violationOf(hostColumn: string, attributeColumn: string): PairViolation | null
+}
+
+/** 每对样例最多留这么多个不同取值。 */
+const VIOLATION_SAMPLE_LIMIT = 3
+
+interface PairAccumulator {
+  hostIndex: number
+  attributeIndex: number
+  /** 宿主值 → 见过的属性取值。一旦这一对已经确认冲突就不再增长。 */
+  seen: Map<string, Set<string>>
+  /** 宿主值 → 属性非空的行数。 */
+  rows: Map<string, number>
+  violation: PairViolation | null
+}
+
+export interface PairsAccumulator {
+  skipped: boolean
+  pairs: PairAccumulator[]
+  keyOf: Map<string, PairAccumulator>
+}
+
+const pairKey = (host: string, attribute: string) => `${host}\u0000${attribute}`
+
+export function createPairsAccumulator(options: {
+  columns: string[]
+  hostColumns: string[]
+  attributeColumns: string[]
+}): PairsAccumulator {
+  const { columns, hostColumns, attributeColumns } = options
+  const indexOf = new Map(columns.map((name, index) => [name, index]))
+  const pairs: PairAccumulator[] = []
+  const keyOf = new Map<string, PairAccumulator>()
+  if (hostColumns.length * attributeColumns.length > MAX_PAIRS) {
+    return { skipped: true, pairs, keyOf }
+  }
+  for (const host of hostColumns) {
+    for (const attribute of attributeColumns) {
+      const hostIndex = indexOf.get(host)
+      const attributeIndex = indexOf.get(attribute)
+      if (hostIndex === undefined || attributeIndex === undefined) continue
+      // 一列挂到它自己身上没有意义，跳过。
+      if (hostIndex === attributeIndex) continue
+      const pair: PairAccumulator = {
+        hostIndex,
+        attributeIndex,
+        seen: new Map(),
+        rows: new Map(),
+        violation: null,
+      }
+      pairs.push(pair)
+      keyOf.set(pairKey(host, attribute), pair)
+    }
+  }
+  return { skipped: false, pairs, keyOf }
+}
+
+export function accumulatePairRow(acc: PairsAccumulator, row: string[]): void {
+  if (acc.skipped) return
+  for (const pair of acc.pairs) {
+    const hostValue = (row[pair.hostIndex] ?? '').trim()
+    const attributeValue = (row[pair.attributeIndex] ?? '').trim()
+    // 两端任一为空都不参与判定：一个客户有一行没填等级，不是"两个不同的
+    // 等级"，只是这一行没有这个信息。
+    if (hostValue === '' || attributeValue === '') continue
+    pair.rows.set(hostValue, (pair.rows.get(hostValue) ?? 0) + 1)
+    let values = pair.seen.get(hostValue)
+    if (values === undefined) {
+      values = new Set()
+      pair.seen.set(hostValue, values)
+    }
+    values.add(attributeValue)
+  }
+}
+
+export function finalizePairs(acc: PairsAccumulator): PairReport {
+  if (acc.skipped) {
+    return { skipped: true, violationOf: () => null }
+  }
+  for (const pair of acc.pairs) {
+    for (const [hostValue, values] of pair.seen) {
+      if (values.size <= 1) continue
+      // 报第一个撞上的宿主值就够：用户要的是"这件事会发生"和一个能去核对
+      // 的具体例子，不是全部反例的清单。
+      pair.violation = {
+        hostValue,
+        rowCount: pair.rows.get(hostValue) ?? values.size,
+        distinctCount: values.size,
+        samples: [...values].slice(0, VIOLATION_SAMPLE_LIMIT),
+      }
+      break
+    }
+  }
+  return {
+    skipped: false,
+    violationOf: (host, attribute) => acc.keyOf.get(pairKey(host, attribute))?.violation ?? null,
+  }
+}
+
+/**
+ * 一次算完：给定全部行，判每一对（宿主列，属性列）是不是单值。
+ *
+ * 属性挂到**非中心**实体上时才需要这个判断。中心每行一个实例，天然单值；
+ * 而「客户等级」挂到「客户」上时，同一个客户在多行里如果等级不一样，
+ * 导入后就会变成一条待决议的属性冲突——那件事该在建模时就让用户知道，
+ * 不是导完才发现。
+ */
+export function detectSingleValued(options: {
+  columns: string[]
+  rows: string[][]
+  hostColumns: string[]
+  attributeColumns: string[]
+}): PairReport {
+  const acc = createPairsAccumulator(options)
+  for (const row of options.rows) accumulatePairRow(acc, row)
+  return finalizePairs(acc)
+}
+
 export function createAccumulator(columns: string[]): StatsAccumulator {
   return {
     columns: columns.map((name) => ({
