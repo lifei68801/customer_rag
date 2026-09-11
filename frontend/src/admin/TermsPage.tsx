@@ -88,6 +88,20 @@ function termKey(term: { node_key: string }): string {
  * InvalidExtraPropertyTypeError 校验只在其中一条路径上通过。
  * 空输入返回 undefined，调用方据此整个略去这个键——传 "" 会被后端按类型
  * 校验拒掉，而用户清空一个输入框的意图是"这个属性没有值"。 */
+/**
+ * 各类型输入框的格式提示。
+ *
+ * 日期这条尤其要有：手工编辑**不做**归一化（写库前的类型闸只判定不转换，
+ * 见 terms_store._coerce_to_declared_type），只认补零 ISO；而引导页列的五种
+ * 写法（2026/1/5、2026年1月5日 等）是**导入时**ETL 认得的。两个场景不同，
+ * 不在输入框旁边说清楚的话，用户照着引导页那份清单填、提交才收到 400，
+ * 而他不知道这两处为什么不一样。
+ */
+const EXTRA_FIELD_PLACEHOLDERS: Record<string, string> = {
+  'number[]': '分号分隔，如 1.5; 2.0',
+  date: '如 2026-01-05（要补零）',
+}
+
 function coerceExtraProperty(raw: string, valueType: string): unknown {
   const trimmed = raw.trim()
   if (trimmed === '') return undefined
@@ -585,7 +599,7 @@ export function TermsPage() {
                                   : prev,
                               )
                             }
-                            placeholder={spec.value_type === 'number[]' ? '分号分隔，如 1.5; 2.0' : ''}
+                            placeholder={EXTRA_FIELD_PLACEHOLDERS[spec.value_type] ?? ''}
                             aria-label={`${fieldDisplayName(spec)}（${term.standard_name}）`}
                             className={`rounded-control border border-subtle bg-paper px-3 py-2 text-ink placeholder:text-ink-soft focus:outline-none ${focusRing}`}
                           />

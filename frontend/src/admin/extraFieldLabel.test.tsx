@@ -184,4 +184,28 @@ describe('实体明细的属性显示名', () => {
     await user.click(await screen.findByRole('button', { name: '编辑' }))
     expect(await screen.findByRole('textbox', { name: 'price（牛奶）' })).toBeTruthy()
   })
+
+  it('日期字段的输入框给出格式示例，不是让用户提交了才知道', async () => {
+    // 手工编辑这条路**不做**归一化（写库前的类型闸只判定不转换），只认补零
+    // ISO。而引导页列的五种写法（2026/1/5 等）是**导入时**认得的——两个场景
+    // 不同。不在输入框旁边说清楚的话，用户照着引导页那份清单填，提交才收到
+    // 400，而他不知道这两处为什么不一样。
+    termTypesBody = {
+      term_types: [
+        {
+          value: '商品',
+          extra_fields: [{ name: 'purchase_date', value_type: 'date', label: '下单日期' }],
+          standard_name_value_type: 'string',
+        },
+      ],
+    }
+    const user = userEvent.setup()
+    renderAt(`${ADMIN_ROUTES.terms}?term_type=商品`)
+
+    await user.click(await screen.findByRole('button', { name: '编辑' }))
+    const input = (await screen.findByRole('textbox', {
+      name: '下单日期（牛奶）',
+    })) as HTMLInputElement
+    expect(input.placeholder).toMatch(/2026-01-05/)
+  })
 })
