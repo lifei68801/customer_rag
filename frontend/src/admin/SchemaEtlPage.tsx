@@ -271,14 +271,23 @@ export function SchemaEtlPage() {
     const dataFilesInput = form.elements.namedItem('data_files') as HTMLInputElement
     const dryRunInput = form.elements.namedItem('dry_run') as HTMLInputElement | null
     const allowLargeSweepInput = form.elements.namedItem('allow_large_sweep') as HTMLInputElement | null
-    const configFile = configInput.files?.[0]
-    if (!configFile) return
+    const configFile = configInput?.files?.[0]
+    // 不用 <input required>：jsdom 的表单校验不认 user-event 设进去的 files，
+    // 整个提交会被静默挡掉（实测踩到过，测试里点了按钮什么都不发生）。改成
+    // 在这里显式判断，顺便能给一句真正的提示——浏览器原生的那个气泡提示
+    // 在这个表单里还会被"没选文件"和"没选配置"两种情况共用，说不清是哪个。
+    if (!configFile && (dataFilesInput?.files?.length ?? 0) === 0) {
+      setUploadError('先选要导入的数据文件。')
+      return
+    }
 
     setUploading(true)
     setUploadError(null)
     try {
       const formData = new FormData()
-      formData.append('config', configFile)
+      // 不传 config 时**不要**塞一个空字段：后端把上传的 config 当权威，
+      // 塞个空的会让它拿一份什么都不导的配置去跑，而不是回落到存好的映射。
+      if (configFile) formData.append('config', configFile)
       for (const file of Array.from(dataFilesInput.files ?? [])) {
         formData.append('data_files', file)
       }
@@ -437,6 +446,52 @@ export function SchemaEtlPage() {
           传入数据文件即可运行，不用再配一遍。
         </p>
       ) : null}
+
+      {mapping && (
+        // 页面上那句"传入数据文件即可运行，不用再配一遍"要能兑现，入口就得在
+        // 主区域。此前唯一能传数据文件的地方折叠在「高级」面板里，那个表单还
+        // 要求再传一次 config.yaml——正是那句话承诺不用做的事。
+        <form
+          data-testid="run-with-stored-mapping"
+          onSubmit={handleUpload}
+          className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4"
+        >
+          <label className="flex flex-col gap-1 text-sm font-bold text-ink">
+            数据文件（CSV/TSV/XLSX/XLS，可多选）
+            <input
+              type="file"
+              name="data_files"
+              accept=".csv,.tsv,.xlsx,.xls"
+              multiple
+              disabled={confirmed !== true}
+              className="text-sm font-normal text-ink"
+            />
+            <span className="font-normal text-ink-soft">
+              只传一个文件时，名字跟映射里的不一样也没关系——会按映射里的名字处理。
+              文件名不在这里重复，上面那句提示已经写了是哪一份。
+            </span>
+          </label>
+          <label className="flex items-center gap-2 text-sm font-bold text-ink">
+            <input type="checkbox" name="dry_run" disabled={confirmed !== true} />
+            预演（terms 和 Neo4j 零写入）
+            <span className="ml-2 font-normal text-ink-soft">
+              只报告将要移除多少实体；预演只覆盖实体侧，关系侧无法预演。
+            </span>
+          </label>
+          {uploadError && (
+            <p role="alert" className="text-sm text-ink">
+              {uploadError}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={uploading || confirmed !== true}
+            className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-primary px-5 py-2.5 font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+          >
+            {uploading ? '提交中…' : '开始运行'}
+          </button>
+        </form>
+      )}
 
       {mapping !== undefined && (
         <div className="flex flex-col gap-2 rounded-panel border border-subtle bg-card">

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
@@ -162,6 +162,84 @@ function renderAt(path: string) {
     </SkinProvider>,
   )
 }
+
+describe('已有映射时只传数据文件就能跑', () => {
+  it('主区域就有数据文件输入框，不用先点开「高级」', async () => {
+    // 页面明说"传入数据文件即可运行，不用再配一遍"。而在这之前，唯一能传
+    // 数据文件的地方折叠在一个叫「高级」、副标题是"已经有验证过的配置文件？"
+    // 的面板里，那个表单还要求再传一次 config.yaml——正是那句话承诺不用做的事。
+    signIn('admin')
+    stubEtlMapping({
+      config_yaml: 'entities: []',
+      source_file_name: 'soft_drink_sales.xlsx',
+      created_at: '2026-09-11T00:00:00',
+    })
+    renderAt(ADMIN_ROUTES.etl)
+    // 不做任何展开动作就该看得见。
+    expect(await screen.findByTestId('run-with-stored-mapping')).toBeTruthy()
+  })
+
+  it('提交时不带 config，让后端用存好的那份', async () => {
+    // 带上一个空 config 的话后端会拿它当权威，跑出一份什么都不导的空跑批。
+    signIn('admin')
+    stubEtlMapping({
+      config_yaml: 'entities: []',
+      source_file_name: 'soft_drink_sales.xlsx',
+      created_at: '2026-09-11T00:00:00',
+    })
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+    const form = await screen.findByTestId('run-with-stored-mapping')
+    // 等按钮真的可用：确认状态没拿到之前整个表单是禁用的（本体没确认就不该
+    // 能触发 ETL）。不等的话点击落在一个 disabled 的按钮上，什么都不会发生。
+    const button = within(form).getByRole('button', { name: /开始运行|运行/ })
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false))
+    const input = within(form).getByLabelText(/数据文件/) as HTMLInputElement
+    await user.upload(input, new File(['a,b,1,2'], 'sales_2026.csv', { type: 'text/csv' }))
+    await user.click(button)
+
+    await waitFor(() => {
+      const posted = requests.find(
+        (r) => r.url.includes('/schema-etl/runs') && r.init?.method === 'POST',
+      )
+      expect(posted).toBeTruthy()
+      const body = posted!.init!.body as FormData
+      expect(body.has('config')).toBe(false)
+      expect(body.getAll('data_files')).toHaveLength(1)
+    })
+  })
+
+  it('一个文件都没选就点运行，给出提示而不是发一次空请求', async () => {
+    // 这里不能靠 <input required>：jsdom 的表单校验不认 user-event 设进去的
+    // files，整个提交会被静默挡掉，于是"能提交"这件事在测试里根本验不了。
+    // 守卫写在 handleUpload 里，这条用例钉住它。
+    signIn('admin')
+    stubEtlMapping({
+      config_yaml: 'entities: []',
+      source_file_name: 'soft_drink_sales.xlsx',
+      created_at: '2026-09-11T00:00:00',
+    })
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+    const form = await screen.findByTestId('run-with-stored-mapping')
+    const button = within(form).getByRole('button', { name: /开始运行|运行/ })
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false))
+    await user.click(button)
+
+    expect(await within(form).findByRole('alert')).toBeTruthy()
+    expect(
+      requests.find((r) => r.url.includes('/schema-etl/runs') && r.init?.method === 'POST'),
+    ).toBeUndefined()
+  })
+
+  it('没有映射时不出这个表单——没东西可回落', async () => {
+    signIn('admin')
+    stubEtlMapping(null)
+    renderAt(ADMIN_ROUTES.etl)
+    await screen.findByTestId('admin-topbar')
+    expect(screen.queryByTestId('run-with-stored-mapping')).toBeNull()
+  })
+})
 
 describe('本体草稿未确认的提示', () => {
   it('草稿和已确认不是同一批时说出来，并指路去确认', async () => {

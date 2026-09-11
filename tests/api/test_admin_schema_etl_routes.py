@@ -17,6 +17,7 @@ from app.graphrag.etl_runs_store import (
     list_etl_runs,
 )
 from app.graphrag.ontology_categories import create_term_type
+from app.graphrag.ontology_etl_mapping import set_draft_etl_mapping
 from app.graphrag.ontology_lifecycle import checkout_draft, confirm_ontology, ensure_ontology_schema
 from app.graphrag.ontology_relations import create_relation_type
 from app.graphrag.schema_etl import ETLRunReport
@@ -143,6 +144,147 @@ def test_status_does_not_report_changes_after_a_mere_checkout(client, review_con
     body = client.get("/api/admin/muji/schema-etl/status").json()
 
     assert body["has_unconfirmed_term_type_changes"] is False
+
+
+_STORED_YAML = """tenant_id: "muji"
+
+entities:
+  - term_type: "Product"
+    source_file: "soft_drink_sales.xlsx"
+    standard_name_column: "Product"
+    node_key_parts:
+      - column: "Product"
+    field_mappings: {}
+
+relations: []
+"""
+
+
+async def _store_confirmed_mapping(conn, tenant_id: str = "muji", yaml_text: str = _STORED_YAML) -> None:
+    """把一份映射存成**已确认**的，模拟引导流程写草稿 + 确认本体之后的状态。"""
+    await checkout_draft(conn, tenant_id)
+    await set_draft_etl_mapping(
+        conn,
+        tenant_id,
+        config_yaml=yaml_text,
+        source_file_name="soft_drink_sales.xlsx",
+        created_at="2026-09-11T00:00:00",
+    )
+    await confirm_ontology(conn, tenant_id, actor="alice")
+
+
+def test_start_run_falls_back_to_the_stored_mapping_when_no_config_uploaded(client, review_conn):
+    """已经有存好的映射时，只传数据文件就能跑。
+
+    表格导入页明说了"引导流程已为这个本体配好映射，传入数据文件即可运行，
+    不用再配一遍"。在这条回落存在之前那句话是假的：config 是必填的，用户
+    照着做会撞在一个还要他传 config.yaml 的表单上——正是那句话承诺不用做的事。
+    """
+    asyncio.run(_confirm_muji_schema(review_conn))
+    asyncio.run(_store_confirmed_mapping(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files={"data_files": ("soft_drink_sales.xlsx", b"fake-bytes")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["run_id"]
+
+
+def test_start_run_without_config_and_without_stored_mapping_says_so(client, review_conn):
+    """两样都没有时要说清楚缺什么，不是一个 422 字段校验错误。
+
+    FastAPI 对缺失的必填 UploadFile 给的是"field required"，那句话回答不了
+    "我该去哪配一份映射"。
+    """
+    asyncio.run(_confirm_muji_schema(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files={"data_files": ("x.csv", b"a,b\n1,2\n")},
+    )
+
+    assert response.status_code == 400
+    assert "映射" in response.json()["detail"]
+
+
+def test_uploaded_config_still_wins_over_the_stored_mapping(client, review_conn, tmp_path):
+    """显式传了 config 就用传的那份——回落只在没传时生效。
+
+    没有这条的话，"存了映射之后就再也改不动了"这种实现也能通过上面两条。
+    """
+    asyncio.run(_confirm_muji_schema(review_conn))
+    asyncio.run(_store_confirmed_mapping(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files={
+            "config": ("config.yaml", b'tenant_id: "muji"\nentities: []\nrelations: []\n'),
+            "data_files": ("whatever.csv", b"a,b\n1,2\n"),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    # 跑的是传上去那份（entities 为空），不是存好的那份（有一个 Product）。
+    run_dir = tmp_path / "uploads" / "schema-etl" / "muji" / response.json()["run_id"]
+    assert "entities: []" in (run_dir / "config.yaml").read_text(encoding="utf-8")
+
+
+def test_a_single_data_file_is_rebound_to_the_name_the_mapping_expects(client, review_conn, tmp_path):
+    """映射里写死的是 soft_drink_sales.xlsx，而用户重新导出的文件叫别的名字。
+
+    同一张表换个名字重新导出是最常见的再次导入方式。要求文件名逐字一致是
+    纯粹的摩擦——数据形状没变。映射只引用一个源文件、用户也只传了一个文件
+    时，把上传的字节按映射期望的名字落盘，不动 YAML（配置保持权威）。
+    """
+    asyncio.run(_confirm_muji_schema(review_conn))
+    asyncio.run(_store_confirmed_mapping(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files={"data_files": ("sales_2026_export.xlsx", b"fake-bytes")},
+    )
+
+    assert response.status_code == 200, response.text
+    run_dir = tmp_path / "uploads" / "schema-etl" / "muji" / response.json()["run_id"]
+    # 按映射期望的名字落盘了，上传时的名字不留在目录里——留着的话 ETL 会
+    # 按 source_file 去找，找不到，而错误信息指向的是"文件不存在"，
+    # 跟真正的原因（名字对不上）隔着一层。
+    assert (run_dir / "soft_drink_sales.xlsx").read_bytes() == b"fake-bytes"
+    assert not (run_dir / "sales_2026_export.xlsx").exists()
+
+
+def test_ambiguous_file_names_are_refused_with_both_lists(client, review_conn):
+    """映射引用多个源文件、而上传的名字对不上时，不猜——报错并把两边都列出来。
+
+    只有"一个对一个"这种无歧义的情形才改绑。多个文件时按顺序猜、或者按大小
+    猜，都会在猜错时产出一份看起来正常的垃圾数据。
+    """
+    two_files_yaml = _STORED_YAML.replace(
+        "relations: []",
+        """  - term_type: "Company"
+    source_file: "companies.csv"
+    standard_name_column: "Company"
+    node_key_parts:
+      - column: "Company"
+    field_mappings: {}
+
+relations: []""",
+    )
+    asyncio.run(_confirm_muji_schema(review_conn))
+    asyncio.run(_store_confirmed_mapping(review_conn, yaml_text=two_files_yaml))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files={"data_files": ("something_else.csv", b"a,b\n1,2\n")},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    # 两边都要点名，否则用户不知道该把文件改成什么名字。
+    assert "soft_drink_sales.xlsx" in detail and "companies.csv" in detail
+    assert "something_else.csv" in detail
 
 
 def test_start_run_returns_404_for_unknown_tenant(client):

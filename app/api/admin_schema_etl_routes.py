@@ -30,12 +30,13 @@ from app.graphrag.etl_runs_store import (
 )
 from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.ontology_constraints import list_allowed_combinations
+from app.graphrag.ontology_etl_mapping import get_etl_mapping
 from app.graphrag.ontology_lifecycle import (
     has_unconfirmed_term_type_changes,
     is_ontology_confirmed,
 )
 from app.graphrag.schema_etl import SchemaEtlGraphProtocol, run_schema_etl
-from app.graphrag.schema_etl_config import load_schema_etl_config
+from app.graphrag.schema_etl_config import SchemaETLConfig, load_schema_etl_config
 from app.graphrag.schema_etl_sample import (
     EmptySchemaError,
     SampleFile,
@@ -207,11 +208,54 @@ async def _run_schema_etl_job(
         await mark_etl_run_failed(conn, run_id=run_id, finished_at=datetime.now().isoformat(), error=str(exc))
 
 
+def _resolve_data_file_names(
+    parsed_config: SchemaETLConfig, data_files: list[UploadFile]
+) -> dict[str, str]:
+    """上传的文件该按什么名字落盘：{上传时的文件名: 落盘用的文件名}。
+
+    配置里的 source_file 是权威——ETL 按它去 run_dir 里找文件。所以对不上名字
+    时改的是**落盘的名字**，不是 YAML；配置保持不变，改动面也最小。
+
+    只在**无歧义**时改绑：配置只引用一个源文件、用户也只传了一个文件。同一张表
+    换个名字重新导出是最常见的再次导入方式（sales.xlsx → sales_2026.xlsx），
+    要求逐字一致是纯摩擦，数据形状根本没变。
+
+    多个文件时**不猜**。按顺序配、按大小配都会在猜错时产出一份看起来完全正常
+    的垃圾数据——那种错要等到有人发现问答答错了才暴露。宁可报错让用户改名字。
+
+    名字本来就对得上的情形（含多文件）走空字典，按原样落盘。
+    """
+    expected = {e.source_file for e in parsed_config.entities}
+    expected |= {r.source_file for r in parsed_config.relations}
+    expected.discard("")
+    uploaded = [f.filename for f in data_files if f.filename]
+    if not expected or not uploaded:
+        return {}
+
+    sanitized = {name: _sanitize_data_filename(name) for name in uploaded}
+    missing = expected - set(sanitized.values())
+    if not missing:
+        return {}
+
+    if len(expected) == 1 and len(uploaded) == 1:
+        return {uploaded[0]: _sanitize_data_filename(next(iter(expected)))}
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"上传的数据文件跟映射对不上。映射要的是 {sorted(expected)}，"
+            f"这次传的是 {sorted(uploaded)}。"
+            "把文件改成映射里的名字再传；只有「映射只要一个文件、也只传一个文件」"
+            "时才会自动按映射的名字落盘。"
+        ),
+    )
+
+
 @router.post("/runs", response_model=StartRunResponse)
 async def start_schema_etl_run(
     tenant_id: str,
     background_tasks: BackgroundTasks,
-    config: UploadFile,
+    config: UploadFile | None = None,
     data_files: list[UploadFile] = [],
     dry_run: bool = Form(False),
     allow_large_sweep: bool = Form(False),
@@ -228,7 +272,27 @@ async def start_schema_etl_run(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     config_path = run_dir / "config.yaml"
-    config_path.write_bytes(await config.read())
+    if config is not None:
+        config_path.write_bytes(await config.read())
+    else:
+        # 没传配置文件：用引导流程存在本体上的那份映射。
+        #
+        # 表格导入页明说了"引导流程已为这个本体配好映射，传入数据文件即可运行，
+        # 不用再配一遍"。在这条回落存在之前那句话是假的——config 是必填的，
+        # 照着做的人会撞在一个还要他传 config.yaml 的表单上，正是那句话承诺
+        # 不用做的事。引导流程辛苦生成并存下来的映射此前没有任何消费方。
+        stored = await get_etl_mapping(review_conn, tenant_id, status="confirmed")
+        if stored is None:
+            shutil.rmtree(run_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "没有上传 config.yaml，这个本体上也没有存好的映射。"
+                    "先走一遍引导建模（它会连同本体一起存下映射），"
+                    "或者在表格导入页用映射构建器配一份。"
+                ),
+            )
+        config_path.write_text(stored.config_yaml, encoding="utf-8")
 
     # 配置文件里声明的 tenant_id 才是 run_schema_etl 真正写入数据时用的租户——
     # 必须和 URL 路径上的 tenant_id（用来做并发防护、schema 确认预检查、
@@ -255,10 +319,18 @@ async def start_schema_etl_run(
         shutil.rmtree(run_dir, ignore_errors=True)
         raise
 
+    try:
+        rebind_to = _resolve_data_file_names(parsed_config, data_files)
+    except HTTPException:
+        shutil.rmtree(run_dir, ignore_errors=True)
+        raise
+
     for data_file in data_files:
         if not data_file.filename:
             continue
-        dest = run_dir / _sanitize_data_filename(data_file.filename)
+        dest = run_dir / rebind_to.get(
+            data_file.filename, _sanitize_data_filename(data_file.filename)
+        )
         dest.write_bytes(await data_file.read())
 
     started_at = datetime.now().isoformat()
