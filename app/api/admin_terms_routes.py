@@ -21,6 +21,7 @@ from app.api.tenant_guard import require_active_tenant_or_404
 from app.graphrag.duplicate_detection import find_similar_terms
 from app.graphrag.neo4j_client import GraphWriteProtocol
 from app.graphrag.ontology import Term
+from app.graphrag.term_authoring import TermCreateRejected, create_term_from_admin
 from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.term_edits_store import (
     FIELD_CREATED,
@@ -517,151 +518,41 @@ async def create_new_term(
     graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
     session: AdminSession = Depends(deps.require_admin_session),
 ) -> TermResponse:
-    """新增术语。Task 4 起改写编辑层：不再往 terms 表插入新行，而是给
-    node_key 写一条 __created__ 编辑——terms 表在 ETL 产出同 node_key 的行
-    之前永远没有这一行（见 term_merge._synthesize_created，合并视图会把
-    它合成出来，source 固定标 "review"）。
+    """新增术语。
 
     这个端点是全库唯一的 create_term 生产调用点——"知识图谱审核"页
     （GraphReviewsPage）批准关系时现场创建端点实体，走的就是这里。
 
-    不再做名字冲突检查（原 create_term 内部的 _check_name_conflict）。
-    这是刻意的：standard_name 早已不是身份键（2026-08-30 起同一 term_type
-    下允许重名），编辑层路径上"名字撞了"不再是数据完整性问题，也不在这里
-    重建这道检查。如果这次创建的 node_key 恰好和已有的一行（不管是 ETL
-    产出的还是别的编辑层创建的）相同，合并视图会把 __created__ 的字段
-    降级成对那一行的普通字段级编辑（见 term_merge.apply_edits），不报错、
-    也不会产生第二条记录。
+    规则和编排都在 `app/graphrag/term_authoring.py`：那边知道数据模型，也
+    由它决定"图谱同步失败之后怎么办"。这里只做两件事——确认租户可用（那是
+    一个 HTTP 层面的判断，要回 404），以及把结果和拒绝理由翻译成状态码。
     """
     await require_active_tenant_or_404(review_conn, tenant_id)
-    # 创建前先跟同租户、同类型的现有术语比一遍相似度，供管理员在提交后
-    # 直接看到"这个新名字是不是已经有一个很像的术语了"——查询范围限定在
-    # 同 term_type，避免不同类型之间凑巧撞名字的噪声提示。走合并视图，
-    # 这样刚被人工编辑过（改名/属性）的术语也能算进相似度比对。
-    existing_terms = await list_terms_merged(review_conn, tenant_id, source=None)
-    # 已经被合并过的墓碑行（duplicate_review_queue.approve_duplicate_suggestion
-    # 打上的标记）排除在外——它的 standard_name 字面包含被合并前的原名，不该
-    # 被当成"这个新名字看起来很像"的提示对象，见 is_tombstoned() 的说明。
-    same_type_terms = [
-        t for t in existing_terms
-        if t.term_type == payload.term_type and not is_tombstoned(t)
-    ]
-    similar = find_similar_terms(payload.standard_name, same_type_terms)
-    similar_terms_payload = [
-        {"node_key": term.node_key, "standard_name": term.standard_name, "similarity_score": score}
-        for term, score in similar
-    ]
-    extra_properties = payload.extra_properties or {}
-    node_key = f"{payload.term_type}:{payload.standard_name}"
-
-    # 祖父豁免：按 node_key 查是否已有该实体（terms 表中可能有、也可能没有）。
-    # 新的合并语义下，POST 写的 __created__ 编辑如果 node_key 撞上已有实体，
-    # 实际上会降级成对那一行的普通字段级编辑（见 term_merge.apply_edits），
-    # 这时应该豁免已有属性键的校验（它们可能因 term_type 声明变更而成为"废弃字段"）。
-    # 用 get_term_by_node_key（查 terms 表原始行）而不是合并视图，因为
-    # 祖父豁免关心的是"这个实体上在 terms 表里实际存在的属性键"。
-    existing_extra_property_keys = frozenset()
-    existing_term = None
     try:
-        existing_term = await get_term_by_node_key(review_conn, tenant_id=tenant_id, node_key=node_key)
-        existing_extra_property_keys = frozenset(existing_term.extra_properties)
-    except TermNotFoundError:
-        # 查不到原始行 = 纯新建，无需豁免
-        pass
-
-    if existing_term is not None:
-        # 这次 POST 会顺带复活一行曾被人工删除的 terms 行（下面撤 __deleted__
-        # 那一步）。复活它之前先看它自己的 term_type 还在不在已确认 schema
-        # 里：分类删除的守卫走的是合并视图，被人工删空的类型可以被删掉——
-        # 于是"实体被删 → 分类被删 → 实体被重建"这条链会让一行 term_type
-        # 指向不存在分类的实体重新可见，悬空。
-        #
-        # 校验口径跟 ETL 写入那道一致（schema_etl.py::_write_entity_mapping
-        # 也是 list_term_types(status="confirmed") 里没有就拒），这里补的是
-        # 同一套逻辑漏掉的那个入口。
-        #
-        # 只在真的要复活时检查：没有 __deleted__ 编辑的行本来就一直可见，
-        # 这次 POST 不改变它的可见性，在这里拦住只会挡掉一次合法的编辑。
-        # 注意校验的是 terms 行自己的 term_type，不是 payload.term_type
-        # （那个由下面的 validate_term_categories 负责）——node_key 的类型
-        # 前缀只反映创建时的类型，两者可以不一致，见 terms_store.update_term。
-        existing_edits = await list_term_edits_for_node_key(
-            review_conn, tenant_id=tenant_id, node_key=node_key
+        created = await create_term_from_admin(
+            review_conn,
+            graph_client,
+            tenant_id=tenant_id,
+            standard_name=payload.standard_name,
+            term_type=payload.term_type,
+            aliases=payload.aliases,
+            extra_properties=payload.extra_properties,
+            source=payload.source,
+            actor=session.username,
         )
-        if FIELD_DELETED in existing_edits:
-            confirmed_types = await list_term_types(review_conn, tenant_id, status="confirmed")
-            if existing_term.term_type not in {t.value for t in confirmed_types}:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"无法重建 {node_key!r}：它在 terms 表里的 term_type "
-                        f"{existing_term.term_type!r} 不在已确认 schema 里"
-                        f"（分类已被删除）。要恢复这条实体，先把这个分类加回来。"
-                    ),
-                )
-
-    try:
-        await validate_term_categories(
-            review_conn, tenant_id=tenant_id, term_type=payload.term_type,
-            extra_properties=extra_properties,
-            existing_extra_property_keys=existing_extra_property_keys,
-        )
-    except UnknownCategoryError as exc:
+    except TermCreateRejected as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    except InvalidExtraPropertyTypeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    await upsert_term_edit(
-        review_conn,
-        tenant_id=tenant_id,
-        node_key=node_key,
-        field=FIELD_CREATED,
-        value={
-            "standard_name": payload.standard_name,
-            "term_type": payload.term_type,
-            "aliases": payload.aliases,
-            "extra_properties": extra_properties,
-        },
-        edited_by=session.username,
+    return _to_response(
+        created.term,
+        similar_terms=[
+            {
+                "node_key": term.node_key,
+                "standard_name": term.standard_name,
+                "similarity_score": score,
+            }
+            for term, score in created.similar_terms
+        ],
     )
-    # 人工重建一个曾被人工删除的 node_key：撤掉那条 __deleted__ 编辑，让它
-    # 重新可见。这不违反"人工删除不可被恢复"——那条规矩的准确表述是
-    # Foundry 的「Deletions aren't reversible by datasource updates」，
-    # 禁的是**数据源更新**把人删掉的东西带回来（ETL 重跑仍然做不到，
-    # 见 term_merge.apply_edits 里 FIELD_DELETED 的短路），而不是禁止人
-    # 自己撤销自己的删除。
-    #
-    # 顺序：先写 __created__ 再撤 __deleted__。反过来的话，中间一步失败会
-    # 让实体带着删除前的旧值重新可见；现在这个顺序下中间失败则维持删除
-    # 状态不变，是安全的那一侧。
-    #
-    # 不这样做的后果不是"静默成功"而是 500：下面那句
-    # get_term_merged_by_node_key 会因 __deleted__ 抛 TermNotFoundError，
-    # 路由没有捕获它——一次合法的重建操作变成不透明的服务端错误。
-    await delete_term_edit(
-        review_conn, tenant_id=tenant_id, node_key=node_key, field=FIELD_DELETED
-    )
-    # 写完编辑层后从合并视图取回同步进图谱——图谱应当是合并结果的投影。
-    # 响应体用原来的逻辑（payload.source）保持兼容性。
-    merged_term = await get_term_merged_by_node_key(review_conn, tenant_id=tenant_id, node_key=node_key)
-    term_to_return = Term(
-        tenant_id=tenant_id,
-        node_key=node_key,
-        standard_name=payload.standard_name,
-        aliases=payload.aliases,
-        term_type=payload.term_type,
-        extra_properties=extra_properties,
-        source=payload.source,
-    )
-    # 新增成功后立即同步进图谱（属性+别名节点），不留图谱异步落后的窗口。
-    try:
-        await graph_client.sync_term(merged_term)
-    except Exception:
-        logger.exception(
-            "术语 %r（租户 %r）已写入 SQLite 但同步进图谱失败——两侧数据已不一致，需要人工核对",
-            term_to_return.standard_name, tenant_id,
-        )
-        raise
-    return _to_response(term_to_return, similar_terms=similar_terms_payload)
 
 
 @router.put("/{node_key}", response_model=TermResponse)

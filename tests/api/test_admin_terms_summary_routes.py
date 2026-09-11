@@ -65,11 +65,25 @@ async def _seed(conn, term_type: str, count: int) -> None:
     await conn.commit()
 
 
+class _FakeGraph:
+    """详情路由要问图谱"这个实体连着谁"。
+
+    不打桩的话这些用例会去连真的 Neo4j（deps.get_graph_client 会
+    ensure_tenant_scoped_schema），于是本地有没有起 Neo4j 决定它们红不红
+    ——一条这样的测试在数据库开着的时候是绿的，关掉就红，而它要测的东西
+    （/terms/summary 会不会盖掉 /terms/{node_key}）跟图谱毫无关系。
+    """
+
+    async def list_term_relations(self, *, tenant_id: str, node_key: str):
+        return []
+
+
 def _get(review_conn, path: str):
     session_store = AdminSessionStore()
     app.dependency_overrides[deps.get_settings] = lambda: _settings()
     app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
     app.dependency_overrides[deps.get_review_conn] = lambda: review_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: _FakeGraph()
     try:
         client = TestClient(app)
         token = session_store.create_session(username="admin", role="admin", tenant_id=None)
