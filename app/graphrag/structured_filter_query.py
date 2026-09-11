@@ -7,7 +7,7 @@ from datetime import date as _date
 from typing import TYPE_CHECKING, Any
 
 from app.graphrag.ontology import Term, resolve_term, resolve_term_or_candidates
-from app.graphrag.ontology_categories import TermTypeCategory
+from app.graphrag.ontology_categories import EXTRA_FIELD_NAME_PATTERN, TermTypeCategory
 from app.graphrag.ontology_constraints import AllowedCombination, to_combination_keys
 from app.graphrag.ontology_recall import precision_match_score
 from app.graphrag.date_periods import InvalidPeriodError, resolve_period
@@ -31,7 +31,10 @@ _RELATION_TYPE_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 # _validate_extra_field_specs，所以 spec.name == field 的成员校验本身不能保证字段名
 # 格式安全，见 docs/superpowers/specs/2026-08-17-structured-filter-query-tool-design.md
 # 第4节）。
-_EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
+# 不自己再编译一份：这是"什么算合法字段名"的契约，由 ontology_categories 定义。
+# 本模块拿它做的是注入防线（字段名要插值进 Cypher），跟声明侧用的必须是同一条
+# 规则——两份副本一旦分叉，声明时放行的名字在这里可能被拒，或者更糟，反过来。
+_EXTRA_FIELD_NAME_PATTERN = EXTRA_FIELD_NAME_PATTERN
 
 _MAX_HOPS = 2
 _RESERVED_FIELD_NAME = "standard_name"

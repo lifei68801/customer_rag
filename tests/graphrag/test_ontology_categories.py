@@ -920,3 +920,32 @@ async def test_standard_name_cannot_be_a_date():
             conn, tenant_id="demo", value="订单", extra_fields=[],
             standard_name_value_type="date", actor="admin",
         )
+
+
+def test_the_field_name_pattern_is_compiled_in_exactly_one_place():
+    """字段名那条正则在整个 app/graphrag 包里只许编译一次。
+
+    这是**契约**不是实现细节：声明侧（ontology_categories / ontology_lifecycle）
+    用它判"这个字段名合不合法"，而 structured_filter_query 和 neo4j_client 用它
+    当注入防线——字段名要插值进 Cypher。两份副本一旦分叉，声明时放行的名字在
+    查询侧可能被拒，或者反过来：查询侧放行一个声明侧本该拒掉的名字，那就是
+    注入防线出现缺口。
+
+    **为什么扫源码而不是断言 `a is b`**：CPython 的 re.compile 带内部缓存，
+    同一个模式串编译两次返回的是同一个对象（实测过）。所以 `is` 分不出
+    "导入了常量"和"又编译了一遍同样的串"——写成那样是一条永远绿的假断言。
+    只有数源码里的定义处才真的钉得住"只有一份"。
+    """
+    import pathlib
+
+    package = pathlib.Path(__file__).resolve().parents[2] / "app" / "graphrag"
+    literal = 'a-zA-Z0-9_]{0,63}'
+    defining = [
+        path.name
+        for path in package.glob("*.py")
+        if any(literal in line and "re.compile" in line for line in path.read_text(encoding="utf-8").splitlines())
+    ]
+    assert defining == ["ontology_categories.py"], (
+        f"字段名正则应该只在 ontology_categories.py 里编译一次，实际出现在 {defining}。"
+        "别处要用就导入 EXTRA_FIELD_NAME_PATTERN。"
+    )

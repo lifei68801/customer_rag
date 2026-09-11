@@ -6,7 +6,11 @@ from datetime import datetime
 
 import aiosqlite
 
-from app.graphrag.ontology_categories import InvalidExtraFieldTypeError, ensure_categories_schema
+from app.graphrag.ontology_categories import (
+    EXTRA_FIELD_NAME_PATTERN,
+    InvalidExtraFieldTypeError,
+    ensure_categories_schema,
+)
 from app.graphrag.ontology_change_log import (
     ACTION_CONFIRM,
     ACTION_REPLACE,
@@ -35,9 +39,16 @@ from app.graphrag.tenant_ingestion_config import ensure_ingestion_config_schema,
 # 给对方的私有函数类型对不上。
 #
 # 代价是两处规则要保持同步：如果以后 ontology_categories.py 或
-# ontology_relations.py 改了合法性规则（比如放宽字段名格式），这里也要跟着改，
-# 否则会出现"单条创建时报错，整份替换草稿时放行"的不一致体验。
-_EXTRA_FIELD_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}\Z")
+# ontology_relations.py 改了合法性规则，这里也要跟着改，否则会出现"单条创建
+# 时报错，整份替换草稿时放行"的不一致体验。
+#
+# **但字段名那条正则不复制，直接导入。** 上面那套理由讲的是"私有函数的签名
+# 不为外部调用方负责"，对一条正则不成立：它是"什么算合法字段名"这个**契约**
+# 本身，不是实现细节，而且 ontology_categories 已经把它作为公开常量导出。
+# 2026-09-10 的整分支终审点名过这类散落副本——同一批改动里，四处独立维护的
+# value_type 枚举已经造成两条 Critical，正则副本是同一种形状：契约一变要多处
+# 同步，漏一处就是校验口径不一致，而这一条漏了是**注入防线出现缺口**。
+_EXTRA_FIELD_NAME_PATTERN = EXTRA_FIELD_NAME_PATTERN
 _VALID_EXTRA_FIELD_VALUE_TYPES = frozenset({"string", "number", "integer", "number[]", "date"})
 # date 有意**不**进下面这张表，跟 ontology_categories.py 那份原件保持一致的
 # 不对称：standard_name 是实体的名字，一个日期不该当实体的名字。
