@@ -19,7 +19,11 @@ from app.graphrag.ontology_change_log import (
     KIND_ONTOLOGY_DRAFT,
     commit_with_change_log,
 )
-from app.graphrag.ontology_constraints import UnknownCategoryError, ensure_constraints_schema
+from app.graphrag.ontology_constraints import (
+    CombinationKey,
+    UnknownCategoryError,
+    ensure_constraints_schema,
+)
 from app.graphrag.ontology_etl_mapping import ensure_etl_mapping_schema, set_draft_etl_mapping
 from app.graphrag.ontology_relations import (
     InvalidRelationTypeNameError,
@@ -450,8 +454,12 @@ async def replace_draft(
             )
         )
 
-    normalized_constraints: list[tuple[str, str, str]] = []
-    declared_constraint_triples: set[tuple[str, str, str]] = set()
+    # 用 CombinationKey 而不是裸三元组：这几行里字段顺序出现三次（构造、
+    # 去重、下面那条 INSERT 的参数绑定），三处必须一致。裸元组时顺序只靠
+    # 读者自己对齐，而写反不会报错——写进库的约束会主谓宾颠倒，之后所有
+    # 按它做的校验都判错，一声不吭。见 ontology_constraints.CombinationKey。
+    normalized_constraints: list[CombinationKey] = []
+    declared_constraint_triples: set[CombinationKey] = set()
     for constraint in constraints:
         # 引用检查放在这里而不是靠外键：SQLite 默认不强制外键，靠它等于
         # 没检查。引用不存在的类型会让 ETL 在跑批时才炸，那时已经晚了。
@@ -464,10 +472,10 @@ async def replace_draft(
                 raise UnknownCategoryError(
                     f"约束引用了未声明的{label}：{constraint[key]}"
                 )
-        triple = (
-            constraint["subject_term_type"],
-            constraint["relation_type"],
-            constraint["object_term_type"],
+        triple = CombinationKey(
+            subject=constraint["subject_term_type"],
+            relation=constraint["relation_type"],
+            object=constraint["object_term_type"],
         )
         if triple in declared_constraint_triples:
             raise ValueError(f"提交里有重复的约束: {triple}")
@@ -511,12 +519,13 @@ async def replace_draft(
             ),
         )
 
-    for subject_term_type, relation_type_name, object_term_type in normalized_constraints:
+    for combination in normalized_constraints:
         await conn.execute(
             "INSERT INTO term_type_relation_allowlist"
             " (tenant_id, subject_term_type, relation_type, object_term_type, status)"
             " VALUES (?, ?, ?, ?, 'draft')",
-            (tenant_id, subject_term_type, relation_type_name, object_term_type),
+            # 按名字取，读的人能直接把这四个值跟上面那四个列名对上。
+            (tenant_id, combination.subject, combination.relation, combination.object),
         )
 
     # 映射跟本体草稿同一次提交落库。etl_mapping 可选，是因为这个函数的语义是

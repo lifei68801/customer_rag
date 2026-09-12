@@ -212,7 +212,7 @@ async def list_dead_jobs(
 
 
 async def count_dead_jobs(conn: aiosqlite.Connection, *, tenant_id: str) -> int:
-    """这个租户有多少条彻底失败的任务。
+    r"""这个租户有多少条彻底失败的任务。
 
     **必须是真的 COUNT(\*)，不能拿 `list_dead_jobs` 的长度充数**：那个函数
     带 limit，攒到 250 条失败文档时数出来恒等于上限——角标显示 200，用户
