@@ -26,6 +26,9 @@ interface Recorded {
 
 let requests: Recorded[] = []
 let sources: unknown[]
+//: 已确认的实体类型。null = 这个接口不应答（默认），于是页面退回自由文本
+//: ——既有用例都是在这个状态下跑的，保持它们原样。
+let confirmedTermTypes: string[] | null = null
 let testConnectionOk: boolean
 let connectionError: string
 
@@ -89,6 +92,14 @@ function stubApi() {
       if (url.includes('/nav-badges')) {
         return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }))
       }
+      if (url.includes('/term-types') && confirmedTermTypes !== null) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ term_types: confirmedTermTypes.map((value) => ({ value })) }),
+            { status: 200 },
+          ),
+        )
+      }
       return new Promise(() => {})
     }),
   )
@@ -96,6 +107,7 @@ function stubApi() {
 
 beforeEach(() => {
   requests = []
+  confirmedTermTypes = null
   testConnectionOk = true
   connectionError = '连不上 10.0.0.5:3306（OperationalError）。请检查地址、端口、账号密码。'
   sources = [
@@ -199,6 +211,54 @@ describe('数据库导入页', () => {
     await waitFor(() => expect(screen.getByText('可乐')).toBeTruthy())
     expect(screen.getByText('id')).toBeTruthy()
     expect(screen.getByText('name')).toBeTruthy()
+  })
+
+  async function gotoMapping(user: ReturnType<typeof userEvent.setup>) {
+    await fillConnectionAndTest(user)
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: '下一步' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    )
+    await user.click(screen.getByRole('button', { name: '下一步' }))
+    await user.type(screen.getByLabelText('查询（只允许 SELECT）'), 'SELECT id, name FROM goods')
+    await user.click(screen.getByRole('button', { name: '预览' }))
+    await waitFor(() => expect(screen.getByText('可乐')).toBeTruthy())
+    await user.click(screen.getByRole('button', { name: '下一步' }))
+  }
+
+  it('实体类型从已确认本体里选，不是自由文本', async () => {
+    // 填一个本体里没有的类型，ETL 写入时才会被拒（按 status='confirmed'
+    // 校验），而那时用户已经配完了整个数据源——连接、SQL、三个列映射全白做。
+    // 一个打错的字要走到那么远才报错，等于没有校验。
+    confirmedTermTypes = ['产品', '客户']
+    const user = userEvent.setup()
+    await renderPage()
+
+    await gotoMapping(user)
+
+    const field = await screen.findByLabelText('实体类型')
+    expect(field.tagName).toBe('SELECT')
+    const options = [...(field as HTMLSelectElement).options].map((o) => o.value)
+    expect(options).toContain('产品')
+    expect(options).toContain('客户')
+    // 第一项是空的占位：不给占位的话浏览器会默认选中第一个真实类型，
+    // 用户没选过却像是选了。
+    expect(options[0]).toBe('')
+  })
+
+  it('拉不到已确认类型时退回自由文本，并说清代价', async () => {
+    // 本体服务暂时不可用不该让用户配不了数据源。但也不能默不作声——
+    // 用户会以为随便填都行。
+    confirmedTermTypes = null
+    const user = userEvent.setup()
+    await renderPage()
+
+    await gotoMapping(user)
+
+    const field = await screen.findByLabelText('实体类型')
+    expect(field.tagName).toBe('INPUT')
+    expect(screen.getByText(/导入跑起来时会被拒/)).toBeTruthy()
   })
 
   it('保存数据源时请求体里没有 password', async () => {

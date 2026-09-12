@@ -85,10 +85,36 @@ export function DatabaseImportPage() {
 
   //: 正在等密码的那个数据源。null 表示没在等。
   const [syncing, setSyncing] = useState<DbSource | null>(null)
+  //: 已确认本体里的实体类型。null = 还没拉到（拉取失败也是 null）。
+  const [termTypeOptions, setTermTypeOptions] = useState<string[] | null>(null)
 
   useEffect(() => {
     document.title = `${PAGE_TITLES.dbImport} · 管理后台`
   }, [])
+
+  // 实体类型必须是已确认本体里有的：ETL 写入时按 status='confirmed' 校验，
+  // 这里填一个不存在的类型，要等到导入真的跑起来才报错，而那时用户已经
+  // 配完了整个数据源。
+  useEffect(() => {
+    if (!sessionToken || !tenantId) return
+    let cancelled = false
+    adminFetch(
+      `/api/admin/ontology/${encodeURIComponent(tenantId)}/term-types?status=confirmed`,
+      sessionToken,
+    )
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
+      .then((data: { term_types: { value: string }[] }) => {
+        if (!cancelled) setTermTypeOptions(data.term_types.map((t) => t.value))
+      })
+      .catch(() => {
+        // 拉不到就退回自由文本输入，而不是把这一步锁死——本体服务暂时不可用
+        // 不该让用户配不了数据源。下面的输入框会把这件事说出来。
+        if (!cancelled) setTermTypeOptions(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sessionToken, tenantId])
 
   const call = useCallback(
     async (path: string, init?: RequestInit) => {
@@ -434,15 +460,50 @@ export function DatabaseImportPage() {
                   数据源名字
                   <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
                 </label>
-                <label className="flex flex-col gap-1 text-sm text-ink">
-                  实体类型
-                  <input
-                    className={inputClass}
-                    value={termType}
-                    onChange={(e) => setTermType(e.target.value)}
-                    placeholder="产品"
-                  />
-                </label>
+                {/* 提示语放在 label 外面：放里面的话，这个字段的可访问名字
+                    会变成"实体类型 + 整段提示"，读屏软件念一长串，测试也
+                    按名字找不到它。 */}
+                <div className="flex flex-col gap-1 text-sm text-ink">
+                  <label className="flex flex-col gap-1">
+                    实体类型
+                    {termTypeOptions === null || termTypeOptions.length === 0 ? (
+                      <input
+                        className={inputClass}
+                        value={termType}
+                        onChange={(e) => setTermType(e.target.value)}
+                        placeholder="产品"
+                        disabled={termTypeOptions?.length === 0}
+                      />
+                    ) : (
+                      <select
+                        className={inputClass}
+                        value={termType}
+                        onChange={(e) => setTermType(e.target.value)}
+                      >
+                        <option value="">请选择实体类型</option>
+                        {termTypeOptions.map((value) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </label>
+                  {termTypeOptions === null && (
+                    // 拉不到已确认类型时退回自由文本，并说清代价——不说的话
+                    // 用户以为随便填都行，而 ETL 会在跑起来之后才拒。
+                    <span className="text-xs text-ink-soft">
+                      没能拉到已确认的实体类型，这里暂时按自由文本处理。填一个
+                      本体里没有的类型，导入跑起来时会被拒。
+                    </span>
+                  )}
+                  {termTypeOptions?.length === 0 && (
+                    <span className="text-xs text-ink-soft">
+                      这个领域还没有已确认的实体类型。先去「本体结构」建一个并
+                      确认，再回来配数据源。
+                    </span>
+                  )}
+                </div>
                 <label className="flex flex-col gap-1 text-sm text-ink">
                   展示名列
                   <input
