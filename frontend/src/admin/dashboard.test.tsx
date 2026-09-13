@@ -224,6 +224,34 @@ describe('看板', () => {
     await waitFor(() => expect(screen.queryByTestId('domain-card-slow')).toBeNull())
   })
 
+  it('一切正常的领域也能点进去——领域名就是入口', async () => {
+    // 卡上此前只有条件按钮：空领域给"去导入"、有待审给"去审核"、有失效
+    // 问题给"去修"。于是配好了、正常跑着的领域（实体>0、待审=0、没有失效
+    // 问题）一个按钮都没有——落地页最该做的那件事，恰恰对状态最好的那些
+    // 领域缺失。
+    statsResponders.slow = () =>
+      jsonResponse(stats('slow', { pending_review_count: 0, stale_question_count: 0 }))
+    const user = userEvent.setup()
+    await renderDashboard()
+    await waitFor(() => expect(card('slow').getByText('没有待处理的')).toBeTruthy())
+
+    // 这张卡上除了领域名，没有别的按钮——正是此前那个死胡同。
+    expect(card('slow').queryByRole('button', { name: /待审|导入|确认本体|去修/ })).toBeNull()
+
+    await user.click(card('slow').getByRole('button', { name: /门店/ }))
+
+    // 跟别的入口一样：先切租户再跳，否则用户落在目标页上看到的是别的领域。
+    await waitFor(() => expect(switchRequests).toEqual(['slow']))
+  })
+
+  it('待审为零时说出来，不只是一个灰色的 0', async () => {
+    // 0 靠颜色跟其它数字区分是不够的——把"没有事等着你"直接写出来，
+    // 用反色或高对比模式的人也读得到。
+    statsResponders.fast = () => jsonResponse(stats('fast', { pending_review_count: 0 }))
+    await renderDashboard()
+    await waitFor(() => expect(card('fast').getByText('没有待处理的')).toBeTruthy())
+  })
+
   it('卡片上有「表格行数」', async () => {
     // spec §5 卡片的第四格。少了它用户分不清 2 万个实体里多少是表格导进来的、
     // 多少是文档抽出来的——而这两条路径的修法完全不同。

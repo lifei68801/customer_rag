@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { ChevronRight } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { ADMIN_ROUTES } from '../adminRoutes'
 import { adminFetch, extractErrorDetail } from './adminApi'
@@ -90,7 +91,24 @@ export function DomainCard({ domain }: { domain: Domain }) {
       data-testid={`domain-card-${domain.tenant_id}`}
       className="flex flex-col gap-3 rounded-card border border-subtle bg-card p-4"
     >
-      <h3 className="font-mono text-sm font-semibold text-ink">{domain.name}</h3>
+      {/* 领域名就是进入这个领域的入口。
+          此前卡上只有条件按钮：空领域给"去导入"、有待审给"去审核"、有失效
+          问题给"去修"。于是**配好了、正常跑着的**领域（实体>0、待审=0、
+          没有失效问题）一个按钮都没有——点不进去。落地页最该做的那件事，
+          恰恰对状态最好的那些领域缺失。
+          进入的落点是实体明细：卡上这几个数字说的就是这个领域里有什么，
+          点进去自然是去看它们。 */}
+      <h3 className="font-mono text-sm font-semibold">
+        <button
+          type="button"
+          disabled={going}
+          onClick={() => void goTo(ADMIN_ROUTES.terms)}
+          className={`flex w-full cursor-pointer items-center justify-between gap-2 text-left text-ink transition hover:text-accent-primary disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+        >
+          {domain.name}
+          <ChevronRight aria-hidden="true" className="h-4 w-4 flex-shrink-0 text-ink-soft" />
+        </button>
+      </h3>
       {children}
     </section>
   )
@@ -145,6 +163,11 @@ export function DomainCard({ domain }: { domain: Domain }) {
 
   return shell(
     <>
+      {/* 规模和待办分开排，两个理由。
+          一是它们不是一类东西：前四个说"这里有多少东西"，待审说"有多少事
+          等着你"。项目在侧边栏徽标里早就区分了 todo 和 count
+          （useNavBadges），这里此前没区分——五个数字长得一模一样。
+          二是五个数字塞进两列，第五个独占半行留个洞。四个填满 2×2。 */}
       <dl className="grid grid-cols-2 gap-3">
         <Stat label="实体" value={stats.term_count} />
         <Stat label="关系" value={stats.edge_count} />
@@ -153,7 +176,20 @@ export function DomainCard({ domain }: { domain: Domain }) {
             两万个实体里多少是表格导进来的、多少是文档抽出来的——而这两条
             路径的修法完全不同。 */}
         <Stat label="表格行" value={stats.sheet_row_count} />
-        <Stat label="待审" value={stats.pending_review_count} />
+      </dl>
+      <dl className="flex items-baseline gap-2 border-t border-subtle pt-3">
+        <dt className="text-xs text-ink-soft">待审</dt>
+        <dd
+          className={`font-mono text-lg font-semibold tabular-nums ${
+            stats.pending_review_count > 0 ? 'text-status-error-strong' : 'text-ink-soft'
+          }`}
+        >
+          {stats.pending_review_count.toLocaleString()}
+        </dd>
+        {/* 不靠颜色单独表意：0 的时候把"没有事等着你"直接说出来。 */}
+        {stats.pending_review_count === 0 && (
+          <span className="text-xs text-ink-soft">没有待处理的</span>
+        )}
       </dl>
 
       {/* 失效的手写引导问题（spec 前台硬规矩之二：失效了必须有人知道）。
