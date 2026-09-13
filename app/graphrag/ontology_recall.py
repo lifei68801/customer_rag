@@ -256,6 +256,40 @@ class RecallCandidates:
     entities: list[Term]
 
 
+def recall_entity_candidates(
+    query_text: str, *, terms: list[Term], top_k: int = _ENTITY_TOP_K
+) -> list[Term]:
+    """只召回实体这一档：跟 query_text 字面相近的已有 Term，打分高的在前。
+
+    抽出来单独公开，是为了让**抽取侧**也能用上查询侧这套已经调过参的打分
+    （阈值 0.6 的实测依据见 _ENTITY_MIN_SCORE 上方那段注释）。
+
+    抽取侧要它做的事是：把这批文本里可能提到的已有实体先捞出来，塞进抽取
+    prompt，让 LLM 在"命中已有实体就返回它的原名"和"确实是新实体才发明
+    新名"之间做选择——而不是让它自由发明一个字符串，再由事后的字符串匹配
+    去猜这跟库里哪条是同一个东西。
+
+    **这是字面召回，不是语义召回。** 它抓得住错别字、大小写、缩写
+    （coke-cola → Coca-Cola）；抓不住字面无关但语义相同的说法（「快递」↔
+    「顺丰速运」），中英对照（「可乐」↔ Coca-Cola）更是恒为 0 分。要覆盖
+    那一档得上向量召回，那是另一件事——先把这条打通、用真实失败样本决定
+    要不要上，而不是同时引入两个变量。
+    """
+    query_chars = set(query_text.lower())
+    ranked = _rank(
+        [
+            (
+                *_best_scores(query_text, query_chars, term.standard_name, use_fbeta=True),
+                term,
+            )
+            for term in terms
+        ],
+        top_k=top_k,
+        min_score=_ENTITY_MIN_SCORE,
+    )
+    return [term for term in ranked if isinstance(term, Term)]
+
+
 def recall_ontology_candidates(
     query_text: str,
     *,
@@ -298,19 +332,7 @@ def recall_ontology_candidates(
         ],
         top_k=_FIELD_TOP_K,
     )
-    entities = _rank(
-        [
-            (
-                *_best_scores(
-                    query_text, query_chars, term.standard_name, use_fbeta=True,
-                ),
-                term,
-            )
-            for term in terms
-        ],
-        top_k=_ENTITY_TOP_K,
-        min_score=_ENTITY_MIN_SCORE,
-    )
+    entities = recall_entity_candidates(query_text, terms=terms)
 
     # 多跳路径搜索的起点/终点都取自"已经独立判定为跟这次查询相关"的候选
     # term_type——source 是候选 term_type 本身；target 在此基础上并上候选

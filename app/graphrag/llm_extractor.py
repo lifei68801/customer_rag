@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 
+from app.graphrag.ontology import Term
 from app.graphrag.ontology_constraints import AllowedCombination
 from app.providers.base import ProviderCapability, ProviderRequest
 from app.providers.registry import ProviderRegistry
@@ -27,6 +28,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "relation_type/object_type 的组合必须命中下面某一行，命中不了就不要"
     "输出这条关系：\n"
     "{allowed_combinations}\n"
+    "{known_entities}"
     '只输出 JSON：{{"relations":[{{"subject":"...","subject_type":"...",'
     '"object":"...","object_type":"...","relation_type":"...",'
     '"evidence":"..."}}]}}。subject_type/object_type 分别是 subject/object '
@@ -40,9 +42,32 @@ _SYSTEM_PROMPT_TEMPLATE = (
 )
 
 
+def _format_known_entities(known_entities: list[Term]) -> str:
+    """已有实体那一段。没有候选时整段不出现，不留一个空标题。
+
+    只给"标准名[类型]"和别名，不给 node_key——node_key 是内部身份键，
+    让 LLM 看见它只会诱使它把那串东西当成名字输出。
+    """
+    if not known_entities:
+        return ""
+    lines = []
+    for term in known_entities:
+        aliases = "（又称：" + "、".join(term.aliases) + "）" if term.aliases else ""
+        lines.append("- " + term.standard_name + "[" + term.term_type + "]" + aliases)
+    return (
+        "这个知识库里已经存在下面这些实体（只列出跟本段文本可能相关的）。"
+        "**如果文中提到的就是其中某一个，subject/object 必须原样返回它的名字**"
+        "——哪怕原文里的写法跟它不完全一样（错别字、大小写、简称都算同一个）。"
+        "只有确认文中说的确实不在这个列表里，才写原文里的说法。\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
 def _build_system_prompt(
     *, relation_types: list[str], term_types: list[str],
     allowed_combinations: list[AllowedCombination],
+    known_entities: list[Term],
 ) -> str:
     combos_text = "\n".join(
         f"- {c.subject_term_type} {c.relation_type} {c.object_term_type}"
@@ -52,6 +77,7 @@ def _build_system_prompt(
         term_types="、".join(term_types) or "（无）",
         relation_types="、".join(relation_types) or "（无）",
         allowed_combinations=combos_text,
+        known_entities=_format_known_entities(known_entities),
     )
 
 
@@ -75,6 +101,7 @@ async def extract_candidate_relations(
     relation_types: list[str],
     term_types: list[str],
     allowed_combinations: list[AllowedCombination],
+    known_entities: list[Term] | None = None,
     timeout_sec: float = 30.0,
 ) -> list[dict[str, str]]:
     """LLM 抽取候选关系；失败/超时/JSON 解析失败均回退空列表，不阻塞摄取流程。
@@ -103,6 +130,7 @@ async def extract_candidate_relations(
     system_prompt = _build_system_prompt(
         relation_types=relation_types, term_types=term_types,
         allowed_combinations=allowed_combinations,
+        known_entities=known_entities or [],
     )
     try:
         result = await asyncio.wait_for(

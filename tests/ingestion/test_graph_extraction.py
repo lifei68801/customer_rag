@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime
 
 import aiosqlite
@@ -394,3 +395,104 @@ async def test_one_failing_batch_does_not_prevent_other_batches_from_writing():
     )
 
     assert written == 1
+
+
+class PromptCapturingProvider:
+    """记下每次调用拿到的 system prompt。"""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self.system_prompts: list[str] = []
+
+    async def complete(self, request: ProviderRequest) -> ProviderResult:
+        self.system_prompts.append(
+            next(m["content"] for m in request.messages if m["role"] == "system")
+        )
+        return ProviderResult(text=self._text)
+
+
+def _registry_with(provider) -> ProviderRegistry:
+    registry = ProviderRegistry()
+    registry.register(ProviderCapability.LLM, "fake", provider)
+    return registry
+
+
+async def test_recalled_entities_reach_the_extraction_prompt():
+    """文本里提到的已有实体，要连同名字和类型一起进 system prompt。
+
+    不给的话 LLM 只知道有哪些**类型**（error_code/module），不知道有哪些
+    **实例**——它从文本里抄一个字符串出来，再由事后的字符串匹配去猜这跟库
+    里哪条是同一个东西。一个本可以在抽取时消解的问题，被推迟成了事后对齐，
+    而对齐失败的代价是进人工队列。
+    """
+    provider = PromptCapturingProvider(json.dumps({"relations": []}))
+    await extract_and_write_graph_relations(
+        [Chunk(text="示例错误码E502 跟登录有关", heading_path=[], source="s.md")],
+        llm_registry=_registry_with(provider),
+        llm_provider_name="fake",
+        terms=_TERMS,
+        graph_client=FakeGraphClient(),
+        source="s.md",
+        tenant_id="t1",
+        now=_NOW,
+        relation_types=_RELATION_TYPES,
+        term_types=_TERM_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
+    )
+
+    prompt = provider.system_prompts[0]
+    assert "示例错误码E502" in prompt
+    # 类型要一起给：同名不同类型的实体靠它区分。
+    assert "error_code" in prompt
+    # 别名也要给——原文里用的往往是别名。
+    assert "网关超时示例" in prompt
+
+
+async def test_the_prompt_tells_the_model_to_reuse_the_existing_name():
+    """光列出实体不够，得说清楚"命中了就原样返回它的名字"。
+
+    只列不说的话，LLM 会把它们当成背景信息，照样按原文的写法输出——那样
+    这一整步等于没做。
+    """
+    provider = PromptCapturingProvider(json.dumps({"relations": []}))
+    await extract_and_write_graph_relations(
+        [Chunk(text="示例错误码E502 跟登录有关", heading_path=[], source="s.md")],
+        llm_registry=_registry_with(provider),
+        llm_provider_name="fake",
+        terms=_TERMS,
+        graph_client=FakeGraphClient(),
+        source="s.md",
+        tenant_id="t1",
+        now=_NOW,
+        relation_types=_RELATION_TYPES,
+        term_types=_TERM_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
+    )
+
+    prompt = provider.system_prompts[0]
+    assert "原样返回" in prompt
+
+
+async def test_no_known_entity_section_when_nothing_is_recalled():
+    """一个都没召回时，那一段整个不出现，不留一个空标题。
+
+    留个空标题等于告诉 LLM"这个库里没有任何实体"——那是一句可能不实的话，
+    它只是这一段文本没提到而已。
+    """
+    provider = PromptCapturingProvider(json.dumps({"relations": []}))
+    await extract_and_write_graph_relations(
+        [Chunk(text="一段跟库里任何实体都无关的文字", heading_path=[], source="s.md")],
+        llm_registry=_registry_with(provider),
+        llm_provider_name="fake",
+        terms=_TERMS,
+        graph_client=FakeGraphClient(),
+        source="s.md",
+        tenant_id="t1",
+        now=_NOW,
+        relation_types=_RELATION_TYPES,
+        term_types=_TERM_TYPES,
+        allowed_combinations=_ALLOWED_COMBINATIONS,
+    )
+
+    prompt = provider.system_prompts[0]
+    assert "这个知识库里已经存在" not in prompt

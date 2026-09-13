@@ -9,6 +9,7 @@ from app.graphrag.llm_extractor import extract_candidate_relations
 from app.graphrag.normalization import GraphWriteClientProtocol, normalize_and_write_relations
 from app.graphrag.ontology import Term
 from app.graphrag.ontology_constraints import AllowedCombination, to_combination_keys
+from app.graphrag.ontology_recall import recall_entity_candidates
 from app.ingestion.chunking import Chunk
 from app.providers.registry import ProviderRegistry
 
@@ -96,14 +97,30 @@ async def extract_and_write_graph_relations(
     allowed_combinations_set = to_combination_keys(allowed_combinations)
 
     async def _process_batch(batch: list[Chunk]) -> list[dict[str, str]]:
+        texts = [chunk.text for chunk in batch]
+        # 先把这批文本里可能提到的已有实体捞出来，连同 prompt 一起发给 LLM。
+        #
+        # 不给的话，LLM 只知道有哪些**类型**（产品/客户），不知道有哪些
+        # **实例**——它从文本里抄一个字符串出来，再由事后的字符串匹配去猜
+        # 这跟库里哪条是同一个东西。一个本可以在抽取时消解的问题，被推迟成
+        # 了事后对齐，而事后对齐失败的代价是进人工队列。
+        #
+        # 一律走召回，不按实体规模分档：全量塞 prompt 在两万条的租户上根本
+        # 塞不下，而"小租户全量、大租户召回"会让两条路径的行为不一样——
+        # demo 上验过的东西到了生产未必成立。
+        #
+        # 召回是**字面**的（见 recall_entity_candidates 的说明），抓错别字和
+        # 大小写，抓不住中英对照和同义词。那一档要靠向量，先不做。
+        known = recall_entity_candidates("\n".join(texts), terms=terms)
         async with semaphore:
             return await extract_candidate_relations(
-                [chunk.text for chunk in batch],
+                texts,
                 llm_registry=llm_registry,
                 llm_provider_name=llm_provider_name,
                 relation_types=relation_types,
                 term_types=term_types,
                 allowed_combinations=allowed_combinations,
+                known_entities=known,
                 timeout_sec=extract_timeout_sec,
             )
 
