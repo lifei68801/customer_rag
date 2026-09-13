@@ -203,3 +203,35 @@ def test_no_module_keeps_its_own_copy_of_the_value_type_whitelist():
         "这些地方看起来又维护了一份 value_type 枚举，应该改成从 "
         f"app.graphrag.value_types 导入：{offenders}"
     )
+
+
+def test_the_frontend_copy_of_the_table_matches_this_one():
+    """前端硬编码的那份 value_type 列表必须跟这张表一致。
+
+    浏览器读不到 Python，所以 `frontend/src/admin/ontologySchema/shared.ts`
+    里有一份手抄的副本。加一个类型时漏改它不会有任何信号：下拉框里少一个
+    选项，没有人会因此变红——正是这张表当初要消灭的那种缺陷，只是换到了
+    语言边界上。
+
+    真正消掉它要让后端把这张表作为接口暴露出去、前端拉取而不是硬编码。
+    在那之前，这条跨语言的对照就是唯一的防线。
+    """
+    import pathlib
+    import re
+
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    shared = repo_root / "frontend" / "src" / "admin" / "ontologySchema" / "shared.ts"
+    source = shared.read_text(encoding="utf-8")
+
+    def listed(const_name: str) -> list[str]:
+        match = re.search(rf"export const {const_name} = \[(.*?)\] as const", source, re.S)
+        assert match, f"{shared.name} 里找不到 {const_name}——它是不是改名或搬走了？"
+        return re.findall(r"'([^']+)'", match.group(1))
+
+    assert sorted(listed("VALUE_TYPES")) == sorted(EXTRA_FIELD_VALUE_TYPES), (
+        "前端的 VALUE_TYPES 跟后端这张表对不上。加类型时两边都要改，"
+        "或者给它加一个接口让前端去拉。"
+    )
+    assert sorted(listed("STANDARD_NAME_VALUE_TYPES")) == sorted(STANDARD_NAME_VALUE_TYPES), (
+        "前端的 STANDARD_NAME_VALUE_TYPES 跟后端对不上。"
+    )

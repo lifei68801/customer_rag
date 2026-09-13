@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
@@ -66,6 +66,25 @@ async function renderAt(path: string) {
   return result
 }
 
+/**
+ * 本体结构页的全部源码——页面外壳加三个 tab。
+ *
+ * 下面两条是源码扫描：约束区里那个图必须已经换成去本体图页的链接。扫源码
+ * 而不是查 DOM，是因为约束是第三个 tab、默认不挂载，查 DOM 的话"找不到那个
+ * 切换控件"在修好之前也成立，又是一次假绿。
+ *
+ * 拆文件之后不能只读 OntologySchemaPage.tsx：约束那段搬进了
+ * ontologySchema/ConstraintsTab.tsx，只读页面文件的话「有没有那条链接」
+ * 这条断言会因为**读错了文件**而红，而「还留着切换控件」那条会因为同样的
+ * 原因而永远绿。整个目录一起读，以后再搬也不会失准。
+ */
+function ontologySchemaSource(): string {
+  const dir = join(__dirname, 'ontologySchema')
+  const parts = readdirSync(dir).map((f) => readFileSync(join(dir, f), 'utf8'))
+  parts.push(readFileSync(join(__dirname, 'OntologySchemaPage.tsx'), 'utf8'))
+  return parts.join(String.fromCharCode(10))
+}
+
 describe('确认 schema', () => {
   it('用危险色，不用成功色', async () => {
     await renderAt(ADMIN_ROUTES.ontology)
@@ -97,7 +116,7 @@ describe('本体图只有一个入口', () => {
   it('约束区不再自带一份图，换成去图页面的链接', async () => {
     // 扫源码而不是查 DOM：约束是第三个 tab，默认不挂载，查 DOM 的话
     // 「找不到那个切换控件」在修好之前也成立——又是一次假绿。
-    const source = readFileSync(join(__dirname, 'OntologySchemaPage.tsx'), 'utf8')
+    const source = ontologySchemaSource()
     expect(source, '约束区还留着「表格/图」切换').not.toMatch(/约束视图形态/)
     expect(source, '没有给出去本体图的链接').toMatch(/ADMIN_ROUTES\.ontologyGraph/)
   })
@@ -105,7 +124,7 @@ describe('本体图只有一个入口', () => {
   it('图组件不再被本体页直接渲染', async () => {
     // 独立页面之外再留一份 tab 内的图，就是同一个东西的两个入口：两处
     // 状态、两处要改，而且 tab 里那份没有自己的 URL，分享不出去。
-    const source = readFileSync(join(__dirname, 'OntologySchemaPage.tsx'), 'utf8')
+    const source = ontologySchemaSource()
     expect(source, '还在渲染 <OntologyGraph>').not.toMatch(/<OntologyGraph/)
   })
 })
