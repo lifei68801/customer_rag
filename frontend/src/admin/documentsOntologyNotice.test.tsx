@@ -150,7 +150,10 @@ describe('本体未确认', () => {
     renderPage()
     await ready()
     await waitFor(() => expect(notice()).toBeTruthy())
-    expect(screen.getByRole('link', { name: /本体结构/ })).toBeTruthy()
+    // 限定在提示条里找。侧边栏也有一条「本体结构」（分组默认全展开之后它
+    // 一直可见），不限定的话这里命中两个，而且命中的可能是侧边栏那条——
+    // 那样即使提示条根本没给入口，这条也是绿的。
+    expect(within(notice()!).getByRole('link', { name: /本体结构/ })).toBeTruthy()
   })
 
   it('切到未确认的租户时，已勾上的要被撤掉', async () => {

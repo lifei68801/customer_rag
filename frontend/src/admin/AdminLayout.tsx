@@ -1,7 +1,7 @@
 import { Building2, ChevronDown, Menu, SquareArrowOutUpRight, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
-import { NAV_GROUPS, routeRequiresTenant } from '../adminRoutes'
+import { NAV_GROUPS, groupIdForPath, routeRequiresTenant } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
 import { DensityProvider } from './DensityContext'
 import { TenantProvider } from './TenantContext'
@@ -17,9 +17,21 @@ import { EmptyState } from './EmptyState'
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
+/**
+ * 导航项的样式。
+ *
+ * 只有当前项是实心的，其余安静。此前每一项都是 `border + bg-paper +
+ * font-bold` 的描边实心按钮——十六个这样的块竖着堆，全都在喊，结果"我现在
+ * 在哪"反而看不出来。侧边栏的工作是回答这个问题，不是把每个链接都做成 CTA。
+ *
+ * 当前项另外加一条左侧竖条：不靠颜色单独表意（§color-not-only），用了
+ * 反色的人和把界面调成高对比的人都还能看出来。
+ */
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-  `flex items-center gap-2 rounded-control border border-subtle px-3 py-2.5 text-sm font-bold transition ${focusRing} ${
-    isActive ? 'bg-accent-primary text-on-accent' : 'bg-paper text-ink hover:bg-interactive-hover'
+  `flex items-center gap-2.5 rounded-control px-3 py-2 text-sm transition ${focusRing} ${
+    isActive
+      ? 'border-l-2 border-accent-primary bg-accent-primary/10 pl-[10px] font-medium text-accent-primary'
+      : 'font-normal text-ink-soft hover:bg-interactive-hover hover:text-ink'
   }`
 
 /**
@@ -32,6 +44,7 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
 function AdminNav() {
   const { pathname, search } = useLocation()
   const { isExpanded, toggle } = useNavGroups(pathname)
+  const currentGroup = groupIdForPath(pathname)
   const badges = useNavBadges()
 
   return (
@@ -62,7 +75,11 @@ function AdminNav() {
                         className={`ml-2 h-3.5 w-3.5 flex-shrink-0 transition-transform ${expanded ? '' : '-rotate-90'}`}
                       />
                     </button>
-                    {expanded && group.id === 'ontology' && <VersionSwitcher />}
+                    {/* 版本切换器只在**当前就在建模组**时出现，不是"这个组
+                        展开着"就出现——它只对本体结构和本体图有意义。此前
+                        这两件事碰巧等价（只有当前组会展开），分组默认全展开
+                        之后就不再等价了。 */}
+                    {group.id === 'ontology' && currentGroup === 'ontology' && <VersionSwitcher />}
                     {expanded &&
                       group.items.map((item) => (
                         <NavLink

@@ -125,9 +125,10 @@ describe('跨页保持', () => {
   it('离开建模组时版本参数不跟着走', async () => {
     // ?version 对审核页没有意义。带着它跑只会让 URL 说谎——看起来那个页面
     // 也有版本概念。
+    //
+    // 分组默认全展开，所以不用先点开「数据审核」——点它反而是收起。
     const user = userEvent.setup()
     await renderAt(`${ADMIN_ROUTES.ontology}?version=confirmed`)
-    await user.click(nav().getByRole('button', { name: '数据审核' }))
     await user.click(nav().getByRole('link', { name: '关系审核' }))
     expect(url()).toBe(ADMIN_ROUTES.reviewRelations)
   })

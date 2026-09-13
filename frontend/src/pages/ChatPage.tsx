@@ -217,7 +217,7 @@ function ChatWorkspace({ onLogout }: { onLogout: () => void }) {
                   />
                 )
               ))}
-            <ChatWindow messages={messages} />
+            <ChatWindow messages={messages} onPickSuggestion={sendQuestion} />
             <ChatInput disabled={isSending} onSend={sendQuestion} />
           </main>
         ) : (

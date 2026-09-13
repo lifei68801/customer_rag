@@ -9,16 +9,24 @@ interface MessageBubbleProps {
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
+  // 用户的话是气泡，助手的回答是正文。
+  //
+  // 助手回答经常是带标题、列表、表格、代码块的长 Markdown——塞进一个 75%
+  // 宽的描边气泡里，表格要横向滚、代码要折行，而那圈边框还在跟内容自己的
+  // 结构抢视觉。让它按全宽正文流排，读起来才是一份答案而不是一条消息。
+  //
+  // 出错的回答仍然要一眼认出来，所以保留一条左侧的危险色标记——不靠颜色
+  // 单独表意，下面 MarkdownContent 之外还有文字说明。
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[75%] rounded-card border px-4 py-3 ${
+        className={
           isUser
-            ? 'border-subtle bg-accent-primary text-on-accent'
+            ? 'max-w-[75%] rounded-card border border-subtle bg-accent-primary px-4 py-3 text-on-accent'
             : message.isError
-              ? 'border-status-error bg-card text-ink'
-              : 'border-subtle bg-card text-ink'
-        }`}
+              ? 'w-full border-l-2 border-status-error py-1 pl-3 text-ink'
+              : 'w-full text-ink'
+        }
       >
         {message.text ? (
           isUser ? (

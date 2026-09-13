@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import App from '../App'
 import { SkinProvider } from './SkinContext'
@@ -89,10 +90,15 @@ describe('徽标', () => {
   })
 
   it('收起的组也带着数字——不展开就看不到待办，等于没提醒', async () => {
+    // 分组默认全展开，所以这里先手动把审核组收起来。规则本身没变：一旦
+    // 收起，组头上的合计就是唯一的提醒。
     stubFetch({ pending_relations: 7, pending_duplicates: 3, pending_conflicts: 0, total_terms: 20017 })
+    const user = userEvent.setup()
     await renderAt(ADMIN_ROUTES.documents)
-    // 审核组此时是收起的。
-    expect(nav().getByRole('button', { name: /审核/ }).getAttribute('aria-expanded')).toBe('false')
+    await user.click(nav().getByRole('button', { name: /数据审核/ }))
+    expect(nav().getByRole('button', { name: /数据审核/ }).getAttribute('aria-expanded')).toBe(
+      'false',
+    )
     await waitFor(() => {
       expect(nav().getByLabelText('数据审核：10 项待处理')).toBeTruthy()
     })
@@ -134,10 +140,17 @@ describe('实体总数', () => {
   it('不算进任何组的待办合计里', async () => {
     // 它不在任何组里，本来就不该被算进去；这条防的是以后有人把独立项
     // 也塞进某个组时顺手把计数一起并了。
+    //
+    // 组头合计只在**收起**时渲染（展开时数字就在各个叶子上），而分组现在
+    // 默认全展开——所以这里要先把「结果预览」收起来，才测得到它的组头。
     stubFetch({ pending_relations: 7, pending_duplicates: 3, pending_conflicts: 0, total_terms: 20017 })
+    const user = userEvent.setup()
     await renderAt(ADMIN_ROUTES.documents)
-    await waitFor(() => expect(nav().getByLabelText('数据审核：10 项待处理')).toBeTruthy())
-    // 而且实体总数不能变成「结果预览」组的待办合计——它是规模不是待办。
+    await waitFor(() => expect(nav().getByLabelText('关系审核：7 项待处理')).toBeTruthy())
+
+    await user.click(nav().getByRole('button', { name: /结果预览/ }))
+
+    // 实体总数不能变成「结果预览」组的待办合计——它是规模不是待办。
     expect(nav().queryByLabelText(/结果预览：.*项待处理/)).toBeNull()
   })
 
