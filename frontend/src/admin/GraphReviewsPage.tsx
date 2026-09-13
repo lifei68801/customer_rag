@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
-import { EmptyState } from './EmptyState'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   InlineAllowCombination,
   InlineCreateMissingTerm,
   missingSide,
   type FixableReview,
 } from './ReviewInlineFixes'
-import { History } from 'lucide-react'
+import {  } from 'lucide-react'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminDensity } from './DensityContext'
@@ -15,7 +14,6 @@ import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 import { Pager } from './Pager'
 import { StandardNameInput } from './StandardNameInput'
-import { TaskStatusBadge } from './TaskStatusBadge'
 import { fetchGraphTerms, createTerm, type GraphTerm } from './termsApi'
 import { useLatestRequestGuard } from './useLatestRequestGuard'
 import { useReviewEdits } from './useReviewEdits'
@@ -35,18 +33,6 @@ interface PendingReview {
   suggested_object_standard_name: string | null
   subject_type_candidate: string | null
   object_type_candidate: string | null
-}
-
-interface ResolvedReview {
-  review_id: number
-  subject_candidate: string
-  object_candidate: string
-  relation_type: string
-  source: string
-  evidence: string
-  status: string
-  resolved_at: string
-  resolved_note: string | null
 }
 
 interface CreateEntityDraft {
@@ -79,7 +65,9 @@ const REVIEW_TABS = [
 ] as const
 
 type ReviewTab = (typeof REVIEW_TABS)[number]['key']
-type HistoryFilter = 'all' | 'approved' | 'rejected'
+
+import { useDialogFocus } from './useDialogFocus'
+import { HistoryTab, type HistoryFilter, type ResolvedReview } from './graphReviews/HistoryTab'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -136,6 +124,10 @@ export function GraphReviewsPage() {
   const [historyTotal, setHistoryTotal] = useState(0)
   const [termTypeOptions, setTermTypeOptions] = useState<string[]>([])
   const [createDraft, setCreateDraft] = useState<CreateEntityDraft | null>(null)
+  const createDialogRef = useRef<HTMLDivElement>(null)
+  //: 「确认创建」这一步里，确认那颗按钮排在取消前面。不显式指定的话焦点
+  //: 会落在它上面——一个提交动作，等于邀请用户顺手回车。
+  const createDialogCancelRef = useRef<HTMLButtonElement>(null)
   // 值是评审员在内联创建弹窗里实际确认过的 term_type（不是布尔值）——
   // 批准时要用这个真实类型覆盖 LLM 猜的 subject_type_candidate/
   // object_type_candidate，见 handleApprove/handleBatchApprove 里
@@ -746,6 +738,11 @@ export function GraphReviewsPage() {
 
   // Escape 关闭弹窗——提交中（submitting）时不响应，避免用户中途关闭后
   // fetch 仍在飞行、回调打在已经不存在的 UI 状态上。只在弹窗打开时挂
+  // 焦点管理跟确认弹窗共用一套（见 useDialogFocus）。这个弹窗此前一条都
+  // 没做，而它比确认框更需要：里面有输入框和两步流程，焦点不进去的话用户
+  // 得先 Tab 穿过整个页面才够得着。
+  useDialogFocus(createDraft !== null, createDialogRef, createDialogCancelRef)
+
   // 监听，卸载/关闭时清理，不用全局常驻监听器。
   useEffect(() => {
     if (!createDraft) return
@@ -852,6 +849,7 @@ export function GraphReviewsPage() {
           }}
         >
           <div
+            ref={createDialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="create-entity-dialog-title"
@@ -924,6 +922,7 @@ export function GraphReviewsPage() {
                     {createDraft.submitting ? '创建中…' : '确认创建'}
                   </button>
                   <button
+                    ref={createDialogCancelRef}
                     type="button"
                     onClick={handleCancelCreateEntity}
                     disabled={createDraft.submitting}
@@ -1225,70 +1224,16 @@ export function GraphReviewsPage() {
       )}
 
       {tab === 'history' && (
-        <div className="flex gap-2">
-          {(['all', 'approved', 'rejected'] as const).map((filter) => (
-            <button
-              key={filter}
-              type="button"
-              onClick={() => setHistoryFilter(filter)}
-              className={`min-h-[44px] cursor-pointer rounded-control border border-subtle px-3 py-1.5 text-sm font-bold transition ${focusRing} ${
-                historyFilter === filter
-                  ? 'bg-accent-primary text-on-accent'
-                  : 'bg-paper text-ink'
-              }`}
-            >
-              {filter === 'all' ? '全部' : filter === 'approved' ? '已批准' : '已驳回'}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {tab === 'history' && !historyLoaded && <Skeleton variant="card-list" count={3} />}
-      {tab === 'history' &&
-        historyLoaded &&
-        history.map((review) => (
-          <div
-            key={review.review_id}
-            className={`flex flex-col gap-1 rounded-card border border-subtle bg-card ${
-              density === 'compact' ? 'p-2.5' : 'p-4'
-            }`}
-          >
-            <p className="text-sm text-ink">
-              {review.subject_candidate} —[{review.relation_type}]→ {review.object_candidate}
-            </p>
-            <p className="text-xs text-ink-soft">来源文档：{review.source || '（无记录）'}</p>
-            {review.evidence && (
-              <p className="border-l border-subtle pl-2 text-sm italic text-ink">
-                原文引用："{review.evidence}"
-              </p>
-            )}
-            <p className="flex flex-wrap items-center gap-2 text-xs text-ink-soft">
-              <TaskStatusBadge
-                tone={review.status === 'approved' ? 'success' : 'error'}
-                label={review.status === 'approved' ? '已批准' : '已驳回'}
-              />
-              <span>
-                {review.resolved_at}
-                {review.resolved_note && ` · ${review.resolved_note}`}
-              </span>
-            </p>
-          </div>
-        ))}
-      {tab === 'history' && historyLoaded && history.length === 0 && (
-        <EmptyState
-          icon={History}
-          title="还没有处理过的记录"
-          action="在「待审核」标签里批准或驳回候选后，处理结果会出现在这里。"
-        />
-      )}
-      {tab === 'history' && historyLoaded && history.length > 0 && (
-        <Pager
+        <HistoryTab
+          reviews={history}
+          loaded={historyLoaded}
+          filter={historyFilter}
+          onFilterChange={setHistoryFilter}
           page={historyPage}
           totalPages={Math.max(1, Math.ceil(historyTotal / PAGE_SIZE))}
           onPageChange={setHistoryPage}
         />
       )}
-
     </div>
   )
 }

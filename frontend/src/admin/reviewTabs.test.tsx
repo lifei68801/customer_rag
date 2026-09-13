@@ -377,3 +377,37 @@ describe('就地修复', () => {
     await waitFor(() => expect(screen.getByText(/去「本体结构」页确认/)).toBeTruthy())
   })
 })
+
+describe('「创建为新实体」弹窗的焦点', () => {
+  /** 在 subject 输入框里打一个图谱里没有的名字，把弹窗叫出来。 */
+  async function openCreateDialog(user: ReturnType<typeof userEvent.setup>) {
+    await renderReviews()
+    const input = await screen.findByLabelText('subject 标准名')
+    await user.clear(input)
+    await user.type(input, '一个图谱里没有的名字')
+    await user.click(await screen.findByRole('button', { name: /创建为新实体/ }))
+    return screen.getByRole('dialog')
+  }
+
+  it('打开时焦点进到弹窗里', async () => {
+    // 不进的话焦点还停在遮罩后面那个输入框上，读屏软件也不播报弹窗内容
+    // ——用户听不到自己面前打开了什么。这个弹窗比确认框更需要：里面有
+    // 输入框和两步流程，焦点不进去得先 Tab 穿过整个页面才够得着。
+    const user = userEvent.setup()
+    const dialog = await openCreateDialog(user)
+
+    await waitFor(() => {
+      expect(dialog.contains(document.activeElement)).toBe(true)
+    })
+  })
+
+  it('关闭之后焦点还回去，不落到 body', async () => {
+    const user = userEvent.setup()
+    await openCreateDialog(user)
+
+    await user.keyboard('{Escape}')
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(document.activeElement).not.toBe(document.body)
+  })
+})

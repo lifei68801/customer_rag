@@ -1,3 +1,4 @@
+import { useDialogFocus } from './useDialogFocus'
 import {
   createContext,
   useCallback,
@@ -51,34 +52,11 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
 
   const dialogRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
-  //: 弹窗打开前焦点在哪。关闭时还回去。
-  const returnFocusRef = useRef<HTMLElement | null>(null)
 
-  /**
-   * 焦点管理。WAI-ARIA 的 alertdialog 要求三件事，此前一件都没做：
-   *
-   * 1. **打开时把焦点移进来**。不移的话焦点还停在遮罩后面那个「删除」按钮
-   *    上，读屏软件也不会播报弹窗内容——用户听不到自己正要确认什么。
-   * 2. **Tab 不许走出去**。走出去就进到被遮罩盖住的控件里，用户在看不见的
-   *    东西之间 Tab，而屏幕上的弹窗还开着。
-   * 3. **关闭时把焦点还回去**。不还的话焦点落到 body，下一次 Tab 从页面
-   *    顶部重新开始。
-   *
-   * 落焦点落在**取消**上，不是确认。这是一个破坏性操作的弹窗，确认那颗是
-   * 危险的那颗——焦点默认停在它上面，等于邀请用户顺手回车。
-   */
-  useEffect(() => {
-    if (!pending) {
-      // 关闭：还焦点。元素可能已经不在 DOM 里（比如刚被删掉的那一行），
-      // 所以要先确认它还连着。
-      const target = returnFocusRef.current
-      returnFocusRef.current = null
-      if (target && target.isConnected) target.focus()
-      return
-    }
-    returnFocusRef.current = document.activeElement as HTMLElement | null
-    cancelRef.current?.focus()
-  }, [pending])
+  // 焦点管理走共用的 hook（见 useDialogFocus 的模块文档）。落焦点落在
+  // **取消**上，不是确认：这是破坏性操作的弹窗，确认那颗是危险的那颗，
+  // 焦点默认停在它上面等于邀请用户顺手回车。
+  useDialogFocus(pending !== null, dialogRef, cancelRef)
 
   useEffect(() => {
     if (!pending) return
@@ -86,23 +64,6 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       if (event.key === 'Escape') {
         pending.resolve(false)
         setPending(null)
-        return
-      }
-      if (event.key !== 'Tab') return
-      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      )
-      if (!focusable || focusable.length === 0) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      // 只在两端接住，中间几个交给浏览器自己走——自己实现整套 Tab 顺序
-      // 会跟浏览器的规则不一致（比如 shadow DOM、contenteditable）。
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
       }
     }
     window.addEventListener('keydown', handleKeyDown)
