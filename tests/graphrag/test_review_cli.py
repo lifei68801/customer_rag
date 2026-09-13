@@ -4,11 +4,15 @@ from app.graphrag.ontology import Term
 from app.graphrag.ontology_lifecycle import ensure_ontology_schema
 from app.graphrag.review_cli import cmd_approve, cmd_list, cmd_reject
 from app.graphrag.review_queue import enqueue_for_review, ensure_review_schema, list_pending_reviews
+from app.graphrag.term_edits_store import ensure_term_edits_schema
 
 
 async def _connect() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(conn)
+    # 批准会把审核员确认的写法沉淀成别名（走人工编辑层）。生产里
+    # ontology_store 建库时一起建这张表。
+    await ensure_term_edits_schema(conn)
     # cmd_approve 现在还会查该租户 status="confirmed" 的关系类型/类型组合
     # 白名单（Fix 1：approve_review 补齐了跟 normalize_and_write_relations
     # 一样的"已确认本体范围"校验），这两张表也要建好，否则查询会报

@@ -174,6 +174,7 @@ async def approve(
     tenant_id: str,
     review_id: int,
     payload: ApproveRequest,
+    session: AdminSession = Depends(deps.require_admin_session),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: Neo4jGraphClient = Depends(deps.get_neo4j_graph_client),
 ) -> dict[str, bool]:
@@ -185,6 +186,7 @@ async def approve(
         object_standard_name=payload.object_standard_name,
         subject_term_type=payload.subject_term_type,
         object_term_type=payload.object_term_type,
+        approved_by=session.username,
     )
 
 
@@ -198,6 +200,7 @@ async def _approve_with_names(
     object_standard_name: str,
     subject_term_type: str | None,
     object_term_type: str | None,
+    approved_by: str,
 ) -> dict[str, bool]:
     """批准一条待审：写图 + 标记已处理。
 
@@ -234,6 +237,7 @@ async def _approve_with_names(
             allowed_combinations=allowed_combinations,
             subject_term_type_hint=subject_term_type,
             object_term_type_hint=object_term_type,
+            approved_by=approved_by,
         )
     except ReviewNotFoundError:
         raise HTTPException(status_code=404, detail="待审核记录不存在")
@@ -371,6 +375,7 @@ async def create_missing_term(
         object_standard_name=object_name,
         subject_term_type=payload.term_type if payload.side == "subject" else None,
         object_term_type=payload.term_type if payload.side == "object" else None,
+        approved_by=session.username,
     )
 
 

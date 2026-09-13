@@ -4,6 +4,11 @@ import aiosqlite
 import pytest
 
 from app.graphrag.ontology import Term
+from app.graphrag.term_edits_store import (
+    ensure_term_edits_schema,
+    list_term_edits_for_node_key,
+    upsert_term_edit,
+)
 from app.graphrag.review_queue import (
     RelationNotInConfirmedOntologyError,
     ReviewAlreadyResolvedError,
@@ -51,6 +56,9 @@ def _terms(*standard_names: str, tenant_id: str = "t1") -> list[Term]:
 async def _connect() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(":memory:")
     await ensure_review_schema(conn)
+    # 批准时会把审核员确认的写法沉淀成别名（走人工编辑层），所以这张表
+    # 也得在。生产里 ontology_store 建库时一起建，见那个模块。
+    await ensure_term_edits_schema(conn)
     return conn
 
 
@@ -1002,5 +1010,134 @@ async def test_count_pending_by_reason_is_scoped_and_ignores_resolved():
         await reject_review(conn, review_id=done, tenant_id="t1")
 
         assert await count_pending_by_reason(conn, tenant_id="t1") == {"subject_unresolved": 1}
+    finally:
+        await conn.close()
+
+
+async def _aliases_of(conn, node_key: str, *, tenant_id: str = "t1"):
+    edits = await list_term_edits_for_node_key(conn, tenant_id, node_key)
+    value = edits.get("aliases")
+    return list(value) if isinstance(value, list) else None
+
+
+async def test_approving_records_the_candidate_spelling_as_an_alias():
+    """审核员说"网关超时示例2.0 就是 示例错误码E502"时，把这句话记下来。
+
+    这是这次改动的全部意义：那句判断对**以后每一篇文档**都成立，不该只用掉
+    一次。写回去之后，下一次抽取里的同一个写法会在 resolve_term 的精确匹配
+    阶段直接命中——既不进队列，也不依赖召回打分。
+
+    不写的话，同一个名字在下一批文档里照样对不齐，照样排队等人再判一遍；
+    一个实体出现在五十条关系里就是五十条待审，判完第一条，其余四十九条
+    仍然躺在那儿。
+    """
+    conn = await _connect()
+    try:
+        review_id = await enqueue_for_review(
+            conn,
+            subject_candidate="网关超时示例2.0",
+            object_candidate="示例登录模块",
+            relation_type="RELATED_TO",
+            reason="subject_unresolved",
+            source="faq.md",
+            tenant_id="t1",
+        )
+
+        await approve_review(
+            conn,
+            review_id=review_id,
+            subject_standard_name="示例错误码E502",
+            object_standard_name="示例登录模块",
+            tenant_id="t1",
+            graph_client=FakeGraphClient(),
+            terms=_terms("示例错误码E502", "示例登录模块"),
+            now=_NOW,
+            confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+            allowed_combinations=_ALLOWED_COMBINATIONS,
+            approved_by="alice",
+        )
+
+        assert await _aliases_of(conn, "示例错误码E502") == ["网关超时示例2.0"]
+    finally:
+        await conn.close()
+
+
+async def test_a_candidate_that_already_matches_writes_nothing():
+    """候选名本来就等于标准名时什么都不做。
+
+    绝大多数批准都是这一档（对齐失败的只是一端）。不挡住的话，每批准一条
+    都会白写一次编辑，把编辑层刷成一堆"把标准名加成自己的别名"的噪音。
+    """
+    conn = await _connect()
+    try:
+        review_id = await enqueue_for_review(
+            conn,
+            subject_candidate="示例错误码E502",
+            object_candidate="示例登录模块",
+            relation_type="RELATED_TO",
+            reason="not_in_confirmed_ontology",
+            source="faq.md",
+            tenant_id="t1",
+        )
+
+        await approve_review(
+            conn,
+            review_id=review_id,
+            subject_standard_name="示例错误码E502",
+            object_standard_name="示例登录模块",
+            tenant_id="t1",
+            graph_client=FakeGraphClient(),
+            terms=_terms("示例错误码E502", "示例登录模块"),
+            now=_NOW,
+            confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+            allowed_combinations=_ALLOWED_COMBINATIONS,
+            approved_by="alice",
+        )
+
+        assert await _aliases_of(conn, "示例错误码E502") is None
+    finally:
+        await conn.close()
+
+
+async def test_recording_an_alias_keeps_the_ones_already_there():
+    """已经有别名的实体，追加而不是覆盖。
+
+    直接拿合并视图里那份 term.aliases 追加也能让上面第一条通过——但那份是
+    快照，人工改过别名的话这一步会把那次编辑抹掉。所以要以编辑层里的为准。
+    """
+    conn = await _connect()
+    try:
+        await upsert_term_edit(
+            conn, tenant_id="t1", node_key="示例错误码E502",
+            field="aliases", value=["人工早先加的别名"], edited_by="bob",
+        )
+        review_id = await enqueue_for_review(
+            conn,
+            subject_candidate="网关超时示例2.0",
+            object_candidate="示例登录模块",
+            relation_type="RELATED_TO",
+            reason="subject_unresolved",
+            source="faq.md",
+            tenant_id="t1",
+        )
+
+        await approve_review(
+            conn,
+            review_id=review_id,
+            subject_standard_name="示例错误码E502",
+            object_standard_name="示例登录模块",
+            tenant_id="t1",
+            graph_client=FakeGraphClient(),
+            terms=_terms("示例错误码E502", "示例登录模块"),
+            now=_NOW,
+            confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+            allowed_combinations=_ALLOWED_COMBINATIONS,
+            approved_by="alice",
+        )
+
+        assert await _aliases_of(conn, "示例错误码E502") == [
+            "人工早先加的别名",
+            "网关超时示例2.0",
+        ]
     finally:
         await conn.close()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -10,6 +12,9 @@ from app.graphrag.provenance import HUMAN_APPROVED
 from app.graphrag.relation_writer import RelationWriterProtocol
 from app.graphrag.ontology import Term, find_candidate_term_types, resolve_term
 from app.graphrag.ontology_constraints import CombinationKey
+from app.graphrag.term_edits_store import list_term_edits_for_node_key, upsert_term_edit
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS graph_review_queue (
@@ -365,6 +370,59 @@ async def _fetch_pending_row(
     return row_dict
 
 
+async def _record_alias_from_review(
+    conn: aiosqlite.Connection,
+    *,
+    tenant_id: str,
+    term: Term,
+    candidate: str,
+    actor: str,
+) -> None:
+    """把"LLM 抽出来的这个写法 = 这条 Term"沉淀成别名。
+
+    只在候选名确实还不是这条 Term 的任何一个名字时才写——候选名本来就等于
+    标准名（绝大多数情况）时什么都不做，否则每批准一条都会白写一次编辑。
+
+    **走人工编辑层而不是直接改 terms 表**：这是一个人做的判断，跟改名、
+    删除同源，理应跟它们受同一套合并规则管（ETL 重跑不会把它覆盖掉，
+    见 term_merge.apply_edits）。
+
+    写进去的别名在实体详情页可见、可删——这是"默认写入"能成立的前提。
+    判错了会污染以后所有文档的对齐，所以必须有一个看得见的地方能撤销它。
+    每次弹窗问一遍不是更安全的做法：审核员点过一百次之后会习惯性点过去，
+    那个确认就只剩下摩擦，不剩下保护。
+    """
+    candidate = candidate.strip()
+    if not candidate:
+        return
+    lowered = candidate.lower()
+    if lowered == term.standard_name.lower() or any(
+        lowered == alias.lower() for alias in term.aliases
+    ):
+        return
+
+    # 以编辑层里的那份为准：同一条 Term 可能已经被人工改过别名，直接在
+    # term.aliases（合并视图的快照）上追加会把那次编辑覆盖掉。
+    edits = await list_term_edits_for_node_key(conn, tenant_id, term.node_key)
+    current = edits.get("aliases")
+    aliases = list(current) if isinstance(current, list) else list(term.aliases)
+    if any(candidate.lower() == a.lower() for a in aliases):
+        return
+    aliases.append(candidate)
+    await upsert_term_edit(
+        conn,
+        tenant_id=tenant_id,
+        node_key=term.node_key,
+        field="aliases",
+        value=aliases,
+        edited_by=actor,
+    )
+    logger.info(
+        "人工审核确认的写法沉淀为别名：%r → %s（租户 %s）",
+        candidate, term.standard_name, tenant_id,
+    )
+
+
 async def approve_review(
     conn: aiosqlite.Connection,
     *,
@@ -379,6 +437,7 @@ async def approve_review(
     allowed_combinations: set[CombinationKey],
     subject_term_type_hint: str | None = None,
     object_term_type_hint: str | None = None,
+    approved_by: str = "review",
 ) -> None:
     """人工确认候选关系对应的标准名称后，写入图谱并把队列状态标记为已批准。
 
@@ -426,6 +485,21 @@ async def approve_review(
     # 取 node_key，与 app/graphrag/normalization.py 的做法一致。
     subject_node_key = subject_term.node_key
     object_node_key = object_term.node_key
+    # 把这次人工判定沉淀成别名：审核员说"网关超时就是示例错误码E502"时，
+    # 那句话对**以后每一篇文档**都成立，不该只用掉一次。
+    #
+    # 写回去之后，下一次抽取里的"网关超时"会在 resolve_term 的精确匹配阶段
+    # 直接命中——既不进队列，也不依赖召回打分。每判一次，永久消掉一类。
+    #
+    # 不写的话，同一个名字在下一批文档里照样对不齐，照样排队等人再判一遍。
+    await _record_alias_from_review(
+        conn, tenant_id=tenant_id, term=subject_term, candidate=row["subject_candidate"],
+        actor=approved_by,
+    )
+    await _record_alias_from_review(
+        conn, tenant_id=tenant_id, term=object_term, candidate=row["object_candidate"],
+        actor=approved_by,
+    )
     combo = CombinationKey(
         subject=subject_term.term_type,
         relation=row["relation_type"],
