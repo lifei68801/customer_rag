@@ -411,3 +411,30 @@ describe('「创建为新实体」弹窗的焦点', () => {
     expect(document.activeElement).not.toBe(document.body)
   })
 })
+
+describe('两端已能对齐的待审', () => {
+  it('标出来，并说清楚没有替人批准', async () => {
+    // 别名沉淀之后，队列里同名卡住的条目两端都能对上了。标出来是为了让
+    // 审核员知道这一条很轻；而那句"只剩确认关系本身"必须写出来——别名
+    // 只说明名字是谁，不说明关系是真的，不写的话审核员会以为系统已经核实过。
+    byTab.fuzzy = [
+      {
+        ...row(1, 'fuzzy_match_needs_confirmation', '网关超时示例2.0'),
+        auto_alignable: true,
+      } as ReviewRow,
+    ]
+    await renderReviews()
+
+    const badge = await screen.findByTestId('auto-alignable-1')
+    expect(badge.textContent).toMatch(/两端已对齐/)
+    expect(badge.textContent).toMatch(/关系本身/)
+  })
+
+  it('没对齐的条目不出现这个标记', async () => {
+    // 没有这一条的话，"每条都标"也能让上面那条通过。
+    await renderReviews()
+    await screen.findByText(/网关超时示例2.0/)
+
+    expect(screen.queryByTestId('auto-alignable-1')).toBeNull()
+  })
+})

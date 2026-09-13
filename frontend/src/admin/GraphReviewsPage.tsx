@@ -33,6 +33,12 @@ interface PendingReview {
   suggested_object_standard_name: string | null
   subject_type_candidate: string | null
   object_type_candidate: string | null
+  /**
+   * 两端现在都能对上已有实体了（按当前术语表重算的，不是入队时的判断）。
+   * 常见来源：审核员刚判过另一条同名的，那个写法已经沉淀成了别名。
+   * 这一条只剩"扫一眼关系对不对"。可选：老接口不带这个字段。
+   */
+  auto_alignable?: boolean
 }
 
 interface CreateEntityDraft {
@@ -998,6 +1004,20 @@ export function GraphReviewsPage() {
               候选：{review.subject_candidate} —[{review.relation_type}]→{' '}
               {review.object_candidate}（原因：{review.reason}）
             </p>
+            {review.auto_alignable && (
+              // 两端已经填好了，但**没有替你批准**：别名只说明"这个名字是谁"，
+              // 不说明"这条关系是真的"。这句话写出来，免得审核员以为系统已经
+              // 核实过、顺手就点。
+              <p
+                data-testid={`auto-alignable-${review.review_id}`}
+                className="flex flex-wrap items-center gap-2 text-xs text-ink-soft"
+              >
+                <span className="rounded-chip border border-status-success px-1.5 py-0.5 text-status-success">
+                  两端已对齐
+                </span>
+                名字已经按现有实体填好，只剩确认这条关系本身对不对。
+              </p>
+            )}
             {review.reason === 'invalid_relation_type' && (
               <p className="text-xs text-status-error">
                 关系类型不合法，无法批准，请驳回。

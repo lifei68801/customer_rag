@@ -231,6 +231,7 @@ async def list_pending_reviews(
     limit: int | None = None,
     offset: int = 0,
     reasons: list[str] | None = None,
+    terms: list[Term] | None = None,
 ) -> list[dict[str, Any]]:
     """limit=None（默认）返回该租户全部待审核记录，保持 review_cli.py 等
     既有调用方不传这两个参数时的行为不变；管理后台分页时显式传入具体的
@@ -253,7 +254,43 @@ async def list_pending_reviews(
         (tenant_id, *params, limit if limit is not None else -1, offset),
     )
     rows = await cursor.fetchall()
-    return [dict(row) for row in rows]
+    reviews = [dict(row) for row in rows]
+    return reviews if terms is None else [_refresh_suggestions(r, terms) for r in reviews]
+
+
+def _refresh_suggestions(review: dict[str, Any], terms: list[Term]) -> dict[str, Any]:
+    """按**当前**术语表重算这条待审的对齐建议。
+
+    suggested_* 是入队那一刻存下来的，之后再没动过。但术语表一直在变——
+    审核员刚判过的一条会沉淀成别名（见 _record_alias_from_review），本体也
+    可能被补过。于是队列里躺着的条目常常"其实已经能对上了"，却还显示着
+    入队时那份过时的建议，甚至什么都不显示。
+
+    重算而不是加一列标记：标记要靠某个时机去刷，而"术语表变了"没有单一的
+    入口（人工审核、手工建实体、ETL 导入都会变）。读的时候算一次，永远是
+    当前的答案，也不用担心某条路径忘了刷。
+
+    **只填建议，不自动批准。** 队列里一条待审同时包含两个判断：这个名字
+    是谁（对齐），和这条关系是不是真的（正确性）。审核员确认别名只解决了
+    前者——LLM 抽出的这条关系是否属实，仍然没有人看过。自动批准等于把
+    "名字认对了"当成"关系是真的"。
+
+    auto_alignable 给界面用：两端现在都能唯一解析了，这一条只剩"扫一眼
+    关系对不对"，比"还要自己查这个名字是谁"轻得多，值得单独标出来。
+    """
+    refreshed = dict(review)
+    resolved: list[str | None] = []
+    for side in ("subject", "object"):
+        term = resolve_term(
+            review[f"{side}_candidate"],
+            terms,
+            term_type_hint=review.get(f"{side}_type_candidate") or None,
+        )
+        resolved.append(term.standard_name if term is not None else None)
+        if term is not None:
+            refreshed[f"suggested_{side}_standard_name"] = term.standard_name
+    refreshed["auto_alignable"] = all(name is not None for name in resolved)
+    return refreshed
 
 
 async def list_resolved_reviews(

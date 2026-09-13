@@ -129,8 +129,12 @@ async def list_reviews(
         )
     reasons = TAB_REASONS[tab] if tab is not None else None
     if status == "pending":
+        # 传当前术语表进去，让对齐建议按现在的数据重算一遍——入队时存下的
+        # 那份可能已经过时（审核员判过的写法会沉淀成别名，本体也可能补过）。
+        # 见 review_queue._refresh_suggestions。
         reviews = await list_pending_reviews(
-            review_conn, tenant_id=tenant_id, limit=page_size, offset=offset, reasons=reasons
+            review_conn, tenant_id=tenant_id, limit=page_size, offset=offset,
+            reasons=reasons, terms=await list_terms_merged(review_conn, tenant_id),
         )
         # total 跟着 tab 走。不跟的话分页器按全部条数算，用户翻到第二页看到
         # 的是空的，而他以为那里还有东西。

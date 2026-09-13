@@ -1141,3 +1141,113 @@ async def test_recording_an_alias_keeps_the_ones_already_there():
         ]
     finally:
         await conn.close()
+
+
+async def test_pending_list_recomputes_suggestions_against_current_terms():
+    """入队时对不上的名字，术语表后来补了别名之后，建议要跟着更新。
+
+    suggested_* 是入队那一刻存下的。审核员判过一条之后那个写法会沉淀成
+    别名——但队列里其余因为同一个名字卡住的条目，还显示着入队时那份过时的
+    建议（通常是空的）。读的时候按当前术语表重算，它们就自动填好了。
+    """
+    conn = await _connect()
+    try:
+        await enqueue_for_review(
+            conn,
+            subject_candidate="网关超时示例2.0",
+            object_candidate="示例登录模块",
+            relation_type="RELATED_TO",
+            reason="subject_unresolved",
+            source="faq.md",
+            tenant_id="t1",
+        )
+        terms = [
+            Term(tenant_id="t1", node_key="示例错误码E502", standard_name="示例错误码E502",
+                 aliases=["网关超时示例2.0"], term_type=""),
+            Term(tenant_id="t1", node_key="示例登录模块", standard_name="示例登录模块",
+                 aliases=[], term_type=""),
+        ]
+
+        [review] = await list_pending_reviews(conn, tenant_id="t1", terms=terms)
+
+        assert review["suggested_subject_standard_name"] == "示例错误码E502"
+        assert review["auto_alignable"] is True
+    finally:
+        await conn.close()
+
+
+async def test_recomputing_does_not_approve_anything():
+    """只填建议，队列里的条目仍然是待审。
+
+    一条待审同时包含两个判断：名字是谁（对齐），关系是不是真的（正确性）。
+    别名只解决了前者——自动批准等于把"名字认对了"当成"关系是真的"。
+    """
+    conn = await _connect()
+    try:
+        await enqueue_for_review(
+            conn,
+            subject_candidate="示例错误码E502",
+            object_candidate="示例登录模块",
+            relation_type="RELATED_TO",
+            reason="subject_unresolved",
+            source="faq.md",
+            tenant_id="t1",
+        )
+        terms = _terms("示例错误码E502", "示例登录模块")
+
+        await list_pending_reviews(conn, tenant_id="t1", terms=terms)
+
+        # 读完之后再读一次（不带 terms），它还在待审里。
+        assert len(await list_pending_reviews(conn, tenant_id="t1")) == 1
+    finally:
+        await conn.close()
+
+
+async def test_one_end_still_unresolved_is_not_auto_alignable():
+    """只有一端能对上时不标——那一条还是得有人去查另一端是谁。
+
+    没有这一条的话，"只要有一端对上就标"这种实现也能让上面那条通过，
+    而那样标出来的条目并不比别的轻。
+    """
+    conn = await _connect()
+    try:
+        await enqueue_for_review(
+            conn,
+            subject_candidate="示例错误码E502",
+            object_candidate="一个库里没有的模块",
+            relation_type="RELATED_TO",
+            reason="object_unresolved",
+            source="faq.md",
+            tenant_id="t1",
+        )
+
+        [review] = await list_pending_reviews(
+            conn, tenant_id="t1", terms=_terms("示例错误码E502")
+        )
+
+        assert review["suggested_subject_standard_name"] == "示例错误码E502"
+        assert review["auto_alignable"] is False
+    finally:
+        await conn.close()
+
+
+async def test_without_terms_the_list_is_unchanged():
+    """不传术语表时行为跟以前一样——CLI 等既有调用方不受影响。"""
+    conn = await _connect()
+    try:
+        await enqueue_for_review(
+            conn,
+            subject_candidate="网关超时示例2.0",
+            object_candidate="示例登录模块",
+            relation_type="RELATED_TO",
+            reason="subject_unresolved",
+            source="faq.md",
+            tenant_id="t1",
+        )
+
+        [review] = await list_pending_reviews(conn, tenant_id="t1")
+
+        assert "auto_alignable" not in review
+        assert review["suggested_subject_standard_name"] is None
+    finally:
+        await conn.close()
