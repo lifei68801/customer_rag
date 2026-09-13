@@ -1,3 +1,4 @@
+import { Trash2 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { useConfirm } from '../admin/ConfirmContext'
 import { Tooltip } from '../admin/Tooltip'
@@ -16,25 +17,6 @@ interface ChatSidebarProps {
   onDeleteSession: (sessionId: string) => Promise<void>
   /** 钉在侧边栏底部的东西（前台放账号块）。侧边栏自己不关心它是什么。 */
   footer?: ReactNode
-}
-
-function TrashIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-4 w-4"
-      aria-hidden="true"
-    >
-      <path d="M3 6h18" />
-      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-    </svg>
-  )
 }
 
 export function ChatSidebar({
@@ -88,14 +70,17 @@ export function ChatSidebar({
           {sessions.map((session) => {
             const isActive = session.session_id === activeSessionId
             return (
-              <li key={session.session_id} className="group flex items-stretch gap-1">
+              <li key={session.session_id} className="flex items-stretch gap-1">
                 <button
                   type="button"
                   onClick={() => onSelectSession(session.session_id)}
-                  className={`min-h-[44px] flex-1 cursor-pointer truncate rounded-control border border-subtle px-3 py-2 text-left text-sm font-bold transition ${focusRing} ${
+                  // 只有当前会话是实心的，其余安静。此前每一条都是
+                  // `border + bg-paper + font-bold`——二十条会话就是二十个
+                  // 描边加粗块，全都在喊，而"我现在在哪一条"反而看不出来。
+                  className={`min-h-[44px] flex-1 cursor-pointer truncate rounded-control px-3 py-2 text-left text-sm transition ${focusRing} ${
                     isActive
-                      ? 'bg-accent-primary text-on-accent'
-                      : 'bg-paper text-ink hover:bg-interactive-hover'
+                      ? 'bg-accent-primary font-medium text-on-accent'
+                      : 'font-normal text-ink-soft hover:bg-interactive-hover hover:text-ink'
                   }`}
                   title={session.title}
                 >
@@ -107,9 +92,12 @@ export function ChatSidebar({
                     onClick={() => handleDelete(session)}
                     disabled={deletingId === session.session_id}
                     aria-label={`删除会话「${session.title}」`}
-                    className={`flex min-h-[44px] w-10 flex-shrink-0 cursor-pointer items-center justify-center rounded-control border border-subtle bg-paper text-ink transition hover:bg-status-error-hover active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    // 常驻可见而不是悬停才出现：悬停才出现的话，用触屏的人
+                    // 根本够不着它（§hover-vs-tap）。但它不该跟会话本身抢
+                    // 注意力——平时是弱色，悬停/聚焦时才转成危险色。
+                    className={`flex min-h-[44px] w-10 flex-shrink-0 cursor-pointer items-center justify-center rounded-control text-ink-soft transition hover:bg-status-error-hover hover:text-status-error active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                   >
-                    <TrashIcon />
+                    <Trash2 aria-hidden="true" className="h-4 w-4" />
                   </button>
                 </Tooltip>
               </li>
