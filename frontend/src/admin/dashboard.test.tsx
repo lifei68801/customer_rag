@@ -252,6 +252,35 @@ describe('看板', () => {
     await waitFor(() => expect(card('fast').getByText('没有待处理的')).toBeTruthy())
   })
 
+  it('抽取质量：近 30 天每篇文档平均待审、审核沉淀别名的命中数', async () => {
+    // 这两个数回答的是"对齐/融合的改动到底有没有用"——召回进 prompt、别名
+    // 沉淀如果有效，前者该降、后者该涨。没有它们，改进只能凭感觉。
+    statsResponders.fast = () =>
+      jsonResponse({
+        ...stats('fast'),
+        review_alias_count: 12,
+        review_alias_hits: 340,
+        recent_reviews_per_document: 2.5,
+      })
+    await renderDashboard()
+
+    const block = await waitFor(() => card('fast').getByTestId('extraction-quality'))
+    expect(block.textContent).toMatch(/2\.5/)
+    expect(block.textContent).toMatch(/12/)
+    expect(block.textContent).toMatch(/340/)
+  })
+
+  it('两个数都没有时整块不出现', async () => {
+    // 老接口不带这几个字段、或者窗口里没导过文档也没沉淀过别名：摆一行"—"
+    // 只是噪音。
+    statsResponders.fast = () =>
+      jsonResponse({ ...stats('fast'), review_alias_count: 0, recent_reviews_per_document: null })
+    await renderDashboard()
+    await waitFor(() => expect(card('fast').getByText('20,017')).toBeTruthy())
+
+    expect(card('fast').queryByTestId('extraction-quality')).toBeNull()
+  })
+
   it('卡片上有「表格行数」', async () => {
     // spec §5 卡片的第四格。少了它用户分不清 2 万个实体里多少是表格导进来的、
     // 多少是文档抽出来的——而这两条路径的修法完全不同。

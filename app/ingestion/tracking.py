@@ -97,6 +97,24 @@ async def list_tracked_files(
     return [dict(row) for row in rows]
 
 
+async def count_documents_ingested_since(
+    conn: aiosqlite.Connection, *, tenant_id: str, since: str
+) -> int:
+    """since 之后（含）最近一次导入过的文档数。
+
+    last_ingested_at 是**最近一次**导入时间，重导会覆盖。所以一篇文档在
+    窗口里导了三次，这里只算一篇——而审核队列那边三次各进一批。拿两个数
+    相除得到的"每篇文档平均待审"会在频繁重导时偏高。这是这张表的形状决定
+    的，不是算错。
+    """
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM ingested_documents WHERE tenant_id = ? AND last_ingested_at >= ?",
+        (tenant_id, since),
+    )
+    row = await cursor.fetchone()
+    return row[0]
+
+
 async def count_tracked_files(conn: aiosqlite.Connection, *, tenant_id: str) -> int:
     cursor = await conn.execute(
         "SELECT COUNT(*) FROM ingested_documents WHERE tenant_id = ?", (tenant_id,)

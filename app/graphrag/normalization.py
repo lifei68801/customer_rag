@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 import aiosqlite
 
+from app.graphrag.alias_usage import record_alias_hit
 from app.graphrag.ontology import Term, resolve_term
 from app.graphrag.ontology_constraints import CombinationKey
 from app.graphrag.provenance import AUTO_MERGED
@@ -214,6 +215,25 @@ async def normalize_and_write_relations(
                     object_type_candidate=relation.get("object_type") or None,
                 )
             continue
+        # 两端都对上了。如果某一端靠的是别名（而不是标准名本身），而那个别名
+        # 恰好是审核沉淀下来的，给它记一次命中——这是"一次判定管到以后"有没有
+        # 真的在起作用的直接证据。
+        #
+        # 记在本体范围检查**之前**：那一刻别名已经完成了它的工作（对齐）。
+        # 这条关系之后被本体挡下来，是关系类型的事，不是对齐的事。
+        if review_conn is not None:
+            for candidate, term in (
+                (relation["subject"], subject_term),
+                (relation["object"], object_term),
+            ):
+                # 这个判断只是省掉一次必然什么都不改的 UPDATE，不是正确性条件：
+                # record_alias_hit 只更新别名等于候选名的那一行，而标准名本身
+                # 从来不会被记成审核别名（_record_alias_from_review 会跳过它）。
+                if candidate.strip().lower() != term.standard_name.lower():
+                    await record_alias_hit(
+                        review_conn, tenant_id=tenant_id, node_key=term.node_key,
+                        candidate=candidate,
+                    )
         subject_type = relation.get("subject_type", "")
         object_type = relation.get("object_type", "")
         combo = CombinationKey(

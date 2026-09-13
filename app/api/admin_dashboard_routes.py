@@ -37,6 +37,11 @@ class DomainStats(BaseModel):
     sheet_row_count: int
     #: 失效的手写引导问题数（spec 前台硬规矩之二）。>0 时卡片上出一条待办。
     stale_question_count: int
+    #: 审核沉淀的别名条数 / 后续命中次数。见 app/graphrag/alias_usage.py。
+    review_alias_count: int
+    review_alias_hits: int
+    #: 近 30 天平均每篇文档进了几条关系待审；窗口里没导过文档时为 null。
+    recent_reviews_per_document: float | None
 
 
 # 领域清单。**非租户**路径：「我能看到哪些领域」对每个角色都要回答得出来，
@@ -130,4 +135,7 @@ async def get_domain_stats(
         pending_review_count=stats.pending_review_count,
         sheet_row_count=stats.sheet_row_count,
         stale_question_count=stats.stale_question_count,
+        review_alias_count=stats.review_alias_count,
+        review_alias_hits=stats.review_alias_hits,
+        recent_reviews_per_document=stats.recent_reviews_per_document,
     )

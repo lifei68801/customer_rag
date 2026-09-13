@@ -17,6 +17,7 @@ from app.graphrag.ontology_lifecycle import (
     confirm_ontology,
     ensure_ontology_schema,
 )
+from app.graphrag.alias_usage import record_alias_hit, record_review_alias
 from app.graphrag.attribute_conflicts import (
     ensure_attribute_conflicts_schema,
     record_conflict,
@@ -142,6 +143,10 @@ async def test_collects_all_four_numbers_from_the_right_sources():
             pending_review_count=3,
             sheet_row_count=0,
             stale_question_count=0,
+            review_alias_count=0,
+            review_alias_hits=0,
+            # 5 篇文档、3 条待审，都是刚写进去的，落在近 30 天窗口里。
+            recent_reviews_per_document=0.6,
         )
     finally:
         await review_conn.close()
@@ -369,6 +374,84 @@ async def test_a_tenant_without_a_persona_row_has_zero_stale_questions():
         )
 
         assert stats.stale_question_count == 0
+    finally:
+        await review_conn.close()
+        await ingestion_conn.close()
+
+
+async def test_recent_rate_is_none_when_no_document_was_ingested_in_the_window():
+    """窗口里没导过文档时是 None，不是 0。
+
+    0 是在说"导进来的都不用人看"——那是一句没有依据的话。也不能拿全时段的
+    文档数兜底：那会把旧文档算进分母，数字看起来比实际好。
+    """
+    review_conn = await _review_conn()
+    ingestion_conn = await _ingestion_conn()
+    try:
+        await _seed_documents(ingestion_conn, "demo", 4)
+        await ingestion_conn.execute(
+            "UPDATE ingested_documents SET last_ingested_at = '2020-01-01 00:00:00'"
+        )
+        await ingestion_conn.commit()
+
+        stats = await collect_tenant_stats(
+            review_conn, ingestion_conn, FakeGraph(), tenant_id="demo"
+        )
+
+        assert stats.recent_reviews_per_document is None
+    finally:
+        await review_conn.close()
+        await ingestion_conn.close()
+
+
+async def test_old_reviews_fall_out_of_the_recent_rate():
+    """窗口外进队的待审不算。
+
+    全时段平均会把最近的改进稀释掉：一个跑了半年的租户这周抽取准了很多，
+    全时段的数几乎不动——而这个数存在就是为了看出改动有没有效果。
+    """
+    review_conn = await _review_conn()
+    ingestion_conn = await _ingestion_conn()
+    try:
+        await _seed_documents(ingestion_conn, "demo", 2)
+        await _seed_pending_reviews(review_conn, "demo", 6)
+        await review_conn.execute(
+            "UPDATE graph_review_queue SET created_at = '2020-01-01 00:00:00' "
+            "WHERE review_id IN (SELECT review_id FROM graph_review_queue LIMIT 4)"
+        )
+        await review_conn.commit()
+
+        stats = await collect_tenant_stats(
+            review_conn, ingestion_conn, FakeGraph(), tenant_id="demo"
+        )
+
+        # 6 条里 4 条是老的，窗口里只剩 2 条；2 篇文档 → 平均 1.0。
+        assert stats.recent_reviews_per_document == 1.0
+    finally:
+        await review_conn.close()
+        await ingestion_conn.close()
+
+
+async def test_alias_numbers_come_from_the_review_alias_record():
+    review_conn = await _review_conn()
+    ingestion_conn = await _ingestion_conn()
+    try:
+        await record_review_alias(
+            review_conn, tenant_id="demo", node_key="产品:可乐", alias="coke", created_by="alice"
+        )
+        await record_review_alias(
+            review_conn, tenant_id="demo", node_key="产品:雪碧", alias="sprite", created_by="alice"
+        )
+        for _ in range(3):
+            await record_alias_hit(
+                review_conn, tenant_id="demo", node_key="产品:可乐", candidate="COKE"
+            )
+
+        stats = await collect_tenant_stats(
+            review_conn, ingestion_conn, FakeGraph(), tenant_id="demo"
+        )
+
+        assert (stats.review_alias_count, stats.review_alias_hits) == (2, 3)
     finally:
         await review_conn.close()
         await ingestion_conn.close()

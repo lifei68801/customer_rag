@@ -210,6 +210,10 @@ def test_stats_endpoint_returns_all_four_numbers(dashboard_conns):
         "pending_review_count": 3,
         "sheet_row_count": 0,
         "stale_question_count": 0,
+        "review_alias_count": 0,
+        "review_alias_hits": 0,
+        # 5 篇文档、3 条待审，都是刚写的，落在近 30 天窗口里。
+        "recent_reviews_per_document": 0.6,
     }
 
 

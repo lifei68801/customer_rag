@@ -5,13 +5,16 @@ from typing import Protocol
 
 import aiosqlite
 
+from datetime import datetime, timedelta, timezone
+
+from app.graphrag.alias_usage import summarize_review_aliases
 from app.graphrag.attribute_conflicts import count_conflicts
 from app.graphrag.duplicate_review_queue import count_pending_duplicate_suggestions
-from app.graphrag.review_queue import count_pending_reviews
+from app.graphrag.review_queue import count_pending_reviews, count_reviews_enqueued_since
 from app.graphrag.question_validation import find_unmatched_questions
 from app.graphrag.tenant_personas_store import get_questions
 from app.graphrag.terms_store import count_terms_merged, list_terms_merged
-from app.ingestion.tracking import count_tracked_files
+from app.ingestion.tracking import count_documents_ingested_since, count_tracked_files
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,19 @@ class TenantStats:
     #: 「失效了必须有人知道」）。口径与 GET /{tenant_id}/persona/stale-questions
     #: 是同一个函数，两处必须一个数。
     stale_question_count: int
+    #: 审核沉淀下来的别名条数，以及它们在之后的抽取里一共被命中了几次。
+    #: 口径见 app/graphrag/alias_usage.py。
+    review_alias_count: int
+    review_alias_hits: int
+    #: 近 RECENT_WINDOW_DAYS 天里，平均每篇文档进了几条关系待审。窗口里没有
+    #: 导入过文档时是 None——不是 0：0 是在说"导进来的都不用人看"，那是
+    #: 一句没有依据的话。
+    recent_reviews_per_document: float | None
+
+
+#: 入队率的统计窗口。全时段平均会把最近的改进稀释掉：一个跑了半年的租户，
+#: 这周抽取准了很多，全时段的数几乎不动。
+RECENT_WINDOW_DAYS = 30
 
 
 class EdgeCounter(Protocol):
@@ -97,6 +113,21 @@ async def collect_tenant_stats(
         if handwritten
         else 0
     )
+    review_alias_count, review_alias_hits = await summarize_review_aliases(
+        review_conn, tenant_id=tenant_id
+    )
+    since = (datetime.now(timezone.utc) - timedelta(days=RECENT_WINDOW_DAYS)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    recent_documents = await count_documents_ingested_since(
+        ingestion_conn, tenant_id=tenant_id, since=since
+    )
+    recent_reviews = await count_reviews_enqueued_since(
+        review_conn, tenant_id=tenant_id, since=since
+    )
+    recent_reviews_per_document = (
+        recent_reviews / recent_documents if recent_documents > 0 else None
+    )
     return TenantStats(
         tenant_id=tenant_id,
         term_count=term_count,
@@ -105,4 +136,7 @@ async def collect_tenant_stats(
         pending_review_count=pending_review_count,
         sheet_row_count=sheet_row_count,
         stale_question_count=stale_question_count,
+        review_alias_count=review_alias_count,
+        review_alias_hits=review_alias_hits,
+        recent_reviews_per_document=recent_reviews_per_document,
     )

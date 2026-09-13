@@ -12,6 +12,7 @@ from app.graphrag.provenance import HUMAN_APPROVED
 from app.graphrag.relation_writer import RelationWriterProtocol
 from app.graphrag.ontology import Term, find_candidate_term_types, resolve_term
 from app.graphrag.ontology_constraints import CombinationKey
+from app.graphrag.alias_usage import ensure_alias_usage_schema, record_review_alias
 from app.graphrag.term_edits_store import list_term_edits_for_node_key, upsert_term_edit
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,9 @@ async def ensure_review_schema(conn: aiosqlite.Connection) -> None:
     """幂等建表+迁移，可重复调用。"""
     await conn.executescript(_SCHEMA_SQL)
     await conn.commit()
+    # 审核沉淀别名的用量表跟审核队列同源（别名是批准时写的），跟着一起建，
+    # 调用方不用多记一件事。
+    await ensure_alias_usage_schema(conn)
     # tenant_id 迁移历史数据默认回填 'demo'——项目里目前唯一真实产生过
     # 数据的租户就是 demo，见 docs/superpowers/specs/2026-08-08-admin-backend-design.md 第2节。
     await add_column_if_missing(
@@ -222,6 +226,22 @@ def _reason_clause(reasons: list[str] | None) -> tuple[str, list[str]]:
         return "", []
     placeholders = ", ".join("?" for _ in reasons)
     return f" AND reason IN ({placeholders})", list(reasons)
+
+
+async def count_reviews_enqueued_since(
+    conn: aiosqlite.Connection, *, tenant_id: str, since: str
+) -> int:
+    """since 之后（含）进过关系审核队列的条数，不论现在是什么状态。
+
+    不论状态：批准掉的、驳回掉的也算。要回答的是"抽取产出了多少需要人看的
+    东西"，处理掉了不代表它当初没进来。
+    """
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM graph_review_queue WHERE tenant_id = ? AND created_at >= ?",
+        (tenant_id, since),
+    )
+    row = await cursor.fetchone()
+    return int(row[0])
 
 
 async def list_pending_reviews(
@@ -453,6 +473,11 @@ async def _record_alias_from_review(
         field="aliases",
         value=aliases,
         edited_by=actor,
+    )
+    # 另记一笔"这是审核沉淀的"：别名本身只是 Term 的一列字符串，看不出来源，
+    # 看板上"沉淀的别名后来用上了几次"就无从回答。
+    await record_review_alias(
+        conn, tenant_id=tenant_id, node_key=term.node_key, alias=candidate, created_by=actor
     )
     logger.info(
         "人工审核确认的写法沉淀为别名：%r → %s（租户 %s）",

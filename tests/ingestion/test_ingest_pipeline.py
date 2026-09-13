@@ -35,6 +35,9 @@ async def _confirm_error_code_module_related_to_ontology(
     normalize_and_write_relations 的确认范围校验所需的最小 schema。
     """
     await ensure_ontology_schema(conn)
+    # 这个连接同时充当审核库：对齐时会给审核沉淀的别名记命中，需要审核
+    # 那几张表在。生产里 ontology_store 建库时一起建。
+    await ensure_review_schema(conn)
     await checkout_draft(conn, tenant_id)
     await create_term_type(conn, tenant_id, value="error_code", actor="alice")
     await create_term_type(conn, tenant_id, value="module", actor="alice")
@@ -223,6 +226,7 @@ async def test_ingest_markdown_file_skips_graph_extraction_when_ontology_unconfi
     graph_client = FakeGraphClient()
     graph_review_conn = await aiosqlite.connect(":memory:")
     await ensure_ontology_schema(graph_review_conn)
+    await ensure_review_schema(graph_review_conn)
     # 只建表，不 checkout_draft/confirm——该租户没有任何 confirmed 状态的
     # tenant_relation_types 行，is_ontology_confirmed 应返回 False。
 

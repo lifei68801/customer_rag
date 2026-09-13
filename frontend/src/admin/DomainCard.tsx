@@ -24,6 +24,11 @@ interface DomainStats {
   pending_review_count: number
   sheet_row_count: number
   stale_question_count: number
+  /** 审核沉淀的别名条数 / 它们在之后的抽取里一共被命中几次。可选：老接口不带。 */
+  review_alias_count?: number
+  review_alias_hits?: number
+  /** 近 30 天平均每篇文档进几条关系待审；窗口里没导过文档时为 null。 */
+  recent_reviews_per_document?: number | null
 }
 
 /**
@@ -192,6 +197,8 @@ export function DomainCard({ domain }: { domain: Domain }) {
         )}
       </dl>
 
+      <ExtractionQuality stats={stats} />
+
       {/* 失效的手写引导问题（spec 前台硬规矩之二：失效了必须有人知道）。
           只在数字人配置页能看见的话，要用户主动去翻——那正是「默默消失」。
           0 时不显示：恒显示的话用户很快就不看它了。 */}
@@ -237,6 +244,46 @@ export function DomainCard({ domain }: { domain: Domain }) {
 }
 
 const buttonClass = `min-h-[36px] cursor-pointer self-start rounded-control border border-subtle bg-paper px-3 text-sm font-bold text-ink transition hover:bg-interactive-hover disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`
+
+/**
+ * 抽取质量的两个数：这一轮对齐/融合改动到底有没有用。
+ *
+ * 不跟上面那些规模数字放在一起：它们回答的是"这里有多少东西"，这两个回答
+ * 的是"知识构建的过程有没有在变好"。
+ *
+ * - **每篇文档平均待审**：召回进 prompt、别名沉淀如果有效，这个数该降。
+ *   只看近 30 天——全时段平均会把最近的改进稀释掉。
+ * - **审核沉淀的别名被命中几次**："一次判定管到以后"的直接证据。沉淀了
+ *   一堆却一次都没命中，说明那些判定没被复用上。
+ *
+ * 一个数字都没有（老接口、或者两个都没数据）时整块不出现，不摆一行"—"。
+ */
+function ExtractionQuality({ stats }: { stats: DomainStats }) {
+  const rate = stats.recent_reviews_per_document
+  const aliasCount = stats.review_alias_count ?? 0
+  const aliasHits = stats.review_alias_hits ?? 0
+  const hasRate = rate !== undefined && rate !== null
+  if (!hasRate && aliasCount === 0) return null
+
+  return (
+    <div data-testid="extraction-quality" className="flex flex-col gap-1 text-xs text-ink-soft">
+      {hasRate && (
+        <p>
+          近 30 天每篇文档平均待审{' '}
+          <span className="font-mono tabular-nums text-ink">{rate.toFixed(1)}</span> 条
+        </p>
+      )}
+      {aliasCount > 0 && (
+        <p>
+          审核沉淀别名{' '}
+          <span className="font-mono tabular-nums text-ink">{aliasCount.toLocaleString()}</span>{' '}
+          条，之后被命中{' '}
+          <span className="font-mono tabular-nums text-ink">{aliasHits.toLocaleString()}</span> 次
+        </p>
+      )}
+    </div>
+  )
+}
 
 function Stat({ label, value }: { label: string; value: number }) {
   return (

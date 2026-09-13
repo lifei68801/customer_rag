@@ -8,6 +8,7 @@ from app.graphrag.normalization import (
     resolve_to_standard_name,
 )
 from app.graphrag.ontology import Term
+from app.graphrag.alias_usage import record_review_alias, summarize_review_aliases
 from app.graphrag.review_queue import ensure_review_schema, list_pending_reviews
 
 _NOW = datetime(2026, 8, 12, 12, 0, 0)
@@ -680,3 +681,67 @@ def test_find_fuzzy_candidate_standard_name_scores_case_insensitively():
 
 def test_find_fuzzy_candidate_standard_name_scores_alias_case_insensitively():
     assert find_fuzzy_candidate_standard_name("COKE", _ENGLISH_TERMS) == "Coca-Cola"
+
+
+async def test_a_review_sourced_alias_gets_a_hit_when_it_does_the_aligning():
+    """审核沉淀的别名在后续抽取里帮上了忙，记一次命中。
+
+    这是"一次判定管到以后"有没有真的在起作用的直接证据。不记的话，看板上
+    那个数永远是 0，而沉淀别名这件事到底有没有用只能凭感觉。
+    """
+    review_conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(review_conn)
+    try:
+        # "网关超时"是审核沉淀的；"认证模块"是建模时手填的（没登记）。
+        await record_review_alias(
+            review_conn, tenant_id="t1", node_key="错误码E502",
+            alias="网关超时", created_by="alice",
+        )
+        relations = [
+            {
+                "subject": "网关超时", "subject_type": "error_code",
+                "object": "认证模块", "object_type": "module",
+                "relation_type": "RELATED_TO",
+            }
+        ]
+
+        await normalize_and_write_relations(
+            relations, terms=_TERMS, graph_client=FakeGraphClient(), source="a.md",
+            tenant_id="t1", now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+            allowed_combinations=_ALLOWED_COMBINATIONS, review_conn=review_conn,
+        )
+
+        # 只有审核沉淀的那一条记了命中：手填别名"认证模块"也对齐了一端，但它
+        # 不在记录里——口径要回答的是"审核的沉淀有没有用"，把手填的混进来
+        # 就回答不了。
+        assert await summarize_review_aliases(review_conn, tenant_id="t1") == (1, 1)
+    finally:
+        await review_conn.close()
+
+
+async def test_resolving_by_the_standard_name_itself_is_not_an_alias_hit():
+    """原文写的就是标准名时，不算别名命中——那次对齐跟别名无关。"""
+    review_conn = await aiosqlite.connect(":memory:")
+    await ensure_review_schema(review_conn)
+    try:
+        await record_review_alias(
+            review_conn, tenant_id="t1", node_key="错误码E502",
+            alias="网关超时", created_by="alice",
+        )
+        relations = [
+            {
+                "subject": "错误码E502", "subject_type": "error_code",
+                "object": "登录模块", "object_type": "module",
+                "relation_type": "RELATED_TO",
+            }
+        ]
+
+        await normalize_and_write_relations(
+            relations, terms=_TERMS, graph_client=FakeGraphClient(), source="a.md",
+            tenant_id="t1", now=_NOW, confirmed_relation_types=_CONFIRMED_RELATION_TYPES,
+            allowed_combinations=_ALLOWED_COMBINATIONS, review_conn=review_conn,
+        )
+
+        assert await summarize_review_aliases(review_conn, tenant_id="t1") == (1, 0)
+    finally:
+        await review_conn.close()

@@ -3,6 +3,7 @@ from datetime import datetime
 import aiosqlite
 import pytest
 
+from app.graphrag.alias_usage import summarize_review_aliases
 from app.graphrag.ontology import Term
 from app.graphrag.term_edits_store import (
     ensure_term_edits_schema,
@@ -1058,6 +1059,8 @@ async def test_approving_records_the_candidate_spelling_as_an_alias():
         )
 
         assert await _aliases_of(conn, "示例错误码E502") == ["网关超时示例2.0"]
+        # 另记一笔"这是审核沉淀的"，看板靠它回答"沉淀的别名后来用上了几次"。
+        assert await summarize_review_aliases(conn, tenant_id="t1") == (1, 0)
     finally:
         await conn.close()
 
