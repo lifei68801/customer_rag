@@ -1,5 +1,5 @@
 import { Building2, ChevronDown, Menu, SquareArrowOutUpRight, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { NAV_GROUPS, groupIdForPath, routeRequiresTenant } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
@@ -41,6 +41,31 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
  * TenantProvider 是 AdminLayout 自己渲染的，同一个组件体里拿不到自己
  * 提供的 context。
  */
+/**
+ * 换页之后把焦点挪到主内容区。
+ *
+ * SPA 换页时浏览器不动焦点——它还停在刚点过的那条导航链接上。于是用键盘
+ * 或读屏的人每进一个页面，都要从侧边栏第 N 项开始，重新 Tab 穿过剩下的
+ * 十几条链接才够得着内容；读屏软件也不会播报"页面变了"。
+ *
+ * 只在 pathname 变化时动，不在首次挂载时动：刚进来就抢焦点会打断用户自己
+ * 的操作（比如他正要点账号菜单）。
+ */
+function useFocusMainOnNavigate(pathname: string) {
+  const mainRef = useRef<HTMLElement>(null)
+  const firstRender = useRef(true)
+
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false
+      return
+    }
+    mainRef.current?.focus()
+  }, [pathname])
+
+  return mainRef
+}
+
 function AdminNav() {
   const { pathname, search } = useLocation()
   const { isExpanded, toggle } = useNavGroups(pathname)
@@ -129,6 +154,7 @@ function NoTenantNotice() {
 export function AdminLayout() {
   const { status, logout, currentTenantId } = useAdminAuth()
   const { pathname } = useLocation()
+  const mainRef = useFocusMainOnNavigate(pathname)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   // 换页面就关：抽屉的用途是选一个去处，选完还挡着等于每次都要多点一下。
@@ -171,6 +197,16 @@ export function AdminLayout() {
         {/* 挂在两个 Provider 内部——命令面板要调用 TenantContext /
             DensityContext / SkinContext 的方法，挂在外面拿不到。 */}
         <CommandPalette />
+        {/* 跳到主内容：平时看不见，Tab 一下就出现在左上角。
+            没有它的话，用键盘的人每换一页都要从侧边栏第一条开始，穿过
+            十六条导航链接才够得着内容。放在最前面，它必须是第一个可聚焦
+            元素，否则就失去意义。 */}
+        <a
+          href="#main-content"
+          className={`sr-only z-50 rounded-control bg-accent-primary px-4 py-2 text-sm font-bold text-on-accent focus:not-sr-only focus:absolute focus:left-3 focus:top-3 ${focusRing}`}
+        >
+          跳到主内容
+        </a>
         <div className="flex min-h-dvh flex-col bg-paper">
           {/* 顶栏跨满整个宽度，和前台那条同一个位置、同一个形状。右端是
               「返回前台」，正对前台右端的「管理后台」——两个方向的入口落
@@ -231,7 +267,14 @@ export function AdminLayout() {
                 <AccountMenu onLogout={logout} />
               </div>
             </aside>
-            <main className="min-w-0 flex-1 overflow-y-auto p-6">
+            <main
+              id="main-content"
+              ref={mainRef}
+              // tabIndex={-1}：让它能被脚本聚焦，但不进 Tab 顺序（进了的话
+              // 每页多一次无意义的停留）。
+              tabIndex={-1}
+              className={`min-w-0 flex-1 overflow-y-auto p-6 ${focusRing}`}
+            >
               {/* 侧边栏和账号块留在原位（上面那个 aside 不受这个分支影响）
                   ——租户切换器就在账号块里，把它一起挡住等于没有退路。 */}
               {currentTenantId === null && routeRequiresTenant(pathname) ? (

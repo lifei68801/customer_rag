@@ -119,7 +119,10 @@ export function DomainCard({ domain }: { domain: Domain }) {
         className="grid grid-cols-2 gap-3"
       >
         {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="h-10 animate-pulse rounded-control bg-interactive-hover" />
+          <div
+              key={i}
+              className="h-10 animate-pulse rounded-control bg-interactive-hover motion-reduce:animate-none"
+            />
         ))}
       </div>,
     )
