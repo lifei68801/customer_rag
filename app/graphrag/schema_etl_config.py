@@ -117,12 +117,57 @@ def _parse_relation_mapping(raw: dict) -> RelationMapping:
         ) from e
 
 
-def load_schema_etl_config(path: Path) -> SchemaETLConfig:
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+def parse_schema_etl_config(text: str, *, origin: str = "<yaml>") -> SchemaETLConfig:
+    """从 YAML 文本解析。origin 只用于报错里指出这段 YAML 来自哪儿。"""
+    data = yaml.safe_load(text)
     if not isinstance(data, dict) or "tenant_id" not in data:
-        raise InvalidSchemaETLConfigError(f"配置文件缺少 tenant_id: {path}")
+        raise InvalidSchemaETLConfigError(f"配置文件缺少 tenant_id: {origin}")
     return SchemaETLConfig(
         tenant_id=data["tenant_id"],
         entities=[_parse_entity_mapping(raw) for raw in data.get("entities") or []],
         relations=[_parse_relation_mapping(raw) for raw in data.get("relations") or []],
     )
+
+
+def summarize_schema_etl_config(config: SchemaETLConfig) -> dict:
+    """给界面看的映射摘要：这份映射会怎么处理一张表。
+
+    表格导入页在「运行」按钮上方列出它——哪列当身份键、哪个属性挂在哪个实体
+    下、实体之间连什么关系。此前那个表单只说"传入数据文件即可运行"，用户
+    没看到过映射会做什么就点了运行；真实事故里邮编挂在了客户名下，同名客户
+    邮编不同，ETL 拒绝写入——而这件事在摘要里一眼能看出来。
+
+    只给列名和类型名这类界面能直接展示的东西。node_key 的稳定码分配规则
+    （AllocatedCodeNodeKeyPart）对用户来说就是"按 X 列分配编号"，展示成那样。
+    """
+    entities = []
+    for e in config.entities:
+        key_columns = []
+        for part in e.node_key_parts:
+            if isinstance(part, ColumnNodeKeyPart):
+                key_columns.append(part.column)
+            else:
+                key_columns.append(f"按「{part.raw_value_column}」分配编号")
+        entities.append(
+            {
+                "term_type": e.term_type,
+                "source_file": e.source_file,
+                "key_columns": key_columns,
+                "name_columns": list(e.standard_name_parts),
+                # 属性：{字段名: 源列}。界面按"源列 → 挂到这个实体的 字段名"展示。
+                "attributes": dict(e.field_mappings),
+            }
+        )
+    relations = [
+        {
+            "relation_type": r.relation_type,
+            "subject_term_type": r.subject_term_type,
+            "object_term_type": r.object_term_type,
+        }
+        for r in config.relations
+    ]
+    return {"entities": entities, "relations": relations}
+
+
+def load_schema_etl_config(path: Path) -> SchemaETLConfig:
+    return parse_schema_etl_config(path.read_text(encoding="utf-8"), origin=str(path))

@@ -202,6 +202,59 @@ describe('已有映射时只传数据文件就能跑', () => {
     expect(await screen.findByTestId('run-with-stored-mapping')).toBeTruthy()
   })
 
+  it('运行表单里先摆出映射摘要：哪列是身份键、哪列挂在哪个实体下', async () => {
+    // 真实事故：邮编挂在「客户名」下，同名客户邮编不同，跑批被拒。表单此前只
+    // 说"传数据文件即可运行"，用户没看过映射就点了。摘要要把这件事直接摆出来。
+    signIn('admin')
+    stubEtlMapping({
+      config_yaml: 'entities: []',
+      source_file_name: 'soft_drink_sales.xlsx',
+      created_at: '2026-09-11T00:00:00',
+      summary: {
+        entities: [
+          {
+            term_type: 'Customer Name',
+            source_file: 'soft_drink_sales.xlsx',
+            key_columns: ['Customer Name'],
+            name_columns: ['Customer Name'],
+            attributes: { Customer_Zip_Code: 'Customer Zip Code' },
+          },
+          {
+            term_type: 'Order ID',
+            source_file: 'soft_drink_sales.xlsx',
+            key_columns: ['Order ID'],
+            name_columns: ['Order ID'],
+            attributes: {},
+          },
+        ],
+        relations: [
+          { relation_type: 'placed_by', subject_term_type: 'Order ID', object_term_type: 'Customer Name' },
+        ],
+      },
+    })
+    renderAt(ADMIN_ROUTES.etl)
+    const form = await screen.findByTestId('run-with-stored-mapping')
+    const summary = within(form).getByTestId('mapping-summary')
+    // 邮编那一行必须跟「Customer Name」挂在同一个条目里，不是随便出现在页面上。
+    const customerRow = within(summary).getByText('Customer Name', { selector: '.font-bold' }).closest('li')!
+    expect(within(customerRow).getByText('Customer Zip Code')).toBeTruthy()
+    expect(within(summary).getByText(/Order ID —placed_by→ Customer Name/)).toBeTruthy()
+  })
+
+  it('存好的 YAML 解析不出摘要时，表单照常可用、不画摘要', async () => {
+    signIn('admin')
+    stubEtlMapping({
+      config_yaml: 'entities: []',
+      source_file_name: 'soft_drink_sales.xlsx',
+      created_at: '2026-09-11T00:00:00',
+      summary: null,
+    })
+    renderAt(ADMIN_ROUTES.etl)
+    const form = await screen.findByTestId('run-with-stored-mapping')
+    expect(within(form).queryByTestId('mapping-summary')).toBeNull()
+    expect(within(form).getByLabelText(/数据文件/)).toBeTruthy()
+  })
+
   it('提交时不带 config，让后端用存好的那份', async () => {
     // 带上一个空 config 的话后端会拿它当权威，跑出一份什么都不导的空跑批。
     signIn('admin')

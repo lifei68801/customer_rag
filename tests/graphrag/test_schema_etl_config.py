@@ -5,6 +5,10 @@ from pathlib import Path
 import pytest
 
 from app.graphrag.schema_etl_config import (
+    parse_schema_etl_config,
+    summarize_schema_etl_config,
+)
+from app.graphrag.schema_etl_config import (
     AllocatedCodeNodeKeyPart,
     ColumnNodeKeyPart,
     EntityMapping,
@@ -247,3 +251,72 @@ relations: []
 
     with pytest.raises(InvalidSchemaETLConfigError):
         load_schema_etl_config(config_path)
+
+
+def test_summary_says_what_the_mapping_will_do_to_a_table():
+    """摘要要能让人一眼看出"邮编挂在了客户名下"。
+
+    真实事故：Customer Zip Code 挂在 Customer Name 实体上，同名客户邮编不同，
+    ETL 拒绝写入。用户点运行之前没看到过这份映射会做什么——摘要就是给他看
+    这个的。所以每个实体要列出：哪列当身份键、哪些列是它的属性。
+    """
+    config = parse_schema_etl_config(
+        """
+tenant_id: demo
+entities:
+  - term_type: Order ID
+    source_file: sales.xlsx
+    standard_name_column: Order ID
+    node_key_parts:
+      - column: Order ID
+    field_mappings:
+      Revenue: Revenue
+  - term_type: Customer Name
+    source_file: sales.xlsx
+    standard_name_column: Customer Name
+    node_key_parts:
+      - column: Customer Name
+    field_mappings:
+      Customer_Zip_Code: Customer Zip Code
+relations:
+  - relation_type: HAS_CUSTOMER_NAME
+    source_file: sales.xlsx
+    subject_term_type: Order ID
+    object_term_type: Customer Name
+"""
+    )
+
+    summary = summarize_schema_etl_config(config)
+
+    customer = next(e for e in summary["entities"] if e["term_type"] == "Customer Name")
+    assert customer["key_columns"] == ["Customer Name"]
+    # 邮编挂在这里——这一行就是事故的全部。
+    assert customer["attributes"] == {"Customer_Zip_Code": "Customer Zip Code"}
+    assert summary["relations"] == [
+        {
+            "relation_type": "HAS_CUSTOMER_NAME",
+            "subject_term_type": "Order ID",
+            "object_term_type": "Customer Name",
+        }
+    ]
+
+
+def test_summary_describes_allocated_code_keys_in_plain_words():
+    """稳定码那种身份键，展示成"按 X 列分配编号"，不是内部结构。"""
+    config = parse_schema_etl_config(
+        """
+tenant_id: demo
+entities:
+  - term_type: SKU
+    source_file: sku.xlsx
+    standard_name_column: label
+    node_key_parts:
+      - allocated_code:
+          scope_columns: [brand]
+          raw_value_column: label
+"""
+    )
+
+    [sku] = summarize_schema_etl_config(config)["entities"]
+
+    assert sku["key_columns"] == ["按「label」分配编号"]

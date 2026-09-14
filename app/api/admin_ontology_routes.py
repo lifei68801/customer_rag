@@ -35,6 +35,7 @@ from app.graphrag.ontology_constraints import (
     list_allowed_combinations,
     remove_allowed_combination,
 )
+from app.graphrag.schema_etl_config import parse_schema_etl_config, summarize_schema_etl_config
 from app.graphrag.ontology_etl_mapping import get_etl_mapping
 from app.graphrag.ontology_lifecycle import (
     checkout_draft,
@@ -762,10 +763,20 @@ async def get_ontology_etl_mapping(
     mapping = await get_etl_mapping(review_conn, tenant_id, status=status)
     if mapping is None:
         return {"mapping": None}
+    # 顺带给一份结构化摘要：前端没有 YAML 解析器，而「运行」按钮上方要列出
+    # 这份映射会对表做什么。解析失败时 summary 为 None——存下来的 YAML 坏了
+    # 不该让整个页面打不开，用户仍然能看到原文、能去改。
+    try:
+        summary = summarize_schema_etl_config(
+            parse_schema_etl_config(mapping.config_yaml, origin="ontology_etl_mapping")
+        )
+    except Exception:  # noqa: BLE001 —— 摘要是附赠的，坏了不拖累主体
+        summary = None
     return {
         "mapping": {
             "config_yaml": mapping.config_yaml,
             "source_file_name": mapping.source_file_name,
             "created_at": mapping.created_at,
+            "summary": summary,
         }
     }

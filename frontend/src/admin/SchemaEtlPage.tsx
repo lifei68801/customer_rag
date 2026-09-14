@@ -10,7 +10,7 @@ import { useToast } from './ToastContext'
 import { CopyButton } from './CopyButton'
 import { TaskStatusBadge } from './TaskStatusBadge'
 import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
-import { fetchEtlMapping, type EtlMapping } from './etlMappingApi'
+import { fetchEtlMapping, type EtlMapping, type EtlMappingSummary } from './etlMappingApi'
 
 // etl_runs 表的 status 只有这三种取值（app/graphrag/etl_runs_store.py），
 // 映射成统一的徽章语气 + 中文文案。
@@ -470,6 +470,11 @@ export function SchemaEtlPage() {
           onSubmit={handleUpload}
           className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4"
         >
+          {/* 先说清这份映射会对表做什么，再让人点运行。此前表单只说"传入数据
+              文件即可运行"，用户没看到过映射就点了——真实事故里邮编挂在了
+              客户名下，同名客户邮编不同，ETL 拒绝写入。那件事在这张摘要里一眼
+              能看出来。 */}
+          {mapping.summary && <MappingSummary summary={mapping.summary} />}
           <label className="flex flex-col gap-1 text-sm font-bold text-ink">
             数据文件（CSV/TSV/XLSX/XLS，可多选）
             <input
@@ -935,6 +940,59 @@ export function SchemaEtlPage() {
             </>
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+
+/**
+ * 「这份映射会对表做什么」——运行前的一眼总览。
+ *
+ * 按实体列：哪列当身份键、哪些列作为属性挂在它上面。身份键是最容易出事的
+ * 地方（用不唯一的列当键，同键不同值就会被拒绝写入），所以放最前面、加粗。
+ */
+function MappingSummary({ summary }: { summary: EtlMappingSummary }) {
+  return (
+    <div data-testid="mapping-summary" className="flex flex-col gap-2 rounded-card border border-subtle bg-paper p-3 text-sm">
+      <p className="text-xs font-bold uppercase tracking-wide text-ink-soft">这份映射会这样处理这张表</p>
+      <ul className="flex flex-col gap-1.5">
+        {summary.entities.map((entity) => {
+          const attributes = Object.entries(entity.attributes)
+          return (
+            <li key={entity.term_type} className="flex flex-col gap-0.5">
+              <span className="text-ink">
+                <span className="font-bold">{entity.term_type}</span>
+                <span className="text-ink-soft">：身份键是 </span>
+                <code className="rounded-chip border border-subtle bg-card px-1.5 py-0.5 font-mono text-xs text-ink">
+                  {entity.key_columns.join(' + ')}
+                </code>
+              </span>
+              {attributes.length > 0 && (
+                <span className="pl-3 text-xs text-ink-soft">
+                  挂在它上面的属性：
+                  {attributes.map(([field, column], i) => (
+                    <span key={field}>
+                      {i > 0 && '、'}
+                      <code className="font-mono">{column}</code>
+                    </span>
+                  ))}
+                </span>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+      {summary.relations.length > 0 && (
+        <p className="text-xs text-ink-soft">
+          关系：
+          {summary.relations.map((r, i) => (
+            <span key={`${r.subject_term_type}-${r.relation_type}-${r.object_term_type}`}>
+              {i > 0 && '；'}
+              {r.subject_term_type} —{r.relation_type}→ {r.object_term_type}
+            </span>
+          ))}
+        </p>
       )}
     </div>
   )
