@@ -4,6 +4,14 @@ import { CopyButton } from '../CopyButton'
 import type { EtlMapping } from '../etlMappingApi'
 import { buildConfigYaml } from './buildConfigYaml'
 import { prefillMapping } from './prefillMapping'
+import { scanPairs, type PairReport } from '../guidedOntology/columnStats'
+import {
+  addColumnToKey,
+  dropField,
+  findMappingConflicts,
+  singleKeyColumns,
+  type MappingConflict,
+} from './mappingConflicts'
 import { readTableHeaderColumns } from './tableHeader'
 import { EntityMappingEditor } from './EntityMappingEditor'
 import { RelationMappingEditor } from './RelationMappingEditor'
@@ -87,6 +95,8 @@ export function TableImportFlow({
   const [allowLargeSweep, setAllowLargeSweep] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [pairReport, setPairReport] = useState<PairReport | null>(null)
+  const [checking, setChecking] = useState(false)
 
   /** 预填时的映射快照，用来判断用户有没有改过。 */
   const prefilledRef = useRef<string>('')
@@ -101,6 +111,7 @@ export function TableImportFlow({
     setSource(null)
     setFileError(null)
     setSubmitError(null)
+    setPairReport(null)
   }, [tenantId])
 
   useEffect(() => {
@@ -171,6 +182,41 @@ export function TableImportFlow({
   useEffect(() => {
     if (openMappingSignal > 0) setMappingExpanded(true)
   }, [openMappingSignal])
+
+  // 身份键定下来之后才扫得了「这个键的每个值是不是只对应一个属性值」。
+  //
+  // 扫描按**身份键列 × 表里所有列**建对，而不是只按当前挂着的那几个属性——
+  // 用户在编辑器里把某一列挂过来时，结论要立刻有，不能每改一次就重扫一遍
+  // 整张表。键变了才重扫（keySignature 变化），改属性不重扫。
+  const keySignature = singleKeyColumns(entities).join(' ')
+  useEffect(() => {
+    const file = files[0]
+    const hostColumns = keySignature === '' ? [] : keySignature.split(' ')
+    if (!file || hostColumns.length === 0) {
+      setPairReport(null)
+      return
+    }
+    let cancelled = false
+    setChecking(true)
+    scanPairs(file.file, { hostColumns, attributeColumns: file.columns })
+      .then((report) => {
+        if (!cancelled) setPairReport(report)
+      })
+      .catch((err) => {
+        // 扫不动就不给结论。**不能**当成"没冲突"——那等于告诉用户这份映射
+        // 验过了。跑批那一端的阀仍然在，最坏是退回原来的行为。
+        console.error('单值检测失败', err)
+        if (!cancelled) setPairReport(null)
+      })
+      .finally(() => {
+        if (!cancelled) setChecking(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [files, keySignature])
+
+  const conflicts = findMappingConflicts(entities, pairReport)
 
   const edited = source !== null && JSON.stringify({ entities, relations }) !== prefilledRef.current
   const usesStoredMapping = source === 'stored' && !edited
@@ -266,6 +312,24 @@ export function TableImportFlow({
                 下面是按本体重新推的一份。
               </p>
             )}
+
+            {checking && <p className="text-xs text-ink-soft">正在检查这份映射跑不跑得通…</p>}
+            {conflicts.map((conflict) => (
+              <ConflictNotice
+                key={`${conflict.entityId}-${conflict.field}`}
+                conflict={conflict}
+                onAddToKey={() =>
+                  setEntities((prev) =>
+                    prev.map((e) => (e.id === conflict.entityId ? addColumnToKey(e, conflict.column) : e)),
+                  )
+                }
+                onDrop={() =>
+                  setEntities((prev) =>
+                    prev.map((e) => (e.id === conflict.entityId ? dropField(e, conflict.field) : e)),
+                  )
+                }
+              />
+            ))}
 
             {!mappingExpanded && (
               <div data-testid="mapping-overview" className="flex flex-col gap-1.5 text-sm">
@@ -493,5 +557,64 @@ function Step({
       </h3>
       {children}
     </section>
+  )
+}
+
+/**
+ * 一条「这份映射跑下去会被拒」的预警，连着两条**不用改本体**就能做的出路。
+ *
+ * 只报问题不给出路的话，用户能做的只有重新上传同一个文件再失败一次——
+ * 这一页此前正是这样：跑批失败后甩出一句"530 个 node_key 被算出了不同的
+ * 值"，而界面上没有任何地方能改那件事。
+ *
+ * 第三条出路（把这个字段在本体里挪到另一个实体下）要去「本体结构」页，
+ * 不在这里做：表格导入页偷偷改本体，会让"已确认本体"这件事失去意义。
+ */
+function ConflictNotice({
+  conflict,
+  onAddToKey,
+  onDrop,
+}: {
+  conflict: MappingConflict
+  onAddToKey: () => void
+  onDrop: () => void
+}) {
+  return (
+    <div
+      role="alert"
+      data-testid={`mapping-conflict-${conflict.field}`}
+      className="flex flex-col gap-2 rounded-card border border-status-error bg-paper p-3 text-sm text-ink"
+    >
+      <p>
+        <span className="font-bold">这份映射跑下去会被拒绝写入。</span>{' '}
+        <code className="font-mono text-xs">{conflict.column}</code> 挂在{' '}
+        <span className="font-bold">{conflict.termType}</span> 下，而它的身份键{' '}
+        <code className="font-mono text-xs">{conflict.hostColumn}</code>{' '}
+        并不唯一：<code className="font-mono text-xs">{conflict.violation.hostValue}</code> 出现在{' '}
+        {conflict.violation.rowCount} 行里，
+        <code className="font-mono text-xs">{conflict.column}</code> 有{' '}
+        {conflict.violation.distinctCount} 个不同的值（{conflict.violation.samples.join('、')}…）。
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={onAddToKey}
+          className={`min-h-[36px] cursor-pointer rounded-control border border-subtle bg-card px-3 text-sm font-bold text-ink ${focusRing}`}
+        >
+          把「{conflict.column}」也算进身份键
+        </button>
+        <button
+          type="button"
+          onClick={onDrop}
+          className={`min-h-[36px] cursor-pointer rounded-control border border-subtle bg-card px-3 text-sm font-bold text-ink ${focusRing}`}
+        >
+          不导入这一列
+        </button>
+      </div>
+      <p className="text-xs text-ink-soft">
+        算进身份键的代价：同一个「{conflict.violation.hostValue}」的两条记录会成为两个不同的节点。
+        如果这一列本来就该挂在别的实体下（比如订单），去「本体结构」把这个字段挪过去，再回来重新选文件。
+      </p>
+    </div>
   )
 }

@@ -305,6 +305,78 @@ describe('表格导入的三步流程', () => {
     expect((zip.querySelector('select') as HTMLSelectElement).value).toBe('Customer Zip Code')
   })
 
+  it('邮编挂在客户名下、同名客户邮编不同 → 点运行之前就报出来，并给出路', async () => {
+    // 这条用例复现的就是那次事故：跑批失败后甩出"530 个 node_key 被算出了
+    // 不同的值"，而界面上没有任何地方能改那件事。现在它出现在运行按钮之前。
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await screen.findByTestId('table-import-flow')
+    await user.upload(
+      within(flow).getByLabelText(/数据文件/) as HTMLInputElement,
+      // 两个「张三」，邮编不同。
+      new File(
+        [`${DEMO_HEADER}
+O1,1,张三,100000
+O2,2,张三,200000
+`],
+        'sales_2026.csv',
+        { type: 'text/csv' },
+      ),
+    )
+
+    const notice = await within(flow).findByTestId('mapping-conflict-Customer_Zip_Code')
+    expect(notice.textContent).toMatch(/张三/)
+    expect(notice.textContent).toMatch(/100000/)
+
+    // 只报问题不给出路的话，用户能做的只有重传同一个文件再失败一次。
+    await user.click(within(notice).getByRole('button', { name: /也算进身份键/ }))
+    await waitFor(() =>
+      expect(within(flow).queryByTestId('mapping-conflict-Customer_Zip_Code')).toBeNull(),
+    )
+  }, 20000)
+
+  it('邮编挂在订单号下就不报——订单号每行一个', async () => {
+    // 会误报的预检等于没有预检：用户学会忽略它之后，真出问题那次也会被忽略。
+    signIn('admin')
+    stubDemoMapping({
+      entities: [
+        {
+          term_type: 'Order ID',
+          source_file: 'soft_drink_sales.xlsx',
+          key_columns: ['Order ID'],
+          key_parts: [{ kind: 'column', column: 'Order ID' }],
+          name_columns: ['Order ID'],
+          attributes: { Customer_Zip_Code: 'Customer Zip Code' },
+        },
+      ],
+      relations: [],
+    })
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await screen.findByTestId('table-import-flow')
+    await user.upload(
+      within(flow).getByLabelText(/数据文件/) as HTMLInputElement,
+      new File(
+        [`${DEMO_HEADER}
+O1,1,张三,100000
+O2,2,张三,200000
+`],
+        'sales_2026.csv',
+        { type: 'text/csv' },
+      ),
+    )
+
+    await screen.findByTestId('mapping-overview')
+    await waitFor(() =>
+      expect(within(flow).queryByText(/正在检查这份映射跑不跑得通/)).toBeNull(),
+    )
+    expect(within(flow).queryByTestId('mapping-conflict-Customer_Zip_Code')).toBeNull()
+  }, 20000)
+
   it('沿用存好的映射、一个字没改时，提交不带 config', async () => {
     // 带上一份 config 的话后端会拿它当权威，而这里生成的那份未必跟存着的
     // 一模一样（比如存的是多列拼接的展示名，编辑器只放得下一列）。
