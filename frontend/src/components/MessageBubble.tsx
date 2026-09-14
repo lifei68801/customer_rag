@@ -28,15 +28,33 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               : 'w-full text-ink'
         }
       >
+        {/* 流式期间把前几轮已经说过的话留在屏幕上（灰色），不是收进折叠的
+            <details> 里。此前每次工具调用都会把气泡清空，观感是"冒一句 →
+            擦掉 → 正在查询 → 再冒一句 → 再擦掉"；内容反复消失会让人觉得
+            比实际更慢，而且已经读到一半的句子被抽走。答案落定后再收进
+            折叠区，正文不被历史轮次挤占。 */}
+        {!isUser && message.isStreaming && message.reasoningTrail.length > 0 && (
+          <div data-testid="reasoning-live" className="flex flex-col gap-1 pb-1 text-sm text-ink-soft">
+            {message.reasoningTrail.map((step, index) => (
+              <p key={index} className="whitespace-pre-wrap break-words">
+                {step}
+              </p>
+            ))}
+          </div>
+        )}
         {message.text ? (
           isUser ? (
             <p className="whitespace-pre-wrap leading-relaxed">{message.text}</p>
           ) : (
             <MarkdownContent text={message.text} />
           )
-        ) : message.isStreaming ? (
-          <ThinkingIndicator statusText={message.statusText} />
         ) : null}
+        {/* 指示器改到文字**下面**，而且有文字时也显示：流式期间它是"还在写"
+            的唯一信号，此前只在没有文字时出现，于是一旦开始出字就消失，
+            用户分不出"写完了"还是"卡住了"。 */}
+        {!isUser && message.isStreaming && (
+          <ThinkingIndicator statusText={message.statusText} />
+        )}
         {!isUser && !message.isStreaming && message.reasoningTrail.length > 0 && (
           <ReasoningTrail steps={message.reasoningTrail} />
         )}
@@ -50,7 +68,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
 function ThinkingIndicator({ statusText }: { statusText?: string }) {
   return (
-    <div className="flex items-center gap-2 py-1">
+    <div data-testid="thinking-indicator" className="flex items-center gap-2 py-1">
       {statusText && <span className="text-sm text-ink-soft">{statusText}</span>}
       <div className="flex items-center gap-1">
         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-soft motion-reduce:animate-none [animation-delay:-0.3s]" />

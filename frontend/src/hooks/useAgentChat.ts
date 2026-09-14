@@ -246,9 +246,12 @@ export function useAgentChat(tenantId: string, personaId: string = 'default') {
             // 工具调用轮之前可能出现的前置说明文字（比如"让我查一下。"）
             // 不是最终答案的一部分——tool_status 事件到达就说明这一轮
             // 结束、要开始/继续执行工具了，把已经显示的文字挪进
-            // reasoningTrail（供用户按需展开查看推理过程），再清空、
-            // 露出"正在查询"指示器，而不是让这段文字停留在气泡里、
-            // 之后又被 final 事件悄悄覆盖掉，或者直接永久丢失。
+            // reasoningTrail，正文腾出来给下一轮，而不是让它停留在气泡里、
+            // 之后被 final 事件悄悄覆盖掉，或者直接永久丢失。
+            //
+            // **挪走不等于从屏幕上消失**：流式期间 MessageBubble 会把
+            // reasoningTrail 原样灰显在正文上方，答案落定后才收进折叠区。
+            // 此前是直接消失的，观感是"写了又擦"，比实际更慢。
             patchAssistantMessage((message) => ({
               ...message,
               text: '',
