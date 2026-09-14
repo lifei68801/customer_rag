@@ -304,6 +304,15 @@ class Settings(BaseSettings):
 
     redis_url: str | None = None
 
+    # 应用自己的日志级别（"DEBUG"/"INFO"/"WARNING"/...）。
+    #
+    # 默认 INFO 而不是沿用 Python 的兜底行为：没有任何日志配置时，root 上
+    # 没有 handler，靠 logging.lastResort 只输出 WARNING 及以上——于是
+    # "这一轮 planner 花了多久""检索召回了几条"这类运行信息在生产上根本
+    # 打不出来，排查时只能靠事后重放（这次查流式时延就是这样）。uvicorn
+    # 只配置它自己的 logger，不管 app.* 这棵树。
+    log_level: str = "INFO"
+
     # 后台管理系统的管理员 token（登录凭证），未配置时 /api/admin/auth/login
     # 直接拒绝所有登录请求（而不是静默放行）——这和 GatewaySettings.
     # shared_secret 的"未配置=本地兜底"降级路径不同，后台管理能直接写库

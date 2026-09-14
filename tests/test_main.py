@@ -72,3 +72,41 @@ def test_startup_warns_that_a_configured_gateway_secret_shuts_the_browser_out(
     # 反向：未配置那条不该在这里出现，否则两条告警内容一混，这个用例就分不出
     # 走的是哪个分支。
     assert not any("未配置" in m for m in messages), messages
+
+
+def test_app_logging_is_configured_so_info_lines_actually_show(monkeypatch, caplog):
+    """启动时要给 app.* 配好 handler，否则 INFO 根本打不出来。
+
+    不配的话 root 上没有 handler，Python 的 logging.lastResort 只输出 WARNING
+    及以上——"这一轮 planner 花了多久""检索召回了几条"这类运行信息在生产上
+    一行都看不到，排查只能靠事后重放（查流式时延那次就是这样）。
+    """
+    import logging
+
+    from app.main import _configure_app_logging
+
+    logging.getLogger("app").handlers.clear()
+
+    _configure_app_logging("INFO")
+
+    app_logger = logging.getLogger("app")
+    assert app_logger.level == logging.INFO
+    assert app_logger.handlers, "app logger 没有 handler，INFO 不会被输出"
+    # 必须继续往上传播：关掉的话，所有挂在 root 上的 handler（包括 pytest
+    # 的 caplog）都收不到这些日志。
+    assert app_logger.propagate is True
+
+
+def test_app_logging_does_not_add_a_second_handler_on_repeated_calls():
+    """lifespan 在测试里会被反复触发。每次都加一个 handler 的话，同一条日志
+    会被打印 N 遍，日志量随重启次数线性膨胀。"""
+    import logging
+
+    from app.main import _configure_app_logging
+
+    logging.getLogger("app").handlers.clear()
+
+    _configure_app_logging("INFO")
+    _configure_app_logging("INFO")
+
+    assert len(logging.getLogger("app").handlers) == 1

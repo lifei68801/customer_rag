@@ -128,3 +128,59 @@ def test_banned_terms_still_apply():
     gate = LiteSafetyGate(banned_terms=["内部代号X"])
 
     assert gate.vet("这是内部代号X") == LITE_SAFETY_FALLBACK_SENTENCE
+
+
+# ── 每轮耗时打点 ────────────────────────────────────────────────────────
+#
+# 端到端的等待主要由"轮数 × 每轮耗时"决定，而每轮里 LLM 往返和工具执行是
+# 两个量级完全不同的东西。不分开记的话，线上看到"慢"也说不出该优化哪一头
+# ——这次查流式时延就卡在这里：日志里一个耗时数字都没有，只能事后重放。
+
+
+def test_planner_logs_each_round_and_each_tool_call(caplog):
+    import asyncio
+    import logging
+
+    from app.agent.planner import run_planner_turn_streaming
+    from app.providers.base import ProviderCapability, ProviderStreamChunk, ToolCall
+    from app.providers.registry import ProviderRegistry
+    from tests.agent.test_planner import ScriptedStreamingLLMProvider, _full_tool_registry
+
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        "fake-llm",
+        ScriptedStreamingLLMProvider(
+            [
+                [
+                    ProviderStreamChunk(text="让我查一下。"),
+                    ProviderStreamChunk(
+                        tool_calls=[ToolCall(id="c1", name="vector_search_tool", arguments="{}")]
+                    ),
+                ]
+            ]
+        ),
+    )
+
+    async def noop(*_args) -> None:
+        return None
+
+    with caplog.at_level(logging.INFO, logger="app.agent.planner"):
+        asyncio.run(
+            run_planner_turn_streaming(
+                {"planner_messages": [{"role": "user", "content": "问题"}], "tool_call_round": 0},
+                llm_registry=llm_registry,
+                llm_provider_name="fake-llm",
+                max_tool_call_rounds=3,
+                banned_terms=None,
+                on_answer_chunk=noop,
+                on_tool_status=noop,
+                tool_registry=_full_tool_registry(),
+            )
+        )
+
+    line = "\n".join(r.getMessage() for r in caplog.records)
+    assert "planner 第 1 轮" in line
+    # 两个量级分开：LLM 往返多久、首块文字多久出现、这一轮要调哪个工具。
+    assert "LLM" in line and "首块" in line
+    assert "vector_search_tool" in line

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from app.agent.tool_registry import ToolContext, ToolRegistry
@@ -378,6 +379,12 @@ async def run_planner_turn_streaming(
     messages = list(state.get("planner_messages", []))
     round_num = state.get("tool_call_round", 0)
 
+    # 这一轮的计时。端到端的等待主要由"轮数 × 每轮耗时"决定，而每轮里
+    # LLM 往返和工具执行是两个量级完全不同的东西——不分开记的话，看到
+    # "慢"也说不出该优化哪一头。
+    round_started = time.monotonic()
+    first_token_at: list[float | None] = [None]
+
     raw_stream = llm_registry.stream_with_tools(
         ProviderCapability.LLM,
         ProviderRequest(messages=messages, tools=tool_registry.schemas(), tool_choice="auto"),
@@ -391,6 +398,8 @@ async def run_planner_turn_streaming(
     any_sentence_substituted = False
     gate = LiteSafetyGate(banned_terms)
     async for sentence in stream_display_chunks(text_stream):
+        if first_token_at[0] is None:
+            first_token_at[0] = time.monotonic() - round_started
         safe_sentence = gate.vet(sentence)
         if safe_sentence is not sentence:
             any_sentence_substituted = True
@@ -413,6 +422,16 @@ async def run_planner_turn_streaming(
         streamed_round_texts = [*streamed_round_texts, full_text]
 
     tool_calls = tool_calls_box[0]
+    logger.info(
+        "planner 第 %d 轮：LLM %.2fs（首块 %s），输出 %d 字，%s",
+        round_num + 1,
+        time.monotonic() - round_started,
+        f"{first_token_at[0]:.2f}s" if first_token_at[0] is not None else "无文本",
+        len(full_text),
+        f"请求 {len(tool_calls)} 个工具：" + "、".join(c.name for c in tool_calls)
+        if tool_calls
+        else "直接作答",
+    )
     if tool_calls:
         if round_num >= max_tool_call_rounds:
             return await _run_final_answer_attempt_streaming(
@@ -472,9 +491,14 @@ async def run_tool_calls(
                 {"tool_call_id": call["id"], "name": call["name"], "content": content},
                 [],
             )
+        tool_started = time.monotonic()
         try:
             resolved_arguments = await tool.resolve_arguments(arguments, context=context)
             observation, new_records = await tool.execute(resolved_arguments, context=context)
+            logger.info(
+                "planner 工具 %s：%.2fs，返回 %d 条记录",
+                call["name"], time.monotonic() - tool_started, len(new_records),
+            )
         except Exception as exc:
             # 优雅降级只对用户/LLM 可见的这一层负责——异常本身仍然要
             # 记日志，否则一个真实的代码 bug（不是预期内的域错误）会被

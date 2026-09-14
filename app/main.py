@@ -47,6 +47,29 @@ from app.graphrag.tenants_store import ensure_tenants_schema
 logger = logging.getLogger(__name__)
 
 
+def _configure_app_logging(level_name: str) -> None:
+    """给 app.* 这棵 logger 树配一个输出到 stderr 的 handler。
+
+    不配的话，root 上没有 handler，Python 的 logging.lastResort 只输出
+    WARNING 及以上——运行信息（每轮 planner 耗时、检索召回条数）在生产上
+    根本打不出来。uvicorn 只配置 uvicorn/uvicorn.access 两棵树，不管这里。
+
+    只配 "app"，不动 root：第三方库（httpx、neo4j、pymilvus）的 INFO 日志
+    量大且跟排查这套系统无关，全局放开只会把真正有用的那几行淹掉。
+    """
+    app_logger = logging.getLogger("app")
+    app_logger.setLevel(level_name.upper())
+    if not app_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:    %(name)s %(message)s"))
+        app_logger.addHandler(handler)
+    # 保持 propagate=True（默认）：logging 的兜底处理器只在**整条链上一个
+    # handler 都没有**时才触发，这里给 app 挂了 handler 之后它就不会再介入，
+    # 不存在重复打印。而关掉传播会让所有挂在 root 上的 handler 收不到这些
+    # 日志——pytest 的 caplog 就是其中之一（tests/test_main.py 那两条启动
+    # 告警用例因此变红过）。
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """启动时检查 gateway_shared_secret 是否配置，未配置只告警不阻止启动。
@@ -75,6 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     兜底”这条路径，不能因为加了这个检查就让不配网关的本地开发环境起不来。
     """
     settings = Settings()
+    _configure_app_logging(settings.log_level)
     if not settings.gateway.shared_secret:
         logger.warning(
             "gateway_shared_secret 未配置：/voice/* 仍然信任客户端自报的 "
