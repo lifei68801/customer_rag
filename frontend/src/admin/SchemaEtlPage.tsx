@@ -3,14 +3,14 @@ import { EmptyState } from './EmptyState'
 import { PlayCircle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { adminFetch, extractErrorDetail } from './adminApi'
-import { SchemaEtlConfigBuilder } from './schemaEtlConfigBuilder/SchemaEtlConfigBuilder'
+import { TableImportFlow } from './schemaEtlConfigBuilder/TableImportFlow'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 import { CopyButton } from './CopyButton'
 import { TaskStatusBadge } from './TaskStatusBadge'
 import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
-import { fetchEtlMapping, type EtlMapping, type EtlMappingSummary } from './etlMappingApi'
+import { fetchEtlMapping, type EtlMapping } from './etlMappingApi'
 
 // etl_runs 表的 status 只有这三种取值（app/graphrag/etl_runs_store.py），
 // 映射成统一的徽章语气 + 中文文案。
@@ -96,10 +96,9 @@ export function SchemaEtlPage() {
   const [sampleLoading, setSampleLoading] = useState(false)
   const [sampleError, setSampleError] = useState<string | null>(null)
   const [downloadingSample, setDownloadingSample] = useState(false)
-  // null = 用户还没手动展开或折叠过，展开与否由 mapping 决定（见下面的
-  // builderExpanded）。裸上传表单是面向已有 config.yaml 的老手场景，与
-  // mapping 无关，所以它仍是一个普通的默认折叠状态，见 uploadFormExpanded。
-  const [builderToggled, setBuilderToggled] = useState<boolean | null>(null)
+  // 跑批失败详情里的「去改映射」每点一次就加一，流程组件据此展开第二步的
+  // 映射编辑器。用布尔量的话，用户自己收起来之后再点就没反应了。
+  const [openMappingSignal, setOpenMappingSignal] = useState(0)
   const [uploadFormExpanded, setUploadFormExpanded] = useState(false)
   // 轮询期间才需要知道"上一次拿到的历史列表里是不是还有 running 记录"，
   // 不需要触发重渲染。
@@ -107,15 +106,8 @@ export function SchemaEtlPage() {
   // 让 handleUpload 能在提交完成后立即"踢"一次轮询循环，不用等已经排好
   // 队的 setTimeout 走完最坏 15 秒才发现新记录出现了。
   const pollNowRef = useRef<() => Promise<void>>(async () => {})
-  //: 映射构建器那块面板。失败详情里的「去改映射」要把它展开并滚过去。
-  const builderRef = useRef<HTMLDivElement>(null)
-  // 有映射时默认折叠（构建器降级成次级入口），没有时默认展开——向导是面向
-  // 新手的主路径，不能让用户先自己发现「这里能点开」才看到它。
-  //
-  // 直接从 mapping 派生，不走 effect：effect 要等这一帧渲染完才跑，那一帧里
-  // 提示文字已经出现而构建器还展开着，用户会看见它闪一下再折叠。用户手动点
-  // 过之后（builderToggled 不再是 null）以他的选择为准。
-  const builderExpanded = builderToggled ?? mapping === null
+  //: 三步流程那块。失败详情里的「去改映射」要滚过去。
+  const flowRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     document.title = '表格导入 · 管理后台'
@@ -157,9 +149,6 @@ export function SchemaEtlPage() {
   useEffect(() => {
     if (!sessionToken) return
     let cancelled = false
-    // 换了租户/重新登录，上一个租户下用户手动展开或折叠的选择不再适用，
-    // 交还给 mapping 决定。
-    setBuilderToggled(null)
     setMapping(undefined)
     fetchEtlMapping(sessionToken, tenantId, 'confirmed')
       .then((result) => {
@@ -454,94 +443,33 @@ export function SchemaEtlPage() {
         <div data-testid="etl-mapping-loading" className="text-sm text-ink-soft">
           正在读取这个本体的映射…
         </div>
-      ) : mapping ? (
-        <p className="rounded-panel border border-subtle bg-card px-4 py-3 text-sm text-ink">
-          引导流程已为这个本体配好映射（来自 <code className="font-mono">{mapping.source_file_name}</code>）。
-          传入数据文件即可运行，不用再配一遍。
-        </p>
-      ) : null}
-
-      {mapping && (
-        // 页面上那句"传入数据文件即可运行，不用再配一遍"要能兑现，入口就得在
-        // 主区域。此前唯一能传数据文件的地方折叠在「高级」面板里，那个表单还
-        // 要求再传一次 config.yaml——正是那句话承诺不用做的事。
-        <form
-          data-testid="run-with-stored-mapping"
-          onSubmit={handleUpload}
-          className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4"
-        >
-          {/* 先说清这份映射会对表做什么，再让人点运行。此前表单只说"传入数据
-              文件即可运行"，用户没看到过映射就点了——真实事故里邮编挂在了
-              客户名下，同名客户邮编不同，ETL 拒绝写入。那件事在这张摘要里一眼
-              能看出来。 */}
-          {mapping.summary && <MappingSummary summary={mapping.summary} />}
-          <label className="flex flex-col gap-1 text-sm font-bold text-ink">
-            数据文件（CSV/TSV/XLSX/XLS，可多选）
-            <input
-              type="file"
-              name="data_files"
-              accept=".csv,.tsv,.xlsx,.xls"
-              multiple
-              disabled={confirmed !== true}
-              className="text-sm font-normal text-ink"
-            />
-            <span className="font-normal text-ink-soft">
-              只传一个文件时，名字跟映射里的不一样也没关系——会按映射里的名字处理。
-              文件名不在这里重复，上面那句提示已经写了是哪一份。
-            </span>
-          </label>
-          <label className="flex items-center gap-2 text-sm font-bold text-ink">
-            <input type="checkbox" name="dry_run" disabled={confirmed !== true} />
-            预演（terms 和 Neo4j 零写入）
-            <span className="ml-2 font-normal text-ink-soft">
-              只报告将要移除多少实体；预演只覆盖实体侧，关系侧无法预演。
-            </span>
-          </label>
-          {uploadError && (
-            <p role="alert" className="text-sm text-ink">
-              {uploadError}
+      ) : (
+        <div ref={flowRef} className="flex flex-col gap-3">
+          {mapping && (
+            // 说一句"存着一份"就够。它长什么样在第二步里看——放在这儿会跟
+            // 第二步的概览重复，而那两处一旦不一致，用户不知道该信哪个。
+            <p className="rounded-panel border border-subtle bg-card px-4 py-3 text-sm text-ink">
+              这个本体已经配好了一份映射（来自{' '}
+              <code className="font-mono">{mapping.source_file_name}</code>）。选文件后会直接沿用它，
+              也可以改。
             </p>
           )}
-          <button
-            type="submit"
-            disabled={uploading || confirmed !== true}
-            className={`min-h-[44px] cursor-pointer self-start rounded-control border border-subtle bg-accent-primary px-5 py-2.5 font-bold text-on-accent transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
-          >
-            {uploading ? '提交中…' : '开始运行'}
-          </button>
-        </form>
-      )}
-
-      {mapping !== undefined && (
-        <div ref={builderRef} className="flex flex-col gap-2 rounded-panel border border-subtle bg-card">
-          <button
-            type="button"
-            onClick={() => setBuilderToggled(!builderExpanded)}
-            className={`flex items-center justify-between px-4 py-3 text-left font-bold text-ink ${focusRing}`}
-          >
-            <span>
-              {/* 标题要说出它是什么：「表格列 ↔ 本体实体」。此前叫"改这份映射"，
-                  而用户的问题原话是"没有选择表中的字段和本体中的实体对象的映射
-                  的地方"——那个地方就在这儿，只是标题没让他认出来。 */}
-              {mapping ? '表格列 ↔ 本体实体的映射（改这份、或再接一张表）' : '把这张表的列映射到本体实体'}
-              <span className="ml-2 font-normal text-ink-soft">
-                哪列当身份键、哪个属性挂在哪个实体下，一步步配，不用手写 YAML
-              </span>
-            </span>
-            <span
-              aria-hidden="true"
-              className={`inline-block transition-transform duration-200 ${builderExpanded ? 'rotate-0' : '-rotate-90'}`}
-            >
-              ▾
-            </span>
-          </button>
-          {builderExpanded && sessionToken && (
-            <SchemaEtlConfigBuilder
+          {sessionToken && (
+            <TableImportFlow
               tenantId={tenantId}
               sessionToken={sessionToken}
               disabled={confirmed !== true}
-              onSubmitted={() => {
-                pollNowRef.current()
+              mapping={mapping}
+              openMappingSignal={openMappingSignal}
+              onSubmitted={(runId) => {
+                showToast('已提交运行')
+                // 直接选中刚提交的这一条，让详情跟着跑。不选的话，跑批失败时
+                // 用户看到的只是列表里多了一行「失败」徽标——原因藏在要点那
+                // 一行才展开的详情里，他会以为是"上传坏了"，而不是去看 ETL
+                // 说了什么。真实事故里那个原因是"530 个客户同名不同邮编"，
+                // 跟上传毫无关系。
+                setSelectedRunId(runId)
+                pollNowRef.current().catch((err) => console.error(err))
               }}
             />
           )}
@@ -735,8 +663,8 @@ export function SchemaEtlPage() {
                   type="button"
                   data-testid="fix-mapping-from-failure"
                   onClick={() => {
-                    setBuilderToggled(true)
-                    builderRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                    setOpenMappingSignal((prev) => prev + 1)
+                    flowRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
                   }}
                   className={`min-h-[36px] cursor-pointer self-start rounded-control border border-subtle bg-paper px-3 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
                 >
@@ -940,59 +868,6 @@ export function SchemaEtlPage() {
             </>
           )}
         </div>
-      )}
-    </div>
-  )
-}
-
-
-/**
- * 「这份映射会对表做什么」——运行前的一眼总览。
- *
- * 按实体列：哪列当身份键、哪些列作为属性挂在它上面。身份键是最容易出事的
- * 地方（用不唯一的列当键，同键不同值就会被拒绝写入），所以放最前面、加粗。
- */
-function MappingSummary({ summary }: { summary: EtlMappingSummary }) {
-  return (
-    <div data-testid="mapping-summary" className="flex flex-col gap-2 rounded-card border border-subtle bg-paper p-3 text-sm">
-      <p className="text-xs font-bold uppercase tracking-wide text-ink-soft">这份映射会这样处理这张表</p>
-      <ul className="flex flex-col gap-1.5">
-        {summary.entities.map((entity) => {
-          const attributes = Object.entries(entity.attributes)
-          return (
-            <li key={entity.term_type} className="flex flex-col gap-0.5">
-              <span className="text-ink">
-                <span className="font-bold">{entity.term_type}</span>
-                <span className="text-ink-soft">：身份键是 </span>
-                <code className="rounded-chip border border-subtle bg-card px-1.5 py-0.5 font-mono text-xs text-ink">
-                  {entity.key_columns.join(' + ')}
-                </code>
-              </span>
-              {attributes.length > 0 && (
-                <span className="pl-3 text-xs text-ink-soft">
-                  挂在它上面的属性：
-                  {attributes.map(([field, column], i) => (
-                    <span key={field}>
-                      {i > 0 && '、'}
-                      <code className="font-mono">{column}</code>
-                    </span>
-                  ))}
-                </span>
-              )}
-            </li>
-          )
-        })}
-      </ul>
-      {summary.relations.length > 0 && (
-        <p className="text-xs text-ink-soft">
-          关系：
-          {summary.relations.map((r, i) => (
-            <span key={`${r.subject_term_type}-${r.relation_type}-${r.object_term_type}`}>
-              {i > 0 && '；'}
-              {r.subject_term_type} —{r.relation_type}→ {r.object_term_type}
-            </span>
-          ))}
-        </p>
       )}
     </div>
   )

@@ -8,7 +8,7 @@ import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
 import { ADMIN_ROUTES } from '../adminRoutes'
-import type { EtlMapping } from './etlMappingApi'
+import type { EtlMapping, EtlMappingSummary } from './etlMappingApi'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
@@ -52,6 +52,9 @@ let etlMappingValue: EtlMapping | null = null
 let runsListResponse: { run_id: string; status: string; started_at: string; finished_at: string | null }[] = []
 let runDetailResponse: Record<string, unknown> | null = null
 let requests: { url: string; init?: RequestInit }[] = []
+/** 表格导入页的映射编辑器只认已确认的实体类型/允许组合。 */
+let confirmedTermTypes: { value: string; extra_fields: { name: string; value_type: string; label?: string }[] }[] = []
+let confirmedCombinations: { subject_term_type: string; relation_type: string; object_term_type: string }[] = []
 
 function stubApi() {
   vi.stubGlobal(
@@ -62,6 +65,12 @@ function stubApi() {
       requests.push({ url, init })
       const json = (body: unknown, status = 200) =>
         Promise.resolve(new Response(JSON.stringify(body), { status }))
+      if (url.includes('/term-types')) {
+        return json({ term_types: confirmedTermTypes })
+      }
+      if (url.includes('/constraints')) {
+        return json({ constraints: confirmedCombinations })
+      }
       if (url.includes('/nav-badges')) {
         return json({ pending_relations: 0, pending_duplicates: 0, total_terms: 0 })
       }
@@ -169,6 +178,8 @@ beforeEach(() => {
   requests = []
   startRunOutcome = null
   settleRun = null
+  confirmedTermTypes = []
+  confirmedCombinations = []
   stubApi()
 })
 
@@ -186,95 +197,124 @@ function renderAt(path: string) {
   )
 }
 
-describe('已有映射时只传数据文件就能跑', () => {
-  it('主区域就有数据文件输入框，不用先点开「高级」', async () => {
-    // 页面明说"传入数据文件即可运行，不用再配一遍"。而在这之前，唯一能传
-    // 数据文件的地方折叠在一个叫「高级」、副标题是"已经有验证过的配置文件？"
-    // 的面板里，那个表单还要求再传一次 config.yaml——正是那句话承诺不用做的事。
+/** demo 那份映射：订单挂着几个度量，客户名下挂着邮编（正是那次事故的形状）。 */
+const DEMO_SUMMARY: EtlMappingSummary = {
+  entities: [
+    {
+      term_type: 'Order ID',
+      source_file: 'soft_drink_sales.xlsx',
+      key_columns: ['Order ID'],
+      key_parts: [{ kind: 'column' as const, column: 'Order ID' }],
+      name_columns: ['Order ID'],
+      attributes: { Revenue: 'Revenue' },
+    },
+    {
+      term_type: 'Customer Name',
+      source_file: 'soft_drink_sales.xlsx',
+      key_columns: ['Customer Name'],
+      key_parts: [{ kind: 'column' as const, column: 'Customer Name' }],
+      name_columns: ['Customer Name'],
+      attributes: { Customer_Zip_Code: 'Customer Zip Code' },
+    },
+  ],
+  relations: [
+    {
+      relation_type: 'HAS_CUSTOMER_NAME',
+      subject_term_type: 'Order ID',
+      object_term_type: 'Customer Name',
+    },
+  ],
+}
+
+const DEMO_HEADER = 'Order ID,Revenue,Customer Name,Customer Zip Code'
+
+function stubDemoMapping(summary: EtlMappingSummary | null = DEMO_SUMMARY) {
+  stubEtlMapping({
+    config_yaml: 'entities: []',
+    source_file_name: 'soft_drink_sales.xlsx',
+    created_at: '2026-09-11T00:00:00',
+    summary,
+  })
+}
+
+function csv(header: string, name = 'sales_2026.csv') {
+  return new File([`${header}\nA,1,张三,100000\n`], name, { type: 'text/csv' })
+}
+
+/** 选文件 → 等第二步填好。返回流程容器。 */
+async function chooseFile(user: ReturnType<typeof userEvent.setup>, file: File) {
+  const flow = await screen.findByTestId('table-import-flow')
+  await user.upload(within(flow).getByLabelText(/数据文件/) as HTMLInputElement, file)
+  await screen.findByTestId('mapping-overview')
+  return flow
+}
+
+describe('表格导入的三步流程', () => {
+  it('第一步就是选数据文件，不用先点开任何折叠面板', async () => {
+    // 此前主区域给的是运行按钮，映射折在下面的面板里，而那个面板里还要
+    // 再传一次表——用户点运行时根本没见过映射。
     signIn('admin')
-    stubEtlMapping({
-      config_yaml: 'entities: []',
-      source_file_name: 'soft_drink_sales.xlsx',
-      created_at: '2026-09-11T00:00:00',
-    })
+    stubDemoMapping()
     renderAt(ADMIN_ROUTES.etl)
-    // 不做任何展开动作就该看得见。
-    expect(await screen.findByTestId('run-with-stored-mapping')).toBeTruthy()
+
+    const flow = await screen.findByTestId('table-import-flow')
+    expect(within(flow).getByLabelText(/数据文件/)).toBeTruthy()
+    // 页面上只有这一个主按钮。此前「开始运行」和「确认并开始运行」并列，
+    // 做的事不同而外观一致。
+    expect(screen.getAllByRole('button', { name: /^开始导入$/ })).toHaveLength(1)
   })
 
-  it('运行表单里先摆出映射摘要：哪列是身份键、哪列挂在哪个实体下', async () => {
-    // 真实事故：邮编挂在「客户名」下，同名客户邮编不同，跑批被拒。表单此前只
-    // 说"传数据文件即可运行"，用户没看过映射就点了。摘要要把这件事直接摆出来。
+  it('选完文件，第二步直接摆出哪列是身份键、哪列挂在哪个实体下', async () => {
     signIn('admin')
-    stubEtlMapping({
-      config_yaml: 'entities: []',
-      source_file_name: 'soft_drink_sales.xlsx',
-      created_at: '2026-09-11T00:00:00',
-      summary: {
-        entities: [
-          {
-            term_type: 'Customer Name',
-            source_file: 'soft_drink_sales.xlsx',
-            key_columns: ['Customer Name'],
-            key_parts: [{ kind: 'column' as const, column: 'Customer Name' }],
-            name_columns: ['Customer Name'],
-            attributes: { Customer_Zip_Code: 'Customer Zip Code' },
-          },
-          {
-            term_type: 'Order ID',
-            source_file: 'soft_drink_sales.xlsx',
-            key_columns: ['Order ID'],
-            key_parts: [{ kind: 'column' as const, column: 'Order ID' }],
-            name_columns: ['Order ID'],
-            attributes: {},
-          },
-        ],
-        relations: [
-          { relation_type: 'placed_by', subject_term_type: 'Order ID', object_term_type: 'Customer Name' },
-        ],
-      },
-    })
-    renderAt(ADMIN_ROUTES.etl)
-    const form = await screen.findByTestId('run-with-stored-mapping')
-    const summary = within(form).getByTestId('mapping-summary')
-    // 邮编那一行必须跟「Customer Name」挂在同一个条目里，不是随便出现在页面上。
-    const customerRow = within(summary).getByText('Customer Name', { selector: '.font-bold' }).closest('li')!
-    expect(within(customerRow).getByText('Customer Zip Code')).toBeTruthy()
-    expect(within(summary).getByText(/Order ID —placed_by→ Customer Name/)).toBeTruthy()
-  })
-
-  it('存好的 YAML 解析不出摘要时，表单照常可用、不画摘要', async () => {
-    signIn('admin')
-    stubEtlMapping({
-      config_yaml: 'entities: []',
-      source_file_name: 'soft_drink_sales.xlsx',
-      created_at: '2026-09-11T00:00:00',
-      summary: null,
-    })
-    renderAt(ADMIN_ROUTES.etl)
-    const form = await screen.findByTestId('run-with-stored-mapping')
-    expect(within(form).queryByTestId('mapping-summary')).toBeNull()
-    expect(within(form).getByLabelText(/数据文件/)).toBeTruthy()
-  })
-
-  it('提交时不带 config，让后端用存好的那份', async () => {
-    // 带上一个空 config 的话后端会拿它当权威，跑出一份什么都不导的空跑批。
-    signIn('admin')
-    stubEtlMapping({
-      config_yaml: 'entities: []',
-      source_file_name: 'soft_drink_sales.xlsx',
-      created_at: '2026-09-11T00:00:00',
-    })
+    stubDemoMapping()
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.etl)
-    const form = await screen.findByTestId('run-with-stored-mapping')
-    // 等按钮真的可用：确认状态没拿到之前整个表单是禁用的（本体没确认就不该
-    // 能触发 ETL）。不等的话点击落在一个 disabled 的按钮上，什么都不会发生。
-    const button = within(form).getByRole('button', { name: /开始运行|运行/ })
-    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false))
-    const input = within(form).getByLabelText(/数据文件/) as HTMLInputElement
-    await user.upload(input, new File(['a,b,1,2'], 'sales_2026.csv', { type: 'text/csv' }))
-    await user.click(button)
+
+    const flow = await chooseFile(user, csv(DEMO_HEADER))
+
+    const overview = within(flow).getByTestId('mapping-overview')
+    expect(overview.textContent).toMatch(/Customer Name/)
+    expect(overview.textContent).toMatch(/Order ID —HAS_CUSTOMER_NAME→ Customer Name/)
+    expect(within(flow).getByText(/沿用上次配好的映射/)).toBeTruthy()
+  })
+
+  it('点「改这份映射」就能改，邮编挂在客户名下这件事在编辑器里看得见', async () => {
+    // 事故的形状：邮编挂在「客户名」这个身份键下，同名客户邮编不同，ETL
+    // 拒绝写入。用户至少要够得着那一处才改得动。
+    signIn('admin')
+    stubDemoMapping()
+    confirmedTermTypes = [
+      { value: 'Order ID', extra_fields: [{ name: 'Revenue', value_type: 'integer', label: 'Revenue' }] },
+      {
+        value: 'Customer Name',
+        extra_fields: [
+          { name: 'Customer_Zip_Code', value_type: 'integer', label: 'Customer Zip Code' },
+        ],
+      },
+    ]
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFile(user, csv(DEMO_HEADER))
+    await user.click(within(flow).getByTestId('toggle-mapping-editor'))
+
+    expect(within(flow).queryByTestId('mapping-overview')).toBeNull()
+    // 按 testid 找，不按文字：'Customer Zip Code' 同时也是每个下拉里的一个
+    // <option>，按文字找会撞上一堆。
+    const zip = await within(flow).findByTestId('field-mapping-Customer_Zip_Code')
+    expect((zip.querySelector('select') as HTMLSelectElement).value).toBe('Customer Zip Code')
+  })
+
+  it('沿用存好的映射、一个字没改时，提交不带 config', async () => {
+    // 带上一份 config 的话后端会拿它当权威，而这里生成的那份未必跟存着的
+    // 一模一样（比如存的是多列拼接的展示名，编辑器只放得下一列）。
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFile(user, csv(DEMO_HEADER))
+    await user.click(within(flow).getByTestId('run-import'))
 
     await waitFor(() => {
       const posted = requests.find(
@@ -287,96 +327,126 @@ describe('已有映射时只传数据文件就能跑', () => {
     })
   })
 
-  it('提交后跑批失败，原因不用点任何东西就能看见', async () => {
-    // 真实事故：demo 租户导入 soft_drink_sales.xlsx，ETL 因为 530 个客户
-    // 同名不同邮编拒绝写入——原因完整地存在 etl_runs.error 里，后端日志
-    // 也打了。但页面提交后只刷新列表、不选中新跑批，用户看到的是一行
-    // 「失败」徽标；原因藏在要点那一行才展开的详情里。他以为是"上传坏了"。
+  it('改过映射之后，提交就带上改完的那份', async () => {
+    // 不带的话后端会用存着的旧映射跑——用户刚做的修改被静默丢弃，而界面上
+    // 看不出发生过这件事。
     signIn('admin')
-    stubEtlMapping({
-      config_yaml: 'entities: []',
-      source_file_name: 'soft_drink_sales.xlsx',
-      created_at: '2026-09-11T00:00:00',
-    })
-    const reason =
-      "实体类型 'Customer Name' 有 530 个 node_key 被算出了不同的值，本次未写入任何数据。"
-    startRunOutcome = {
-      listRow: {
-        run_id: 'run-failed',
-        status: 'failed',
-        started_at: '2026-09-14T09:58:59',
-        finished_at: '2026-09-14T09:59:04',
-      },
-      detail: {
-        run_id: 'run-failed',
-        status: 'failed',
-        started_at: '2026-09-14T09:58:59',
-        finished_at: '2026-09-14T09:59:04',
-        error: reason,
-        report: null,
-      },
-    }
+    stubDemoMapping()
+    confirmedTermTypes = [
+      { value: 'Order ID', extra_fields: [] },
+      { value: 'Customer Name', extra_fields: [] },
+    ]
     const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.etl)
-    const form = await screen.findByTestId('run-with-stored-mapping')
-    const button = within(form).getByRole('button', { name: /开始运行|运行/ })
-    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false))
+
+    const flow = await chooseFile(user, csv(DEMO_HEADER))
+    await user.click(within(flow).getByTestId('toggle-mapping-editor'))
+    const removeButtons = await within(flow).findAllByRole('button', { name: '删除' })
+    await user.click(removeButtons[1])
+    await user.click(within(flow).getByTestId('run-import'))
+
+    await waitFor(() => {
+      const posted = requests.find(
+        (r) => r.url.includes('/schema-etl/runs') && r.init?.method === 'POST',
+      )
+      expect(posted).toBeTruthy()
+      expect((posted!.init!.body as FormData).has('config')).toBe(true)
+    })
+  })
+
+  it('存好的映射用到的列这张表没有时，说出缺哪列，并改用按本体推的建议', async () => {
+    // 不给原因的话，用户看到的是"这不是我上次配的那份"，最可能的猜测是
+    // 系统把配置弄丢了；真实原因通常是他换了一张列名不同的表。
+    signIn('admin')
+    stubDemoMapping()
+    confirmedTermTypes = [{ value: 'Order ID', extra_fields: [] }]
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await screen.findByTestId('table-import-flow')
     await user.upload(
-      within(form).getByLabelText(/数据文件/) as HTMLInputElement,
-      new File(['a,b'], 'soft_drink_sales.xlsx'),
+      within(flow).getByLabelText(/数据文件/) as HTMLInputElement,
+      csv('Order ID,Revenue'),
     )
-    await user.click(button)
 
-    // 提交那一刻它还在跑。详情已经开着，但没有失败原因可显示。
-    await screen.findByText(/跑批详情：run-failed/)
-    expect(screen.queryByRole('alert')).toBeNull()
+    const notice = await within(flow).findByTestId('stored-mapping-not-reused')
+    expect(notice.textContent).toMatch(/Customer Name/)
+    expect(within(flow).getByText(/按已确认本体现推的建议/)).toBeTruthy()
+  })
 
-    // ETL 跑完了、失败了。页面自己轮询列表（running 时每 3 秒），详情得跟着
-    // 刷新——不点任何一行，原因就得在页面上出现。
-    settleRun!()
-    const alert = await screen.findByRole('alert', {}, { timeout: 8000 })
-    expect(alert.textContent).toContain('Customer Name')
-    expect(alert.textContent).toContain('530')
-
-    // 原因十有八九在映射上，不在文件上。只报原因不给出路，用户会去重新上传
-    // 同一个文件再失败一次。点「去改映射」要把构建器展开。
-    await user.click(screen.getByTestId('fix-mapping-from-failure'))
-    expect(await screen.findByText(/表格列 ↔ 本体实体/)).toBeTruthy()
-    // 展开状态从三角形的朝向读不出来，从"构建器内容挂没挂载"读：它自己
-    // 的第二步标题就是「配置实体映射」——哪列是身份键、属性挂在哪个实体下。
-    expect(await screen.findByText(/2\. 配置实体映射/)).toBeTruthy()
-  }, 15000)
-
-  it('一个文件都没选就点运行，给出提示而不是发一次空请求', async () => {
-    // 这里不能靠 <input required>：jsdom 的表单校验不认 user-event 设进去的
-    // files，整个提交会被静默挡掉，于是"能提交"这件事在测试里根本验不了。
-    // 守卫写在 handleUpload 里，这条用例钉住它。
+  it('一个文件都没选时运行按钮不可点，也不会发出一次空请求', async () => {
     signIn('admin')
-    stubEtlMapping({
-      config_yaml: 'entities: []',
-      source_file_name: 'soft_drink_sales.xlsx',
-      created_at: '2026-09-11T00:00:00',
-    })
-    const user = userEvent.setup()
+    stubDemoMapping()
     renderAt(ADMIN_ROUTES.etl)
-    const form = await screen.findByTestId('run-with-stored-mapping')
-    const button = within(form).getByRole('button', { name: /开始运行|运行/ })
-    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false))
-    await user.click(button)
 
-    expect(await within(form).findByRole('alert')).toBeTruthy()
+    const flow = await screen.findByTestId('table-import-flow')
+    expect(within(flow).getByTestId('run-import').hasAttribute('disabled')).toBe(true)
     expect(
       requests.find((r) => r.url.includes('/schema-etl/runs') && r.init?.method === 'POST'),
     ).toBeUndefined()
   })
 
-  it('没有映射时不出这个表单——没东西可回落', async () => {
+  it('没有存过映射时，走的是同一条流程，只是第二步给的是建议', async () => {
+    // 此前无映射走的是另一套界面（构建器默认展开当主角），有映射走运行
+    // 表单。两条路并存正是"入口多、找不到"的来源。
     signIn('admin')
     stubEtlMapping(null)
+    confirmedTermTypes = [{ value: 'Order ID', extra_fields: [] }]
+    const user = userEvent.setup()
     renderAt(ADMIN_ROUTES.etl)
-    await screen.findByTestId('admin-topbar')
-    expect(screen.queryByTestId('run-with-stored-mapping')).toBeNull()
+
+    const flow = await screen.findByTestId('table-import-flow')
+    expect(screen.queryByText(/已经配好了一份映射/)).toBeNull()
+    await user.upload(
+      within(flow).getByLabelText(/数据文件/) as HTMLInputElement,
+      csv('Order ID,Revenue'),
+    )
+    // 没看过的建议默认展开，不用先自己发现「这里能点开」。
+    expect(await within(flow).findByText(/按已确认本体现推的建议/)).toBeTruthy()
+    expect(within(flow).queryByTestId('mapping-overview')).toBeNull()
   })
+
+  it('提交后跑批失败，原因不用点任何东西就能看见，旁边给「去改映射」', async () => {
+    signIn('admin')
+    stubDemoMapping()
+    confirmedTermTypes = [{ value: 'Order ID', extra_fields: [] }]
+    startRunOutcome = {
+      listRow: {
+        run_id: 'run-new',
+        status: 'failed',
+        started_at: '2026-09-13T00:00:00',
+        finished_at: '2026-09-13T00:00:05',
+      },
+      detail: {
+        run_id: 'run-new',
+        status: 'failed',
+        started_at: '2026-09-13T00:00:00',
+        finished_at: '2026-09-13T00:00:05',
+        error: "实体类型 'Customer Name' 有 530 个 node_key 被算出了不同的值",
+        report: null,
+      },
+    }
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFile(user, csv(DEMO_HEADER))
+    await user.click(within(flow).getByTestId('run-import'))
+
+    // 提交那一刻它还在跑。详情已经开着，但没有失败原因可显示。
+    await screen.findByText(/跑批详情：run-new/)
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    // ETL 跑完了、失败了。页面自己轮询列表，详情得跟着刷新——不点任何一行，
+    // 原因就得出现在页面上。
+    settleRun!()
+    const alert = await screen.findByRole('alert', {}, { timeout: 8000 })
+    expect(alert.textContent).toContain('530 个 node_key')
+
+    // 原因十有八九在映射上，不在文件上。点「去改映射」要把第二步的编辑器
+    // 展开——只报原因不给出路，用户会去重新上传同一个文件再失败一次。
+    await user.click(screen.getByTestId('fix-mapping-from-failure'))
+    await waitFor(() => expect(within(flow).queryByTestId('mapping-overview')).toBeNull())
+  }, 20000)
 })
 
 describe('本体草稿未确认的提示', () => {
@@ -409,44 +479,38 @@ describe('本体草稿未确认的提示', () => {
 })
 
 describe('表格导入页首屏', () => {
-  it('本体带着引导配好的映射时，只要数据文件，不邀请他重配', async () => {
+  it('已经配好映射时说一句就够，映射长什么样留到第二步', async () => {
     // 刚走完引导的用户看到一个邀请他从头配置的界面，等于让他重做刚做完的
-    // 工作；重做出来的两份还可能不一致，那时以哪个为准没有答案。
+    // 工作。这里只说"有一份、来自哪张表"——它的内容在第二步展示，两处都画
+    // 一遍的话，一旦不一致用户不知道该信哪个。
     signIn('admin')
-    stubEtlMapping({
-      config_yaml: 'entities: []',
-      source_file_name: 'orders.csv',
-      created_at: '2026-09-03T00:00:00',
-    })
+    stubDemoMapping()
     renderAt(ADMIN_ROUTES.etl)
-    expect(await screen.findByText(/引导流程已为这个本体配好映射/)).toBeTruthy()
-    expect(screen.getByText('orders.csv')).toBeTruthy()
-    // 构建器降级成折叠的次级入口，不是主角。
-    expect(screen.getByRole('button', { name: /表格列 ↔ 本体实体的映射/ })).toBeTruthy()
-    // 光断言按钮存在区分不了折叠和展开——两种状态下按钮都在。真正能区分
-    // 开的是面板内容："1. 添加数据文件" 是 SchemaEtlConfigBuilder 展开后
-    // 才会渲染的第一行，折叠时整个组件都不挂载，这行文本不存在。
-    expect(screen.queryByText('1. 添加数据文件')).toBeNull()
+
+    expect(await screen.findByText(/已经配好了一份映射/)).toBeTruthy()
+    expect(screen.getByText('soft_drink_sales.xlsx')).toBeTruthy()
+    // 还没选文件，第二步没有可展示的映射。
+    expect(screen.queryByTestId('mapping-overview')).toBeNull()
   })
 
-  it('没有映射时维持原样，构建器是主角', async () => {
+  it('没有映射时也是同一条流程，只是少了那句提示', async () => {
     signIn('admin')
     stubEtlMapping(null)
     renderAt(ADMIN_ROUTES.etl)
-    expect(await screen.findByRole('button', { name: /把这张表的列映射到本体实体/ })).toBeTruthy()
-    expect(screen.queryByText(/引导流程已为这个本体配好映射/)).toBeNull()
-    // 无映射时构建器默认展开，不需要用户先点开折叠按钮才看到内容。
-    expect(await screen.findByText('1. 添加数据文件')).toBeTruthy()
+
+    expect(await screen.findByTestId('table-import-flow')).toBeTruthy()
+    expect(screen.queryByText(/已经配好了一份映射/)).toBeNull()
   })
 
   it('映射状态未知时，不抢先渲染任何一种形态', async () => {
-    // 抢先渲染"从头配置"会让刚走完引导的用户看到一个邀请他重做的界面，
-    // 然后闪一下变掉。未知就是未知，不许折叠进任何一个已知态。
+    // 抢先渲染会让刚走完引导的用户先看到"没有映射"的样子，然后闪一下变掉。
+    // 未知就是未知，不许折叠进任何一个已知态。
     signIn('admin')
     renderAt(ADMIN_ROUTES.etl)
+
     expect(await screen.findByTestId('etl-mapping-loading')).toBeTruthy()
-    expect(screen.queryByText(/引导流程已为这个本体配好映射/)).toBeNull()
-    expect(screen.queryByRole('button', { name: /把这张表的列映射到本体实体/ })).toBeNull()
+    expect(screen.queryByTestId('table-import-flow')).toBeNull()
+    expect(screen.queryByText(/已经配好了一份映射/)).toBeNull()
   })
 })
 
