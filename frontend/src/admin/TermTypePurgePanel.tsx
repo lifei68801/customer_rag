@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
+import { useConfirm } from './ConfirmContext'
 import {
   fetchStoredTermTypes,
   previewPurgeTermType,
   purgeTermType,
   PurgeCountChangedError,
-  type PurgePreview,
   type StoredTermType,
 } from './termsApi'
 
@@ -16,6 +16,13 @@ interface TermTypePurgePanelProps {
   tenantId: string
   /** 清空成功后通知页面刷新列表和摘要。 */
   onPurged: (message: string) => void
+}
+
+/** 一个类型清空完的结果。失败的那些要逐条报出来，不能只说"部分失败"。 */
+interface PurgeOutcome {
+  termType: string
+  nodeCount: number
+  error: string | null
 }
 
 /**
@@ -33,23 +40,28 @@ interface TermTypePurgePanelProps {
  * （demo 租户的 Order ID：存储 10000 行，可见 0 行）。所以这里单独读
  * /stored-types，并把"已删除但仍占着存储"这件事直接写出来。
  *
- * ## 三道闸
+ * ## 闸只留一道，放在批量那一层
  *
- * 1. 先预览，说清会删多少、删什么、不删什么。
- * 2. 原样输入类型名，按钮才可点（服务端也校验一遍）。
- * 3. 提交预览时看到的数量；预览之后有人导入了新数据，服务端 409，这里重新
- *    拉一次预览让用户看新数字，不按新数字悄悄执行。
+ * 第一版是每个类型各走一遍：预览 → 手打类型名 → 执行。demo 有 12 个类型，
+ * 那就是 12 遍——而用户的处境恰恰是"整个库要清干净重导"，逐个确认没有让他
+ * 更安全，只是让他更容易在第 8 遍时不再读弹窗。
+ *
+ * 现在是多选（含全选）→ 一个按钮 → 一次确认弹窗，弹窗里写清一共几个类型、
+ * 多少个实体、删掉的是什么、什么不删。服务端那道"手打类型名"的校验保留
+ * 不动（它挡的是绕过界面直接调接口的人），由这里按类型逐个填。
+ *
+ * **仍然逐个类型调接口**，不合并成一个大事务：每个类型各自带着"预览时看到
+ * 多少个"的数量守卫，一个类型在这期间被别人导入了新数据，只有它会被拒绝，
+ * 其余照常清完；合并之后只能整批拒绝，而用户不知道是哪一个变了。
  */
 export function TermTypePurgePanel({ sessionToken, tenantId, onPurged }: TermTypePurgePanelProps) {
+  const confirm = useConfirm()
   const [expanded, setExpanded] = useState(false)
   const [types, setTypes] = useState<StoredTermType[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [target, setTarget] = useState<string | null>(null)
-  const [preview, setPreview] = useState<PurgePreview | null>(null)
-  const [previewNotice, setPreviewNotice] = useState<string | null>(null)
-  const [confirmText, setConfirmText] = useState('')
-  const [purging, setPurging] = useState(false)
-  const [purgeError, setPurgeError] = useState<string | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [purgingOf, setPurgingOf] = useState<string | null>(null)
+  const [outcomes, setOutcomes] = useState<PurgeOutcome[] | null>(null)
 
   const loadTypes = async () => {
     setLoadError(null)
@@ -66,48 +78,76 @@ export function TermTypePurgePanel({ sessionToken, tenantId, onPurged }: TermTyp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded, tenantId, sessionToken])
 
-  // 切租户时收起目标，避免拿着上一个租户的预览去清空这一个租户。
+  // 切租户时清掉选择：拿着上一个租户选中的类型名去清这一个租户，名字还可能
+  // 正好同名。
   useEffect(() => {
-    setTarget(null)
-    setPreview(null)
+    setSelected(new Set())
+    setOutcomes(null)
   }, [tenantId])
 
-  const openPreview = async (termType: string, notice: string | null = null) => {
-    setTarget(termType)
-    setPreview(null)
-    setPreviewNotice(notice)
-    setConfirmText('')
-    setPurgeError(null)
-    try {
-      setPreview(await previewPurgeTermType(sessionToken, tenantId, termType))
-    } catch (err) {
-      setPurgeError(err instanceof Error ? err.message : '预览失败')
-    }
+  const toggle = (termType: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(termType)) next.delete(termType)
+      else next.add(termType)
+      return next
+    })
   }
 
-  const handlePurge = async () => {
-    if (!preview || confirmText !== preview.term_type) return
-    setPurging(true)
-    setPurgeError(null)
-    try {
-      const result = await purgeTermType(sessionToken, tenantId, {
-        termType: preview.term_type,
-        expectedNodeCount: preview.node_count,
-        confirmText,
-      })
-      setTarget(null)
-      setPreview(null)
-      await loadTypes()
-      onPurged(`已彻底清空「${preview.term_type}」：${result.node_count} 个实体`)
-    } catch (err) {
-      if (err instanceof PurgeCountChangedError) {
-        await openPreview(preview.term_type, err.message)
-      } else {
-        setPurgeError(err instanceof Error ? err.message : '清空失败')
+  const rows = types ?? []
+  const chosen = rows.filter((t) => selected.has(t.term_type))
+  const chosenEntities = chosen.reduce((sum, t) => sum + t.stored, 0)
+  const allSelected = rows.length > 0 && chosen.length === rows.length
+
+  const handlePurgeSelected = async () => {
+    if (chosen.length === 0) return
+    const names = chosen.map((t) => t.term_type).join('、')
+    const ok = await confirm({
+      message:
+        `彻底清空 ${chosen.length} 个实体类型（${names}），共 ${chosenEntities.toLocaleString()} 个实体。\n\n` +
+        '连同它们在图谱里的节点和边、人工编辑记录、审核沉淀的别名、待处理的属性冲突和疑似重复建议一起删除。\n' +
+        '不删：实体类型本身的定义（本体结构不变）、稳定编号的分配记录。\n\n' +
+        '删除后无法撤销。之后重新导入会从零重建。',
+      confirmLabel: '彻底清空',
+    })
+    if (!ok) return
+
+    const results: PurgeOutcome[] = []
+    for (const type of chosen) {
+      setPurgingOf(type.term_type)
+      try {
+        // 每个类型现取一次预览：用列表里那个数当守卫的话，它可能是几分钟前
+        // 拉的，而守卫的意义正是"跟我刚才看到的一致"。这一次取到的是最新值，
+        // 再变就会被服务端拒绝。
+        const preview = await previewPurgeTermType(sessionToken, tenantId, type.term_type)
+        const result = await purgeTermType(sessionToken, tenantId, {
+          termType: type.term_type,
+          expectedNodeCount: preview.node_count,
+          confirmText: type.term_type,
+        })
+        results.push({ termType: type.term_type, nodeCount: result.node_count, error: null })
+      } catch (err) {
+        const message =
+          err instanceof PurgeCountChangedError
+            ? `${err.message}（这个类型没有清空，其余照常）`
+            : err instanceof Error
+              ? err.message
+              : '清空失败'
+        results.push({ termType: type.term_type, nodeCount: 0, error: message })
       }
-    } finally {
-      setPurging(false)
     }
+    setPurgingOf(null)
+    setOutcomes(results)
+    setSelected(new Set())
+    await loadTypes()
+
+    const cleared = results.filter((r) => r.error === null)
+    const total = cleared.reduce((sum, r) => sum + r.nodeCount, 0)
+    onPurged(
+      cleared.length === results.length
+        ? `已彻底清空 ${cleared.length} 个类型，共 ${total.toLocaleString()} 个实体`
+        : `清空了 ${cleared.length}/${results.length} 个类型，有失败的，见下面的明细`,
+    )
   }
 
   return (
@@ -122,7 +162,7 @@ export function TermTypePurgePanel({ sessionToken, tenantId, onPurged }: TermTyp
         className={`flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-left ${focusRing}`}
       >
         <span className="font-bold text-ink">
-          彻底清空某个实体类型
+          彻底清空实体类型
           <span className="ml-2 text-sm font-normal text-ink-soft">
             清理干净后从头重新导入时用。不可撤销。
           </span>
@@ -138,132 +178,115 @@ export function TermTypePurgePanel({ sessionToken, tenantId, onPurged }: TermTyp
       {expanded && (
         <div className="flex flex-col gap-3 border-t border-subtle p-4 text-sm text-ink">
           <p className="text-ink-soft">
-            在上面删除的实体只是被隐藏：词表行还在，重新导入也不会让它们回来。彻底清空会把这个类型在存储里的
+            在上面删除的实体只是被隐藏：词表行还在，重新导入也不会让它们回来。彻底清空会把这些类型在存储里的
             痕迹整个抹掉，之后的导入就相当于第一次导入。
           </p>
 
           {loadError && (
-            <p role="alert" className="text-sm text-ink">
-              {loadError}
+            <p role="alert" className="flex flex-wrap items-center gap-2 text-sm text-ink">
+              <span>{loadError}</span>
+              <button
+                type="button"
+                onClick={() => void loadTypes()}
+                className={`font-bold underline ${focusRing}`}
+              >
+                重试
+              </button>
             </p>
           )}
           {types === null && !loadError && <p className="text-ink-soft">正在读取存储里的实体类型…</p>}
-          {types !== null && types.length === 0 && <p className="text-ink-soft">存储里没有任何实体。</p>}
+          {types !== null && rows.length === 0 && <p className="text-ink-soft">存储里没有任何实体。</p>}
 
-          {types !== null && types.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[28rem] border-collapse text-left">
-                <thead>
-                  <tr className="border-b border-subtle text-xs text-ink-soft">
-                    <th className="py-2 pr-3 font-bold">实体类型</th>
-                    <th className="py-2 pr-3 text-right font-bold">存储行数</th>
-                    <th className="py-2 pr-3 text-right font-bold">列表可见</th>
-                    <th className="py-2" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {types.map((t) => {
-                    const hidden = t.stored - t.visible
-                    return (
-                      <tr key={t.term_type} className="border-b border-subtle last:border-b-0">
-                        <td className="py-2 pr-3 font-mono">{t.term_type}</td>
-                        <td className="py-2 pr-3 text-right tabular-nums">{t.stored}</td>
-                        <td className="py-2 pr-3 text-right tabular-nums">
-                          {t.visible}
-                          {hidden > 0 && (
-                            <span className="ml-2 text-xs text-ink-soft">（{hidden} 条已删除，重新导入不会恢复）</span>
-                          )}
-                        </td>
-                        <td className="py-2 text-right">
-                          <button
-                            type="button"
-                            data-testid={`purge-open-${t.term_type}`}
-                            onClick={() => {
-                              openPreview(t.term_type).catch((err) => console.error(err))
-                            }}
-                            className={`min-h-[36px] cursor-pointer rounded-control border border-status-error bg-paper px-3 text-sm font-bold text-ink ${focusRing}`}
-                          >
-                            清空…
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          {rows.length > 0 && (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[28rem] border-collapse text-left">
+                  <thead>
+                    <tr className="border-b border-subtle text-xs text-ink-soft">
+                      <th className="py-2 pr-3 font-bold">
+                        <label className="flex cursor-pointer items-center gap-2">
+                          <input
+                            type="checkbox"
+                            data-testid="purge-select-all"
+                            checked={allSelected}
+                            onChange={() =>
+                              setSelected(allSelected ? new Set() : new Set(rows.map((t) => t.term_type)))
+                            }
+                          />
+                          全选
+                        </label>
+                      </th>
+                      <th className="py-2 pr-3 font-bold">实体类型</th>
+                      <th className="py-2 pr-3 text-right font-bold">存储行数</th>
+                      <th className="py-2 text-right font-bold">列表可见</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((t) => {
+                      const hidden = t.stored - t.visible
+                      return (
+                        <tr key={t.term_type} className="border-b border-subtle last:border-b-0">
+                          <td className="py-2 pr-3">
+                            <input
+                              type="checkbox"
+                              aria-label={`选择 ${t.term_type}`}
+                              data-testid={`purge-select-${t.term_type}`}
+                              checked={selected.has(t.term_type)}
+                              onChange={() => toggle(t.term_type)}
+                            />
+                          </td>
+                          <td className="py-2 pr-3 font-mono">{t.term_type}</td>
+                          <td className="py-2 pr-3 text-right tabular-nums">
+                            {t.stored.toLocaleString()}
+                          </td>
+                          <td className="py-2 text-right tabular-nums">
+                            {t.visible.toLocaleString()}
+                            {hidden > 0 && (
+                              <span className="ml-2 text-xs text-ink-soft">
+                                （{hidden.toLocaleString()} 条已删除，重新导入不会恢复）
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
 
-          {target && (
-            <div
-              role="region"
-              aria-label={`彻底清空「${target}」`}
-              data-testid="purge-confirm"
-              className="flex flex-col gap-3 rounded-card border border-status-error bg-paper p-3"
-            >
-              {previewNotice && (
-                <p role="alert" className="text-sm text-ink">
-                  {previewNotice}
-                </p>
-              )}
-              {!preview && !purgeError && <p className="text-ink-soft">正在计算要删除多少…</p>}
-              {preview && (
-                <>
-                  <p>
-                    将彻底删除实体类型 <span className="font-mono font-bold">{preview.term_type}</span> 的{' '}
-                    <span className="font-bold tabular-nums">{preview.node_count}</span> 个实体
-                    {preview.created_only > 0 && (
-                      <>（其中 {preview.created_only} 个是在后台手工新建的）</>
-                    )}
-                    ，连同它们在图谱里的节点和边、人工编辑记录、审核沉淀的别名、待处理的属性冲突和疑似重复建议。
-                  </p>
-                  <p className="text-ink-soft">
-                    不删：实体类型本身的定义（本体结构不变）、稳定编号的分配记录（重新导入时同一个值拿到同一个编号）。
-                  </p>
-                  <label className="flex flex-col gap-1 font-bold">
-                    <span>
-                      输入 <span className="font-mono">{preview.term_type}</span> 确认
-                    </span>
-                    <input
-                      type="text"
-                      value={confirmText}
-                      onChange={(e) => setConfirmText(e.target.value)}
-                      autoComplete="off"
-                      spellCheck={false}
-                      className={`w-full max-w-xs rounded-control border border-subtle bg-card px-3 py-2 font-mono font-normal text-ink focus:outline-none ${focusRing}`}
-                    />
-                  </label>
-                </>
-              )}
-              {purgeError && (
-                <p role="alert" className="text-sm text-ink">
-                  {purgeError}
-                </p>
-              )}
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
-                  data-testid="purge-execute"
+                  data-testid="purge-selected"
                   onClick={() => {
-                    handlePurge().catch((err) => console.error(err))
+                    handlePurgeSelected().catch((err) => console.error(err))
                   }}
-                  disabled={!preview || confirmText !== preview.term_type || purging || preview.node_count === 0}
+                  disabled={chosen.length === 0 || purgingOf !== null}
                   className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-status-error-strong px-4 font-bold text-white transition active:scale-95 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
                 >
-                  {purging ? '正在清空…' : '彻底清空，不可撤销'}
+                  {purgingOf !== null
+                    ? `正在清空「${purgingOf}」…`
+                    : `彻底清空所选（${chosen.length} 个类型 · ${chosenEntities.toLocaleString()} 个实体）`}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTarget(null)
-                    setPreview(null)
-                  }}
-                  className={`min-h-[44px] cursor-pointer rounded-control border border-subtle bg-card px-4 font-bold text-ink ${focusRing}`}
-                >
-                  取消
-                </button>
+                {chosen.length === 0 && <span className="text-xs text-ink-soft">先勾选要清空的类型</span>}
               </div>
-            </div>
+            </>
+          )}
+
+          {outcomes && (
+            <ul data-testid="purge-outcomes" className="flex flex-col gap-1 text-xs">
+              {outcomes.map((outcome) => (
+                <li
+                  key={outcome.termType}
+                  className={outcome.error === null ? 'text-ink-soft' : 'text-status-error-strong'}
+                >
+                  <span className="font-mono">{outcome.termType}</span>：
+                  {outcome.error === null
+                    ? `已清空 ${outcome.nodeCount.toLocaleString()} 个实体`
+                    : outcome.error}
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       )}
