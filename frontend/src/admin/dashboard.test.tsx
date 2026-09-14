@@ -57,6 +57,26 @@ let domainsStatus = 200
 let statsResponders: Record<string, () => Promise<Response>>
 let switchRequests: string[] = []
 /** whoami 回的当前租户。第 9 项人工核查（admin 没切过租户）要把它设成 null。 */
+/** 图谱结构的打桩：按租户覆盖，没覆盖的返回下面这份空结构。 */
+let structureResponders: Record<string, () => Promise<Response>> = {}
+
+function structure(overrides: Partial<{
+  entity_types: { term_type: string; count: number }[]
+  relation_types: { relation_type: string; edge_count: number }[]
+  risks: { subject_term_type: string; relation_type: string; object_term_type: string; fanout: number }[]
+  graph_term_count: number
+  connected_term_count: number
+}> = {}) {
+  return jsonResponse({
+    entity_types: [],
+    relation_types: [],
+    risks: [],
+    graph_term_count: 0,
+    connected_term_count: 0,
+    ...overrides,
+  })
+}
+
 let currentTenantId: string | null = 'fast'
 /** 切租户的 PUT 什么时候完成——竞态那条用例要卡住它。 */
 let resolveSwitch: (() => void) | null = null
@@ -89,6 +109,13 @@ function stubApi() {
       if (url.includes('/api/admin/dashboard/domains')) {
         return jsonResponse(domainsBody, domainsStatus)
       }
+      // 图谱结构。跟 /stats 是两个独立端点（代价和失败语义都不同），
+      // 所以这里也各自打桩。
+      const sm = /\/api\/admin\/([^/]+)\/dashboard\/structure$/.exec(url)
+      if (sm) {
+        const responder = structureResponders[decodeURIComponent(sm[1])]
+        return responder ? responder() : structure()
+      }
       // 逐领域统计。租户 id 在路径中段：/api/admin/{tenant}/dashboard/stats
       const m = /\/api\/admin\/([^/]+)\/dashboard\/stats$/.exec(url)
       if (m) {
@@ -109,6 +136,7 @@ beforeEach(() => {
     slow: () => jsonResponse(stats('slow', { term_count: 1 })),
     loner: () => jsonResponse(stats('loner', { term_count: 3 })),
   }
+  structureResponders = {}
   switchRequests = []
   currentTenantId = 'fast'
   resolveSwitch = null
@@ -408,5 +436,109 @@ describe('看板', () => {
     await renderDashboard()
     await waitFor(() => expect(screen.getByText(/领域清单加载失败/)).toBeTruthy())
     expect(screen.queryByText(/还没有任何领域/)).toBeNull()
+  })
+})
+
+describe('看板上的图谱结构', () => {
+  it('扇出风险摆在卡上，说清它会造成什么，并给去本体图的入口', async () => {
+    // demo 上真实发生过：产品→公司 扇出为 3，于是"某公司有多少订单"恒等于
+    // 订单总数。这件事此前只有点进本体图才看得到，用户通常是先问错一次才
+    // 发现。落地页第一眼就该说出来。
+    structureResponders = {
+      fast: () =>
+        structure({
+          risks: [
+            {
+              subject_term_type: '产品',
+              relation_type: 'HAS_COMPANY',
+              object_term_type: '公司',
+              fanout: 3,
+            },
+          ],
+        }),
+    }
+    const user = userEvent.setup()
+    await renderDashboard()
+
+    const block = await card('fast').findByTestId('domain-structure-fast')
+    expect(block.textContent).toMatch(/产品 —HAS_COMPANY→ 公司/)
+    expect(block.textContent).toMatch(/一对多/)
+    // 只说"有风险"不说后果，用户不知道该不该管它。
+    expect(block.textContent).toMatch(/计数会把归属放大/)
+
+    await user.click(within(block).getByRole('button', { name: /去本体图/ }))
+    // 跨领域的入口必须先切租户再跳，否则落在目标页看到的是别的领域的数据。
+    await waitFor(() => expect(switchRequests).toEqual(['fast']))
+  })
+
+  it('没有风险时不摆一块空的警告区', async () => {
+    structureResponders = { fast: () => structure({ entity_types: [{ term_type: '产品', count: 3 }] }) }
+    await renderDashboard()
+
+    const block = await card('fast').findByTestId('domain-structure-fast')
+    expect(within(block).queryByRole('button', { name: /去本体图/ })).toBeNull()
+  })
+
+  it('实体构成按类型画出来，条子对读屏软件读成一句话', async () => {
+    structureResponders = {
+      fast: () =>
+        structure({
+          entity_types: [
+            { term_type: '订单', count: 10000 },
+            { term_type: '客户', count: 500 },
+          ],
+        }),
+    }
+    await renderDashboard()
+
+    const block = await card('fast').findByTestId('domain-structure-fast')
+    expect(within(block).getByRole('img', { name: /实体构成：订单 10000，客户 500/ })).toBeTruthy()
+    // 图例把名字和条数写出来：颜色在这里不表意，不能只靠色块区分。
+    expect(block.textContent).toMatch(/订单/)
+    expect(block.textContent).toMatch(/10,000/)
+  })
+
+  it('关系构成按边数排，稀疏的那种一眼看得出比主干少得多', async () => {
+    structureResponders = {
+      fast: () =>
+        structure({
+          relation_types: [
+            { relation_type: 'HAS_PRODUCT', edge_count: 10000 },
+            { relation_type: 'HAS_COMPANY', edge_count: 30 },
+          ],
+        }),
+    }
+    await renderDashboard()
+
+    const block = await card('fast').findByTestId('domain-structure-fast')
+    const bars = within(block).getAllByTitle(/HAS_/)
+    expect(bars.map((b) => b.textContent)).toEqual(['HAS_PRODUCT', 'HAS_COMPANY'])
+    expect(block.textContent).toMatch(/10,000/)
+    expect(block.textContent).toMatch(/30/)
+  })
+
+  it('孤立实体说出条数和占比——导入报告不会报这件事', async () => {
+    structureResponders = {
+      fast: () => structure({ graph_term_count: 1000, connected_term_count: 850 }),
+    }
+    await renderDashboard()
+
+    const block = await card('fast').findByTestId('domain-structure-fast')
+    expect(block.textContent).toMatch(/150/)
+    expect(block.textContent).toMatch(/15%/)
+    expect(block.textContent).toMatch(/查询问不到/)
+  })
+
+  it('结构算不出来时只有这一块降级，规模数字照常显示', async () => {
+    // 两个端点分开的理由之一：结构那次图查询失败，不该让这张卡上本来好好的
+    // 实体数一起看不到。
+    structureResponders = {
+      fast: () => jsonResponse({ detail: '图谱结构没算出来' }, 503),
+    }
+    await renderDashboard()
+
+    const fast = card('fast')
+    expect(await fast.findByText(/图谱结构没算出来/)).toBeTruthy()
+    expect(fast.getByText('20,017')).toBeTruthy()
   })
 })

@@ -5,6 +5,7 @@ import { ADMIN_ROUTES } from '../adminRoutes'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
+import { DomainStructure } from './DomainStructure'
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -168,12 +169,14 @@ export function DomainCard({ domain }: { domain: Domain }) {
 
   return shell(
     <>
-      {/* 规模和待办分开排，两个理由。
-          一是它们不是一类东西：前四个说"这里有多少东西"，待审说"有多少事
-          等着你"。项目在侧边栏徽标里早就区分了 todo 和 count
-          （useNavBadges），这里此前没区分——五个数字长得一模一样。
-          二是五个数字塞进两列，第五个独占半行留个洞。四个填满 2×2。 */}
-      <dl className="grid grid-cols-2 gap-3">
+      {/* 结构在前、数字在后。
+          此前这张卡是四个规模数字 + 待审，回答的全是"有多少"；而用户在落地页
+          要判断的是"这个知识库装的是什么、哪里建歪了"。规模数字降级成下面
+          一行次要信息——它们仍然要有（用来跟各自的明细页对账），但不该占据
+          一张卡最显眼的位置。 */}
+      <DomainStructure tenantId={domain.tenant_id} onOpen={(path) => void goTo(path)} disabled={going} />
+
+      <dl className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-subtle pt-3 text-xs text-ink-soft">
         <Stat label="实体" value={stats.term_count} />
         <Stat label="关系" value={stats.edge_count} />
         <Stat label="文档" value={stats.document_count} />
@@ -181,20 +184,13 @@ export function DomainCard({ domain }: { domain: Domain }) {
             两万个实体里多少是表格导进来的、多少是文档抽出来的——而这两条
             路径的修法完全不同。 */}
         <Stat label="表格行" value={stats.sheet_row_count} />
-      </dl>
-      <dl className="flex items-baseline gap-2 border-t border-subtle pt-3">
-        <dt className="text-xs text-ink-soft">待审</dt>
-        <dd
-          className={`font-mono text-lg font-semibold tabular-nums ${
-            stats.pending_review_count > 0 ? 'text-status-error-strong' : 'text-ink-soft'
-          }`}
-        >
-          {stats.pending_review_count.toLocaleString()}
-        </dd>
+        <Stat
+          label="待审"
+          value={stats.pending_review_count}
+          tone={stats.pending_review_count > 0 ? 'alert' : 'normal'}
+        />
         {/* 不靠颜色单独表意：0 的时候把"没有事等着你"直接说出来。 */}
-        {stats.pending_review_count === 0 && (
-          <span className="text-xs text-ink-soft">没有待处理的</span>
-        )}
+        {stats.pending_review_count === 0 && <span>没有待处理的</span>}
       </dl>
 
       <ExtractionQuality stats={stats} />
@@ -285,15 +281,27 @@ function ExtractionQuality({ stats }: { stats: DomainStats }) {
   )
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({
+  label,
+  value,
+  tone = 'normal',
+}: {
+  label: string
+  value: number
+  tone?: 'normal' | 'alert'
+}) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-xs text-ink-soft">{label}</dt>
+    <span className="flex items-baseline gap-1">
+      <dt>{label}</dt>
       {/* 千分位：1204883 读不出来是一百二十万还是十二万。tabular-nums 让
-          四个数字的位数对齐，扫一眼就能比大小。 */}
-      <dd className="font-mono text-lg font-semibold tabular-nums text-ink">
+          这一行里的数字位数对齐，扫一眼就能比大小。 */}
+      <dd
+        className={`font-mono font-bold tabular-nums ${
+          tone === 'alert' ? 'text-status-error-strong' : 'text-ink'
+        }`}
+      >
         {value.toLocaleString()}
       </dd>
-    </div>
+    </span>
   )
 }
