@@ -9,6 +9,20 @@ from app.memory.memory_store import list_active_memory_items
 from app.memory.recall import recall_memory_items
 from app.memory.session_window import get_recent_turns
 from app.providers.embedding import EmbeddingRegistry
+from app.safety.rules import UNSAFE_INPUT_MESSAGE, UNSAFE_OUTPUT_MESSAGE
+
+# 历史里的安全兜底文案，喂给 LLM 之前换成这句说明。
+#
+# 兜底文案会原样作为助手回答存进会话轮次（memory_save_node 写的是用户实际
+# 看到的 final_text，会话列表也靠它回放）。原样喂回去的话，模型会把它当成
+# 自己上一轮的回答照抄：demo 租户一次回答被语义审查误拦之后，同一会话里
+# 再问同一个问题，模型一个工具都没调，直接复述"抱歉，生成的回答未通过安全
+# 审查"——那一轮根本没有经过拦截，日志里也没有任何审查记录。
+#
+# 替换而不是删掉：删掉会让历史里出现连续两条 user 消息，一问一答的交替
+# 断掉。替换成的是一句事实陈述，不是指令，也不含原文案里的任何字句。
+_SAFETY_FALLBACK_REPLIES = frozenset({UNSAFE_OUTPUT_MESSAGE, UNSAFE_INPUT_MESSAGE})
+SAFETY_FALLBACK_HISTORY_NOTE = "（这一轮没有给出回答：内容被安全检查拦下了。）"
 
 
 async def inject_memory_context(
@@ -59,7 +73,17 @@ async def inject_memory_context(
     turns = await get_recent_turns(
         conn, tenant_id=tenant_id, session_id=session_id, limit=recent_turn_limit
     )
-    turn_messages = [{"role": t["role"], "content": t["content"]} for t in turns]
+    turn_messages = [
+        {
+            "role": t["role"],
+            "content": (
+                SAFETY_FALLBACK_HISTORY_NOTE
+                if t["role"] == "assistant" and t["content"] in _SAFETY_FALLBACK_REPLIES
+                else t["content"]
+            ),
+        }
+        for t in turns
+    ]
     compacted_turns = compact_messages(
         turn_messages, preserve_recent_messages=compaction_preserve_recent_messages
     )
