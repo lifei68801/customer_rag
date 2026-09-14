@@ -137,22 +137,38 @@ def summarize_schema_etl_config(config: SchemaETLConfig) -> dict:
     没看到过映射会做什么就点了运行；真实事故里邮编挂在了客户名下，同名客户
     邮编不同，ETL 拒绝写入——而这件事在摘要里一眼能看出来。
 
-    只给列名和类型名这类界面能直接展示的东西。node_key 的稳定码分配规则
-    （AllocatedCodeNodeKeyPart）对用户来说就是"按 X 列分配编号"，展示成那样。
+    每个实体给两份 node_key：
+
+    - ``key_columns`` 是**给人看的**。稳定码分配规则（AllocatedCodeNodeKeyPart）
+      对用户来说就是"按 X 列分配编号"，压成那样一句话。
+    - ``key_parts`` 是**给界面回填用的**，跟 node_key_parts 一一对应、不丢信息。
+      表格导入页要把存好的映射填回可编辑的表单里，只有 key_columns 的话，
+      "按「X」分配编号"这句中文再也解析不回一条规则——用户一打开编辑器，
+      那条键就会被悄悄降级成一个叫这句中文的普通列。
     """
     entities = []
     for e in config.entities:
         key_columns = []
+        key_parts: list[dict] = []
         for part in e.node_key_parts:
             if isinstance(part, ColumnNodeKeyPart):
                 key_columns.append(part.column)
+                key_parts.append({"kind": "column", "column": part.column})
             else:
                 key_columns.append(f"按「{part.raw_value_column}」分配编号")
+                key_parts.append(
+                    {
+                        "kind": "allocated_code",
+                        "scope_columns": list(part.scope_columns),
+                        "raw_value_column": part.raw_value_column,
+                    }
+                )
         entities.append(
             {
                 "term_type": e.term_type,
                 "source_file": e.source_file,
                 "key_columns": key_columns,
+                "key_parts": key_parts,
                 "name_columns": list(e.standard_name_parts),
                 # 属性：{字段名: 源列}。界面按"源列 → 挂到这个实体的 字段名"展示。
                 "attributes": dict(e.field_mappings),

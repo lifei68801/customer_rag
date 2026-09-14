@@ -320,3 +320,37 @@ entities:
     [sku] = summarize_schema_etl_config(config)["entities"]
 
     assert sku["key_columns"] == ["按「label」分配编号"]
+
+
+def test_summary_key_parts_round_trip_back_into_an_editable_form():
+    """key_parts 不丢信息：表格导入页要拿它把存好的映射填回可编辑的表单。
+
+    只有 key_columns 的话，"按「label」分配编号"那句中文再也解析不回一条
+    分配规则——用户一打开编辑器，那条键就被降级成一个叫这句话的普通列，
+    而界面上看不出发生过降级。
+    """
+    config = parse_schema_etl_config(
+        """
+tenant_id: demo
+entities:
+  - term_type: SKU
+    source_file: sku.xlsx
+    standard_name_column: label
+    node_key_parts:
+      - column: brand
+      - allocated_code:
+          scope_columns: [brand, year]
+          raw_value_column: label
+"""
+    )
+
+    [sku] = summarize_schema_etl_config(config)["entities"]
+
+    assert sku["key_parts"] == [
+        {"kind": "column", "column": "brand"},
+        {
+            "kind": "allocated_code",
+            "scope_columns": ["brand", "year"],
+            "raw_value_column": "label",
+        },
+    ]

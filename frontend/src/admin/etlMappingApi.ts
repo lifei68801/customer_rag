@@ -5,8 +5,18 @@ export interface EtlMappingSummary {
   entities: {
     term_type: string
     source_file: string
-    /** 哪些列拼成身份键。稳定码那种展示成"按 X 列分配编号"。 */
+    /** 哪些列拼成身份键，**给人看的**。稳定码那种压成"按 X 列分配编号"一句话。 */
     key_columns: string[]
+    /**
+     * 同一份身份键的**机器形式**，跟后端的 node_key_parts 一一对应。
+     *
+     * 要它是因为 key_columns 有损：「按「X」分配编号」这句中文再也解析不回
+     * 一条分配规则，拿它填回编辑器会把那条键悄悄降级成一个叫这句话的普通列。
+     */
+    key_parts: (
+      | { kind: 'column'; column: string }
+      | { kind: 'allocated_code'; scope_columns: string[]; raw_value_column: string }
+    )[]
     name_columns: string[]
     /** {字段名: 源列}——挂在这个实体上的属性。 */
     attributes: Record<string, string>
