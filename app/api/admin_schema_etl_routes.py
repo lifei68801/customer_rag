@@ -30,7 +30,7 @@ from app.graphrag.etl_runs_store import (
 )
 from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.ontology_constraints import list_allowed_combinations
-from app.graphrag.ontology_etl_mapping import get_etl_mapping
+from app.graphrag.ontology_etl_mapping import get_etl_mapping, remember_mapping_used_for_import
 from app.graphrag.ontology_lifecycle import (
     has_unconfirmed_term_type_changes,
     is_ontology_confirmed,
@@ -100,6 +100,10 @@ class StatusResponse(BaseModel):
 
 class StartRunResponse(BaseModel):
     run_id: str
+    #: 这次上传的映射有没有被记成这个本体的默认映射（见
+    #: remember_mapping_used_for_import）。界面据此告诉用户"下次会沿用它"——
+    #: 默默替换掉默认映射，用户下次看到的"沿用上次"会跟他记忆里的不一样。
+    mapping_saved_as_default: bool = False
 
 
 class RunSummaryResponse(BaseModel):
@@ -340,6 +344,29 @@ async def start_schema_etl_run(
         shutil.rmtree(run_dir, ignore_errors=True)
         raise HTTPException(status_code=409, detail=str(exc))
 
+    # 上传了映射、又不是预演：把它记成这个本体的默认映射。
+    #
+    # 时机在**提交**而不是跑完：跑批是后台任务，跑完再写要把这条逻辑挂进任务
+    # 里，而那条路径上的失败没有人看得见。提交时写的语义也站得住——用户刚刚
+    # 确认"就用这份跑"。真跑失败的话，下次进来预填的正是他上次选的那份，
+    # 冲突预检会再报一次，而不是悄悄退回更早的一版。
+    #
+    # 预演不写：预演是"先看看会发生什么"，它不该改变任何持久状态。
+    mapping_saved = False
+    if config is not None and not dry_run:
+        source_file_name = next(
+            (f.filename for f in data_files if f.filename), parsed_config.entities[0].source_file
+            if parsed_config.entities else "",
+        )
+        mapping_saved = True
+        await remember_mapping_used_for_import(
+            review_conn,
+            tenant_id,
+            config_yaml=config_path.read_text(encoding="utf-8"),
+            source_file_name=source_file_name,
+            created_at=started_at,
+        )
+
     background_tasks.add_task(
         _run_schema_etl_job,
         conn=review_conn,
@@ -351,7 +378,7 @@ async def start_schema_etl_run(
         dry_run=dry_run,
         allow_large_sweep=allow_large_sweep,
     )
-    return StartRunResponse(run_id=run_id)
+    return StartRunResponse(run_id=run_id, mapping_saved_as_default=mapping_saved)
 
 
 @router.post("/runs/{run_id}/promote", response_model=StartRunResponse)

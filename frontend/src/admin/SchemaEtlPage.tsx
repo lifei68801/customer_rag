@@ -461,8 +461,10 @@ export function SchemaEtlPage() {
               disabled={confirmed !== true}
               mapping={mapping}
               openMappingSignal={openMappingSignal}
-              onSubmitted={(runId) => {
-                showToast('已提交运行')
+              onSubmitted={(runId, mappingSaved) => {
+                // 说出映射被记住了这件事：它改变了下次进这一页的默认行为，
+                // 不说的话用户下次看到的"沿用上次"跟他记忆里的不一样。
+                showToast(mappingSaved ? '已提交运行，这份映射已存为默认' : '已提交运行')
                 // 直接选中刚提交的这一条，让详情跟着跑。不选的话，跑批失败时
                 // 用户看到的只是列表里多了一行「失败」徽标——原因藏在要点那
                 // 一行才展开的详情里，他会以为是"上传坏了"，而不是去看 ETL

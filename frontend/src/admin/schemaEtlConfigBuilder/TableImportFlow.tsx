@@ -33,7 +33,12 @@ interface TableImportFlowProps {
   disabled: boolean
   /** 存好的映射。undefined=还在读，null=没有。 */
   mapping: EtlMapping | null | undefined
-  onSubmitted: (runId: string) => void
+  /**
+   * 跑批已提交。mappingSaved 说明这次用的映射有没有被记成这个本体的默认
+   * 映射——默默替换掉默认映射的话，用户下次进来看到的"沿用上次"会跟他
+   * 记忆里的不一样。
+   */
+  onSubmitted: (runId: string, mappingSaved: boolean) => void
   /**
    * 每加一，就把第二步的映射编辑器展开一次。
    *
@@ -246,8 +251,11 @@ export function TableImportFlow({
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '启动失败'))
       }
-      const { run_id } = (await response.json()) as { run_id: string }
-      onSubmitted(run_id)
+      const { run_id, mapping_saved_as_default } = (await response.json()) as {
+        run_id: string
+        mapping_saved_as_default?: boolean
+      }
+      onSubmitted(run_id, mapping_saved_as_default === true)
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : '启动失败')
     } finally {

@@ -781,3 +781,87 @@ def test_start_run_defaults_both_switches_to_false(client, review_conn, monkeypa
     # etl_runs 里这一行对上。不传的话 run_schema_etl 会自己生成一个，
     # 报错明细页永远指不回是哪一次跑批。
     assert captured["run_id"] == response.json()["run_id"]
+
+
+# ── 这次导入用的映射记成默认 ─────────────────────────────────────────────
+
+_NEW_CONFIG = b"tenant_id: muji\nentities: []\nrelations: []\n"
+
+
+def _stored_mapping(conn, status: str = "confirmed"):
+    async def _run():
+        from app.graphrag.ontology_etl_mapping import get_etl_mapping
+
+        return await get_etl_mapping(conn, "muji", status=status)
+
+    return asyncio.run(_run())
+
+
+def test_a_real_run_remembers_the_uploaded_mapping_as_the_default(client, review_conn):
+    """表格导入页第二步改过的映射必须被记住。
+
+    不记的话，改动只作用于这一次：用户下次进来看到的"沿用上次配好的映射"
+    是他改之前的那一版，而界面上没有任何地方说过这件事。
+    """
+    asyncio.run(_confirm_muji_schema(review_conn))
+    asyncio.run(_store_confirmed_mapping(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files=[
+            ("config", ("config.yaml", _NEW_CONFIG)),
+            ("data_files", ("sales_2026.csv", b"a,b\n1,2\n")),
+        ],
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["mapping_saved_as_default"] is True
+    stored = _stored_mapping(review_conn)
+    assert stored is not None
+    assert stored.config_yaml == _NEW_CONFIG.decode()
+    # 来源文件名取这次真正传进来的那个，不是映射里写的旧名字——下次进页面
+    # 卡片上写的"来自 X"要说的是这份映射最后一次跑的是哪张表。
+    assert stored.source_file_name == "sales_2026.csv"
+
+
+def test_a_dry_run_changes_nothing(client, review_conn):
+    """预演是"先看看会发生什么"，不该改变任何持久状态。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    asyncio.run(_store_confirmed_mapping(review_conn))
+    before = _stored_mapping(review_conn)
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files=[
+            ("config", ("config.yaml", _NEW_CONFIG)),
+            ("data_files", ("sales_2026.csv", b"a,b\n1,2\n")),
+        ],
+        data={"dry_run": "true"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["mapping_saved_as_default"] is False
+    after = _stored_mapping(review_conn)
+    assert after is not None and before is not None
+    assert after.config_yaml == before.config_yaml
+
+
+def test_running_with_the_stored_mapping_does_not_rewrite_it(client, review_conn):
+    """没传 config 就是"照旧跑"。那一次不该刷新 created_at 或来源文件名——
+    卡片上"来自 X、什么时候配的"会莫名其妙变成今天。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    asyncio.run(_store_confirmed_mapping(review_conn))
+    before = _stored_mapping(review_conn)
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files={"data_files": ("soft_drink_sales.xlsx", b"fake-bytes")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["mapping_saved_as_default"] is False
+    after = _stored_mapping(review_conn)
+    assert after is not None and before is not None
+    assert (after.config_yaml, after.created_at, after.source_file_name) == (
+        before.config_yaml, before.created_at, before.source_file_name,
+    )

@@ -99,7 +99,17 @@ function stubApi() {
             runDetailResponse = startRunOutcome!.detail
           }
         }
-        return json({ run_id: startRunOutcome?.listRow.run_id ?? 'run-new' })
+        // 跟后端契约一致：只有"带着 config 的真跑"才会把这份映射记成默认
+        // （没传 config 就是照旧跑，预演不改任何持久状态）。桩不照这个来的话，
+        // 这条提示会在它根本不会出现的场景里被验成绿的。
+        const body = init?.body as FormData | undefined
+        const savedAsDefault = body instanceof FormData
+          ? body.has('config') && body.get('dry_run') !== 'true'
+          : false
+        return json({
+          run_id: startRunOutcome?.listRow.run_id ?? 'run-new',
+          mapping_saved_as_default: savedAsDefault,
+        })
       }
       if (url.includes('/schema-etl/runs')) {
         return json({ runs: runsListResponse })
@@ -397,6 +407,38 @@ O2,2,张三,200000
       expect(body.has('config')).toBe(false)
       expect(body.getAll('data_files')).toHaveLength(1)
     })
+  })
+
+  it('改过映射再跑时说一句"已存为默认"——它改变了下次进这一页的默认行为', async () => {
+    signIn('admin')
+    stubDemoMapping()
+    confirmedTermTypes = [
+      { value: 'Order ID', extra_fields: [] },
+      { value: 'Customer Name', extra_fields: [] },
+    ]
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFile(user, csv(DEMO_HEADER))
+    await user.click(within(flow).getByTestId('toggle-mapping-editor'))
+    const removeButtons = await within(flow).findAllByRole('button', { name: '删除' })
+    await user.click(removeButtons[1])
+    await user.click(within(flow).getByTestId('run-import'))
+
+    expect(await screen.findByText(/这份映射已存为默认/)).toBeTruthy()
+  })
+
+  it('照旧跑（没改映射）时不说这句话——那一次后端不会改默认映射', async () => {
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFile(user, csv(DEMO_HEADER))
+    await user.click(within(flow).getByTestId('run-import'))
+
+    expect(await screen.findByText('已提交运行')).toBeTruthy()
+    expect(screen.queryByText(/已存为默认/)).toBeNull()
   })
 
   it('改过映射之后，提交就带上改完的那份', async () => {
