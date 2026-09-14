@@ -77,6 +77,21 @@ function stubApi() {
       if (/\/schema-etl\/runs\/[^/]+$/.test(url)) {
         return json(runDetailResponse ?? {})
       }
+      if (url.includes('/schema-etl/runs') && init?.method === 'POST') {
+        // 跟真实 ETL 一样：提交之后这条跑批先是 running，跑完才变 failed。
+        // 页面在提交那一刻拿到的详情是 running 的，后面得靠轮询才知道它
+        // 失败了——桩直接给 failed 的话，"详情从不刷新"这个缺陷测不出来。
+        if (startRunOutcome) {
+          const running: RunRow = { ...startRunOutcome.listRow, status: 'running', finished_at: null }
+          runsListResponse = [running, ...runsListResponse]
+          runDetailResponse = { ...startRunOutcome.detail, status: 'running', error: null, finished_at: null }
+          settleRun = () => {
+            runsListResponse = [startRunOutcome!.listRow, ...runsListResponse.slice(1)]
+            runDetailResponse = startRunOutcome!.detail
+          }
+        }
+        return json({ run_id: startRunOutcome?.listRow.run_id ?? 'run-new' })
+      }
       if (url.includes('/schema-etl/runs')) {
         return json({ runs: runsListResponse })
       }
@@ -92,6 +107,12 @@ function stubApi() {
     }),
   )
 }
+
+/** 提交跑批之后它变成什么样：列表里的那一行 + 点开的详情。 */
+type RunRow = { run_id: string; status: string; started_at: string; finished_at: string | null }
+let startRunOutcome: { listRow: RunRow; detail: Record<string, unknown> } | null = null
+/** 让那条 running 的跑批"跑完"——之后列表和详情就返回最终状态。 */
+let settleRun: (() => void) | null = null
 
 function stubEtlMapping(mapping: EtlMapping | null) {
   etlMappingStubbed = true
@@ -146,6 +167,8 @@ beforeEach(() => {
   runsListResponse = []
   runDetailResponse = null
   requests = []
+  startRunOutcome = null
+  settleRun = null
   stubApi()
 })
 
@@ -208,6 +231,66 @@ describe('已有映射时只传数据文件就能跑', () => {
       expect(body.getAll('data_files')).toHaveLength(1)
     })
   })
+
+  it('提交后跑批失败，原因不用点任何东西就能看见', async () => {
+    // 真实事故：demo 租户导入 soft_drink_sales.xlsx，ETL 因为 530 个客户
+    // 同名不同邮编拒绝写入——原因完整地存在 etl_runs.error 里，后端日志
+    // 也打了。但页面提交后只刷新列表、不选中新跑批，用户看到的是一行
+    // 「失败」徽标；原因藏在要点那一行才展开的详情里。他以为是"上传坏了"。
+    signIn('admin')
+    stubEtlMapping({
+      config_yaml: 'entities: []',
+      source_file_name: 'soft_drink_sales.xlsx',
+      created_at: '2026-09-11T00:00:00',
+    })
+    const reason =
+      "实体类型 'Customer Name' 有 530 个 node_key 被算出了不同的值，本次未写入任何数据。"
+    startRunOutcome = {
+      listRow: {
+        run_id: 'run-failed',
+        status: 'failed',
+        started_at: '2026-09-14T09:58:59',
+        finished_at: '2026-09-14T09:59:04',
+      },
+      detail: {
+        run_id: 'run-failed',
+        status: 'failed',
+        started_at: '2026-09-14T09:58:59',
+        finished_at: '2026-09-14T09:59:04',
+        error: reason,
+        report: null,
+      },
+    }
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+    const form = await screen.findByTestId('run-with-stored-mapping')
+    const button = within(form).getByRole('button', { name: /开始运行|运行/ })
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false))
+    await user.upload(
+      within(form).getByLabelText(/数据文件/) as HTMLInputElement,
+      new File(['a,b'], 'soft_drink_sales.xlsx'),
+    )
+    await user.click(button)
+
+    // 提交那一刻它还在跑。详情已经开着，但没有失败原因可显示。
+    await screen.findByText(/跑批详情：run-failed/)
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    // ETL 跑完了、失败了。页面自己轮询列表（running 时每 3 秒），详情得跟着
+    // 刷新——不点任何一行，原因就得在页面上出现。
+    settleRun!()
+    const alert = await screen.findByRole('alert', {}, { timeout: 8000 })
+    expect(alert.textContent).toContain('Customer Name')
+    expect(alert.textContent).toContain('530')
+
+    // 原因十有八九在映射上，不在文件上。只报原因不给出路，用户会去重新上传
+    // 同一个文件再失败一次。点「去改映射」要把构建器展开。
+    await user.click(screen.getByTestId('fix-mapping-from-failure'))
+    expect(await screen.findByText(/表格列 ↔ 本体实体/)).toBeTruthy()
+    // 展开状态从三角形的朝向读不出来，从"构建器内容挂没挂载"读：它自己
+    // 的第二步标题就是「配置实体映射」——哪列是身份键、属性挂在哪个实体下。
+    expect(await screen.findByText(/2\. 配置实体映射/)).toBeTruthy()
+  }, 15000)
 
   it('一个文件都没选就点运行，给出提示而不是发一次空请求', async () => {
     // 这里不能靠 <input required>：jsdom 的表单校验不认 user-event 设进去的
@@ -284,7 +367,7 @@ describe('表格导入页首屏', () => {
     expect(await screen.findByText(/引导流程已为这个本体配好映射/)).toBeTruthy()
     expect(screen.getByText('orders.csv')).toBeTruthy()
     // 构建器降级成折叠的次级入口，不是主角。
-    expect(screen.getByRole('button', { name: /改这份映射／再接一张表/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /表格列 ↔ 本体实体的映射/ })).toBeTruthy()
     // 光断言按钮存在区分不了折叠和展开——两种状态下按钮都在。真正能区分
     // 开的是面板内容："1. 添加数据文件" 是 SchemaEtlConfigBuilder 展开后
     // 才会渲染的第一行，折叠时整个组件都不挂载，这行文本不存在。
@@ -295,7 +378,7 @@ describe('表格导入页首屏', () => {
     signIn('admin')
     stubEtlMapping(null)
     renderAt(ADMIN_ROUTES.etl)
-    expect(await screen.findByRole('button', { name: /把这张表映射到已有本体/ })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: /把这张表的列映射到本体实体/ })).toBeTruthy()
     expect(screen.queryByText(/引导流程已为这个本体配好映射/)).toBeNull()
     // 无映射时构建器默认展开，不需要用户先点开折叠按钮才看到内容。
     expect(await screen.findByText('1. 添加数据文件')).toBeTruthy()
@@ -308,7 +391,7 @@ describe('表格导入页首屏', () => {
     renderAt(ADMIN_ROUTES.etl)
     expect(await screen.findByTestId('etl-mapping-loading')).toBeTruthy()
     expect(screen.queryByText(/引导流程已为这个本体配好映射/)).toBeNull()
-    expect(screen.queryByRole('button', { name: /把这张表映射到已有本体/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /把这张表的列映射到本体实体/ })).toBeNull()
   })
 })
 

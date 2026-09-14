@@ -107,6 +107,8 @@ export function SchemaEtlPage() {
   // 让 handleUpload 能在提交完成后立即"踢"一次轮询循环，不用等已经排好
   // 队的 setTimeout 走完最坏 15 秒才发现新记录出现了。
   const pollNowRef = useRef<() => Promise<void>>(async () => {})
+  //: 映射构建器那块面板。失败详情里的「去改映射」要把它展开并滚过去。
+  const builderRef = useRef<HTMLDivElement>(null)
   // 有映射时默认折叠（构建器降级成次级入口），没有时默认展开——向导是面向
   // 新手的主路径，不能让用户先自己发现「这里能点开」才看到它。
   //
@@ -242,6 +244,12 @@ export function SchemaEtlPage() {
     }
   }, [refreshRuns])
 
+  // 选中的那条跑批在列表里现在是什么状态。它是详情要不要重新加载的信号：
+  // 详情此前只在 selectedRunId 变化时加载一次，而刚提交的跑批那一刻还在
+  // running——五秒后它失败了，列表靠轮询知道，详情却停在"运行中"，失败原因
+  // 永远显示不出来。
+  const selectedRunStatus = runs.find((r) => r.run_id === selectedRunId)?.status
+
   useEffect(() => {
     if (!selectedRunId || !sessionToken) {
       setSelectedRun(null)
@@ -261,7 +269,7 @@ export function SchemaEtlPage() {
     return () => {
       cancelled = true
     }
-  }, [selectedRunId, sessionToken, tenantId])
+  }, [selectedRunId, selectedRunStatus, sessionToken, tenantId])
 
   const handleUpload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -302,8 +310,14 @@ export function SchemaEtlPage() {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '启动失败'))
       }
+      const { run_id } = (await response.json()) as { run_id: string }
       showToast('已提交运行')
       form.reset()
+      // 直接选中刚提交的这一条，让详情跟着跑。不选的话，跑批失败时用户看到
+      // 的只是列表里多了一行「失败」徽标——原因藏在要点那一行才展开的详情里，
+      // 他会以为是"上传坏了"，而不是去看 ETL 说了什么。真实事故里那个原因
+      // 是"530 个客户同名不同邮编"，跟上传毫无关系。
+      setSelectedRunId(run_id)
       await pollNowRef.current()
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : '启动失败')
@@ -494,16 +508,19 @@ export function SchemaEtlPage() {
       )}
 
       {mapping !== undefined && (
-        <div className="flex flex-col gap-2 rounded-panel border border-subtle bg-card">
+        <div ref={builderRef} className="flex flex-col gap-2 rounded-panel border border-subtle bg-card">
           <button
             type="button"
             onClick={() => setBuilderToggled(!builderExpanded)}
             className={`flex items-center justify-between px-4 py-3 text-left font-bold text-ink ${focusRing}`}
           >
             <span>
-              {mapping ? '改这份映射／再接一张表' : '把这张表映射到已有本体'}
+              {/* 标题要说出它是什么：「表格列 ↔ 本体实体」。此前叫"改这份映射"，
+                  而用户的问题原话是"没有选择表中的字段和本体中的实体对象的映射
+                  的地方"——那个地方就在这儿，只是标题没让他认出来。 */}
+              {mapping ? '表格列 ↔ 本体实体的映射（改这份、或再接一张表）' : '把这张表的列映射到本体实体'}
               <span className="ml-2 font-normal text-ink-soft">
-                对着自己的数据列一步步配出 config.yaml，不用手写 YAML
+                哪列当身份键、哪个属性挂在哪个实体下，一步步配，不用手写 YAML
               </span>
             </span>
             <span
@@ -701,9 +718,27 @@ export function SchemaEtlPage() {
         <div data-testid="etl-run-detail" className="flex flex-col gap-3 rounded-panel border border-subtle bg-card p-4">
           <h2 className="font-mono font-semibold text-ink">跑批详情：{selectedRun.run_id}</h2>
           {selectedRun.status === 'failed' && (
-            <p role="alert" className="whitespace-pre-wrap rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
-              失败：{selectedRun.error}
-            </p>
+            <div className="flex flex-col gap-2">
+              <p role="alert" className="whitespace-pre-wrap rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
+                失败：{selectedRun.error}
+              </p>
+              {/* 失败的原因十有八九在映射上（哪列当身份键、哪个属性挂在哪个
+                  实体下），不在上传的文件上。只报原因不给出路，用户会去重新
+                  上传同一个文件再失败一次。 */}
+              {mapping && (
+                <button
+                  type="button"
+                  data-testid="fix-mapping-from-failure"
+                  onClick={() => {
+                    setBuilderToggled(true)
+                    builderRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                  }}
+                  className={`min-h-[36px] cursor-pointer self-start rounded-control border border-subtle bg-paper px-3 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
+                >
+                  去改映射（哪列是身份键、属性挂在哪个实体下）
+                </button>
+              )}
+            </div>
           )}
           {selectedRun.report && (
             <>
