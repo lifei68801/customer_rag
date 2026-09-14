@@ -2060,3 +2060,45 @@ async def test_query_neighborhood_excludes_alias_edges():
     )
 
     assert "type(r) <> 'ALIAS_OF'" in session.last_query
+
+
+async def test_count_edges_by_relation_type_matches_the_total_query_shape():
+    """分组计数跟总数那条查询的起手形状必须逐字相同。
+
+    两个数字摆在看板同一张卡上：一个总数、一条按关系类型的构成条。分组求和
+    对不上总数时，没有人能判断是哪一个错了。形状一致是这件事唯一的保证——
+    比如一个数出边、另一个无向匹配，分组就会是总数的两倍。
+    """
+    session = FakeSession(rows=[
+        {"relation_type": "HAS_PRODUCT", "edge_count": 10000},
+        {"relation_type": "HAS_COMPANY", "edge_count": 30},
+    ])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    counts = await client.count_edges_by_relation_type(tenant_id="demo")
+
+    assert counts == {"HAS_PRODUCT": 10000, "HAS_COMPANY": 30}
+    assert session.last_parameters == {"tenant_id": "demo"}
+    assert "MATCH (t:Term {tenant_id: $tenant_id})-[r]->()" in session.last_query
+    assert "type(r) <> 'ALIAS_OF'" in session.last_query
+
+
+async def test_count_connected_terms_uses_an_undirected_match():
+    """判据是"有没有连上"，只有入边的实体同样连上了。只数出边会把它们
+    误报成孤立实体，而孤立实体在看板上是"映射配错了"的信号。"""
+    session = FakeSession(rows=[{"term_count": 7826, "connected_count": 7800}])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    total, connected = await client.count_connected_terms(tenant_id="demo")
+
+    assert (total, connected) == (7826, 7800)
+    assert "OPTIONAL MATCH (t)-[r]-()" in session.last_query
+    assert "type(r) <> 'ALIAS_OF'" in session.last_query
+
+
+async def test_count_connected_terms_on_an_empty_graph_returns_zeros():
+    """看板拿它算比例，None 会变成「NaN%」。"""
+    session = FakeSession(rows=[])
+    client = Neo4jGraphClient(driver=FakeDriver(session))
+
+    assert await client.count_connected_terms(tenant_id="demo") == (0, 0)

@@ -37,6 +37,7 @@ from app.graphrag.ontology_constraints import (
 )
 from app.graphrag.schema_etl_config import parse_schema_etl_config, summarize_schema_etl_config
 from app.graphrag.ontology_etl_mapping import get_etl_mapping
+from app.graphrag.structure_overview import probe_constraint_fanout
 from app.graphrag.ontology_lifecycle import (
     checkout_draft,
     confirm_ontology,
@@ -394,30 +395,21 @@ async def load_tenant_graph_overlay(
     """
     entity_counts = await count_terms_by_term_type(review_conn, tenant_id)
     combinations = await list_allowed_combinations(review_conn, tenant_id, status=status)
-    fanout: list[dict] = []
-    for c in combinations:
-        try:
-            value = await graph_client.probe_relation_fanout(
-                tenant_id=tenant_id,
-                relation_type=c.relation_type,
-                from_term_type=c.subject_term_type,
-                to_term_type=c.object_term_type,
-                direction="outgoing",
-            )
-        except Exception:
-            logger.exception(
-                "探测扇出失败：tenant=%r %s -%s-> %s",
-                tenant_id, c.subject_term_type, c.relation_type, c.object_term_type,
-            )
-            value = None
-        fanout.append(
-            {
-                "subject_term_type": c.subject_term_type,
-                "relation_type": c.relation_type,
-                "object_term_type": c.object_term_type,
-                "fanout": value,
-            }
-        )
+    # 探测逻辑在 structure_overview.probe_constraint_fanout：看板的结构概览
+    # 要的是同一件事。两处各写一遍的话，"扇出多少算风险"会慢慢分叉，而两边
+    # 对同一条边给出不同结论时，没有人知道该信哪个。
+    probes = await probe_constraint_fanout(
+        graph_client, tenant_id=tenant_id, combinations=combinations
+    )
+    fanout = [
+        {
+            "subject_term_type": p.subject_term_type,
+            "relation_type": p.relation_type,
+            "object_term_type": p.object_term_type,
+            "fanout": p.fanout,
+        }
+        for p in probes
+    ]
     return {"fanout": fanout, "entity_counts": entity_counts}
 
 

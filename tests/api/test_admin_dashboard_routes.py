@@ -249,3 +249,158 @@ def test_anonymous_requests_are_refused(dashboard_conns):
         assert client.get("/api/admin/dashboard/domains").status_code == 401
     finally:
         app.dependency_overrides.clear()
+
+
+# ── 图谱结构 ────────────────────────────────────────────────────────────
+
+
+class FakeStructureGraph(FakeGraph):
+    """按关系类型的边数、连通实体数、扇出探测都能打桩的图谱。"""
+
+    def __init__(
+        self,
+        *,
+        edges_by_type: dict[str, int] | None = None,
+        connected: tuple[int, int] = (0, 0),
+        fanout: dict[tuple[str, str, str], int | None] | None = None,
+        fanout_raises: bool = False,
+        broken: set[str] | None = None,
+    ):
+        super().__init__({}, broken=broken)
+        self._edges_by_type = edges_by_type or {}
+        self._connected = connected
+        self._fanout = fanout or {}
+        self._fanout_raises = fanout_raises
+
+    async def count_edges_by_relation_type(self, *, tenant_id: str) -> dict[str, int]:
+        if tenant_id in self._broken:
+            raise RuntimeError("Neo4j 连不上")
+        return dict(self._edges_by_type)
+
+    async def count_connected_terms(self, *, tenant_id: str) -> tuple[int, int]:
+        return self._connected
+
+    async def probe_relation_fanout(
+        self, *, tenant_id: str, relation_type: str, from_term_type: str,
+        to_term_type: str, direction: str,
+    ) -> int | None:
+        if self._fanout_raises:
+            raise RuntimeError("探测失败")
+        return self._fanout.get((from_term_type, relation_type, to_term_type))
+
+
+def _get_structure(conns, *, tenant_id: str = "muji-goods", graph=None):
+    try:
+        client, headers = _client(conns, username="alice", role="member", graph=graph)
+        return client.get(f"/api/admin/{tenant_id}/dashboard/structure", headers=headers)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _seed_confirmed_constraint(conns, *, tenant_id: str = "muji-goods") -> None:
+    """给这个租户加一条已确认的约束：产品 -RELATED_TO-> 产品。
+
+    没有约束就没有扇出探测可做，risks 恒为空——那样的话，"扇出 1 不算风险"
+    "探测失败不算风险"这些用例不管实现怎么写都是绿的（第一版正是这样，被变异
+    测试抓了出来）。
+    """
+    review_conn, _ = conns
+
+    async def _run() -> None:
+        from app.graphrag.ontology_constraints import add_allowed_combination
+
+        await checkout_draft(review_conn, tenant_id)
+        # RELATED_TO 是平台预置的关系类型，草稿里本来就有，不用（也不能）再建。
+        await add_allowed_combination(
+            review_conn, tenant_id, subject_term_type="产品",
+            relation_type="RELATED_TO", object_term_type="产品", actor="alice",
+        )
+        await confirm_ontology(review_conn, tenant_id, actor="alice")
+
+    asyncio.run(_run())
+
+
+def test_structure_returns_composition_sorted_by_size(dashboard_conns):
+    """构成条要先画最大的那一类。乱序的话用户读不出"图谱主要由什么撑起来"。"""
+    response = _get_structure(
+        dashboard_conns,
+        graph=FakeStructureGraph(
+            edges_by_type={"HAS_COMPANY": 30, "HAS_PRODUCT": 10000},
+            connected=(13, 10),
+        ),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entity_types"] == [{"term_type": "产品", "count": 13}]
+    assert [r["relation_type"] for r in body["relation_types"]] == ["HAS_PRODUCT", "HAS_COMPANY"]
+    assert (body["graph_term_count"], body["connected_term_count"]) == (13, 10)
+
+
+def test_structure_reports_only_edges_whose_fanout_really_exceeds_one(dashboard_conns):
+    """扇出 1 是函数关系，不是风险；未知（探测失败）也不算风险——把"查不到"
+    显示成"有风险"是另一种撒谎。"""
+    _seed_confirmed_constraint(dashboard_conns)
+
+    response = _get_structure(
+        dashboard_conns,
+        graph=FakeStructureGraph(fanout={("产品", "RELATED_TO", "产品"): 1}),
+    )
+
+    assert response.json()["risks"] == []
+
+
+def test_a_failed_fanout_probe_does_not_fail_the_whole_structure(dashboard_conns):
+    """一条边探不出来，其余结构信息照常给。整块报错的话，用户连"图里有什么"
+    都看不到了。"""
+    _seed_confirmed_constraint(dashboard_conns)
+
+    response = _get_structure(
+        dashboard_conns,
+        graph=FakeStructureGraph(edges_by_type={"HAS_PRODUCT": 7}, fanout_raises=True),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["risks"] == []
+    assert response.json()["relation_types"] == [{"relation_type": "HAS_PRODUCT", "edge_count": 7}]
+
+
+def test_structure_reports_a_real_fan_trap(dashboard_conns):
+    """扇出 > 1 必须报出来，否则这块只是个永远为空的装饰。
+
+    这是 demo 上真实发生过的那类问题：产品→公司 扇出为 3，沿它做计数聚合
+    会让"某公司有多少订单"恒等于订单总数。本体层完全正常，只有真实数据
+    看得出来。
+    """
+    _seed_confirmed_constraint(dashboard_conns)
+
+    response = _get_structure(
+        dashboard_conns,
+        graph=FakeStructureGraph(fanout={("产品", "RELATED_TO", "产品"): 3}),
+    )
+
+    assert response.json()["risks"] == [
+        {
+            "subject_term_type": "产品",
+            "relation_type": "RELATED_TO",
+            "object_term_type": "产品",
+            "fanout": 3,
+        }
+    ]
+
+
+def test_a_graph_failure_returns_503_not_an_empty_structure(dashboard_conns):
+    """空列表在界面上长得像"这个图没有关系"——一个看起来正常、实际是错的结论。"""
+    response = _get_structure(
+        dashboard_conns, graph=FakeStructureGraph(broken={"muji-goods"}),
+    )
+
+    assert response.status_code == 503
+    assert "不代表这个图是空的" in response.json()["detail"]
+
+
+def test_structure_refuses_a_tenant_this_account_cannot_reach(dashboard_conns):
+    """结构本身也是业务信息：有哪几类实体、多少条边，同样不能给无权的人看。"""
+    response = _get_structure(dashboard_conns, tenant_id="secret")
+
+    assert response.status_code in (403, 404)

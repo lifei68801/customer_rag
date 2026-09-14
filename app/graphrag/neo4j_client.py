@@ -539,6 +539,37 @@ DETACH DELETE t, a
 # MATCH 让"没有别名"的术语也能正常匹配到 t（DELETE 一个 null 值是
 # Cypher 里的合法操作，不会报错）。
 
+_COUNT_TENANT_EDGES_BY_TYPE_QUERY = """
+MATCH (t:Term {tenant_id: $tenant_id})-[r]->()
+WHERE r.tenant_id = $tenant_id AND type(r) <> 'ALIAS_OF'
+RETURN type(r) AS relation_type, count(r) AS edge_count
+ORDER BY edge_count DESC
+"""
+# 看板上「关系 31k」拆开成每种关系各多少条。
+#
+# 起手形状跟 _COUNT_TENANT_RELATION_EDGES_QUERY 逐字相同（节点侧起手、只数
+# 出边、排除 ALIAS_OF），只多一个 GROUP BY。必须相同：两个数字摆在同一张卡
+# 上，分组求和对不上总数的话，没有人能判断是哪一个错了。
+
+_COUNT_TENANT_CONNECTED_TERMS_QUERY = """
+MATCH (t:Term {tenant_id: $tenant_id})
+OPTIONAL MATCH (t)-[r]-()
+WHERE r.tenant_id = $tenant_id AND type(r) <> 'ALIAS_OF'
+WITH t, count(r) AS degree
+RETURN count(t) AS term_count, sum(CASE WHEN degree > 0 THEN 1 ELSE 0 END) AS connected_count
+"""
+# 图里有多少实体、其中多少条至少连着一条关系边。
+#
+# 孤立实体（度为 0）是映射配错的典型信号：实体建出来了、关系没建上，导入
+# 报告一切正常，查询却什么都查不到。
+#
+# 这里用无向匹配（-[r]-），跟上面两条只数出边的查询不同，**是有意的**：
+# 判据是"有没有连上"，一个只有入边的实体同样是连上了的。也正因为无向，这里
+# 不能拿 degree 去跟边数总和对账——同一条边在两端各算一次。
+#
+# 别名节点不会混进来：它们由 _SYNC_TERM_QUERY 以 MERGE (a:Term {alias_name})
+# 创建，身上没有 tenant_id 属性，第一条 MATCH 就把它们排除了。
+
 _COUNT_TENANT_RELATION_EDGES_QUERY = """
 MATCH (t:Term {tenant_id: $tenant_id})-[r]->()
 WHERE r.tenant_id = $tenant_id AND type(r) <> 'ALIAS_OF'
@@ -807,6 +838,10 @@ class GraphWriteProtocol(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     async def count_relation_edges_for_tenant(self, *, tenant_id: str) -> int: ...
+
+    async def count_edges_by_relation_type(self, *, tenant_id: str) -> dict[str, int]: ...
+
+    async def count_connected_terms(self, *, tenant_id: str) -> tuple[int, int]: ...
 
     async def query_neighborhood(
         self, node_key: str, *, tenant_id: str, chain_query_relation_types: set[str]
@@ -1282,6 +1317,29 @@ class Neo4jGraphClient:
             rows = await result.data()
         truncated = len(rows) > limit
         return [dict(row) for row in rows[:limit]], truncated
+
+    async def count_edges_by_relation_type(self, *, tenant_id: str) -> dict[str, int]:
+        """每种关系各有多少条边。看板把「关系 31k」拆成构成条用。"""
+        async with self._driver.session() as session:
+            result = await session.run(
+                _COUNT_TENANT_EDGES_BY_TYPE_QUERY, {"tenant_id": tenant_id}
+            )
+            return {row["relation_type"]: row["edge_count"] for row in await result.data()}
+
+    async def count_connected_terms(self, *, tenant_id: str) -> tuple[int, int]:
+        """(图里的实体数, 其中至少连着一条关系边的实体数)。
+
+        空图上 Cypher 的聚合仍会给出一行，所以无行这一支正常走不到；真走到
+        时返回 (0, 0) 而不是 None——看板会拿它算比例，None 会变成「NaN%」。
+        """
+        async with self._driver.session() as session:
+            result = await session.run(
+                _COUNT_TENANT_CONNECTED_TERMS_QUERY, {"tenant_id": tenant_id}
+            )
+            rows = await result.data()
+            if not rows:
+                return 0, 0
+            return int(rows[0]["term_count"] or 0), int(rows[0]["connected_count"] or 0)
 
     async def count_relation_edges_for_tenant(self, *, tenant_id: str) -> int:
         """这个租户图里有多少条关系边。看板用。

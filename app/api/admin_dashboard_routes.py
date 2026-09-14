@@ -10,6 +10,7 @@ from app.api import deps
 from app.api.admin_session import AdminSession
 from app.graphrag.neo4j_client import GraphWriteProtocol
 from app.graphrag.organizations_store import list_tenants_with_organization
+from app.graphrag.structure_overview import collect_graph_structure
 from app.graphrag.tenant_stats import collect_tenant_stats
 
 logger = logging.getLogger(__name__)
@@ -138,4 +139,86 @@ async def get_domain_stats(
         review_alias_count=stats.review_alias_count,
         review_alias_hits=stats.review_alias_hits,
         recent_reviews_per_document=stats.recent_reviews_per_document,
+    )
+
+
+# ── 图谱结构 ────────────────────────────────────────────────────────────
+#
+# 跟 /stats 分开的两个理由。
+#
+# 一是**代价不同**：这里每条已确认约束各一次图查询（扇出探测），/stats 只有
+# 一次边计数。合在一起的话，每张卡最慢的那一项会拖住本来 1 毫秒就能出的实体
+# 数——而看板是登录后的落地页。
+#
+# 二是**失败面不同**：扇出探测失败按"未知"处理、不影响别的数字；/stats 的
+# 图查询失败要整张卡报 503。两种失败语义塞进一个响应，前端只能按更严的那档
+# 处理，于是一次探测超时会让整张卡变成"统计失败"。
+
+
+class EntityTypeSlice(BaseModel):
+    term_type: str
+    count: int
+
+
+class RelationTypeSlice(BaseModel):
+    relation_type: str
+    edge_count: int
+
+
+class StructureRisk(BaseModel):
+    subject_term_type: str
+    relation_type: str
+    object_term_type: str
+    #: 一个主语沿这条关系连到几个不同的宾语。>1 意味着沿它做计数会放大归属。
+    fanout: int
+
+
+class GraphStructureResponse(BaseModel):
+    entity_types: list[EntityTypeSlice]
+    relation_types: list[RelationTypeSlice]
+    risks: list[StructureRisk]
+    graph_term_count: int
+    connected_term_count: int
+
+
+@stats_router.get("/structure", response_model=GraphStructureResponse)
+async def get_graph_structure(
+    tenant_id: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
+) -> GraphStructureResponse:
+    """这个领域的图谱是什么形状：由哪几类实体构成、靠哪几种关系连起来、
+    哪些边会扭曲计数、有多少实体一条边都没连上。
+
+    图谱查不通时同样返回 503 而不是一组空列表：空列表在界面上长得像"这个图
+    没有关系"，那是个看起来正常、实际是错的结论。
+    """
+    try:
+        structure = await collect_graph_structure(review_conn, graph_client, tenant_id=tenant_id)
+    except Exception:
+        logger.warning("租户 %r 的图谱结构没算出来", tenant_id, exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="图谱结构没算出来。这不代表这个图是空的——请稍后重试，一直失败请看服务端日志。",
+        ) from None
+    return GraphStructureResponse(
+        entity_types=[
+            EntityTypeSlice(term_type=t, count=n) for t, n in structure.entity_types
+        ],
+        relation_types=[
+            RelationTypeSlice(relation_type=r, edge_count=n) for r, n in structure.relation_types
+        ],
+        risks=[
+            StructureRisk(
+                subject_term_type=p.subject_term_type,
+                relation_type=p.relation_type,
+                object_term_type=p.object_term_type,
+                # risks 里 fanout 一定不是 None（collect_graph_structure 已经
+                # 滤掉未知），这里的 int() 只是让类型收窄。
+                fanout=int(p.fanout or 0),
+            )
+            for p in structure.risks
+        ],
+        graph_term_count=structure.graph_term_count,
+        connected_term_count=structure.connected_term_count,
     )
