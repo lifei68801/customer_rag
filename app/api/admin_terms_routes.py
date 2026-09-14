@@ -22,6 +22,12 @@ from app.graphrag.duplicate_detection import find_similar_terms
 from app.graphrag.neo4j_client import GraphWriteProtocol
 from app.graphrag.ontology import Term
 from app.graphrag.term_authoring import TermCreateRejected, create_term_from_admin
+from app.graphrag.term_purge import (
+    PurgeCountChangedError,
+    list_stored_term_types,
+    plan_purge_term_type,
+    purge_term_type,
+)
 from app.graphrag.ontology_categories import list_term_types
 from app.graphrag.term_edits_store import (
     FIELD_CREATED,
@@ -211,6 +217,115 @@ async def get_terms_summary(
     groups = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     return TermSummaryResponse(
         groups=[TermTypeGroup(term_type=t, total=n) for t, n in groups]
+    )
+
+
+# ── 按类型彻底清空 ──────────────────────────────────────────────────────
+#
+# 三条都必须排在 GET /{node_key:path} 前面（stored-types 是 GET；purge 两条
+# 是 POST，不跟它撞，放在一起是为了读的人一处看全）。语义见 term_purge.py。
+
+
+class StoredTermTypeItem(BaseModel):
+    term_type: str
+    stored: int
+    visible: int
+
+
+class StoredTermTypesResponse(BaseModel):
+    types: list[StoredTermTypeItem]
+
+
+class PurgePreviewRequest(BaseModel):
+    term_type: str
+
+
+class PurgePreviewResponse(BaseModel):
+    term_type: str
+    node_count: int
+    stored_rows: int
+    created_only: int
+
+
+class PurgeRequest(BaseModel):
+    term_type: str
+    #: 预览时看到的实体数。服务端重算，对不上就拒绝。
+    expected_node_count: int
+    #: 用户手打的类型名，必须与 term_type 完全一致。
+    confirm_text: str
+
+
+class PurgeResponse(BaseModel):
+    term_type: str
+    node_count: int
+    removed_by_table: dict[str, int]
+
+
+@router.get("/stored-types", response_model=StoredTermTypesResponse)
+async def get_stored_term_types(
+    tenant_id: str,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> StoredTermTypesResponse:
+    """存储里实际有哪些类型、各占多少行（含人工删除后看不见的）。
+
+    不能复用 /summary：那个走合并视图，全被删掉的类型根本不出现，而那恰恰是
+    "删了但重导也回不来"、最需要清空的那些。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    return StoredTermTypesResponse(
+        types=[
+            StoredTermTypeItem(term_type=s.term_type, stored=s.stored, visible=s.visible)
+            for s in await list_stored_term_types(review_conn, tenant_id)
+        ]
+    )
+
+
+@router.post("/purge/preview", response_model=PurgePreviewResponse)
+async def preview_purge_term_type(
+    tenant_id: str,
+    payload: PurgePreviewRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+) -> PurgePreviewResponse:
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    plan = await plan_purge_term_type(review_conn, tenant_id, payload.term_type)
+    return PurgePreviewResponse(
+        term_type=plan.term_type,
+        node_count=len(plan.node_keys),
+        stored_rows=plan.stored_rows,
+        created_only=plan.created_only,
+    )
+
+
+@router.post("/purge", response_model=PurgeResponse)
+async def purge_term_type_endpoint(
+    tenant_id: str,
+    payload: PurgeRequest,
+    review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
+    graph_client: GraphWriteProtocol = Depends(deps.get_neo4j_graph_client),
+    session: AdminSession = Depends(deps.require_admin_session),
+) -> PurgeResponse:
+    """彻底清空一个类型。不可逆。
+
+    confirm_text 在服务端也校验一遍：前端的输入框只是体验，绕过前端直接调
+    接口的人同样得打出类型名。
+    """
+    await require_active_tenant_or_404(review_conn, tenant_id)
+    if payload.confirm_text != payload.term_type:
+        raise HTTPException(
+            status_code=400,
+            detail=f"确认文字不一致：要彻底清空「{payload.term_type}」，请原样输入这个类型名。",
+        )
+    try:
+        result = await purge_term_type(
+            review_conn, graph_client, tenant_id, payload.term_type,
+            expected_node_count=payload.expected_node_count, actor=session.username,
+        )
+    except PurgeCountChangedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return PurgeResponse(
+        term_type=result.term_type,
+        node_count=result.node_count,
+        removed_by_table=result.removed_by_table,
     )
 
 

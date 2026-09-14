@@ -2797,3 +2797,129 @@ def test_bulk_delete_inconsistent_relations_without_edges_returns_400(terms_conn
 
     assert response.status_code == 400
     assert graph_client.deleted_inconsistent_edges == []
+
+
+# ── 按类型彻底清空 ──────────────────────────────────────────────────────
+
+
+def _purge_client(terms_conn, graph_client):
+    session_store = AdminSessionStore()
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    app.dependency_overrides[deps.get_admin_session_store] = lambda: session_store
+    app.dependency_overrides[deps.get_review_conn] = lambda: terms_conn
+    app.dependency_overrides[deps.get_graph_client] = lambda: graph_client
+    return TestClient(app), _authed_headers(session_store)
+
+
+def _seed_soft_deleted_orders(conn) -> None:
+    async def _run() -> None:
+        from app.graphrag.alias_usage import ensure_alias_usage_schema
+        from app.graphrag.attribute_conflicts import ensure_attribute_conflicts_schema
+        from app.graphrag.duplicate_review_queue import ensure_duplicate_review_schema
+        from app.graphrag.ontology_change_log import ensure_change_log_schema
+
+        await ensure_alias_usage_schema(conn)
+        await ensure_attribute_conflicts_schema(conn)
+        await ensure_duplicate_review_schema(conn)
+        await ensure_change_log_schema(conn)
+        for key, term_type in (("Order:1", "Order ID"), ("Order:2", "Order ID"), ("City:1", "Customer City")):
+            await conn.execute(
+                "INSERT INTO terms (tenant_id, node_key, standard_name, aliases, term_type, "
+                "extra_properties, source) VALUES ('t1', ?, ?, '[]', ?, '{}', 'etl')",
+                (key, key, term_type),
+            )
+        for key in ("Order:1", "Order:2"):
+            await upsert_term_edit(
+                conn, tenant_id="t1", node_key=key, field=FIELD_DELETED, value=None, edited_by="admin"
+            )
+        await conn.commit()
+
+    asyncio.run(_run())
+
+
+def test_stored_types_lists_types_hidden_from_the_summary(terms_conn):
+    """全被软删除的类型不在 /summary 里，却必须出现在 /stored-types 里——那正是要清空的。"""
+    _seed_soft_deleted_orders(terms_conn)
+    client, headers = _purge_client(terms_conn, SpyGraphClient())
+    try:
+        summary = client.get("/api/admin/t1/terms/summary", headers=headers).json()
+        stored = client.get("/api/admin/t1/terms/stored-types", headers=headers)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert "Order ID" not in [g["term_type"] for g in summary["groups"]]
+    assert stored.status_code == 200
+    assert {t["term_type"]: (t["stored"], t["visible"]) for t in stored.json()["types"]} == {
+        "Order ID": (2, 0),
+        "Customer City": (1, 1),
+    }
+
+
+def test_purge_requires_typing_the_type_name(terms_conn):
+    _seed_soft_deleted_orders(terms_conn)
+    graph_client = SpyGraphClient()
+    client, headers = _purge_client(terms_conn, graph_client)
+    try:
+        response = client.post(
+            "/api/admin/t1/terms/purge",
+            json={"term_type": "Order ID", "expected_node_count": 2, "confirm_text": "order id"},
+            headers=headers,
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert graph_client.deleted == []
+
+
+def test_purge_rejects_stale_preview_count_with_409(terms_conn):
+    _seed_soft_deleted_orders(terms_conn)
+    graph_client = SpyGraphClient()
+    client, headers = _purge_client(terms_conn, graph_client)
+    try:
+        response = client.post(
+            "/api/admin/t1/terms/purge",
+            json={"term_type": "Order ID", "expected_node_count": 1, "confirm_text": "Order ID"},
+            headers=headers,
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+    assert graph_client.deleted == []
+
+
+def test_preview_then_purge_clears_the_type_and_logs_the_actor(terms_conn):
+    _seed_soft_deleted_orders(terms_conn)
+    graph_client = SpyGraphClient()
+    client, headers = _purge_client(terms_conn, graph_client)
+    try:
+        preview = client.post(
+            "/api/admin/t1/terms/purge/preview", json={"term_type": "Order ID"}, headers=headers
+        ).json()
+        response = client.post(
+            "/api/admin/t1/terms/purge",
+            json={
+                "term_type": "Order ID",
+                "expected_node_count": preview["node_count"],
+                "confirm_text": "Order ID",
+            },
+            headers=headers,
+        )
+        stored = client.get("/api/admin/t1/terms/stored-types", headers=headers).json()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert preview == {"term_type": "Order ID", "node_count": 2, "stored_rows": 2, "created_only": 0}
+    assert response.status_code == 200
+    assert response.json()["removed_by_table"]["terms"] == 2
+    assert sorted(graph_client.deleted) == ["Order:1", "Order:2"]
+    assert [t["term_type"] for t in stored["types"]] == ["Customer City"]
+
+    async def _log_actor() -> list:
+        cursor = await terms_conn.execute(
+            "SELECT actor FROM ontology_change_log WHERE action = 'purge' AND object_id = 'Order ID'"
+        )
+        return [tuple(row) for row in await cursor.fetchall()]
+
+    assert asyncio.run(_log_actor()) == [("admin",)]
