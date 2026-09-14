@@ -26,6 +26,21 @@ from app.graphrag.value_types import convert_admin_text, value_matches_type
 
 logger = logging.getLogger(__name__)
 
+# 「这个租户所有被人工编辑过的 node_key」，写成子查询，需要绑定 1 个参数（tenant_id）。
+#
+# 合并视图的计数函数此前把 list_term_edits 拿到的 key 逐个展开成
+# `IN (?, ?, ...)`。编辑层"通常远小于 terms"这个假设在批量删除面前不成立：
+# demo 租户一次批量删掉 39362 个实体后，实体列表、类型摘要、导航角标全部
+# 500——SQLite 单条语句最多 32766 个参数（3.32 之前是 999）。子查询跟
+# list_term_edits 读的是同一张表、同样只按 tenant_id 过滤，所以集合完全
+# 一致，而参数个数不再随编辑条数增长。
+_EDITED_KEYS_SUBQUERY = "SELECT node_key FROM term_edits WHERE tenant_id = ?"
+
+# 调用方直接传进来一组 key、没法改写成子查询时，每条语句最多放这么多个。
+# 取 900 而不是贴着 32766：上限是 SQLite 的编译期参数，老构建是 999，
+# 留在两者之下哪种构建都不会撞。
+_MAX_KEYS_PER_STATEMENT = 900
+
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS terms (
     tenant_id         TEXT NOT NULL,
@@ -303,11 +318,10 @@ async def count_terms_merged_by_term_type(
 
     # 只查被编辑过的那几行在 terms 里的原始 term_type——要知道它们该从哪个
     # 类型里减掉。
-    keys = list(edits.keys())
-    placeholders = ",".join("?" * len(keys))
     cursor = await conn.execute(
-        f"SELECT node_key, term_type FROM terms WHERE tenant_id = ? AND node_key IN ({placeholders})",
-        (tenant_id, *keys),
+        "SELECT node_key, term_type FROM terms WHERE tenant_id = ? AND node_key IN "
+        f"({_EDITED_KEYS_SUBQUERY})",
+        (tenant_id, tenant_id),
     )
     original = {row[0]: row[1] for row in await cursor.fetchall()}
 
@@ -321,19 +335,37 @@ async def count_terms_merged_by_term_type(
         # （terms 里没有对应行）只加不减。
         # 编辑层用裸字段名存可替换字段（见 term_merge._REPLACEABLE_FIELDS），
         # term_type 没有专门的常量。
-        new_type = fields.get("term_type", base_type)
-        if new_type is None:
-            continue
         if base_type is None:
             # 纯编辑层创建：terms 里没有对应行，只加不减。创建时的类型在
             # __created__ 的整对象里，不在裸字段上。
+            #
+            # 这个分支必须排在"取不到类型就跳过"之前。此前先算的是
+            # `fields.get("term_type", base_type)`——base_type 是 None、后台
+            # 新建又不写裸 term_type 字段，于是恒为 None、直接 continue，
+            # 下面读 __created__ 的这几行永远走不到：后台手工新建的实体
+            # 全都不计入类型摘要。
+            #
+            # 优先级跟 term_merge.apply_edits 一致：__created__ 是底，后来
+            # 改过的裸字段盖在上面。
             created = fields.get(FIELD_CREATED)
-            if isinstance(created, dict):
-                new_type = created.get("term_type", new_type)
+            if not isinstance(created, dict):
+                # 孤儿编辑（terms 无行、也没有 __created__）：apply_edits 不凭空
+                # 造实体，列表里看不见它，这里也不能数它。
+                continue
+            new_type = fields.get("term_type", created.get("term_type"))
             if new_type is None:
                 continue
             counts[new_type] = counts.get(new_type, 0) + 1
-        elif new_type != base_type:
+            continue
+        # 管道后来产出了同 node_key：__created__ 里的字段降级成字段级编辑、盖在
+        # 管道值上，再往上才是后来改过的裸字段（同 apply_edits）。
+        created = fields.get(FIELD_CREATED)
+        if isinstance(created, dict) and created.get("term_type") is not None:
+            base_override = created["term_type"]
+        else:
+            base_override = base_type
+        new_type = fields.get("term_type", base_override)
+        if new_type != base_type:
             counts[base_type] = counts.get(base_type, 0) - 1
             counts[new_type] = counts.get(new_type, 0) + 1
 
@@ -364,13 +396,11 @@ async def count_and_sample_terms_merged_by_term_type(
     """
     conn.row_factory = aiosqlite.Row
     edits = await list_term_edits(conn, tenant_id)
-    edited_keys = list(edits)
     exclusion = ""
     params: tuple[object, ...] = (tenant_id, term_type)
-    if edited_keys:
-        placeholders = ",".join("?" * len(edited_keys))
-        exclusion = f" AND node_key NOT IN ({placeholders})"
-        params = (tenant_id, term_type, *edited_keys)
+    if edits:
+        exclusion = f" AND node_key NOT IN ({_EDITED_KEYS_SUBQUERY})"
+        params = (tenant_id, term_type, tenant_id)
     cursor = await conn.execute(
         f"SELECT COUNT(*) FROM terms WHERE tenant_id = ? AND term_type = ?{exclusion}", params
     )
@@ -384,12 +414,11 @@ async def count_and_sample_terms_merged_by_term_type(
     untouched_sample = [_row_to_term(row) for row in await cursor.fetchall()]
 
     edited_of_this_type: list[Term] = []
-    if edited_keys:
-        placeholders = ",".join("?" * len(edited_keys))
+    if edits:
         cursor = await conn.execute(
             "SELECT tenant_id, node_key, standard_name, aliases, term_type, extra_properties, "
-            f"source FROM terms WHERE tenant_id = ? AND node_key IN ({placeholders})",
-            (tenant_id, *edited_keys),
+            f"source FROM terms WHERE tenant_id = ? AND node_key IN ({_EDITED_KEYS_SUBQUERY})",
+            (tenant_id, tenant_id),
         )
         touched = [_row_to_term(row) for row in await cursor.fetchall()]
         edited_of_this_type = [
@@ -432,11 +461,10 @@ async def count_terms_merged(
 
     # 只查被编辑过的那几个 node_key 在 terms 里的实际情况——要知道它们存不存在
     # 以及 source 是什么（source 过滤对合并结果整体生效，见 list_terms_merged）。
-    keys = list(touched)
-    placeholders = ",".join("?" * len(keys))
     cursor = await conn.execute(
-        f"SELECT node_key, source FROM terms WHERE tenant_id = ? AND node_key IN ({placeholders})",
-        (tenant_id, *keys),
+        "SELECT node_key, source FROM terms WHERE tenant_id = ? AND node_key IN "
+        "(SELECT node_key FROM term_edits WHERE tenant_id = ? AND field IN (?, ?))",
+        (tenant_id, tenant_id, FIELD_DELETED, FIELD_CREATED),
     )
     source_by_key = {row[0]: row[1] for row in await cursor.fetchall()}
 
@@ -545,13 +573,20 @@ async def delete_terms_by_node_keys(
     if not node_keys:
         return 0
     keys = list(node_keys)
-    placeholders = ",".join("?" * len(keys))
-    cursor = await conn.execute(
-        f"DELETE FROM terms WHERE tenant_id = ? AND node_key IN ({placeholders})",
-        (tenant_id, *keys),
-    )
+    removed = 0
+    # 分批：一次把全部 key 展开成参数，超过 SQLite 单条语句的参数上限就直接
+    # 报错（见 _MAX_KEYS_PER_STATEMENT）。批与批之间不提交，整次调用仍是
+    # 一个事务，跟分批之前的原子性一致。
+    for start in range(0, len(keys), _MAX_KEYS_PER_STATEMENT):
+        batch = keys[start:start + _MAX_KEYS_PER_STATEMENT]
+        placeholders = ",".join("?" * len(batch))
+        cursor = await conn.execute(
+            f"DELETE FROM terms WHERE tenant_id = ? AND node_key IN ({placeholders})",
+            (tenant_id, *batch),
+        )
+        removed += cursor.rowcount
     await conn.commit()
-    return cursor.rowcount
+    return removed
 
 
 async def get_term(
