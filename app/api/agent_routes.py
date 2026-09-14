@@ -12,7 +12,9 @@ from starlette.responses import StreamingResponse
 
 from app.agent.graph import build_agent_graph
 from app.agent.tool_registry import ToolRegistry
+from app.agent.display_stream import stream_display_chunks
 from app.api import deps
+from app.voice.streaming_responder import stream_sentences
 from app.config.settings import Settings
 from app.graphrag.graph_read import GraphReadProtocol
 from app.graphrag.ontology_categories import list_term_types
@@ -208,6 +210,12 @@ async def agent_chat_endpoint(
             enable_autonomous_planning=enable_autonomous_planning,
             max_tool_call_rounds=settings.agent.max_tool_call_rounds,
             on_answer_chunk=on_answer_chunk,
+            # 文字用更密的切块（逗号/换行也推，无标点时按字数推），语音保持
+            # 按整句——TTS 按句合成，切碎了音频会一顿一顿。见
+            # app/agent/display_stream.py 的模块文档。
+            answer_stream_chunker=(
+                stream_sentences if payload.voice_response else stream_display_chunks
+            ),
             on_tool_status=on_tool_status if not payload.voice_response else None,
             banned_terms=deps.parse_banned_terms(settings.banned_terms),
             tool_registry=tool_registry,

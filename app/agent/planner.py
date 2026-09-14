@@ -10,8 +10,8 @@ from app.graphrag.term_guard import describe_association
 from app.providers.base import ProviderCapability, ProviderRequest, ProviderStreamChunk, ToolCall
 from app.providers.registry import ProviderRegistry
 from app.retrieval.vector_store import VectorRecord
-from app.safety.rules import LITE_SAFETY_FALLBACK_SENTENCE, check_text
-from app.voice.streaming_responder import stream_sentences
+from app.safety.rules import LITE_SAFETY_FALLBACK_SENTENCE
+from app.agent.display_stream import LiteSafetyGate, stream_display_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ def _build_tool_call_round_result(
     }
 
 
-async def _run_final_answer_attempt(
+async def       _run_final_answer_attempt(
     messages: list[dict[str, Any]],
     *,
     llm_registry: ProviderRegistry,
@@ -168,12 +168,12 @@ async def _split_stream_text_and_tool_calls(
     tool_calls_box: list[list[ToolCall] | None],
     raw_text_parts: list[str],
 ) -> AsyncIterator[str]:
-    """把 provider 流拆成两路：文本增量原样 yield 出去供 stream_sentences()
+    """把 provider 流拆成两路：文本增量原样 yield 出去供 stream_display_chunks()
     消费；工具调用（如果有）写进 tool_calls_box[0]，供调用方在这个生成器
     耗尽后读取——用长度为 1 的列表当"可写引用"，闭包不能直接对外层局部
     变量重新赋值。raw_text_parts 原样收集每个文本增量（不经过
-    stream_sentences 的按句切分/strip），供调用方在没有发生安全替换时
-    重建保留原始换行/空白的完整文本——stream_sentences 是为了流式切句
+    切块），供调用方在没有发生安全替换时
+    重建完整文本——切块本身逐字保留原文，但安全替换会把命中的那一块
     展示用的，会丢掉句子之间的空白/换行，不适合用来重建 planner_messages
     里要喂回给模型的原文。
     """
@@ -226,9 +226,9 @@ async def _retry_final_answer_plain(
         yield text
 
     sent: list[str] = []
-    async for sentence in stream_sentences(_one_shot()):
-        safety_result = check_text(sentence, banned_terms=banned_terms, include_email=False)
-        safe_sentence = sentence if safety_result.is_safe else LITE_SAFETY_FALLBACK_SENTENCE
+    gate = LiteSafetyGate(banned_terms)
+    async for sentence in stream_display_chunks(_one_shot()):
+        safe_sentence = gate.vet(sentence)
         await on_answer_chunk(safe_sentence)
         sent.append(safe_sentence)
     return text, sent
@@ -246,7 +246,7 @@ async def _run_final_answer_attempt_streaming(
     """run_planner_turn_streaming 版本的轮次耗尽兜底：跟 _run_final_answer_
     attempt（非流式版本）语义一致，区别是这次调用同样走 stream_with_tools()
     （不传 tools，模型结构上不可能再请求工具调用）边生成边推送，跟主循环
-    共用同一套逐句 check_text 安全替换逻辑，让用户看到的体验是从"查询
+    共用同一套逐块安全替换逻辑（LiteSafetyGate），让用户看到的体验是从"查询
     过程"无缝过渡到"总结陈述"，而不是先看到一段查询叙述、中间断一下、
     再冒出一句不相关的静态兜底文案。
 
@@ -272,7 +272,8 @@ async def _run_final_answer_attempt_streaming(
 
         any_sentence_substituted = False
         malformed_tool_call_detected = False
-        async for sentence in stream_sentences(text_stream):
+        gate = LiteSafetyGate(banned_terms)
+        async for sentence in stream_display_chunks(text_stream):
             if _MALFORMED_TOOL_CALL_MARKER in sentence:
                 logger.warning(
                     "_run_final_answer_attempt_streaming: 最后陈述流式调用输出了"
@@ -284,11 +285,8 @@ async def _run_final_answer_attempt_streaming(
                 await on_answer_chunk(safe_sentence)
                 sent_sentences.append(safe_sentence)
                 break
-            safety_result = check_text(sentence, banned_terms=banned_terms, include_email=False)
-            if safety_result.is_safe:
-                safe_sentence = sentence
-            else:
-                safe_sentence = LITE_SAFETY_FALLBACK_SENTENCE
+            safe_sentence = gate.vet(sentence)
+            if safe_sentence is not sentence:
                 any_sentence_substituted = True
             await on_answer_chunk(safe_sentence)
             sent_sentences.append(safe_sentence)
@@ -363,13 +361,13 @@ async def run_planner_turn_streaming(
     """run_planner_turn 的流式版本：语义完全一致（同样的轮次上限检查、
     同样的 planner_messages 追加规则），区别只是这一轮的文本用
     stream_complete_with_tools() 边生成边推送，而不是一次性拿到完整
-    文本。每句文本先过 check_text 轻量规则检查（跟确定性路径的
+    文本。每块文本先过 LiteSafetyGate 轻量规则检查（跟确定性路径的
     responder_node 完全一致），命中就换成 LITE_SAFETY_FALLBACK_SENTENCE
     再推送。见 docs/superpowers/specs/2026-08-23-
     planner-streaming-typewriter-design.md。
 
     没有触发任何安全替换时，answer_text/回填进 planner_messages 的文本
-    保留大模型输出的原始换行/空白格式（不经过 stream_sentences 的按句
+    保留大模型输出的原始换行/空白格式（不经过显示切块的
     strip）；一旦某一句被安全替换过，则退回按句子拼接的版本，避免被
     过滤内容通过原始拼接重新进入 answer_text。
 
@@ -391,12 +389,10 @@ async def run_planner_turn_streaming(
 
     sent_sentences: list[str] = []
     any_sentence_substituted = False
-    async for sentence in stream_sentences(text_stream):
-        safety_result = check_text(sentence, banned_terms=banned_terms, include_email=False)
-        if safety_result.is_safe:
-            safe_sentence = sentence
-        else:
-            safe_sentence = LITE_SAFETY_FALLBACK_SENTENCE
+    gate = LiteSafetyGate(banned_terms)
+    async for sentence in stream_display_chunks(text_stream):
+        safe_sentence = gate.vet(sentence)
+        if safe_sentence is not sentence:
             any_sentence_substituted = True
         await on_answer_chunk(safe_sentence)
         sent_sentences.append(safe_sentence)
@@ -409,7 +405,7 @@ async def run_planner_turn_streaming(
         full_text = "".join(sent_sentences)
     else:
         # 没有任何一句被替换，用原始增量直接拼接，保留大模型输出的原始
-        # 换行/空白格式（stream_sentences 为了切句会 strip 掉这些）。
+        # 换行/空白格式（安全替换会把命中的那一块换成兜底话术）。
         full_text = "".join(raw_text_parts)
 
     streamed_round_texts = state.get("streamed_round_texts", [])

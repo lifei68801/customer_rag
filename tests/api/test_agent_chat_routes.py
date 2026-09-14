@@ -710,3 +710,92 @@ def test_agent_chat_passes_tenant_chain_query_relation_types_to_graph():
         app.dependency_overrides.clear()
 
     assert graph_client.queried_chain_types == [{"DEPENDS_ON", "FOLLOWS"}]
+
+
+def _stream_answer(chunks: list[str], *, voice_response: bool, tts=None) -> str:
+    """跑一次流式问答，返回原始 SSE 文本。跟上面那条 delta 用例同一套打桩。"""
+    import asyncio
+
+    embedding_registry = EmbeddingRegistry()
+    embedding_registry.register(deps.DEFAULT_EMBEDDING_PROVIDER_NAME, FakeEmbeddingProvider())
+    llm_registry = ProviderRegistry()
+    llm_registry.register(
+        ProviderCapability.LLM,
+        deps.DEFAULT_LLM_PROVIDER_NAME,
+        StreamingFakeLLMProvider(chunks),
+    )
+    vector_store = asyncio.run(_fake_vector_store())
+
+    async def _override_get_memory_conn() -> aiosqlite.Connection:
+        conn = await aiosqlite.connect(":memory:")
+        await ensure_schema(conn)
+        return conn
+
+    app.dependency_overrides[deps.get_embedding_registry] = lambda: embedding_registry
+    app.dependency_overrides[deps.get_llm_registry] = lambda: llm_registry
+    app.dependency_overrides[deps.get_vector_store] = lambda: vector_store
+    app.dependency_overrides[deps.get_bm25_index] = _fake_bm25_index
+    app.dependency_overrides[deps.get_rerank_provider] = lambda: None
+    app.dependency_overrides[deps.get_review_conn] = _review_conn_override()
+    app.dependency_overrides[deps.get_graph_client] = lambda: None
+    app.dependency_overrides[deps.get_memory_conn] = _override_get_memory_conn
+    app.dependency_overrides[deps.get_tts_provider] = lambda: tts
+    app.dependency_overrides[deps.get_settings] = lambda: _settings()
+    try:
+        client = login_client("member-t1")
+        with client.stream(
+            "POST",
+            "/agent/chat",
+            json={
+                "question": "网络连不上怎么办？",
+                "tenant_id": "t1",
+                "voice_response": voice_response,
+            },
+        ) as response:
+            return "".join(response.iter_text())
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_text_answers_stream_in_finer_chunks_than_sentences():
+    """文字路径按显示块推，不是整句。
+
+    只认句末标点（。！？!?）的话，一句 40 字的长从句在用户眼里是"空白很久，
+    然后整句蹦出来"；markdown 列表更极端——`- 0-556-54422-6：¥1,200` 这样的
+    行里一个句末标点都没有，整张表会攒到流结束才 flush。
+    """
+    body = _stream_answer(["重启路由器、", "检查网线，", "再试一次。"], voice_response=False)
+
+    deltas = [e["text"] for e in _parse_sse_events(body) if e["type"] == "delta"]
+    assert deltas == ["重启路由器、", "检查网线，", "再试一次。"]
+
+
+def test_text_answers_stream_before_any_punctuation_shows_up():
+    """一整段没有标点的内容（列表项、编号、英文）也要流得动，不能攒到最后。"""
+    body = _stream_answer(["订单号 0-556-54422-6 和 1-954013-64-7 的金额相同"], voice_response=False)
+
+    deltas = [e["text"] for e in _parse_sse_events(body) if e["type"] == "delta"]
+    assert len(deltas) > 1
+    assert "".join(deltas) == "订单号 0-556-54422-6 和 1-954013-64-7 的金额相同"
+
+
+def test_voice_answers_are_still_synthesized_one_sentence_at_a_time():
+    """语音路径必须保持整句：TTS 按句合成，切碎了音频会一顿一顿。
+
+    FakeTTSProvider 把送进来的文本原样编进音频字节，所以从 audio 事件就能
+    读出每次合成的是什么。
+    """
+    import base64
+
+    body = _stream_answer(
+        ["重启路由器、", "检查网线，", "再试一次。", "还不行就联系我们。"],
+        voice_response=True,
+        tts=FakeTTSProvider(),
+    )
+
+    audio = [
+        base64.b64decode(e["audio_base64"]).decode().removeprefix("audio:")
+        for e in _parse_sse_events(body)
+        if e["type"] == "audio"
+    ]
+    assert audio == ["重启路由器、检查网线，再试一次。", "还不行就联系我们。"]

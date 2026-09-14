@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 import aiosqlite
 from langgraph.graph import END, START, StateGraph
@@ -57,6 +57,7 @@ from app.safety.rules import (
     check_text,
 )
 from app.safety.semantic_review import semantic_safety_review
+from app.agent.display_stream import LiteSafetyGate
 from app.voice.streaming_responder import stream_sentences
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,10 @@ def build_agent_graph(
     enable_autonomous_planning: bool = False,
     max_tool_call_rounds: int = 3,
     on_answer_chunk: Callable[[str], Awaitable[None]] | None = None,
+    #: 把 LLM 的 token 增量切成推给 on_answer_chunk 的块。默认按句切（语音
+    #: 路径必须这样：TTS 按句合成，切碎了音频会一顿一顿）；文字路径由调用方
+    #: 传入 display_stream.stream_display_chunks，切得更密、且逐字保留换行。
+    answer_stream_chunker: Callable[[AsyncIterator[str]], AsyncIterator[str]] = stream_sentences,
     on_tool_status: Callable[[], Awaitable[None]] | None = None,
     session_window_store: SessionWindowStore | None = None,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
@@ -571,17 +576,16 @@ def build_agent_graph(
                 ProviderRequest(messages=messages),
                 provider_name=llm_provider_name,
             )
-            sent_sentences: list[str] = []
-            async for sentence in stream_sentences(text_stream):
-                safety_result = check_text(
-                    sentence, banned_terms=banned_terms, include_email=False
-                )
-                safe_sentence = (
-                    sentence if safety_result.is_safe else LITE_SAFETY_FALLBACK_SENTENCE
-                )
-                await on_answer_chunk(safe_sentence)
-                sent_sentences.append(safe_sentence)
-            return {"answer_text": "".join(sent_sentences), "fallback_triggered": False}
+            sent_chunks: list[str] = []
+            # 轻量检查从"每块单独查"改成带重叠窗口（见 LiteSafetyGate）：
+            # 块切小之后，一个完整手机号可能被切成两块，两块各自都匹配不上
+            # 正则。窗口让它在第二块到达时仍然被抓住。
+            gate = LiteSafetyGate(banned_terms)
+            async for chunk in answer_stream_chunker(text_stream):
+                safe_chunk = gate.vet(chunk)
+                await on_answer_chunk(safe_chunk)
+                sent_chunks.append(safe_chunk)
+            return {"answer_text": "".join(sent_chunks), "fallback_triggered": False}
 
         result = await llm_registry.run(
             ProviderCapability.LLM,

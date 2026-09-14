@@ -1383,7 +1383,12 @@ async def test_run_planner_turn_streaming_final_answer_attempt_succeeds_when_rou
     assert tool_status_calls == 0
     # 这一轮被拒绝前的叙述文字（"让我查一下。"）没有触发 tool_status，
     # 用户会看到它跟这次总结文字连在一起、无缝过渡，而不是中间被清空。
-    assert sent_chunks == ["让我查一下。", "根据已有信息，答案是992。"]
+    # 推送粒度是"显示块"不是整句：文字路径改用 display_stream.stream_display_chunks
+    # 之后，逗号也是推送边界（长句和 markdown 列表此前会整块攒到最后才出现）。
+    # 这条用例关心的是"轮次耗尽后仍然把总结推给了用户、且内容完整"，
+    # 所以按拼接结果断言，不钉死切块方式。
+    assert "".join(sent_chunks) == "让我查一下。根据已有信息，答案是992。"
+    assert sent_chunks[0] == "让我查一下。"
     assert update["streamed_round_texts"] == ["让我查一下。", "根据已有信息，答案是992。"]
 
 
