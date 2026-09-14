@@ -4,6 +4,7 @@ import { EmptyState } from './EmptyState'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useAdminAuth } from './useAdminAuth'
 import { useConfirm } from './ConfirmContext'
+import { TermTypePurgePanel } from './TermTypePurgePanel'
 import { useAdminDensity } from './DensityContext'
 import { Skeleton } from './Skeleton'
 import { useAdminTenant } from './TenantContext'
@@ -843,6 +844,18 @@ export function TermsPage() {
       )}
       {loaded && terms.length > 0 && (
         <Pager page={page} totalPages={Math.max(1, Math.ceil(total / PAGE_SIZE))} onPageChange={setPage} />
+      )}
+
+      {sessionToken && (
+        <TermTypePurgePanel
+          sessionToken={sessionToken}
+          tenantId={tenantId}
+          onPurged={(message) => {
+            showToast(message)
+            refresh().catch((err) => console.error(err))
+            setRefreshVersion((v) => v + 1)
+          }}
+        />
       )}
     </div>
   )

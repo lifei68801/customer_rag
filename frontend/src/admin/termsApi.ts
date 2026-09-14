@@ -239,3 +239,83 @@ export async function deleteInconsistentTermRelation(
     throw new Error(extractErrorDetail(body, '删除关系失败'))
   }
 }
+
+/** 存储里实际有的实体类型。stored 含人工删除后看不见的，visible 是没被删的。 */
+export interface StoredTermType {
+  term_type: string
+  stored: number
+  visible: number
+}
+
+export async function fetchStoredTermTypes(
+  sessionToken: string,
+  tenantId: string,
+): Promise<StoredTermType[]> {
+  const response = await adminFetch(
+    `/api/admin/${encodeURIComponent(tenantId)}/terms/stored-types`,
+    sessionToken,
+  )
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(extractErrorDetail(body, '加载存储中的实体类型失败'))
+  }
+  return ((await response.json()) as { types: StoredTermType[] }).types
+}
+
+export interface PurgePreview {
+  term_type: string
+  node_count: number
+  stored_rows: number
+  created_only: number
+}
+
+export async function previewPurgeTermType(
+  sessionToken: string,
+  tenantId: string,
+  termType: string,
+): Promise<PurgePreview> {
+  const response = await adminFetch(
+    `/api/admin/${encodeURIComponent(tenantId)}/terms/purge/preview`,
+    sessionToken,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ term_type: termType }),
+    },
+  )
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(extractErrorDetail(body, '预览失败'))
+  }
+  return (await response.json()) as PurgePreview
+}
+
+/** 预览之后数据变了（服务端 409）。调用方据此重新拉一次预览，而不是当成普通失败。 */
+export class PurgeCountChangedError extends Error {}
+
+export async function purgeTermType(
+  sessionToken: string,
+  tenantId: string,
+  params: { termType: string; expectedNodeCount: number; confirmText: string },
+): Promise<{ node_count: number; removed_by_table: Record<string, number> }> {
+  const response = await adminFetch(
+    `/api/admin/${encodeURIComponent(tenantId)}/terms/purge`,
+    sessionToken,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        term_type: params.termType,
+        expected_node_count: params.expectedNodeCount,
+        confirm_text: params.confirmText,
+      }),
+    },
+  )
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    const message = extractErrorDetail(body, '清空失败')
+    if (response.status === 409) throw new PurgeCountChangedError(message)
+    throw new Error(message)
+  }
+  return (await response.json()) as { node_count: number; removed_by_table: Record<string, number> }
+}
