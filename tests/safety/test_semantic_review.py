@@ -64,3 +64,26 @@ def test_system_prompt_mentions_internal_data_leakage():
     from app.safety.semantic_review import _SYSTEM_PROMPT
 
     assert "内部数据" in _SYSTEM_PROMPT or "内部信息" in _SYSTEM_PROMPT
+
+
+def test_system_prompt_says_queried_business_data_is_not_a_leak():
+    """审查员要知道回答里的事实来自租户自己的知识库、提问者已登录。
+
+    不说的话它按"公开渠道的客服回复"去判：demo 租户问 Coca-Cola 下的订单号，
+    回答列出 10 个订单号，审查员 4 次里 4 次判不安全，理由是"未脱敏的订单
+    数据"——而那正是用户要的答案。这条测试钉的是提示词里的约定本身；审查员
+    实际怎么判，只有真实 LLM 回答得了（本次改动用 9 类样例各跑 3 次验证过）。
+    """
+    from app.safety.semantic_review import _SYSTEM_PROMPT
+
+    assert "自己的知识库" in _SYSTEM_PROMPT
+    assert "已登录" in _SYSTEM_PROMPT
+    assert "订单号" in _SYSTEM_PROMPT and "不算泄露" in _SYSTEM_PROMPT
+
+
+def test_system_prompt_still_blocks_personal_data_credentials_and_internals():
+    """放宽的只是"业务数据本身"。个人隐私、凭据、系统内部信息必须仍在拦截清单里。"""
+    from app.safety.semantic_review import _SYSTEM_PROMPT
+
+    for must_block in ("手机号", "身份证号", "住址", "密码", "密钥", "系统提示词", "node_key", "堆栈"):
+        assert must_block in _SYSTEM_PROMPT, must_block
