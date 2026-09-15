@@ -104,16 +104,15 @@ sources:
 
 乘上"其后几行的非空率"是为了排掉夹在中间的说明行：`Character Limit` 那一行本身填得挺满，但它下面紧跟着的行同样满，分数拼不过真表头——**这条需要一个专门的测试用例，用 MUJI 的真实行形状**，否则这个乘法项等于没写。
 
-### 后端预览端点
+### 不做后端预览端点
 
-```
-POST /admin/schema-etl/source-preview
-  multipart: file, 可选 options(JSON)
-  →  { sheets: [...], detected: {header_row, first_data_row},
-       columns: [...], sample_rows: [...] }
-```
+写这份 spec 的初稿时我打算加一个 `POST /admin/schema-etl/source-preview`，由后端解析、返回权威列名。**这个想法要撤销**，因为它跟一条既有的明确决策冲突：
 
-`columns` 是**经过重名去重之后**的列名——也就是跑批时真正会用的键。这是消除前后端分叉的锚点：前端展示什么、写进映射的是什么，都以这个返回为准。
+> `columnStats.ts::scanTableFile` —— 「扫描整个文件，产出每列统计量。**文件不上传——建模阶段数据不出用户的机器。**」
+
+本体引导构建是刻意不上传文件的。加一个预览端点，等于要么给这条链路开个后门，要么让两条链路的列名来源再次分叉——正是本 spec 要消灭的东西。
+
+所以：**解析在前端本地做，后端在跑批时对账。** 表头行探测也只在前端实现——后端的缺省行为必须保持"第 1 行"（向后兼容），它永远不需要猜。
 
 ### 两份解析器怎么办
 
@@ -121,7 +120,7 @@ POST /admin/schema-etl/source-preview
 
 **决策：后端是权威，前端保留本地解析，但两者必须在同一份规则下，并且在上传时对账。**
 
-1. 前端把 `tableHeader.ts` 和 `columnStats.ts` 里的解析部分收敛成一个模块 `sourceParser.ts`，接受同一份 `SourceParseOptions`，并实现同一套重名去重规则。今天这两个文件各自 `SheetNames[0]` + `rows[0]`，规则重复了两遍。
+1. 前端把 `tableHeader.ts::readTableHeaderColumns` 和 `columnStats.ts::readTableRows`（私有）收敛成一个模块 `sourceParser.ts`，接受同一份 `SourceParseOptions`，并实现同一套重名去重规则。今天这两个文件各自 `SheetNames[0]` + `rows[0]`，规则重复了两遍。
 2. 去重规则用**一份共享 fixture** 锁住：`tests/fixtures/header-dedup-cases.json`，后端 pytest 和前端 vitest 都读它跑同一组用例。语言不同没法共享代码，但可以共享判据——这是唯一能真正防住分叉的手段，而不是靠两边各自写注释提醒对方。
 3. 提交跑批时，前端把它本地算出的列名一并发给后端；后端用自己解析出的列名对账，**不一致就整体失败并列出差异**，而不是按后端的悄悄跑。理由跟 roadmap 里那条一样：Foundry 的主键重复从"appear as successful"演进成了 build 失败，我们这里也必须让分叉可见。
 
@@ -138,6 +137,7 @@ POST /admin/schema-etl/source-preview
 ## 未决风险
 
 - **前端仍然有一份解析器。** 对账机制能让分叉可见，但不能让它不发生。真正的解法是引入持久的 raw dataset（上传即落盘拿 `source_id`，之后预览、列统计、跑批都引用它，浏览器完全不解析），也就是 Foundry 的形状。那是下一份 spec，本 spec 的对账机制是它落地之前的防线。
+- **CSV 编码处理前后端本来就不一致。** 后端 `_detect_text_encoding` 有 UTF-8 → GBK 回落；前端 `readDelimitedRows` 写死 `new TextDecoder('utf-8')`。一份 GBK 编码的 CSV 在后端读得好好的，在前端是乱码列名。这个分叉在本 spec 之前就存在，对账机制会第一次让它暴露出来——**实施时要准备好它会立刻报出来**，这不是新 bug，是一直在的旧 bug 浮出水面。修不修由届时判断，但不能因为"报警太吵"就把对账关掉。
 - **xls 仍然整份读进内存。** `xlrd` 没有流式模式，本 spec 不改这一点。MUJI 主数据表 1.4MB / 908 行没问题，但设计文档给的真实规模是"18 万+ 行"——如果那个规模的表是 xls 而非 csv，这里会是瓶颈。
 - **`first_data_row` 之前、`header_row` 之后的行被静默丢弃。** 这是设计意图（说明行），但如果用户把 `first_data_row` 填大了，会安静地少读数据。预览里必须显示"将跳过第 X~Y 行"，让这个丢弃是可见的。
 - **表头探测在"表头确实就在第一行、但第一行有空列"的表上可能选错。** 打分规则偏好非空多的行。缓解手段只有"建议而非自动生效"这一条；如果实测中误判率高，规则需要重新设计，而不是加特例。
