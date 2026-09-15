@@ -2,20 +2,42 @@
 export const DETECT_SCAN_ROWS = 20
 
 /**
- * 判断"接下来是否稳定"要往下看几行。至少要 2 行才有意义——1 行的窗口
- * 永远只有一个值，落差恒为 0，会把每一行都误判成"稳定"（用真实 MUJI 数据
- * 验证过：改成 1 后，第 1 行就会因为落差 0 被立即选中）。
+ * 判定"从这一行开始，连续这么多行密度都很接近"要看多少行，才能确认这是
+ * 真正的数据块，而不是一段巧合很整齐的垃圾行。选 7 是因为要盖过"连续 5 行
+ * 密度相近的垃圾行"（信头/落款重复）——如果窗口跟垃圾行一样长（5 行），
+ * 垃圾行自己就会被误判成"稳定的数据块"；窗口留够 7 行，垃圾行内部任何一
+ * 个起点都会在窗口末尾探到垃圾行外面的表头/数据，密度跳变，测不出"稳定"。
+ * 用变异测试验证过：改回 5 会让"5 行垃圾行"那条用例选错。
  */
-const LOOKAHEAD_ROWS = 5
+const RUN_WINDOW_ROWS = 7
 
 /**
- * 接下来几行的非空率落差在多少以内算"稳定"。用真实 MUJI 文件（113 列）核算
- * 过：表头堆里第 2~5 行（几乎空 / 英文名 / 日文名 / 说明行）往下看 5 行，落差
- * 都是 0.3186（108/113 − 72/113，因为窗口里还混着别的表头层）；真表头（第 6
- * 行）往下看 5 行，落差是 0（连续 5 行都是同密度的数据）。0.2 卡在两者中间，
- * 留了安全余量。
+ * 密度落差在多少以内算"稳定"，按列数放宽——列越少，一个格子的有无对密度
+ * 的影响越大（2 列表缺一格，密度就跳 0.5），固定阈值对窄表不成立。
+ * 0.2 是宽表的下限：用真实 MUJI 文件（113 列）核实过，真表头往后看的落差
+ * 是 0（连续同密度数据），表头堆内部往下看落差是 0.3186，0.2 卡在中间留了
+ * 安全余量。TOLERANCE_CELLS/width 是窄表的补充：等价于"容忍 1 个格子的
+ * 有无"，用两条窄表用例验证过（2 列表缺 1 格、3 列表表头比数据少填 1 格）。
  */
-const STABILITY_THRESHOLD = 0.2
+const BASE_STABILITY_THRESHOLD = 0.2
+const TOLERANCE_CELLS = 1
+
+/**
+ * 窗口至少要有这么多行才采信"稳定"。只有 1 行的窗口，落差恒为 0，会把任何
+ * 非空的孤行都误判成"稳定的数据块"——哪怕它后面根本没有数据能验证。
+ */
+const MIN_RUN_CONFIRM = 2
+
+/** 浮点数比较的容差，避免"容忍 1 个格子"这类算出来的边界值因为浮点运算误差被判定为不相等。 */
+const STABILITY_EPSILON = 1e-9
+
+function density(row: string[], width: number): number {
+  return row.filter((cell) => cell.trim() !== '').length / width
+}
+
+function stabilityThreshold(width: number): number {
+  return Math.max(BASE_STABILITY_THRESHOLD, TOLERANCE_CELLS / width) + STABILITY_EPSILON
+}
 
 /**
  * 猜表头在第几行（1-based）。
@@ -24,41 +46,59 @@ const STABILITY_THRESHOLD = 0.2
  * 推断提议、人确认，跟 Foundry 的 schema 推断对话框是同一个姿态。自动生效
  * 的推断一旦猜错，用户看到的是一份莫名其妙的数据，而不是一个可以改的选项。
  *
- * 从上往下扫描，返回第一个"自己非空、且接下来几行非空率很稳定"的行。
+ * 分两步走：
  *
- * 光看"自己多满"不够：合并标题带那种说明性文字本身可能很满，但它跟表头
- * 之间隔着空行，往下看不稳定，会被这条件排除。
+ * 1. 从上往下找第一个"连续 RUN_WINDOW_ROWS 行密度都很接近"的起点（runStart）
+ *    ——这段就是数据块。只看"下一行"或"接下来 5 行的平均值"都不够：前者
+ *    会把表头正上方那种密度恰好只差一点的说明行也当成表头（拿窄表当反例，
+ *    实测会跟"表头本身就该缺一格"的情况分不清）；后者在 MUJI 这种多层表
+ *    头文件上，会让表头堆的上层因为往下还能看到别的表头层而拿到虚高的分
+ *    数。这里用"连续一段窗口本身够不够稳定"来判定数据块的起点，不掺候选
+ *    行自己的密度。
+ * 2. 数据块的起点不一定就是表头——如果它前面那一行本身非空、且密度不低于
+ *    数据块（比如 MUJI 第 6 行系统代码，比数据更满），那一行才是表头，往
+ *    前挪一格；否则数据块的起点自己就是表头（比如表头密度跟数据一致，或
+ *    表头本身留了空列名、反而比数据稀的情况）。往前只挪一格，不递归再往
+ *    前找——多层表头堆里，只有紧贴数据块的那一层是真表头，再往上的层（哪
+ *    怕也比数据密）都不该被选中。
  *
- * 光看"下面平均多满"也不够：MUJI 这种多层表头（英文名/日文名/说明行/系统
- * 代码逐层叠着），每一层自己都很满，用平均非空率打分，上面的表头层会因为
- * 往下还能看到别的表头层而被拉高分数，实测比真表头（下面是成片同密度的
- * 数据）分数还高。改成看"非空率的落差稳不稳"能避开这个坑：真表头下面是
- * 连续同密度的数据，落差趋近 0；表头堆内部往下看会混到别的表头层，密度
- * 忽高忽低，落差明显更大——这正是上面 STABILITY_THRESHOLD 注释里那两个
- * 数字（0.3186 对 0）的来源。
+ * 全程没有要求"表头一定比数据更满"或"表头一定跟数据一样满"——两种真实
+ * 场景都存在（MUJI 是前者，表头留空列名反而比数据稀是后者的反例），所以
+ * 第 2 步是尝试性地"往前挪"而不是硬性门槛。
  *
- * 用"第一个满足条件就返回"而不是"打分取最高"，是为了防一类反例：如果数据
- * 本身比表头更满（表头里有空列名，数据行反而每列都填了），打分法会因为数据
- * 行自己的非空数更高而反超表头；返回第一个满足条件的行从一开始就锁定表头，
- * 不会被后面更满的数据行抢走。
+ * 已知局限：窄表（比如 2 列）下，"表头/说明行只填了半行"和"数据行缺了
+ * 一格"在密度上完全等价，本函数分不出来——这是纯密度信号的天花板，不是
+ * 实现疏漏。
  */
 export function detectHeaderRow(rows: string[][]): number {
   const limit = Math.min(rows.length, DETECT_SCAN_ROWS)
 
-  for (let i = 0; i < limit; i++) {
-    const width = Math.max(rows[i].length, 1)
-    const nonEmpty = rows[i].filter((cell) => cell.trim() !== '').length
-    if (nonEmpty === 0) continue
+  let runStart = -1
+  for (let r = 0; r < limit; r++) {
+    const window = rows.slice(r, r + RUN_WINDOW_ROWS)
+    if (window.length < MIN_RUN_CONFIRM) continue
 
-    const lookahead = rows.slice(i + 1, i + 1 + LOOKAHEAD_ROWS)
-    if (lookahead.length === 0) continue
-
-    const fillRates = lookahead.map(
-      (row) => row.filter((cell) => cell.trim() !== '').length / width,
-    )
-    const spread = Math.max(...fillRates) - Math.min(...fillRates)
-    if (spread <= STABILITY_THRESHOLD) return i + 1
+    const width = Math.max(rows[r].length, 1)
+    const densities = window.map((row) => density(row, width))
+    const spread = Math.max(...densities) - Math.min(...densities)
+    if (spread <= stabilityThreshold(width)) {
+      runStart = r
+      break
+    }
   }
 
-  return 1
+  if (runStart === -1) return 1
+
+  if (runStart > 0) {
+    const prevRow = rows[runStart - 1]
+    const prevWidth = Math.max(prevRow.length, 1)
+    const prevNonEmpty = prevRow.filter((cell) => cell.trim() !== '').length
+    if (prevNonEmpty > 0) {
+      const runWidth = Math.max(rows[runStart].length, 1)
+      const runDensity = density(rows[runStart], runWidth)
+      if (density(prevRow, prevWidth) >= runDensity) return runStart
+    }
+  }
+
+  return runStart + 1
 }
