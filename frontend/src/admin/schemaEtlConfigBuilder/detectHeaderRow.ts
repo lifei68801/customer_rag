@@ -8,6 +8,11 @@ export const DETECT_SCAN_ROWS = 20
  * 垃圾行自己就会被误判成"稳定的数据块"；窗口留够 7 行，垃圾行内部任何一
  * 个起点都会在窗口末尾探到垃圾行外面的表头/数据，密度跳变，测不出"稳定"。
  * 用变异测试验证过：改回 5 会让"5 行垃圾行"那条用例选错。
+ *
+ * 这个数字目前只有"5 行垃圾行"这个自造用例撑着，7=5+2 是从这条用例反推
+ * 出来的，不是从真实文件里测出来的——不像 BASE_STABILITY_THRESHOLD 那样
+ * 有真实 MUJI 数字背书。如果以后有真实文件推翻它，应该改的是这里，而不是
+ * 把用例改得凑合这个数字。
  */
 const RUN_WINDOW_ROWS = 7
 
@@ -33,6 +38,19 @@ const STABILITY_EPSILON = 1e-9
 
 function density(row: string[], width: number): number {
   return row.filter((cell) => cell.trim() !== '').length / width
+}
+
+/**
+ * 表格的列数不能用某一行自己的 length 代表——Excel 经 SheetJS 解析后，每行
+ * 只保留到"这一行最后一个非空格子"，行尾会被裁掉，行与行之间的 length 并
+ * 不相等（真实 MUJI 文件前几行的 length 依次是 101/97/113/100/113，真实
+ * 列数是 113）。如果拿窗口里某一行自己的 length 当分母去算别的行的密度，
+ * 会把"这一行本身被裁短"误算成"别的行密度暴涨"（比如用长度 100 的行去除
+ * 长度 113 的行的非空数，能算出超过 1 的"密度"）。用扫描区里出现过的最大
+ * length 做统一分母——最长的那一行大概率没被裁掉，最接近真实列数。
+ */
+function tableWidth(rows: string[][]): number {
+  return Math.max(1, ...rows.map((row) => row.length))
 }
 
 function stabilityThreshold(width: number): number {
@@ -72,16 +90,17 @@ function stabilityThreshold(width: number): number {
  */
 export function detectHeaderRow(rows: string[][]): number {
   const limit = Math.min(rows.length, DETECT_SCAN_ROWS)
+  const width = tableWidth(rows)
+  const threshold = stabilityThreshold(width)
 
   let runStart = -1
   for (let r = 0; r < limit; r++) {
     const window = rows.slice(r, r + RUN_WINDOW_ROWS)
     if (window.length < MIN_RUN_CONFIRM) continue
 
-    const width = Math.max(rows[r].length, 1)
     const densities = window.map((row) => density(row, width))
     const spread = Math.max(...densities) - Math.min(...densities)
-    if (spread <= stabilityThreshold(width)) {
+    if (spread <= threshold) {
       runStart = r
       break
     }
@@ -91,12 +110,10 @@ export function detectHeaderRow(rows: string[][]): number {
 
   if (runStart > 0) {
     const prevRow = rows[runStart - 1]
-    const prevWidth = Math.max(prevRow.length, 1)
     const prevNonEmpty = prevRow.filter((cell) => cell.trim() !== '').length
     if (prevNonEmpty > 0) {
-      const runWidth = Math.max(rows[runStart].length, 1)
-      const runDensity = density(rows[runStart], runWidth)
-      if (density(prevRow, prevWidth) >= runDensity) return runStart
+      const runDensity = density(rows[runStart], width)
+      if (density(prevRow, width) >= runDensity) return runStart
     }
   }
 

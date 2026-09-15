@@ -209,4 +209,51 @@ describe('detectHeaderRow', () => {
 
     expect(detectHeaderRow(rows)).toBe(1)
   })
+
+  it('参差行宽（真实 SheetJS 形状）不影响判定：跟等宽版本结果一致', () => {
+    // 真实文件经 SheetJS 解析后，每行只保留到"这一行最后一个非空格子"，
+    // 行尾裁掉的长度各不相同——这里用 MUJI 前 6 行真实探测到的 length
+    // （101/97/113/100/113/113），非空数仍是 5/8/107/92/105/108，数据行
+    // 长度也是真实值 113。跟 makeRow 那条等宽版本断言同一个结果（第 6
+    // 行），证明分母统一之后，参差的行长度不会改变判定。
+    function makeJaggedRow(nonEmptyCount: number, rawLength: number): string[] {
+      const row = Array.from({ length: rawLength }, () => '')
+      for (let i = 0; i < nonEmptyCount - 1; i++) row[i] = 'v'
+      row[rawLength - 1] = 'v' // 最后一格非空，行才会保留到 rawLength 这个长度
+      return row
+    }
+
+    const rows = [
+      makeJaggedRow(5, 101),
+      makeJaggedRow(8, 97),
+      makeJaggedRow(107, 113),
+      makeJaggedRow(92, 100),
+      makeJaggedRow(105, 113),
+      makeJaggedRow(108, 113),
+      makeJaggedRow(72, 113),
+      makeJaggedRow(72, 113),
+      makeJaggedRow(72, 113),
+      makeJaggedRow(72, 113),
+      makeJaggedRow(72, 113),
+      makeJaggedRow(72, 113),
+      makeJaggedRow(72, 113),
+      makeJaggedRow(72, 113),
+    ]
+
+    expect(detectHeaderRow(rows)).toBe(6)
+  })
+
+  it('表头没有截断、数据尾部截断时，分母不统一会把表头判定反超', () => {
+    // 这条不是照抄真实文件——真实 MUJI 前几行的截断幅度不足以让判定翻车
+    // （被截断的行本来就会被排除），这里是刻意构造的最小反例，用来证明
+    // "统一分母"这个改动是必要的，不是可有可无的稳妥做法。
+    // 表头：8 个非空格子，最后一格也非空，长度停在 10（没被截断，密度 0.8）。
+    // 数据：5 个非空格子都挤在前面，尾部全空被裁掉，长度只剩 5（密度 0.5，
+    // 但如果拿它自己的长度当分母，会被算成 5/5=1.0，反而比表头"更满"）。
+    const header = ['h0', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', '', '', 'h9']
+    const data = ['1', '2', '3', '4', '5']
+    const rows = [header, data, data, data, data, data, data]
+
+    expect(detectHeaderRow(rows)).toBe(1)
+  })
 })
