@@ -15,6 +15,7 @@ import xlrd
 from openpyxl import load_workbook
 
 from app.graphrag.schema_etl_row_processing import RowProcessingError, convert_excel_cell_to_string
+from app.graphrag.source_parse_options import SourceParseOptions
 
 
 def deduplicate_header(names: Sequence[str]) -> list[str]:
@@ -74,20 +75,33 @@ def _detect_text_encoding(path: Path) -> str:
     return "gbk"
 
 
-def _read_delimited_rows(path: Path, *, delimiter: str) -> Iterator[dict[str, str]]:
+def _read_delimited_rows(
+    path: Path, *, delimiter: str, options: SourceParseOptions
+) -> Iterator[dict[str, str]]:
     """逐行流式产出 CSV/TSV 源文件的行——设计文档第 6.4 节给出的真实规模
     是"MUJI 一张 SKU 表 18 万+ 行"。注意：编码探测阶段（见
     _detect_text_encoding）会把整个文件读一遍原始字节做 decode 测试，
     这一步不是流式的；探测完成后的逐行处理本身才是流式、不整份文本
-    常驻内存。"""
+    常驻内存。跳到 header_row 同样是流式的——只是把前面的记录读过去丢掉，
+    不会把它们攒起来。"""
     encoding = _detect_text_encoding(path)
     with path.open(encoding=encoding, newline="") as handle:
         reader = csv.reader(handle, delimiter=delimiter)
-        try:
-            header = deduplicate_header(next(reader))
-        except StopIteration:
+        # header_row 数的是 CSV **记录**，不是物理行：带引号的字段里可以有
+        # 换行，那种记录横跨多个物理行。用户在 Excel 里看到的行号也是记录号，
+        # 按物理行数会跟他看到的对不上。
+        header: list[str] | None = None
+        for record_number, row in enumerate(reader, start=1):
+            if record_number == options.header_row:
+                header = deduplicate_header(row)
+                break
+        if header is None:
+            # 表头行号超出文件长度。产出空序列，跟"空文件"同一个终态。
             return
-        for row in reader:
+        first_data_row = options.resolved_first_data_row
+        for record_number, row in enumerate(reader, start=options.header_row + 1):
+            if record_number < first_data_row:
+                continue
             # csv.DictReader 会跳过空行，这里手工复现同样的行为。
             if not row:
                 continue
@@ -98,23 +112,51 @@ def _read_delimited_rows(path: Path, *, delimiter: str) -> Iterator[dict[str, st
             yield values
 
 
-def _read_xlsx_rows(path: Path) -> Iterator[dict[str, str]]:
-    """流式读取 xlsx 第一个工作表，第一行是表头——见决策 2（固定读第一个
-    sheet）。read_only=True 让 openpyxl 用懒加载模式逐行产出，不把整个
-    工作表读进内存，跟 CSV 路径同一个"18 万+ 行不能爆内存"的约束。
-    data_only=True 拿单元格公式算出来的值，不拿公式字符串本身。"""
+def _select_xlsx_sheet(workbook, sheet: str | int | None):
+    """选不中就报错，绝不回落到第一张表——回落会让用户拿到一份完全不相干
+    的数据，而且不报错。"""
+    if sheet is None:
+        return workbook.worksheets[0]
+    if isinstance(sheet, int):
+        if sheet >= len(workbook.worksheets):
+            raise RowProcessingError(
+                f"工作表序号 {sheet} 超出范围：这个文件只有 {len(workbook.worksheets)} 张表"
+            )
+        return workbook.worksheets[sheet]
+    if sheet not in workbook.sheetnames:
+        raise RowProcessingError(
+            f"找不到名为 {sheet!r} 的工作表，这个文件里有：{workbook.sheetnames}"
+        )
+    return workbook[sheet]
+
+
+def _read_xlsx_rows(path: Path, *, options: SourceParseOptions) -> Iterator[dict[str, str]]:
+    """流式读取 xlsx 的指定工作表与表头行。read_only=True 让 openpyxl 用
+    懒加载模式逐行产出，不把整个工作表读进内存，跟 CSV 路径同一个"18 万+
+    行不能爆内存"的约束。data_only=True 拿单元格公式算出来的值，不拿公式
+    字符串本身。
+
+    工作表和表头行曾经写死成"第一个 sheet、第一行"，见
+    docs/superpowers/specs/2026-09-15-source-parse-options-design.md
+    ——那个决策在这里被推翻。"""
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
-        worksheet = workbook.worksheets[0]
+        worksheet = _select_xlsx_sheet(workbook, options.sheet)
         rows_iter = worksheet.iter_rows(values_only=True)
-        try:
-            header_row = next(rows_iter)
-        except StopIteration:
+        header_cells: tuple | None = None
+        for row_number, row in enumerate(rows_iter, start=1):
+            if row_number == options.header_row:
+                header_cells = row
+                break
+        if header_cells is None:
             return
         header = deduplicate_header(
-            [str(cell).strip() if cell is not None else "" for cell in header_row]
+            [str(cell).strip() if cell is not None else "" for cell in header_cells]
         )
-        for row in rows_iter:
+        first_data_row = options.resolved_first_data_row
+        for row_number, row in enumerate(rows_iter, start=options.header_row + 1):
+            if row_number < first_data_row:
+                continue
             values = {
                 header[i]: convert_excel_cell_to_string(row[i] if i < len(row) else None)
                 for i in range(len(header))
@@ -122,8 +164,8 @@ def _read_xlsx_rows(path: Path) -> Iterator[dict[str, str]]:
             # openpyxl 的 read_only 迭代会按工作表"已用范围"补齐行数，哪怕
             # 某一行早就被清空也会产出全空的幽灵行（常见于手工编辑过的
             # Excel 导出文件）。跳过全空行，避免这些幽灵行被当成"缺列"的
-            # 脏数据行计入 skipped_rows，也让这条路径跟 CSV 侧
-            # csv.DictReader 对空行的处理保持一致。
+            # 脏数据行计入 skipped_rows，也让这条路径跟 CSV 侧对空行的
+            # 处理保持一致。
             if not any(values.values()):
                 continue
             yield values
@@ -150,18 +192,36 @@ def _xlrd_cell_to_python_value(cell: "xlrd.sheet.Cell", datemode: int) -> object
     return cell.value  # XL_CELL_NUMBER（float）/ XL_CELL_TEXT（str）
 
 
-def _read_xls_rows(path: Path) -> Iterator[dict[str, str]]:
-    """读取旧版二进制 xls 第一个工作表，第一行是表头。xlrd 没有 openpyxl
-    那种懒加载流式模式，会把整个工作表读进内存——xls 是被淘汰的旧格式，
-    体量通常不大，这里不为了流式特意做额外处理。"""
+def _select_xls_sheet(workbook: "xlrd.book.Book", sheet: str | int | None):
+    """理由同 _select_xlsx_sheet：选不中就报错，不回落。"""
+    if sheet is None:
+        return workbook.sheet_by_index(0)
+    if isinstance(sheet, int):
+        if sheet >= workbook.nsheets:
+            raise RowProcessingError(
+                f"工作表序号 {sheet} 超出范围：这个文件只有 {workbook.nsheets} 张表"
+            )
+        return workbook.sheet_by_index(sheet)
+    if sheet not in workbook.sheet_names():
+        raise RowProcessingError(
+            f"找不到名为 {sheet!r} 的工作表，这个文件里有：{workbook.sheet_names()}"
+        )
+    return workbook.sheet_by_name(sheet)
+
+
+def _read_xls_rows(path: Path, *, options: SourceParseOptions) -> Iterator[dict[str, str]]:
+    """读取旧版二进制 xls 的指定工作表与表头行。xlrd 没有 openpyxl 那种
+    懒加载流式模式，会把整个工作表读进内存——xls 是被淘汰的旧格式，体量
+    通常不大，这里不为了流式特意做额外处理。"""
     workbook = xlrd.open_workbook(str(path))
-    worksheet = workbook.sheet_by_index(0)
-    if worksheet.nrows == 0:
+    worksheet = _select_xls_sheet(workbook, options.sheet)
+    header_idx = options.header_row - 1
+    if worksheet.nrows <= header_idx:
         return
     header = deduplicate_header(
-        [str(worksheet.cell_value(0, col)).strip() for col in range(worksheet.ncols)]
+        [str(worksheet.cell_value(header_idx, col)).strip() for col in range(worksheet.ncols)]
     )
-    for row_idx in range(1, worksheet.nrows):
+    for row_idx in range(options.resolved_first_data_row - 1, worksheet.nrows):
         values = {
             header[col_idx]: convert_excel_cell_to_string(
                 _xlrd_cell_to_python_value(worksheet.cell(row_idx, col_idx), workbook.datemode)
@@ -174,22 +234,31 @@ def _read_xls_rows(path: Path) -> Iterator[dict[str, str]]:
         yield values
 
 
-def read_table_rows(path: Path) -> Iterator[dict[str, str]]:
-    """按扩展名分流到对应的行读取器，统一产出 dict[str, str]——见
-    docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md。
+def read_table_rows(
+    path: Path, options: SourceParseOptions | None = None
+) -> Iterator[dict[str, str]]:
+    """按扩展名分流到对应的行读取器，统一产出 dict[str, str]。
 
     这是 ETL 三层管道的第一层（staging）的唯一入口：解析 + 类型归一，
     不认识 node_key、不认识本体，只把各种格式的表统一成行序列。见
     docs/superpowers/specs/2026-08-30-etl-layered-pipeline-design.md。
+
+    options 省略时的行为跟解析选项引入之前完全一致（第一个工作表、第一行
+    表头）——存量映射里没有 sources 段，全靠这条保持不变。
     """
+    opts = options if options is not None else SourceParseOptions()
     suffix = path.suffix.lower()
-    if suffix == ".csv":
-        yield from _read_delimited_rows(path, delimiter=",")
-    elif suffix == ".tsv":
-        yield from _read_delimited_rows(path, delimiter="\t")
+    if suffix in (".csv", ".tsv"):
+        if opts.sheet is not None:
+            # 安静忽略会让用户以为自己选中了某张表。
+            raise RowProcessingError(
+                f"{suffix} 文件没有工作表的概念，不能指定 sheet：{path.name}"
+            )
+        delimiter = "," if suffix == ".csv" else "\t"
+        yield from _read_delimited_rows(path, delimiter=delimiter, options=opts)
     elif suffix == ".xlsx":
-        yield from _read_xlsx_rows(path)
+        yield from _read_xlsx_rows(path, options=opts)
     elif suffix == ".xls":
-        yield from _read_xls_rows(path)
+        yield from _read_xls_rows(path, options=opts)
     else:
         raise RowProcessingError(f"不支持的数据文件类型: {suffix!r}（{path.name}）")

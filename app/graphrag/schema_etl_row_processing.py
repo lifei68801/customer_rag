@@ -88,8 +88,8 @@ def convert_excel_cell_to_string(value: object) -> str:
     """把 Excel 单元格的原生值（openpyxl/xlrd 读出来的 int/float/str/bool/
     datetime/date/None）转换成字符串，跟 CSV 场景里"一行是 dict[str, str]"
     的契约对齐——见
-    docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md
-    决策 3 的转换规则表。
+    docs/superpowers/specs/2026-09-15-source-parse-options-design.md
+    （原出处 2026-08-21-schema-etl-multi-format-upload.md 已删除）。
 
     分支顺序不能打乱：bool 是 int 的子类（isinstance(True, int) 也是
     True），bool 分支必须排在 int 分支前面；datetime 是 date 的子类，

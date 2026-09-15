@@ -76,8 +76,9 @@ _ALLOWED_DATA_FILE_EXTENSIONS = {".csv", ".tsv", ".xlsx", ".xls"}
 
 def _validate_data_file_extensions(data_files: list[UploadFile]) -> None:
     """上传的数据文件必须是白名单里的格式——见
-    docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md
-    决策 4。在文件写盘之前做，不满足直接 400，不留下垃圾文件。"""
+    docs/superpowers/specs/2026-09-15-source-parse-options-design.md
+    （原出处 2026-08-21-schema-etl-multi-format-upload.md 已删除）。
+    在文件写盘之前做，不满足直接 400，不留下垃圾文件。"""
     for data_file in data_files:
         if not data_file.filename:
             continue

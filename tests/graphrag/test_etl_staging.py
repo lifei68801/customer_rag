@@ -7,6 +7,10 @@ from openpyxl import Workbook
 
 from app.graphrag.etl_staging import read_table_rows
 from app.graphrag.schema_etl_row_processing import RowProcessingError
+from app.graphrag.source_parse_options import (
+    InvalidSourceParseOptionsError,
+    SourceParseOptions,
+)
 
 
 def _write_xls(path: Path, rows: list[list[object]]) -> None:
@@ -236,3 +240,138 @@ def test_read_table_rows_pads_short_csv_rows_with_none(tmp_path: Path):
     rows = list(read_table_rows(path))
 
     assert rows == [{"name": "foo", "code": "A1", "note": None}]
+
+
+def test_read_table_rows_reads_the_named_sheet(tmp_path: Path):
+    """固定读第一个 sheet 的老决策在这里被推翻：MUJI 的主数据表在 Master，
+    同一个文件里还有 List / Work 等好几张表。"""
+    path = tmp_path / "multi.xlsx"
+    workbook = Workbook()
+    first = workbook.active
+    first.title = "Cover"
+    first.append(["说明"])
+    second = workbook.create_sheet("Master")
+    second.append(["jan", "color"])
+    second.append(["4934761229522", "Natural"])
+    workbook.save(path)
+
+    rows = list(read_table_rows(path, SourceParseOptions(sheet="Master")))
+
+    assert rows == [{"jan": "4934761229522", "color": "Natural"}]
+
+
+def test_read_table_rows_reads_the_sheet_by_index(tmp_path: Path):
+    path = tmp_path / "multi.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "Cover"
+    workbook.active.append(["说明"])
+    second = workbook.create_sheet("Master")
+    second.append(["jan"])
+    second.append(["4934761229522"])
+    workbook.save(path)
+
+    rows = list(read_table_rows(path, SourceParseOptions(sheet=1)))
+
+    assert rows == [{"jan": "4934761229522"}]
+
+
+def test_read_table_rows_reports_a_missing_sheet_by_name(tmp_path: Path):
+    """静默回落到第一张表会让用户拿到一份完全不相干的数据，而且不报错。"""
+    path = tmp_path / "multi.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "Cover"
+    workbook.active.append(["说明"])
+    workbook.save(path)
+
+    with pytest.raises(RowProcessingError, match="Master"):
+        list(read_table_rows(path, SourceParseOptions(sheet="Master")))
+
+
+def test_read_table_rows_takes_the_header_from_the_given_row(tmp_path: Path):
+    """MUJI 的形状：第 1 行是合并标题带，第 2 行英文名，第 3 行说明，
+    真表头在第 4 行，数据从第 5 行开始。"""
+    path = tmp_path / "layered.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Product Information", None])
+    sheet.append(["Article Code", "Color"])
+    sheet.append(["-", "(half width 100)"])
+    sheet.append(["md_no", "color"])
+    sheet.append(["M1AG702", "Natural"])
+    workbook.save(path)
+
+    rows = list(read_table_rows(path, SourceParseOptions(header_row=4)))
+
+    assert rows == [{"md_no": "M1AG702", "color": "Natural"}]
+
+
+def test_read_table_rows_skips_the_notes_rows_between_header_and_data(tmp_path: Path):
+    """用户挑了英文名那一行当表头时，它和数据之间还夹着说明行。"""
+    path = tmp_path / "notes.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Article Code", "Color"])
+    sheet.append(["-", "(half width 100)"])
+    sheet.append(["md_no", "color"])
+    sheet.append(["M1AG702", "Natural"])
+    workbook.save(path)
+
+    rows = list(read_table_rows(path, SourceParseOptions(header_row=1, first_data_row=4)))
+
+    assert rows == [{"Article Code": "M1AG702", "Color": "Natural"}]
+
+
+def test_read_table_rows_honours_header_row_for_csv(tmp_path: Path):
+    path = tmp_path / "layered.csv"
+    path.write_text("标题带,\nmd_no,color\nM1AG702,Natural\n", encoding="utf-8")
+
+    rows = list(read_table_rows(path, SourceParseOptions(header_row=2)))
+
+    assert rows == [{"md_no": "M1AG702", "color": "Natural"}]
+
+
+def test_read_table_rows_counts_csv_records_not_physical_lines(tmp_path: Path):
+    """带引号的字段里可以有换行，那种记录横跨多个物理行。header_row 数的是
+    记录——用户在 Excel 里看到的行号也是记录号。按物理行数会错位。"""
+    path = tmp_path / "multiline.csv"
+    path.write_text('"标题\n第二行",x\nmd_no,color\nM1AG702,Natural\n', encoding="utf-8")
+
+    rows = list(read_table_rows(path, SourceParseOptions(header_row=2)))
+
+    assert rows == [{"md_no": "M1AG702", "color": "Natural"}]
+
+
+def test_read_table_rows_honours_header_row_for_xls(tmp_path: Path):
+    path = tmp_path / "layered.xls"
+    _write_xls(path, [["Product Information", ""], ["md_no", "color"], ["M1AG702", "Natural"]])
+
+    rows = list(read_table_rows(path, SourceParseOptions(header_row=2)))
+
+    assert rows == [{"md_no": "M1AG702", "color": "Natural"}]
+
+
+def test_read_table_rows_yields_nothing_when_header_row_is_past_the_end(tmp_path: Path):
+    path = tmp_path / "short.csv"
+    path.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    assert list(read_table_rows(path, SourceParseOptions(header_row=9))) == []
+
+
+def test_read_table_rows_rejects_sheet_on_csv(tmp_path: Path):
+    """CSV 没有工作表。安静忽略会让用户以为自己选中了某张表。"""
+    path = tmp_path / "data.csv"
+    path.write_text("a\n1\n", encoding="utf-8")
+
+    with pytest.raises(RowProcessingError, match="工作表"):
+        list(read_table_rows(path, SourceParseOptions(sheet="Master")))
+
+
+def test_source_parse_options_rejects_header_row_below_one():
+    """1-based 跟 Excel 的行号对齐。允许 0 会让两套下标混在一起。"""
+    with pytest.raises(InvalidSourceParseOptionsError, match="header_row"):
+        SourceParseOptions(header_row=0)
+
+
+def test_source_parse_options_rejects_first_data_row_not_after_header():
+    with pytest.raises(InvalidSourceParseOptionsError, match="first_data_row"):
+        SourceParseOptions(header_row=3, first_data_row=3)
