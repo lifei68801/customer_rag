@@ -20,6 +20,15 @@ from app.providers.registry import ProviderRegistry
 
 _DEFAULT_DELAY_CONFIRMATION_HOURS = 2
 
+#: 离线 consolidation 里两次 LLM 调用的超时。
+#:
+#: 原本是 2 秒——那是在线问答链路的口径（用户在等）。但 consolidation 跑在
+#: 后台 worker 里，没有人在等，2 秒只会让调用频繁超时：而冲突消解一超时就
+#: 退回规则兜底，规则兜底在文本不完全相同时**一律判 ADD**。真实后果是同一
+#: 句话攒了 15 条措辞略有差异的记忆（"Coca-Cola公司共有10,000个订单" /
+#: "Coca-Cola 公司共有 10,000 个订单" / …），精确文本去重一条都短路不掉。
+_OFFLINE_LLM_TIMEOUT_SEC = 20.0
+
 
 async def _narrow_existing_memories(
     conn: aiosqlite.Connection,
@@ -63,8 +72,8 @@ async def consolidate_memory(
     assistant_output: str = "",
     llm_registry: ProviderRegistry,
     llm_provider_name: str,
-    fact_extract_timeout_sec: float = 2.0,
-    conflict_resolve_timeout_sec: float = 2.0,
+    fact_extract_timeout_sec: float = _OFFLINE_LLM_TIMEOUT_SEC,
+    conflict_resolve_timeout_sec: float = _OFFLINE_LLM_TIMEOUT_SEC,
     embedding_registry: EmbeddingRegistry | None = None,
     embedding_provider_name: str | None = None,
     similarity_top_k: int = 20,
@@ -143,8 +152,8 @@ async def run_memory_consolidation(
     assistant_output: str,
     llm_registry: ProviderRegistry,
     llm_provider_name: str,
-    fact_extract_timeout_sec: float = 2.0,
-    conflict_resolve_timeout_sec: float = 2.0,
+    fact_extract_timeout_sec: float = _OFFLINE_LLM_TIMEOUT_SEC,
+    conflict_resolve_timeout_sec: float = _OFFLINE_LLM_TIMEOUT_SEC,
     embedding_registry: EmbeddingRegistry | None = None,
     embedding_provider_name: str | None = None,
     similarity_top_k: int = 20,
