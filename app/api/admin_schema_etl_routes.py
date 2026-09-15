@@ -35,13 +35,19 @@ from app.graphrag.ontology_lifecycle import (
     has_unconfirmed_term_type_changes,
     is_ontology_confirmed,
 )
+from app.graphrag.etl_staging import read_table_rows
 from app.graphrag.schema_etl import SchemaEtlGraphProtocol, run_schema_etl
-from app.graphrag.schema_etl_config import SchemaETLConfig, load_schema_etl_config
+from app.graphrag.schema_etl_config import (
+    SchemaETLConfig,
+    load_schema_etl_config,
+    parse_schema_etl_config,
+)
 from app.graphrag.schema_etl_sample import (
     EmptySchemaError,
     SampleFile,
     generate_schema_etl_sample_files,
 )
+from app.graphrag.source_parse_options import SourceParseOptions
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +262,52 @@ def _resolve_data_file_names(
     )
 
 
+def _find_column_mismatches(
+    run_dir: Path,
+    config: SchemaETLConfig,
+    declared: dict[str, list[str]],
+) -> list[tuple[str, list[str], list[str]]]:
+    """按后端自己的规则解析每个文件的表头，跟前端声明的比对。
+
+    只读表头一行——`read_table_rows` 是生成器，取一行就停，18 万行的表也
+    不会被整份读进来。
+
+    前端声明了、但这次没上传的文件跳过：用户可能在界面上加过又移除，多出来
+    的条目不该让跑批失败。
+    """
+    mismatches: list[tuple[str, list[str], list[str]]] = []
+    for file_name, client_side in declared.items():
+        path = run_dir / file_name
+        if not path.exists():
+            continue
+        options = config.sources.get(file_name) or SourceParseOptions()
+        first = next(iter(read_table_rows(path, options)), None)
+        server_side = list(first.keys()) if first is not None else []
+        # 按顺序逐项比，不比集合：顺序决定哪一列对应哪个位置。
+        if server_side != list(client_side):
+            mismatches.append((file_name, list(client_side), server_side))
+    return mismatches
+
+
+def _format_column_mismatch(mismatches: list[tuple[str, list[str], list[str]]]) -> str:
+    """报错必须把两边的列名都列出来。只说"不一致"的话，用户既不知道是哪一列，
+    也无从判断该改哪边。"""
+    lines = ["页面上看到的列名跟服务端解析出来的对不上，本次未写入任何数据。"]
+    for file_name, client_side, server_side in mismatches:
+        only_client = [c for c in client_side if c not in server_side]
+        only_server = [c for c in server_side if c not in client_side]
+        lines.append(f"{file_name}：页面 {len(client_side)} 列，服务端 {len(server_side)} 列。")
+        if only_client:
+            lines.append(f"  只在页面上有：{only_client}")
+        if only_server:
+            lines.append(f"  只在服务端有：{only_server}")
+    lines.append(
+        "常见原因：这张表的解析设置（工作表/表头行）在页面和配置里不一致，"
+        "或者页面上的文件跟上传的不是同一份。"
+    )
+    return "\n".join(lines)
+
+
 @router.post("/runs", response_model=StartRunResponse)
 async def start_schema_etl_run(
     tenant_id: str,
@@ -264,6 +316,7 @@ async def start_schema_etl_run(
     data_files: list[UploadFile] = [],
     dry_run: bool = Form(False),
     allow_large_sweep: bool = Form(False),
+    client_columns: str | None = Form(None),
     upload_dir: Path = Depends(deps.get_upload_dir),
     review_conn: aiosqlite.Connection = Depends(deps.get_review_conn),
     graph_client: SchemaEtlGraphProtocol = Depends(deps.get_neo4j_graph_client),
@@ -337,6 +390,29 @@ async def start_schema_etl_run(
             data_file.filename, _sanitize_data_filename(data_file.filename)
         )
         dest.write_bytes(await data_file.read())
+
+    # 前端本地解析、后端跑批解析，两份规则会悄悄分叉——9c71cf9 已经让它们
+    # 分叉过一次（后端给重名列加了后缀，前端没有）。分叉时按后端的悄悄跑，
+    # 用户会拿到一份跟他在界面上看到的不一样的映射结果，而且没有任何提示。
+    # 放在这里（数据文件已落盘、还没建 etl_runs 记录）而不是后台任务里：
+    # 挪进后台任务的话用户点完按钮看到的是"已开始"，失败要过一会儿才在
+    # 运行列表里出现；放在建 etl_runs 记录之前，失败时不会留下一条永远
+    # 卡在 running 状态、挡住后续跑批的记录。
+    if client_columns is not None:
+        try:
+            declared: dict[str, list[str]] = json.loads(client_columns)
+        except json.JSONDecodeError as e:
+            shutil.rmtree(run_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=400, detail=f"client_columns 不是合法的 JSON：{e}"
+            ) from e
+        parsed_config = parse_schema_etl_config(
+            config_path.read_text(encoding="utf-8"), origin=str(config_path)
+        )
+        mismatches = _find_column_mismatches(run_dir, parsed_config, declared)
+        if mismatches:
+            shutil.rmtree(run_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=_format_column_mismatch(mismatches))
 
     started_at = datetime.now().isoformat()
     try:

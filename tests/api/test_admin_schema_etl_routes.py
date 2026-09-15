@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 
 import aiosqlite
@@ -865,3 +866,91 @@ def test_running_with_the_stored_mapping_does_not_rewrite_it(client, review_conn
     assert (after.config_yaml, after.created_at, after.source_file_name) == (
         before.config_yaml, before.created_at, before.source_file_name,
     )
+
+
+_EMPTY_MAPPING_CONFIG = b'tenant_id: "muji"\nentities: []\nrelations: []\n'
+
+
+def test_start_run_rejects_a_column_list_that_disagrees_with_the_backend(client, review_conn):
+    """前端本地解析、后端跑批解析，两份规则会悄悄分叉——9c71cf9 已经让它们
+    分叉过一次（后端给重名列加了后缀，前端没有）。分叉时按后端的悄悄跑，
+    用户会拿到一份跟他在界面上看到的不一样的映射结果，而且没有任何提示。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files=[
+            ("config", ("config.yaml", _EMPTY_MAPPING_CONFIG)),
+            ("data_files", ("dup.csv", b"Color,Color\na,b\n")),
+        ],
+        data={"client_columns": json.dumps({"dup.csv": ["Color", "Color"]})},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "dup.csv" in detail
+    assert "Color (2)" in detail  # 后端算出来的
+    assert "未写入任何数据" in detail
+
+
+def test_start_run_accepts_a_matching_column_list(client, review_conn):
+    asyncio.run(_confirm_muji_schema(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files=[
+            ("config", ("config.yaml", _EMPTY_MAPPING_CONFIG)),
+            ("data_files", ("dup.csv", b"Color,Color\na,b\n")),
+        ],
+        data={"client_columns": json.dumps({"dup.csv": ["Color", "Color (2)"]})},
+    )
+
+    assert response.status_code == 200, response.text
+
+
+def test_start_run_rejects_the_same_columns_in_a_different_order(client, review_conn):
+    """顺序决定哪一列对应哪个位置。乱序必须算不一致，不能按集合比。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files=[
+            ("config", ("config.yaml", _EMPTY_MAPPING_CONFIG)),
+            ("data_files", ("ab.csv", b"a,b\n1,2\n")),
+        ],
+        data={"client_columns": json.dumps({"ab.csv": ["b", "a"]})},
+    )
+
+    assert response.status_code == 400
+
+
+def test_start_run_without_client_columns_still_works(client, review_conn):
+    """老前端、curl、以及重跑历史 run 都不会带这个字段。缺省必须是"不对账"，
+    不能是"对账失败"。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files=[
+            ("config", ("config.yaml", _EMPTY_MAPPING_CONFIG)),
+            ("data_files", ("ok.csv", b"a,b\n1,2\n")),
+        ],
+    )
+
+    assert response.status_code == 200, response.text
+
+
+def test_start_run_ignores_client_columns_for_files_it_did_not_receive(client, review_conn):
+    """前端可能带上它本地加过、后来又移除的文件。多出来的条目不该让跑批失败。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files=[
+            ("config", ("config.yaml", _EMPTY_MAPPING_CONFIG)),
+            ("data_files", ("ok.csv", b"a,b\n1,2\n")),
+        ],
+        data={"client_columns": json.dumps({"ok.csv": ["a", "b"], "gone.csv": ["x"]})},
+    )
+
+    assert response.status_code == 200, response.text
