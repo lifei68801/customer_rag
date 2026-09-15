@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Sequence
 
 import xlrd
 from openpyxl import load_workbook
@@ -17,12 +17,43 @@ from openpyxl import load_workbook
 from app.graphrag.schema_etl_row_processing import RowProcessingError, convert_excel_cell_to_string
 
 
+def deduplicate_header(names: Sequence[str]) -> list[str]:
+    """给重名列加 " (2)"、" (3)" 后缀，让每一列都有自己的键。
+
+    不这么做的话，把表头直接当 dict 键会让后出现的同名列**静默覆盖**先
+    出现的：整列数据消失，而跑批报告仍然是"成功"。重名列在真实的表里很
+    常见——MUJI 的 SKU 主数据表有 Color×2（英语/現地語）、Size×2、
+    Retail price×4、Depth/Width/Height/Weight 各 ×3（ボール/ケース/
+    ピース），一张表 113 列曾经被读成 6 列。
+
+    选后缀而不是报错：重名列本身是合法的表达（同一个概念的多语言列、
+    多规格列），用户需要在字段映射那一步看到全部列、自己挑用哪一个；
+    直接报错会让这类表根本导不进来。
+
+    空列名彼此也算重名，同样参与去重——否则几十列没有表头的列会全部挤
+    进同一个 "" 键里互相覆盖。
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for name in names:
+        candidate = name
+        suffix = 1
+        # 表头里可能本来就有一列叫 "Color (2)"，所以不能算出后缀就直接用，
+        # 得一直往后找到一个没被占用的名字，否则又退回到互相覆盖。
+        while candidate in seen:
+            suffix += 1
+            candidate = f"{name} ({suffix})"
+        seen.add(candidate)
+        result.append(candidate)
+    return result
+
+
 def _detect_text_encoding(path: Path) -> str:
     """CSV/TSV 源文件的编码探测：优先按 UTF-8 严格解码，失败则回退尝试
     GBK（国内 Excel 导出 CSV 最常见的默认编码）——见
     docs/superpowers/specs/2026-08-21-schema-etl-multi-format-upload.md
     决策 6。这里读一遍原始字节只是为了做 decode 测试，不保留解码结果；
-    真正的行级处理仍然通过 csv.DictReader 用确定的编码重新打开文件、
+    真正的行级处理仍然通过 csv.reader 用确定的编码重新打开文件、
     流式进行，不会把整份解码后的文本一次性留在内存里。两种编码都解码
     失败时，让 GBK 阶段的 UnicodeDecodeError 原样往上抛，不做进一步猜测。
 
@@ -51,7 +82,20 @@ def _read_delimited_rows(path: Path, *, delimiter: str) -> Iterator[dict[str, st
     常驻内存。"""
     encoding = _detect_text_encoding(path)
     with path.open(encoding=encoding, newline="") as handle:
-        yield from csv.DictReader(handle, delimiter=delimiter)
+        reader = csv.reader(handle, delimiter=delimiter)
+        try:
+            header = deduplicate_header(next(reader))
+        except StopIteration:
+            return
+        for row in reader:
+            # csv.DictReader 会跳过空行，这里手工复现同样的行为。
+            if not row:
+                continue
+            # 值比表头少时补 None，跟 DictReader 的 restval 默认值一致；
+            # 多出来的尾部值没有列名可挂，丢掉——DictReader 把它们塞进
+            # key=None 的列表里，下游同样一次都没读过。
+            values = {name: row[i] if i < len(row) else None for i, name in enumerate(header)}
+            yield values
 
 
 def _read_xlsx_rows(path: Path) -> Iterator[dict[str, str]]:
@@ -67,7 +111,9 @@ def _read_xlsx_rows(path: Path) -> Iterator[dict[str, str]]:
             header_row = next(rows_iter)
         except StopIteration:
             return
-        header = [str(cell).strip() if cell is not None else "" for cell in header_row]
+        header = deduplicate_header(
+            [str(cell).strip() if cell is not None else "" for cell in header_row]
+        )
         for row in rows_iter:
             values = {
                 header[i]: convert_excel_cell_to_string(row[i] if i < len(row) else None)
@@ -112,7 +158,9 @@ def _read_xls_rows(path: Path) -> Iterator[dict[str, str]]:
     worksheet = workbook.sheet_by_index(0)
     if worksheet.nrows == 0:
         return
-    header = [str(worksheet.cell_value(0, col)).strip() for col in range(worksheet.ncols)]
+    header = deduplicate_header(
+        [str(worksheet.cell_value(0, col)).strip() for col in range(worksheet.ncols)]
+    )
     for row_idx in range(1, worksheet.nrows):
         values = {
             header[col_idx]: convert_excel_cell_to_string(
