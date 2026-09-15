@@ -1368,6 +1368,22 @@ git commit -m "refactor(admin): 前端两份解析器收敛成 sourceParser，�
 
 ---
 
+### Task 6: 表头行自动探测 —— **已从本计划移除（2026-09-16）**
+
+> 这个任务做了 4 轮修复后被移除，代码未接线即删除。原因不是"没做完"，而是
+> **按填充密度/计数找稳定数据块这条路线被定量证明走不通**：MUJI 表头堆的窗口
+> 落差比是 36/108 = 0.333，而"数据有若干可选字段"的普通表是 0.30~0.40，两者
+> 区间重叠，不存在能同时成立的固定比例。实测取 0.2 时，最常见的表形状（表头
+> 在第 1 行、数据 7~10 格波动）200 次里判错 99 次。
+>
+> 而且猜错的表头行**不会被 Task 3 的前后端对账拦住**（两边一致地错），数据会
+> 以"成功"导入成垃圾——对表头本就在第 1 行的普通表，这比不做探测更差。
+>
+> 完整结论与下一步方向（改看"像不像数据"而非"有多满"）见
+> `docs/superpowers/specs/2026-09-16-header-row-detection-design.md`。
+>
+> **下面的原始任务描述保留作为历史记录，不要执行。**
+
 ### Task 6: 表头行自动探测
 
 **Files:**
@@ -1545,7 +1561,7 @@ git commit -m "feat(admin): 表头行自动探测，只提议不自动生效"
 - Test: `frontend/src/admin/schemaEtlConfigBuilder/buildConfigYaml.test.ts`（不存在则新建）、`TableImportFlow` 既有测试文件
 
 **Interfaces:**
-- Consumes: `readSourcePreview` / `readSourceHeader` / `listSheetNames` / `SourceParseOptions`（Task 5）、`detectHeaderRow` / `DETECT_SCAN_ROWS`（Task 6）
+- Consumes: `readSourcePreview` / `readSourceHeader` / `listSheetNames` / `SourceParseOptions`（Task 5）。**不消费 Task 6**——自动探测已从本计划移除，表头行缺省为 1，由用户对着原始预览自己挑。
 - Produces: `AddedFile.parseOptions: SourceParseOptions`；YAML 顶部的 `sources:` 段；提交时的 `client_columns` 表单字段
 
 - [ ] **Step 1: 写失败的测试**
