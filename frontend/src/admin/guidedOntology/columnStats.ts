@@ -1,5 +1,14 @@
-import { parseDelimitedHeaderLine } from '../schemaEtlConfigBuilder/tableHeader'
+import { readSourceRows } from '../schemaEtlConfigBuilder/sourceParser'
+import type { SourceParseOptions } from '../schemaEtlConfigBuilder/sourceParser'
 import type { ColumnStats, InferredType } from './types'
+
+/**
+ * 解析实现在 schemaEtlConfigBuilder/sourceParser.ts，这里只做统计。
+ *
+ * 这两个常量继续从这里导出：既有测试引用的是这个模块的符号，而它们描述的
+ * 是解析行为，定义已经搬到 sourceParser。
+ */
+export { MAX_XLSX_BYTES, TEXT_CHUNK_BYTES } from '../schemaEtlConfigBuilder/sourceParser'
 
 /**
  * 每列最多收集这么多不同值，超过就封顶。
@@ -237,20 +246,6 @@ export function finalizeStats(acc: StatsAccumulator): ColumnStats[] {
 }
 
 /**
- * xlsx 的体积上限。它必须整个读进内存再解析，超过这个量级浏览器会卡死。
- * CSV 走流式读取，不受这个限制。
- */
-export const MAX_XLSX_BYTES = 20 * 1024 * 1024
-
-/**
- * CSV/TSV 分块读取的块大小。按字节切片，不按行——文件多大都只占这一块内存。
- *
- * 导出给测试用，好让测试精确控制"一行/一个多字节字符正好切在块边界上"
- * 这种场景，而不用去猜实现里的常量。
- */
-export const TEXT_CHUNK_BYTES = 1024 * 1024
-
-/**
  * 扫描整个文件，产出每列统计量。文件不上传——建模阶段数据不出用户的机器。
  *
  * 明确**不采样**：前 N 行不是随机样本。订单表通常按时间排序，前 1000 行
@@ -260,10 +255,14 @@ export const TEXT_CHUNK_BYTES = 1024 * 1024
  * xlsx 必须整个读进内存（二进制容器格式没法只读一段），所以对它加了体积
  * 上限；超过就抛错并说明原因，不能让页面静静地卡住。
  */
-export async function scanTableFile(file: File): Promise<ColumnStats[]> {
+export async function scanTableFile(
+  file: File,
+  options: SourceParseOptions = {},
+): Promise<ColumnStats[]> {
   let acc: StatsAccumulator | null = null
-  await readTableRows(
+  await readSourceRows(
     file,
+    options,
     (columns) => {
       acc = createAccumulator(columns)
     },
@@ -283,13 +282,15 @@ export async function scanTableFile(file: File): Promise<ColumnStats[]> {
  */
 export async function scanPairs(
   file: File,
-  options: { hostColumns: string[]; attributeColumns: string[] },
+  columnRoles: { hostColumns: string[]; attributeColumns: string[] },
+  options: SourceParseOptions = {},
 ): Promise<PairReport> {
   let acc: PairsAccumulator | null = null
-  await readTableRows(
+  await readSourceRows(
     file,
+    options,
     (columns) => {
-      acc = createPairsAccumulator({ columns, ...options })
+      acc = createPairsAccumulator({ columns, ...columnRoles })
     },
     (row) => {
       if (acc !== null) accumulatePairRow(acc, row)
@@ -299,114 +300,3 @@ export async function scanPairs(
   return finalizePairs(acc)
 }
 
-/**
- * 逐行读一张表，把表头和每一行交给回调。
- *
- * 抽出来是因为文件要读**两遍**：第一遍统计各列基数、推断类型，`assignRoles`
- * 据此定出哪些列是候选宿主、哪些是属性；第二遍才算得了「这个宿主的每个值
- * 是不是只对应一个属性值」——第一遍时角色还不知道，要一遍算完就得追踪所有
- * 列两两配对，内存上限不可控。
- *
- * 两遍的代价是扫描耗时约翻倍。CSV 是分块流式读的，xlsx 第二遍能复用已经
- * 解析好的工作簿（见 readExcelRows 的参数）。
- */
-async function readTableRows(
-  file: File,
-  onHeader: (columns: string[]) => void,
-  onRow: (row: string[]) => void,
-): Promise<void> {
-  const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
-  if (extension === '.xlsx' || extension === '.xls') {
-    await readExcelRows(file, onHeader, onRow)
-    return
-  }
-  await readDelimitedRows(file, extension === '.tsv' ? '\t' : ',', onHeader, onRow)
-}
-
-async function readExcelRows(
-  file: File,
-  onHeader: (columns: string[]) => void,
-  onRow: (row: string[]) => void,
-): Promise<void> {
-  if (file.size > MAX_XLSX_BYTES) {
-    throw new Error(
-      `xlsx 文件过大（${file.size} 字节，上限 ${MAX_XLSX_BYTES} 字节）：xlsx 是二进制容器格式，` +
-        '必须整个读进内存才能解析，文件太大会让浏览器卡死。请换一个更小的文件，或导出为 CSV。',
-    )
-  }
-  // 动态导入而不是顶层 import：SheetJS 压缩后接近 500KB，理由同
-  // tableHeader.ts 里的 readExcelHeaderColumns——只有真正扫描 Excel 时才
-  // 应该触发下载，不能拖累所有页面的首屏包体积。
-  const XLSX = await import('xlsx')
-  const buffer = await file.arrayBuffer()
-  // cellDates: true——不传的话 SheetJS 默认把日期格式的单元格读成 Excel
-  // 内部的浮点序列号（比如 45678），不是 JS Date。那样 cellToString 里
-  // `cell instanceof Date` 分支永远不命中，日期列会被 DATE_PATTERN 判不
-  // 通过，退化成按整数/字符串处理——不报错，只是"下单日期"这种列悄悄
-  // 不再被认成日期列，后续按日期列做的范围过滤处理也就用不上了。
-  const workbook = XLSX.read(buffer, { type: 'array', cellDates: true })
-  const firstSheetName = workbook.SheetNames[0]
-  if (!firstSheetName) return
-  const sheet = workbook.Sheets[firstSheetName]
-  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 })
-  const [headerRow, ...dataRows] = rows
-  onHeader((headerRow ?? []).map((cell) => cellToString(cell).trim()))
-  for (const row of dataRows) {
-    onRow(row.map(cellToString))
-  }
-}
-
-function cellToString(cell: unknown): string {
-  if (cell === undefined || cell === null) return ''
-  if (cell instanceof Date) return cell.toISOString().slice(0, 10)
-  return String(cell)
-}
-
-/**
- * CSV/TSV 按字节分块读取，不把整个文件读进内存(不 `await file.text()`)。
- * jsdom 和不少运行环境下 `File.prototype.stream()` 不可用（测试环境里
- * 就没有），所以用 `Blob.slice()` 按固定字节数递进，配合一个持续存活的
- * `TextDecoder` 实例（`{ stream: true }`）——这样即使某次切片正好切在一个
- * 多字节 UTF-8 字符中间，解码器也会把半个字符缓存到下一块，不会产生乱码。
- */
-async function readDelimitedRows(
-  file: File,
-  delimiter: string,
-  onHeader: (columns: string[]) => void,
-  onRow: (row: string[]) => void,
-): Promise<void> {
-  const decoder = new TextDecoder('utf-8')
-  let pending = ''
-  let sawHeader = false
-
-  const consumeLine = (line: string) => {
-    // 跳过完全空白的行（比如文件末尾的换行符），但不跳过"看起来空但有
-    // 分隔符"的行——那是真实的空值行，短行补齐已经在 accumulateRow 里处理。
-    if (line === '') return
-    const fields = parseDelimitedHeaderLine(line, delimiter)
-    if (!sawHeader) {
-      sawHeader = true
-      onHeader(fields.map((f) => f.trim()))
-      return
-    }
-    onRow(fields)
-  }
-
-  let offset = 0
-  while (offset < file.size) {
-    const slice = file.slice(offset, offset + TEXT_CHUNK_BYTES)
-    const buffer = await slice.arrayBuffer()
-    pending += decoder.decode(buffer, { stream: true })
-    offset += TEXT_CHUNK_BYTES
-
-    let newlineMatch = pending.match(/\r\n|\r|\n/)
-    while (newlineMatch && newlineMatch.index !== undefined) {
-      const line = pending.slice(0, newlineMatch.index)
-      consumeLine(line)
-      pending = pending.slice(newlineMatch.index + newlineMatch[0].length)
-      newlineMatch = pending.match(/\r\n|\r|\n/)
-    }
-  }
-  pending += decoder.decode()
-  if (pending !== '') consumeLine(pending)
-}
