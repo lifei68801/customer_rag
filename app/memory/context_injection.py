@@ -7,7 +7,8 @@ import aiosqlite
 from app.memory.compaction import compact_messages
 from app.memory.memory_store import list_active_memory_items
 from app.memory.recall import recall_memory_items
-from app.memory.session_window import get_recent_turns
+from app.memory.session_summary import get_session_summary
+from app.memory.session_window import get_turns_with_ids
 from app.providers.embedding import EmbeddingRegistry
 from app.safety.rules import UNSAFE_INPUT_MESSAGE, UNSAFE_OUTPUT_MESSAGE
 
@@ -70,9 +71,14 @@ async def inject_memory_context(
         )
         memory_items = memory_items[:memory_item_limit]
 
-    turns = await get_recent_turns(
+    turns = await get_turns_with_ids(
         conn, tenant_id=tenant_id, session_id=session_id, limit=recent_turn_limit
     )
+    # 已经进了摘要的轮次不再原样带进来——否则同一句话在上下文里出现两次
+    # （一次在摘要里，一次是原文）。摘要缺失时 covered=0，等于全都保留，
+    # 行为跟接入摘要之前逐字相同。
+    summary = await get_session_summary(conn, tenant_id=tenant_id, session_id=session_id)
+    covered = summary.covered_through_turn_id if summary else 0
     turn_messages = [
         {
             "role": t["role"],
@@ -83,10 +89,21 @@ async def inject_memory_context(
             ),
         }
         for t in turns
+        if int(t["id"]) > covered
     ]
-    compacted_turns = compact_messages(
-        turn_messages, preserve_recent_messages=compaction_preserve_recent_messages
-    )
+    if summary is not None:
+        # 有 LLM 摘要就用它，不再叠统计摘要：两条摘要说同一段历史，其中一条
+        # 只说得出条数，放在一起只会稀释另一条。
+        compacted_turns = [
+            {"role": "system", "content": f"前面的对话摘要：{summary.summary}"},
+            *turn_messages,
+        ]
+    else:
+        # 没有摘要（worker 还没跑过、或这个会话还没长到要压缩）时，退回统计
+        # 摘要——降级后的行为跟接入前逐字相同。
+        compacted_turns = compact_messages(
+            turn_messages, preserve_recent_messages=compaction_preserve_recent_messages
+        )
 
     messages: list[dict[str, Any]] = []
     if memory_items:
