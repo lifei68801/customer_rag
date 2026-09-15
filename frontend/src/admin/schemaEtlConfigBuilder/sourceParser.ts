@@ -117,6 +117,32 @@ function firstDataRowOf(options: SourceParseOptions): number {
 }
 
 /**
+ * 选项自身不合法时立刻报错，拒绝规则跟后端
+ * `app/graphrag/source_parse_options.py::SourceParseOptions.__post_init__` 逐条对齐。
+ *
+ * 校验只写这一处、三个入口（readSourceRows / readSourceHeader /
+ * readSourcePreview）都走它：CSV 路径和 Excel 路径对同一份非法输入会给出
+ * 不同结果——`headerRow=2, firstDataRow=1` 时 CSV 路径靠 `lineNumber < headerRow`
+ * 把表头之前的行挡掉了，Excel 路径的起始下标却会把表头行及其上方的行当成
+ * 数据行发出去。与其让两条路径各自"随便处理一下"，不如在入口处一律拒绝。
+ */
+export function assertValidParseOptions(options: SourceParseOptions): void {
+  if (options.headerRow !== undefined && options.headerRow < 1) {
+    throw new Error(`headerRow 必须从 1 开始（跟 Excel 行号一致），收到 ${options.headerRow}`)
+  }
+  const headerRow = headerRowOf(options)
+  if (options.firstDataRow !== undefined && options.firstDataRow <= headerRow) {
+    throw new Error(
+      `firstDataRow（${options.firstDataRow}）必须大于 headerRow（${headerRow}）：` +
+        '表头行本身不是数据行，表头之上的行也不是。',
+    )
+  }
+  if (typeof options.sheet === 'number' && options.sheet < 0) {
+    throw new Error(`sheet 序号不能是负数（0 表示第一张表），收到 ${options.sheet}`)
+  }
+}
+
+/**
  * 动态导入而不是顶层 import：SheetJS 压缩后接近 500KB，前台聊天页和后台
  * 管理页共享同一份打包产物（App.tsx 没有对路由做代码分割），静态 import
  * 会让只访问聊天页的普通用户也下载这个库。动态 import 让 Vite 把它拆成
@@ -191,7 +217,9 @@ export async function listSheetNames(file: File): Promise<string[]> {
   const XLSX = await loadXlsx()
   const buffer = await file.arrayBuffer()
   // sheetRows: 1——只要表名，不用把每张表的内容都解析出来。
-  const workbook = XLSX.read(buffer, { type: 'array', sheetRows: 1 })
+  // cellDates 跟 readExcelRows / readExcelHeader 保持一致：三条路径读同一个
+  // 单元格必须得到同一个字符串。
+  const workbook = XLSX.read(buffer, { type: 'array', cellDates: true, sheetRows: 1 })
   return [...workbook.SheetNames]
 }
 
@@ -211,6 +239,7 @@ export async function readSourceRows(
   onHeader: (columns: string[]) => void,
   onRow: (row: string[]) => void,
 ): Promise<void> {
+  assertValidParseOptions(options)
   if (isExcel(file)) {
     await readExcelRows(file, options, onHeader, onRow)
     return
@@ -284,6 +313,7 @@ export async function readSourceHeader(
   file: File,
   options: SourceParseOptions = {},
 ): Promise<string[]> {
+  assertValidParseOptions(options)
   if (isExcel(file)) return readExcelHeader(file, options)
   return readDelimitedHeader(file, delimiterOf(file), options)
 }
@@ -310,7 +340,10 @@ async function readExcelHeader(file: File, options: SourceParseOptions): Promise
   const buffer = await file.arrayBuffer()
   const headerRow = headerRowOf(options)
   // sheetRows 限制只解析到表头那一行，不用把整个工作簿解析出来。
-  const workbook = XLSX.read(buffer, { type: 'array', sheetRows: headerRow })
+  // cellDates 跟 readExcelRows 保持一致：日期型的表头单元格不传这个选项会
+  // 读成 Excel 内部的浮点序列号（45678），传了才是 Date，两条路径否则会对
+  // 同一列给出不同的列名。
+  const workbook = XLSX.read(buffer, { type: 'array', cellDates: true, sheetRows: headerRow })
   const sheetName = selectSheetName(workbook, options.sheet)
   if (sheetName === null) {
     if (options.sheet === undefined) return []
@@ -324,12 +357,19 @@ async function readExcelHeader(file: File, options: SourceParseOptions): Promise
 }
 
 /**
- * 原始的前若干行，**不受 headerRow 影响**——探测和预览要看的就是文件原始
- * 的形状，包括表头之上的标题带。不做重名去重，因为这里给的不是列名。
+ * 原始的前若干行，**不受 headerRow / firstDataRow 影响**——探测和预览要看的
+ * 就是文件原始的形状，包括表头之上的标题带。不做重名去重，因为这里给的不是
+ * 列名。options 里只有 `sheet` 起作用：预览的是哪张表得听用户的，读哪几行
+ * 不听。
  */
-export async function readSourcePreview(file: File, rowCount: number): Promise<string[][]> {
+export async function readSourcePreview(
+  file: File,
+  rowCount: number,
+  options: SourceParseOptions = {},
+): Promise<string[][]> {
+  assertValidParseOptions(options)
   if (rowCount <= 0) return []
-  if (isExcel(file)) return readExcelPreview(file, rowCount)
+  if (isExcel(file)) return readExcelPreview(file, rowCount, options)
   const delimiter = delimiterOf(file)
   const rows: string[][] = []
   for await (const line of readDelimitedLines(file)) {
@@ -339,12 +379,19 @@ export async function readSourcePreview(file: File, rowCount: number): Promise<s
   return rows
 }
 
-async function readExcelPreview(file: File, rowCount: number): Promise<string[][]> {
+async function readExcelPreview(
+  file: File,
+  rowCount: number,
+  options: SourceParseOptions,
+): Promise<string[][]> {
   const XLSX = await loadXlsx()
   const buffer = await file.arrayBuffer()
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: true, sheetRows: rowCount })
-  const sheetName = selectSheetName(workbook, undefined)
-  if (sheetName === null) return []
+  const sheetName = selectSheetName(workbook, options.sheet)
+  if (sheetName === null) {
+    if (options.sheet === undefined) return []
+    throw sheetNotFoundError(options.sheet, workbook.SheetNames)
+  }
   const sheet = workbook.Sheets[sheetName]
   const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 })
   return rows.slice(0, rowCount).map((row) => (row ?? []).map((cell) => cellToString(cell).trim()))

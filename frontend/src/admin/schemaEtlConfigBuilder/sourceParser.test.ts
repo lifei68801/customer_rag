@@ -114,3 +114,73 @@ describe('工作表选择', () => {
     ).rejects.toThrow(/Missing/)
   })
 })
+
+describe('Excel 路径的解析选项', () => {
+  it('按 headerRow / firstDataRow 取表头和数据——Excel 侧跟 CSV 侧同一套行号语义', async () => {
+    const file = xlsxFile('book.xlsx', {
+      Sheet1: [
+        ['标题带'],
+        ['md_no', 'color'],
+        ['-', '(half width 100)'],
+        ['M1AG702', 'Natural'],
+      ],
+    })
+    const rows: string[][] = []
+    let header: string[] = []
+
+    await readSourceRows(
+      file,
+      { headerRow: 2, firstDataRow: 4 },
+      (columns) => {
+        header = columns
+      },
+      (r) => rows.push(r),
+    )
+
+    expect(header).toEqual(['md_no', 'color'])
+    expect(rows).toEqual([['M1AG702', 'Natural']])
+    expect(await readSourceHeader(file, { headerRow: 2 })).toEqual(['md_no', 'color'])
+  })
+
+  it('Excel 的表头同样过 deduplicateHeader——两条路径不能对同一张表给出不同的列名', async () => {
+    const file = xlsxFile('dup.xlsx', { Sheet1: [['Color', 'Color'], ['a', 'b']] })
+    let header: string[] = []
+
+    await readSourceRows(
+      file,
+      {},
+      (columns) => {
+        header = columns
+      },
+      () => {},
+    )
+
+    expect(header).toEqual(['Color', 'Color (2)'])
+    expect(await readSourceHeader(file)).toEqual(['Color', 'Color (2)'])
+  })
+})
+
+describe('解析选项校验', () => {
+  const file = csvFile('a.csv', 'a,b\n1,2\n')
+
+  it('headerRow 小于 1 被拒绝——行号跟 Excel 一样从 1 开始', async () => {
+    await expect(readSourceHeader(file, { headerRow: 0 })).rejects.toThrow(/headerRow/)
+  })
+
+  it('firstDataRow 不在 headerRow 之后被拒绝', async () => {
+    // 不拒绝的话两条路径的结果还不一样：CSV 路径会把表头之前的行挡掉，
+    // Excel 路径会把表头行及其上方的行当成数据行发出去。
+    await expect(
+      readSourceRows(
+        file,
+        { headerRow: 2, firstDataRow: 1 },
+        () => {},
+        () => {},
+      ),
+    ).rejects.toThrow(/firstDataRow/)
+  })
+
+  it('sheet 序号是负数被拒绝', async () => {
+    await expect(readSourcePreview(file, 1, { sheet: -1 })).rejects.toThrow(/sheet/)
+  })
+})

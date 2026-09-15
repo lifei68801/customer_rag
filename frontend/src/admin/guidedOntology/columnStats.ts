@@ -279,6 +279,15 @@ export async function scanTableFile(
  *
  * 在 assignRoles 之后调用——那时才知道哪些列是宿主、哪些是属性，只算真正
  * 需要的那些对，而不是所有列两两配对。
+ *
+ * 文件要读**两遍**：第一遍（scanTableFile）统计各列基数、推断类型，
+ * `assignRoles` 据此定出哪些列是候选宿主、哪些是属性；第二遍才算得了「这个
+ * 宿主的每个值是不是只对应一个属性值」——第一遍时角色还不知道，要一遍算完
+ * 就得追踪所有列两两配对，内存上限不可控。两遍的代价是扫描耗时约翻倍。
+ *
+ * 两遍必须用**同一份** `options`：解析选项不同就是在读两张不同的表，第二遍
+ * 的配对结论挂不到第一遍给出的列上，预检等于没做。后端在 Task 2 踩过这个
+ * 坑。sourceParserPassthrough.test.ts 锁住这一点。
  */
 export async function scanPairs(
   file: File,
