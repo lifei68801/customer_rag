@@ -387,6 +387,71 @@ O2,2,张三,200000
     expect(within(flow).queryByTestId('mapping-conflict-Customer_Zip_Code')).toBeNull()
   }, 20000)
 
+  it('存着的映射跟当前本体对不上时，按本体改好、说出改了什么，并带上 config 提交', async () => {
+    // 真实事故：本体把 HAS_COMPANY 从 Product 改挂到 Order ID 并确认了，存着的
+    // 映射还指着 Product。ETL 按本体校验，这些边全部被静默跳过，跑批报告却是
+    // "成功"——图里一条公司边都没有。用户连撞两次都没找到原因。
+    //
+    // 带 config 这一条是关键：不带的话后端会用存着的旧映射，界面上改好的东西
+    // 一条都不生效，跑批照样"成功"。
+    signIn('admin')
+    stubDemoMapping({
+      entities: [
+        {
+          term_type: 'Order ID',
+          source_file: 'soft_drink_sales.xlsx',
+          key_columns: ['Order ID'],
+          key_parts: [{ kind: 'column' as const, column: 'Order ID' }],
+          name_columns: ['Order ID'],
+          attributes: {},
+        },
+        {
+          term_type: 'Customer Name',
+          source_file: 'soft_drink_sales.xlsx',
+          key_columns: ['Customer Name'],
+          key_parts: [{ kind: 'column' as const, column: 'Customer Name' }],
+          name_columns: ['Customer Name'],
+          attributes: {},
+        },
+      ],
+      relations: [
+        {
+          relation_type: 'HAS_CUSTOMER_NAME',
+          subject_term_type: 'Customer Name',  // 本体里已经改成 Order ID 了
+          object_term_type: 'Customer Name',
+        },
+      ],
+    })
+    confirmedCombinations = [
+      {
+        subject_term_type: 'Order ID',
+        relation_type: 'HAS_CUSTOMER_NAME',
+        object_term_type: 'Customer Name',
+      },
+    ]
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFile(user, csv(DEMO_HEADER))
+
+    const notice = await within(flow).findByTestId('relations-reconciled')
+    expect(notice.textContent).toMatch(/HAS_CUSTOMER_NAME/)
+    expect(notice.textContent).toMatch(/Customer Name/)
+    expect(notice.textContent).toMatch(/Order ID/)
+    // 说清不调整的后果，否则用户不知道这条提示要不要管。
+    expect(notice.textContent).toMatch(/静默跳过/)
+
+    await user.click(within(flow).getByTestId('run-import'))
+
+    await waitFor(() => {
+      const posted = requests.find(
+        (r) => r.url.includes('/schema-etl/runs') && r.init?.method === 'POST',
+      )
+      expect(posted).toBeTruthy()
+      expect((posted!.init!.body as FormData).has('config')).toBe(true)
+    })
+  }, 20000)
+
   it('沿用存好的映射、一个字没改时，提交不带 config', async () => {
     // 带上一份 config 的话后端会拿它当权威，而这里生成的那份未必跟存着的
     // 一模一样（比如存的是多列拼接的展示名，编辑器只放得下一列）。

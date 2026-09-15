@@ -94,6 +94,12 @@ export function TableImportFlow({
   const [unusedColumns, setUnusedColumns] = useState<string[]>([])
   const [unmatchedTermTypes, setUnmatchedTermTypes] = useState<string[]>([])
   const [storedMissingColumns, setStoredMissingColumns] = useState<string[] | null>(null)
+  const [repairedRelations, setRepairedRelations] = useState<
+    { relationType: string; fromSubject: string; toSubject: string }[]
+  >([])
+  const [droppedRelations, setDroppedRelations] = useState<
+    { subject: string; relationType: string; object: string }[]
+  >([])
   const [mappingExpanded, setMappingExpanded] = useState(false)
   const [yamlExpanded, setYamlExpanded] = useState(false)
   const [dryRun, setDryRun] = useState(false)
@@ -170,6 +176,8 @@ export function TableImportFlow({
       setUnusedColumns(prefill.unusedColumns)
       setUnmatchedTermTypes(prefill.unmatchedTermTypes)
       setStoredMissingColumns(prefill.storedMissingColumns)
+      setRepairedRelations(prefill.repairedRelations)
+      setDroppedRelations(prefill.droppedRelations)
       prefilledRef.current = JSON.stringify({
         entities: prefill.entities,
         relations: prefill.relations,
@@ -224,7 +232,11 @@ export function TableImportFlow({
   const conflicts = findMappingConflicts(entities, pairReport)
 
   const edited = source !== null && JSON.stringify({ entities, relations }) !== prefilledRef.current
-  const usesStoredMapping = source === 'stored' && !edited
+  // 按本体自动改过关系时，**不能**再走"沿用存着的那份"——那条路径提交时不带
+  // config，后端会拿存着的旧映射去跑，界面上改过的东西一条都不生效。这正是
+  // 用户连撞两次的那个坑：跑批"成功"，图里一条公司边都没有。
+  const repairedByOntology = repairedRelations.length > 0 || droppedRelations.length > 0
+  const usesStoredMapping = source === 'stored' && !edited && !repairedByOntology
 
   const handleRun = async () => {
     if (files.length === 0) {
@@ -309,6 +321,35 @@ export function TableImportFlow({
           <p className="text-sm text-ink-soft">还没有选文件。</p>
         ) : (
           <>
+            {(repairedRelations.length > 0 || droppedRelations.length > 0) && (
+              <div
+                role="status"
+                data-testid="relations-reconciled"
+                className="flex flex-col gap-1 rounded-card border border-accent-secondary bg-paper px-3 py-2 text-sm text-ink"
+              >
+                <p className="font-bold">存着的映射是本体改动之前配的，已按当前本体调整：</p>
+                {repairedRelations.map((r) => (
+                  <p key={`${r.relationType}-${r.fromSubject}`}>
+                    <code className="font-mono text-xs">{r.relationType}</code> 的主体从{' '}
+                    <code className="font-mono text-xs">{r.fromSubject}</code> 改成{' '}
+                    <code className="font-mono text-xs">{r.toSubject}</code>
+                  </p>
+                ))}
+                {droppedRelations.map((r) => (
+                  <p key={`${r.subject}-${r.relationType}-${r.object}`}>
+                    去掉了{' '}
+                    <code className="font-mono text-xs">
+                      {r.subject} —{r.relationType}→ {r.object}
+                    </code>
+                    ：当前本体里没有这个组合，导入时也会被跳过。
+                  </p>
+                ))}
+                <p className="text-xs text-ink-soft">
+                  不调整的话，这些关系会在导入时被静默跳过——跑批照样报告成功，而图里一条边都没有。
+                </p>
+              </div>
+            )}
+
             {storedMissingColumns && (
               <p
                 role="status"
