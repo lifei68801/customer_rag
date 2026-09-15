@@ -28,6 +28,7 @@ from app.graphrag.schema_etl_config import (
     RelationMapping,
     SchemaETLConfig,
 )
+from app.graphrag.source_parse_options import SourceParseOptions
 from app.graphrag.term_edits_store import (
     FIELD_DELETED,
     ensure_term_edits_schema,
@@ -170,6 +171,134 @@ async def test_run_schema_etl_writes_entities_and_relations(tmp_path):
     assert "Product:1001" in graph_client.synced
     assert "SKU:4901234567890" in graph_client.synced
     assert ("Product:1001", "SKU:4901234567890", "HAS_SKU") in graph_client.merged
+
+
+async def test_run_schema_etl_uses_source_parse_options_from_config_end_to_end(tmp_path):
+    """接线测试：`schema_etl.py` 里 `scan_entity_node_keys` / `project_entity_rows` /
+    `project_relation_rows` 三处调用都要从 `config.sources` 按各自的
+    `source_file` 取出对应的 `SourceParseOptions` 传下去。
+
+    这条测试防的是"接线断掉时选项存了但不生效"这个故障：配置存了
+    `sources` 段、表格导入页的摘要也能正确回填表单，界面看起来一切正常；
+    但如果某个调用点漏传了 `parse_options`，或者把 `entity_mapping.source_file`
+    误写成另一个 mapping 的 `source_file`，跑批会安静地退回到"第 1 行是
+    表头"的缺省行为——这两张源文件的第 1 行都是说明行，说明行会被误当
+    表头、真表头被误当数据行，两个实体和一条关系的列名全部对不上，行会被
+    判定为脏数据整批跳过。**`run_schema_etl` 不会因此抛异常，`report` 仍然
+    是"运行成功"**，区别只在于 `entities_written`/`relations_written`
+    悄悄变成 0、图里没有正确数据——所以断言必须落在写入结果（写进去的
+    `node_key`、写入计数）上，不能只断言"没报错"。
+    """
+    conn = await _confirmed_conn()
+    # 第 1 行是说明行，真正的表头在第 2 行——这正是 MUJI SKU 主数据表的
+    # 真实形状，也是 source-parse-options 这个功能要修的故障场景。
+    (tmp_path / "products.csv").write_text(
+        "本表仅供内部使用,,\n"
+        "product_group_id,product_group_name,md_no\n"
+        "1001,圆角收纳盒,A123\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "skus.csv").write_text(
+        "本表仅供内部使用,\n"
+        "jan,product_group_id\n"
+        "4901234567890,1001\n",
+        encoding="utf-8",
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+            EntityMapping(
+                term_type="SKU", source_file="skus.csv",
+                standard_name_parts=["jan"],
+                node_key_parts=[ColumnNodeKeyPart(column="jan")],
+                field_mappings={},
+            ),
+        ],
+        relations=[
+            RelationMapping(
+                relation_type="HAS_SKU", source_file="skus.csv",
+                subject_term_type="Product", object_term_type="SKU",
+            ),
+        ],
+        # 两个文件各自声明 header_row=2——覆盖 scan_entity_node_keys（预检）、
+        # project_entity_rows（两个实体都会经过它）、project_relation_rows
+        # （HAS_SKU 关系读的也是 skus.csv）三处调用点。
+        sources={
+            "products.csv": SourceParseOptions(header_row=2),
+            "skus.csv": SourceParseOptions(header_row=2),
+        },
+    )
+    graph_client = FakeGraphClient()
+
+    report = await run_schema_etl(
+        conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+    )
+
+    assert report.entities_written == 2
+    assert report.relations_written == 1
+    product = await get_term(conn, tenant_id="muji", standard_name="圆角收纳盒")
+    assert product.node_key == "Product:1001"
+    sku = await get_term_by_node_key(conn, tenant_id="muji", node_key="SKU:4901234567890")
+    assert sku.node_key == "SKU:4901234567890"
+    assert ("Product:1001", "SKU:4901234567890", "HAS_SKU") in graph_client.merged
+
+
+async def test_run_schema_etl_predetection_scan_uses_source_parse_options_from_config(tmp_path):
+    """专门钉住 `run_schema_etl` 预检循环里 `scan_entity_node_keys` 那一处调用点
+    （跟上面 `test_run_schema_etl_uses_source_parse_options_from_config_end_to_end`
+    钉的是 `project_entity_rows`/`project_relation_rows` 不是同一处）。
+
+    预检的 `scan_entity_node_keys` 不直接决定写入内容，只决定"要不要整体拒绝
+    这次运行"，所以它的接线断了不会让 entities_written 变化——真正暴露问题的
+    是"本该被预检拦下的主键冲突，没有被拦下"。这里构造一个真正的主键冲突
+    （node_key 相同、值不同的两行），且表头在第 2 行：
+    - 接线正确：预检按第 2 行读出真表头，能看到这两行的 node_key 冲突，
+      整体拒绝、抛 `DuplicateNodeKeyError`，`terms` 表零写入。
+    - 接线断了（`parse_options` 没传下去）：预检退回到"第 1 行是表头"，
+      说明行被当表头、真表头和两条数据行全部因为缺列而被 `RowProcessingError`
+      静默跳过（scan_entity_node_keys 对行级失败就是静默 continue），预检
+      看不到任何冲突、不报错；随后 `project_entity_rows` 仍然用对的选项正确
+      解析出这两行真正冲突的数据，`upsert_term_with_node_key` 逐行 upsert、
+      不会因为值冲突而报错——于是这次冲突从"整体拒绝、零写入"退化成"悄悄
+      写入两行、静默取最后一次的值"，而 `run_schema_etl` 完全不会抛异常。
+    """
+    conn = await _confirmed_conn()
+    (tmp_path / "products.csv").write_text(
+        "本表仅供内部使用,,\n"
+        "product_group_id,product_group_name,md_no\n"
+        "P1,甲,M1\n"
+        "P1,乙,M2\n",
+        encoding="utf-8",
+    )
+    config = SchemaETLConfig(
+        tenant_id="muji",
+        entities=[
+            EntityMapping(
+                term_type="Product", source_file="products.csv",
+                standard_name_parts=["product_group_name"],
+                node_key_parts=[ColumnNodeKeyPart(column="product_group_id")],
+                field_mappings={"md_no": "md_no"},
+            ),
+        ],
+        relations=[],
+        sources={"products.csv": SourceParseOptions(header_row=2)},
+    )
+    graph_client = FakeGraphClient()
+
+    with pytest.raises(DuplicateNodeKeyError) as excinfo:
+        await run_schema_etl(
+            conn=conn, graph_client=graph_client, config=config, data_dir=tmp_path
+        )
+
+    assert "Product:P1" in str(excinfo.value)
+    assert await list_terms(conn, "muji") == []
+    assert graph_client.synced == []
 
 
 async def test_run_schema_etl_skips_bad_row_and_reports_it(tmp_path):
