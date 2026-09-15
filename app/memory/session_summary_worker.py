@@ -43,8 +43,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_PRESERVE_RECENT_MESSAGES = 8
 
 
-async def _list_sessions(conn: aiosqlite.Connection) -> list[tuple[str, str]]:
-    """有对话轮次的 (tenant_id, session_id)，按最近活跃排前面。
+async def _list_candidate_sessions(
+    conn: aiosqlite.Connection, *, preserve_recent_messages: int
+) -> list[tuple[str, str]]:
+    """**可能**需要摘要的 (tenant_id, session_id)，按最近活跃排前面。
+
+    在 SQL 里就滤掉轮数不足滑窗的会话。不滤的话，这套库里 140 个会话有 130
+    个是 2 轮的测试残留，它们会把候选列表塞满——而真正需要摘要的那几个会话
+    活跃时间更早，排在后面，永远轮不到（第一次跑这个 worker 就是这样：
+    --limit 20 取最近 20 个，全是 2 轮的，结果"更新 0 个"）。
 
     从 conversation_turns 取而不是 chat_sessions：摘要的输入就是轮次，
     chat_sessions 是会话列表的元信息表，两者可能不同步（历史数据里有轮次
@@ -52,7 +59,8 @@ async def _list_sessions(conn: aiosqlite.Connection) -> list[tuple[str, str]]:
     """
     cursor = await conn.execute(
         "SELECT tenant_id, session_id, MAX(id) AS last_id FROM conversation_turns "
-        "GROUP BY tenant_id, session_id ORDER BY last_id DESC"
+        "GROUP BY tenant_id, session_id HAVING COUNT(*) > ? ORDER BY last_id DESC",
+        (preserve_recent_messages,),
     )
     return [(row[0], row[1]) for row in await cursor.fetchall()]
 
@@ -120,7 +128,13 @@ async def main(
     await ensure_session_summary_schema(conn)
 
     updated = 0
-    for tenant_id, session_id in (await _list_sessions(conn))[:limit]:
+    # limit 限制的是"更新了几个"，不是"看了几个"：已经摘全的会话是两次查询
+    # 的空操作，让它们占掉名额会把真正要做的工作挤出去。
+    for tenant_id, session_id in await _list_candidate_sessions(
+        conn, preserve_recent_messages=preserve_recent_messages
+    ):
+        if updated >= limit:
+            break
         if await refresh_session_summary(
             conn,
             tenant_id=tenant_id,
@@ -136,7 +150,7 @@ async def main(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="离线刷新会话摘要")
-    parser.add_argument("--limit", type=int, default=20, help="单次最多处理的会话数")
+    parser.add_argument("--limit", type=int, default=20, help="单次最多**更新**几个会话的摘要")
     parser.add_argument(
         "--preserve-recent",
         type=int,

@@ -246,3 +246,81 @@ async def test_summaries_are_scoped_to_one_session():
 
     assert not any("只属于 s1" in m["content"] for m in messages)
     await conn.close()
+
+
+async def test_worker_does_not_starve_old_sessions_behind_a_crowd_of_short_ones():
+    """limit 限制的是"更新了几个"，不是"看了几个"。
+
+    真实库里 140 个会话有 130 个是 2 轮的测试残留，它们比需要摘要的那几个
+    更晚活跃。按"最近 N 个"截断的话，要做的工作永远排不进来——第一次跑这个
+    worker 就是这样：--limit 20 取最近 20 个全是 2 轮的，结果"更新 0 个"。
+    """
+    from app.memory.session_summary_worker import main
+
+    conn = await _conn()
+    await _seed(conn, 11, session_id="需要摘要的老会话")
+    for i in range(30):  # 之后活跃的一堆短会话
+        await _seed(conn, 2, session_id=f"短会话{i}")
+
+    updated = await main(
+        memory_conn=conn, llm_registry=ScriptedLLM(["摘要正文"]), limit=5,
+    )
+
+    assert updated == 1
+    assert await get_session_summary(conn, tenant_id="t1", session_id="需要摘要的老会话") is not None
+    await conn.close()
+
+
+async def test_worker_stops_after_updating_limit_sessions():
+    from app.memory.session_summary_worker import main
+
+    conn = await _conn()
+    for i in range(4):
+        await _seed(conn, 11, session_id=f"长会话{i}")
+
+    updated = await main(
+        memory_conn=conn, llm_registry=ScriptedLLM(["摘要"] * 4), limit=2,
+    )
+
+    assert updated == 2
+    await conn.close()
+
+
+async def test_candidate_list_excludes_sessions_that_cannot_need_a_summary():
+    """轮数不足滑窗的会话在 SQL 里就滤掉，不进候选列表。
+
+    这套库里 140 个会话有 130 个是 2 轮的测试残留。不滤的话，每次跑都要为
+    它们各做两次查询，而它们永远是空操作。
+    """
+    from app.memory.session_summary_worker import _list_candidate_sessions
+
+    conn = await _conn()
+    await _seed(conn, 11, session_id="够长")
+    await _seed(conn, 8, session_id="刚好不够")
+    await _seed(conn, 2, session_id="很短")
+
+    candidates = await _list_candidate_sessions(conn, preserve_recent_messages=8)
+
+    assert [s for _, s in candidates] == ["够长"]
+    await conn.close()
+
+
+async def test_already_covered_sessions_do_not_consume_the_limit():
+    """limit 限制的是"更新了几个"。已经摘全的会话是空操作，让它们占掉名额
+    会把真正要做的工作挤到下一次——而下一次它们还在前面。"""
+    from app.memory.session_summary_worker import main
+
+    conn = await _conn()
+    await _seed(conn, 11, session_id="早就摘好的")
+    await refresh_session_summary(
+        conn, tenant_id="t1", session_id="早就摘好的",
+        llm_registry=ScriptedLLM(["旧摘要"]), llm_provider_name="fake",
+    )
+    await _seed(conn, 11, session_id="还没摘的")  # 更晚活跃，排在候选列表前面
+
+    updated = await main(memory_conn=conn, llm_registry=ScriptedLLM(["新摘要"]), limit=1)
+
+    assert updated == 1
+    stored = await get_session_summary(conn, tenant_id="t1", session_id="还没摘的")
+    assert stored is not None and stored.summary == "新摘要"
+    await conn.close()
