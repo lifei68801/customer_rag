@@ -22,6 +22,7 @@ from app.graphrag.schema_etl_config import (
     EntityMapping,
     RelationMapping,
 )
+from app.graphrag.source_parse_options import SourceParseOptions
 
 pytestmark = pytest.mark.anyio
 
@@ -291,3 +292,98 @@ async def test_scan_does_not_flag_a_repeated_entity_whose_values_agree(tmp_path:
     assert result.scanned_rows == 4
     # 重复的行仍然算进 node_keys（sweep 要用它），只是不报冲突。
     assert result.node_keys == {"客户:张三:100", "客户:李四:300"}
+
+
+async def test_project_entity_rows_reads_the_source_with_its_parse_options(tmp_path: Path):
+    """选项只存不使用的话，界面上一切正常，跑批仍然读第一行表头——这正是
+    这个功能要修的 bug 换了个地方复发。"""
+    _write_csv(
+        tmp_path / "customers.csv",
+        [
+            "本表仅供内部使用,,",
+            "name,zip,city",
+            "张三,100,北京",
+        ],
+    )
+    conn = await _conn()
+
+    rows = [
+        row
+        async for row in project_entity_rows(
+            conn,
+            tenant_id="demo",
+            mapping=_mapping(),
+            # city 需要在 extra_field_specs 里声明，否则 convert_field_value
+            # 会因为"字段没有在 schema 里声明"而报 RowProcessingError——
+            # _mapping() 的 field_mappings 里 city 映到 city，这一行的 city
+            # 不是空值，会真的走到这条转换。
+            extra_field_specs={"city": ExtraFieldSpec(name="city", value_type="string")},
+            data_dir=tmp_path,
+            parse_options=SourceParseOptions(header_row=2),
+        )
+    ]
+
+    # node_key 的实际拼接分隔符是英文冒号（见 compute_node_key），不是竖线
+    # ——已用 test_scan_does_not_flag_a_repeated_entity_whose_values_agree
+    # 里 "客户:张三:100" 这条既有断言核实过。
+    assert [r.node_key for r in rows] == ["客户:张三:100"]
+
+
+async def test_project_entity_rows_numbers_rows_from_the_real_first_data_row(tmp_path: Path):
+    """报错信息里的"第 N 行"要跟用户在 Excel 里看到的行号对上。表头在第 2
+    行时，第一条数据是第 3 行，不是第 2 行。"""
+    _write_csv(
+        tmp_path / "customers.csv",
+        [
+            "本表仅供内部使用,,",
+            "name,zip,city",
+            "张三,,北京",
+        ],
+    )
+    conn = await _conn()
+
+    results = [
+        row
+        async for row in project_entity_rows(
+            conn,
+            tenant_id="demo",
+            mapping=_mapping(),
+            extra_field_specs={},
+            data_dir=tmp_path,
+            parse_options=SourceParseOptions(header_row=2),
+        )
+    ]
+
+    failures = [r for r in results if isinstance(r, RowFailure)]
+    assert [f.row_number for f in failures] == [3]
+
+
+async def test_scan_entity_node_keys_reads_the_source_with_its_parse_options(tmp_path: Path):
+    """两遍扫描必须用同一份选项。第一遍按第 1 行读、第二遍按第 2 行读的话，
+    预检查到的键跟真正写入的键不是同一批——预检就等于没做。"""
+    _write_csv(
+        tmp_path / "customers.csv",
+        [
+            "本表仅供内部使用,,",
+            "name,zip,city",
+            "张三,100,北京",
+            "张三,100,上海",
+        ],
+    )
+    conn = await _conn()
+
+    result = await scan_entity_node_keys(
+        conn,
+        tenant_id="demo",
+        mapping=_mapping(),
+        # 同上：city 需要声明在 extra_field_specs 里，否则值转换会先因为
+        # "字段未声明"报错，冲突永远走不到值指纹比对那一步。
+        extra_field_specs={"city": ExtraFieldSpec(name="city", value_type="string")},
+        data_dir=tmp_path,
+        parse_options=SourceParseOptions(header_row=2),
+    )
+
+    # 同一个 node_key 两行、city 不同 —— 这是值冲突，必须被检出来。
+    # KeyScanResult 没有 conflicts 字段（字段是 duplicate_keys/scanned_rows/
+    # node_keys，见 etl_projection.py），按实际字段名断言。
+    assert result.duplicate_keys

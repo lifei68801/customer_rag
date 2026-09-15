@@ -29,6 +29,7 @@ from app.graphrag.schema_etl_row_processing import (
     compute_node_key,
     convert_field_value,
 )
+from app.graphrag.source_parse_options import SourceParseOptions
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,7 @@ async def scan_entity_node_keys(
     mapping: EntityMapping,
     extra_field_specs: dict[str, ExtraFieldSpec],
     data_dir: Path,
+    parse_options: SourceParseOptions | None = None,
 ) -> KeyScanResult:
     """第一遍：流式读一遍源文件，算 node_key，收集**值冲突**。
 
@@ -165,7 +167,14 @@ async def scan_entity_node_keys(
     # 只收录真正出现值冲突的键：node_key -> [首次行号, 冲突行号...]
     conflicts: dict[str, list[int]] = {}
     scanned = 0
-    for row_number, row in enumerate(read_table_rows(data_dir / mapping.source_file), start=2):
+    # start=2 是老写法留下的：它假定表头永远在第 1 行、数据从第 2 行开始。
+    # 解析选项引入之后，行号必须从这张表真正的首数据行算起，否则报错信息里
+    # 的"第 N 行"会跟用户在 Excel 里看到的对不上。
+    options = parse_options if parse_options is not None else SourceParseOptions()
+    for row_number, row in enumerate(
+        read_table_rows(data_dir / mapping.source_file, options),
+        start=options.resolved_first_data_row,
+    ):
         scanned += 1
         try:
             node_key = await compute_node_key(
@@ -200,13 +209,21 @@ async def project_entity_rows(
     mapping: EntityMapping,
     extra_field_specs: dict[str, ExtraFieldSpec],
     data_dir: Path,
+    parse_options: SourceParseOptions | None = None,
 ) -> AsyncIterator[ProjectedRow | RowFailure]:
     """第二遍：流式重读源文件，产出物化后的行。
 
     刻意不攒成 list 返回：写入层边消费边写，行数据不全量驻留内存。第一遍
     已经保证了没有重复键，这一遍只管把每一行算出来。
     """
-    for row_number, row in enumerate(read_table_rows(data_dir / mapping.source_file), start=2):
+    # start=2 是老写法留下的：它假定表头永远在第 1 行、数据从第 2 行开始。
+    # 解析选项引入之后，行号必须从这张表真正的首数据行算起，否则报错信息里
+    # 的"第 N 行"会跟用户在 Excel 里看到的对不上。
+    options = parse_options if parse_options is not None else SourceParseOptions()
+    for row_number, row in enumerate(
+        read_table_rows(data_dir / mapping.source_file, options),
+        start=options.resolved_first_data_row,
+    ):
         try:
             node_key = await compute_node_key(
                 conn, tenant_id=tenant_id, term_type=mapping.term_type,
@@ -232,6 +249,7 @@ async def project_relation_rows(
     subject_entity: EntityMapping,
     object_entity: EntityMapping,
     data_dir: Path,
+    parse_options: SourceParseOptions | None = None,
 ) -> AsyncIterator[ProjectedRelationRow | RowFailure]:
     """关系侧的 projection：流式算出每一行的两个端点键。
 
@@ -242,7 +260,14 @@ async def project_relation_rows(
     这一层没有查重：边是 MERGE 的，同一条边从多行产生是合法的，不像实体
     主键重复那样意味着配置错了。
     """
-    for row_number, row in enumerate(read_table_rows(data_dir / mapping.source_file), start=2):
+    # start=2 是老写法留下的：它假定表头永远在第 1 行、数据从第 2 行开始。
+    # 解析选项引入之后，行号必须从这张表真正的首数据行算起，否则报错信息里
+    # 的"第 N 行"会跟用户在 Excel 里看到的对不上。
+    options = parse_options if parse_options is not None else SourceParseOptions()
+    for row_number, row in enumerate(
+        read_table_rows(data_dir / mapping.source_file, options),
+        start=options.resolved_first_data_row,
+    ):
         try:
             subject_key = await compute_node_key(
                 conn, tenant_id=tenant_id, term_type=mapping.subject_term_type,

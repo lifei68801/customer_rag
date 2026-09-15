@@ -16,6 +16,7 @@ from app.graphrag.schema_etl_config import (
     RelationMapping,
     load_schema_etl_config,
 )
+from app.graphrag.source_parse_options import SourceParseOptions
 
 
 def test_load_schema_etl_config_parses_entities_and_relations(tmp_path):
@@ -353,4 +354,73 @@ entities:
             "scope_columns": ["brand", "year"],
             "raw_value_column": "label",
         },
+    ]
+
+
+def test_parse_schema_etl_config_reads_the_sources_section():
+    config = parse_schema_etl_config(
+        """
+tenant_id: muji
+sources:
+  - file: CN_001_SKU_MASTER_121.xls
+    sheet: Master
+    header_row: 6
+    first_data_row: 7
+entities: []
+relations: []
+"""
+    )
+
+    assert config.sources == {
+        "CN_001_SKU_MASTER_121.xls": SourceParseOptions(
+            sheet="Master", header_row=6, first_data_row=7
+        )
+    }
+
+
+def test_parse_schema_etl_config_without_sources_section_yields_no_options():
+    """存量配置没有这一段。缺省解释必须等于"按老行为读"，不做迁移。"""
+    config = parse_schema_etl_config("tenant_id: muji\nentities: []\nrelations: []\n")
+
+    assert config.sources == {}
+
+
+def test_parse_schema_etl_config_rejects_a_sources_entry_without_file():
+    """没有 file 就不知道这份选项管的是哪张表，静默丢掉等于选项没生效。"""
+    with pytest.raises(InvalidSchemaETLConfigError, match="file"):
+        parse_schema_etl_config(
+            "tenant_id: muji\nsources:\n  - header_row: 6\nentities: []\nrelations: []\n"
+        )
+
+
+def test_parse_schema_etl_config_rejects_two_entries_for_the_same_file():
+    """同一个文件两份选项，谁生效取决于 dict 覆盖顺序——那是掷骰子。"""
+    with pytest.raises(InvalidSchemaETLConfigError, match="a.xls"):
+        parse_schema_etl_config(
+            "tenant_id: muji\nsources:\n  - file: a.xls\n    header_row: 2\n"
+            "  - file: a.xls\n    header_row: 3\nentities: []\nrelations: []\n"
+        )
+
+
+def test_parse_schema_etl_config_surfaces_invalid_options_as_config_errors():
+    """用户看到的是一份配置文件，不该收到一个来自内部数据类的异常类型。"""
+    with pytest.raises(InvalidSchemaETLConfigError, match="header_row"):
+        parse_schema_etl_config(
+            "tenant_id: muji\nsources:\n  - file: a.xls\n    header_row: 0\n"
+            "entities: []\nrelations: []\n"
+        )
+
+
+def test_summarize_schema_etl_config_includes_sources():
+    """摘要是表格导入页回填表单的唯一来源。不带解析选项的话，用户重开页面
+    就会看到"表头在第 1 行"，跟他上次存的不一样，而且没有任何提示。"""
+    config = parse_schema_etl_config(
+        "tenant_id: muji\nsources:\n  - file: a.xls\n    sheet: Master\n    header_row: 6\n"
+        "entities: []\nrelations: []\n"
+    )
+
+    summary = summarize_schema_etl_config(config)
+
+    assert summary["sources"] == [
+        {"file": "a.xls", "sheet": "Master", "header_row": 6, "first_data_row": None}
     ]

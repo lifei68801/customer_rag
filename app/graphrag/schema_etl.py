@@ -36,6 +36,7 @@ from app.graphrag.ontology_relations import list_relation_types
 from app.graphrag.ontology_store import open_ontology_store_conn
 from app.graphrag.schema_etl_config import EntityMapping, RelationMapping, SchemaETLConfig, load_schema_etl_config
 from app.graphrag.schema_etl_row_processing import RowProcessingError
+from app.graphrag.source_parse_options import SourceParseOptions
 from app.graphrag.attribute_conflicts import ensure_attribute_conflicts_schema
 from app.graphrag.etl_skipped_rows import (
     SkippedRowRecord,
@@ -178,6 +179,7 @@ async def _write_entity_mapping(
     mapping: EntityMapping,
     data_dir: Path,
     report: ETLRunReport,
+    parse_options: SourceParseOptions | None = None,
 ) -> None:
     term_types = await list_term_types(conn, tenant_id, status="confirmed")
     types_by_value = {t.value: t for t in term_types}
@@ -190,6 +192,7 @@ async def _write_entity_mapping(
     async for projected in project_entity_rows(
         conn, tenant_id=tenant_id, mapping=mapping,
         extra_field_specs=extra_field_specs, data_dir=data_dir,
+        parse_options=parse_options,
     ):
         if isinstance(projected, RowFailure):
             report.entities_skipped += 1
@@ -262,6 +265,7 @@ async def _write_relation_mapping(
     data_dir: Path,
     report: ETLRunReport,
     sweep_by_term_type: dict[str, set[str]],
+    parse_options: SourceParseOptions | None = None,
 ) -> None:
     if mapping.relation_type not in confirmed_relation_types:
         raise RowProcessingError(f"relation_type {mapping.relation_type!r} 不在已确认 schema 里")
@@ -324,6 +328,7 @@ async def _write_relation_mapping(
     async for projected in project_relation_rows(
         conn, tenant_id=tenant_id, mapping=mapping,
         subject_entity=subject_entity, object_entity=object_entity, data_dir=data_dir,
+        parse_options=parse_options,
     ):
         if isinstance(projected, RowFailure):
             report.relations_skipped += 1
@@ -474,6 +479,7 @@ async def run_schema_etl(
                     for f in confirmed_types_by_value[entity_mapping.term_type].extra_fields
                 },
                 data_dir=data_dir,
+                parse_options=config.sources.get(entity_mapping.source_file),
             )
         except RowProcessingError:
             # 文件类型不支持之类的问题，留给写入阶段按老路径记进
@@ -541,6 +547,7 @@ async def run_schema_etl(
                 await _write_entity_mapping(
                     conn=conn, graph_client=graph_client, tenant_id=config.tenant_id,
                     mapping=entity_mapping, data_dir=data_dir, report=report,
+                    parse_options=config.sources.get(entity_mapping.source_file),
                 )
             except RowProcessingError as exc:
                 report.skipped_mappings.append(
@@ -564,6 +571,7 @@ async def run_schema_etl(
                     confirmed_relation_types=confirmed_relation_types,
                     allowed_combinations=allowed_combinations, recorded_at=recorded_at,
                     data_dir=data_dir, report=report, sweep_by_term_type=sweep_by_term_type,
+                    parse_options=config.sources.get(relation_mapping.source_file),
                 )
             except RowProcessingError as exc:
                 report.skipped_mappings.append(

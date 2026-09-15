@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+from app.graphrag.source_parse_options import (
+    InvalidSourceParseOptionsError,
+    SourceParseOptions,
+)
 
 
 class InvalidSchemaETLConfigError(Exception):
@@ -43,6 +48,9 @@ class SchemaETLConfig:
     tenant_id: str
     entities: list[EntityMapping]
     relations: list[RelationMapping]
+    #: 文件名 → 这张表怎么读。没有条目的文件按 SourceParseOptions() 的缺省读。
+    #: 属于 staging 层，不进 entities/relations，也不进本体。
+    sources: dict[str, SourceParseOptions] = field(default_factory=dict)
 
 
 def _parse_node_key_part(raw: dict) -> ColumnNodeKeyPart | AllocatedCodeNodeKeyPart:
@@ -117,6 +125,29 @@ def _parse_relation_mapping(raw: dict) -> RelationMapping:
         ) from e
 
 
+def _parse_sources(raw_list: list) -> dict[str, SourceParseOptions]:
+    sources: dict[str, SourceParseOptions] = {}
+    for raw in raw_list:
+        if not isinstance(raw, dict) or not raw.get("file"):
+            raise InvalidSchemaETLConfigError(
+                f"sources 的每一条都必须有 file（这份选项管的是哪张表），收到: {raw!r}"
+            )
+        file_name = raw["file"]
+        if file_name in sources:
+            # 谁生效取决于 dict 的覆盖顺序，那是掷骰子。
+            raise InvalidSchemaETLConfigError(f"sources 里 {file_name!r} 出现了不止一次")
+        try:
+            sources[file_name] = SourceParseOptions(
+                sheet=raw.get("sheet"),
+                header_row=raw.get("header_row", 1),
+                first_data_row=raw.get("first_data_row"),
+            )
+        except InvalidSourceParseOptionsError as e:
+            # 用户看到的是一份配置文件，不该收到一个来自内部数据类的异常类型。
+            raise InvalidSchemaETLConfigError(f"{file_name} 的解析选项不合法：{e}") from e
+    return sources
+
+
 def parse_schema_etl_config(text: str, *, origin: str = "<yaml>") -> SchemaETLConfig:
     """从 YAML 文本解析。origin 只用于报错里指出这段 YAML 来自哪儿。"""
     data = yaml.safe_load(text)
@@ -126,6 +157,7 @@ def parse_schema_etl_config(text: str, *, origin: str = "<yaml>") -> SchemaETLCo
         tenant_id=data["tenant_id"],
         entities=[_parse_entity_mapping(raw) for raw in data.get("entities") or []],
         relations=[_parse_relation_mapping(raw) for raw in data.get("relations") or []],
+        sources=_parse_sources(data.get("sources") or []),
     )
 
 
@@ -145,6 +177,11 @@ def summarize_schema_etl_config(config: SchemaETLConfig) -> dict:
       表格导入页要把存好的映射填回可编辑的表单里，只有 key_columns 的话，
       "按「X」分配编号"这句中文再也解析不回一条规则——用户一打开编辑器，
       那条键就会被悄悄降级成一个叫这句中文的普通列。
+
+    ``sources`` 是 staging 层的解析选项（这张表怎么读），跟 entities/relations
+    （读出来的列怎么映射到本体）是两回事。摘要必须带上它——表格导入页靠摘要
+    回填表单，不带的话用户重开页面会看到"表头在第 1 行"，跟他上次存的不一样，
+    而且没有任何提示。
     """
     entities = []
     for e in config.entities:
@@ -182,7 +219,16 @@ def summarize_schema_etl_config(config: SchemaETLConfig) -> dict:
         }
         for r in config.relations
     ]
-    return {"entities": entities, "relations": relations}
+    sources = [
+        {
+            "file": file_name,
+            "sheet": opts.sheet,
+            "header_row": opts.header_row,
+            "first_data_row": opts.first_data_row,
+        }
+        for file_name, opts in config.sources.items()
+    ]
+    return {"entities": entities, "relations": relations, "sources": sources}
 
 
 def load_schema_etl_config(path: Path) -> SchemaETLConfig:
