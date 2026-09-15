@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import json as _json
 from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
 
-from app.graphrag.etl_staging import read_table_rows
+from app.graphrag.etl_staging import deduplicate_header, read_table_rows
 from app.graphrag.schema_etl_row_processing import RowProcessingError
 from app.graphrag.source_parse_options import (
     InvalidSourceParseOptionsError,
     SourceParseOptions,
 )
+
+_DEDUP_CASES_PATH = Path(__file__).resolve().parents[2] / "fixtures" / "header-dedup-cases.json"
+
+
+def _load_dedup_cases() -> list[dict]:
+    return _json.loads(_DEDUP_CASES_PATH.read_text(encoding="utf-8"))["cases"]
 
 
 def _write_xls(path: Path, rows: list[list[object]]) -> None:
@@ -375,3 +382,14 @@ def test_source_parse_options_rejects_header_row_below_one():
 def test_source_parse_options_rejects_first_data_row_not_after_header():
     with pytest.raises(InvalidSourceParseOptionsError, match="first_data_row"):
         SourceParseOptions(header_row=3, first_data_row=3)
+
+
+@pytest.mark.parametrize("case", _load_dedup_cases(), ids=lambda c: c["name"])
+def test_deduplicate_header_matches_the_shared_cases(case: dict):
+    assert deduplicate_header(case["input"]) == case["expected"]
+
+
+def test_shared_dedup_case_file_is_not_silently_empty():
+    """fixture 少了几条或者被清空，两边都会"全绿"——而全绿的原因是没跑用例。
+    这条断言是对那种静默失效的唯一防线。"""
+    assert len(_load_dedup_cases()) >= 8

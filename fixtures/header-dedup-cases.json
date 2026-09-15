@@ -1,0 +1,13 @@
+{
+  "_comment": "重名列去重规则的共享判据。后端 tests/graphrag/test_etl_staging.py 和前端 frontend/src/admin/schemaEtlConfigBuilder/headerDedupCases.test.ts 各读一遍，跑同一组用例。语言不同没法共享代码，但可以共享判据——这是唯一能真正防住两边规则分叉的手段。改这个文件等于同时改两边的契约。",
+  "cases": [
+    {"name": "没有重名时一个后缀都不加", "input": ["Color", "Size"], "expected": ["Color", "Size"]},
+    {"name": "两列同名", "input": ["Color", "Color"], "expected": ["Color", "Color (2)"]},
+    {"name": "三列同名按出现顺序递增", "input": ["Depth", "Depth", "Depth"], "expected": ["Depth", "Depth (2)", "Depth (3)"]},
+    {"name": "表头里本来就有带后缀的名字", "input": ["Color", "Color (2)", "Color"], "expected": ["Color", "Color (2)", "Color (3)"]},
+    {"name": "空列名彼此也算重名", "input": ["name", "", ""], "expected": ["name", "", " (2)"]},
+    {"name": "全空表头", "input": ["", "", ""], "expected": ["", " (2)", " (3)"]},
+    {"name": "重名不相邻", "input": ["a", "b", "a"], "expected": ["a", "b", "a (2)"]},
+    {"name": "空表头列表", "input": [], "expected": []}
+  ]
+}
