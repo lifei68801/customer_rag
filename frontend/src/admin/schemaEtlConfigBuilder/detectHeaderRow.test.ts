@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { detectHeaderRow } from './detectHeaderRow'
 
+/**
+ * 造一行宽度为 width、前 filled 个格子非空的行。detectHeaderRow 只统计非空
+ * 格子数，不关心哪一列非空，所以这样构造跟真实文件里非空格子散落各处是等
+ * 价的——但能精确还原任意非空比例，不用手敲上百个字符串字面量。
+ */
+function makeRow(filled: number, width: number): string[] {
+  return Array.from({ length: width }, (_, i) => (i < filled ? 'v' : ''))
+}
+
 describe('detectHeaderRow', () => {
   it('普通的表：第一行就是表头', () => {
     const rows = [
@@ -13,38 +22,40 @@ describe('detectHeaderRow', () => {
   })
 
   it('MUJI 的形状：合并标题带在第一行，真表头在下面', () => {
-    // 形状照真实文件的比例还原（20 列，按 113 列等比例缩小），不能简化成
-    // "表头行满、别的行空"——真实文件里第 3(英文名)、4(日文名)、5(说明行)、
-    // 6(系统代码，真表头) 行都相当满，表头能赢，赢在它后面连续跟着更多整
-    // 行都满的数据行，而不是单看某一行的非空格数。
+    // 这组非空格子数是从真实文件（CN_001_SKU_MASTER_121.xls，Master 工作表，
+    // 113 列）里数出来的第 1~7 行，不是估的。用 makeRow 按原比例（113 列）
+    // 还原，不缩放——缩放会让 107 跟 108 这种相近的数字被四舍五入到同一个
+    // 值，丢失真实的落差。
+    //   第 1 行：5   —— 合并标题带
+    //   第 2 行：8   —— 几乎全空
+    //   第 3 行：107 —— 英文列名
+    //   第 4 行：92  —— 日文列名
+    //   第 5 行：105 —— Character Limit 说明行
+    //   第 6 行：108 —— 系统代码列名，真表头
+    //   第 7 行起：72（各行一致）—— 数据
+    const WIDTH = 113
     const rows = [
-      // 第 1 行：合并标题带，113 列里只有约 6 个非空——这里等比例缩到 1/20
-      ['', '', 'Product Information', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
-      // 第 2 行：全空
-      ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
-      // 第 3 行：英文列名，约 110/113 非空
-      ['', 'update', 'Continue', 'RKJ Division', 'Dept', 'Class', 'Sub Class', 'Style', 'Color', 'Size', 'Season', 'Brand', 'Origin', 'Price', 'Cost', 'Weight', 'Material', 'Supplier', 'Status', 'Notes'],
-      // 第 4 行：日文列名，约 100/113 非空
-      ['', '', '新規継続区分', '部門', 'デパ', 'クラス', 'サブクラス', 'スタイル', 'カラー', 'サイズ', 'シーズン', 'ブランド', '原産国', '価格', '原価', '重量', '素材', 'サプライヤー', 'ステータス', ''],
-      // 第 5 行：Character Limit 说明行，相当满
-      ['Character Limit', 'Please enter *, if you ...', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', ''],
-      // 第 6 行：系统代码列名，113/113 全满——真表头
-      ['nr', 'update_flag', 'continue_discontinue', 'sel_div', 'sel_depa', 'sel_class', 'sel_subclass', 'style_no', 'color_cd', 'size_cd', 'season_cd', 'brand_cd', 'origin_cd', 'price_amt', 'cost_amt', 'weight_kg', 'material_cd', 'supplier_cd', 'status_cd', 'notes_txt'],
-      // 第 7 行起：数据，基本全满（个别可选字段留空，跟真实数据一样）
-      ['1', 'Y', '5:Sales End', '1', '11', '2', 'A1', 'ST001', 'RED', 'M', 'SS24', 'BR1', 'CN', '100', '50', '0.2', 'COTTON', 'SUP1', '', ''],
-      ['2', 'Y', '5:Sales End', '1', '11', '2', 'A1', 'ST002', 'BLK', 'S', 'SS24', 'BR1', 'CN', '100', '50', '0.2', 'COTTON', 'SUP1', '', ''],
-      ['3', 'Y', '5:Sales End', '1', '11', '2', 'A1', 'ST003', 'NAT', 'L', 'SS24', 'BR1', 'CN', '100', '50', '0.2', 'COTTON', 'SUP1', '', ''],
-      ['4', 'Y', '5:Sales End', '1', '11', '2', 'A1', 'ST004', 'RED', 'XL', 'SS24', 'BR1', 'CN', '100', '50', '0.2', 'COTTON', 'SUP1', '', ''],
-      ['5', 'Y', '5:Sales End', '1', '11', '2', 'A1', 'ST005', 'BLK', 'M', 'SS24', 'BR1', 'CN', '100', '50', '0.2', 'COTTON', 'SUP1', '', ''],
-      ['6', 'Y', '5:Sales End', '1', '11', '2', 'A1', 'ST006', 'NAT', 'S', 'SS24', 'BR1', 'CN', '100', '50', '0.2', 'COTTON', 'SUP1', '', ''],
+      makeRow(5, WIDTH),
+      makeRow(8, WIDTH),
+      makeRow(107, WIDTH),
+      makeRow(92, WIDTH),
+      makeRow(105, WIDTH),
+      makeRow(108, WIDTH),
+      makeRow(72, WIDTH),
+      makeRow(72, WIDTH),
+      makeRow(72, WIDTH),
+      makeRow(72, WIDTH),
+      makeRow(72, WIDTH),
+      makeRow(72, WIDTH),
     ]
 
     expect(detectHeaderRow(rows)).toBe(6)
   })
 
   it('顶上的说明块比真表头还满，但它下面没有数据', () => {
-    // 这条用例是"乘上其后几行非空率"那一项存在的唯一理由。只按非空单元格
-    // 数打分的话，这里会选中第 1 行——而第 1 行是一段说明文字，不是表头。
+    // 这条用例锁住"自己非空"这个前提：第 1 行本身非空格子最多，但它跟表头
+    // 之间隔着全空行，往下看不稳定（落差 1.0），会被跳过；表头下面是连续
+    // 同密度的数据（落差 0），才会被选中。
     const rows = [
       ['注意', '本表仅供内部使用', '如有疑问请联系', '数据部', '2026'],
       ['', '', '', '', ''],
@@ -62,6 +73,33 @@ describe('detectHeaderRow', () => {
     expect(detectHeaderRow(rows)).toBe(6)
   })
 
+  it('数据本身比表头更满，依然认表头', () => {
+    // 反例：表头有空列名（第三列没填），数据行反而每列都填了。按"谁更满"
+    // 打分会被数据行反超；detectHeaderRow 用"从上往下，第一个满足条件就是
+    // 表头"，一开始就锁定表头，不会因为后面的数据行更满就被抢走。
+    const rows = [
+      ['a', 'b', ''],
+      ['1', '2', '3'],
+      ['4', '5', '6'],
+      ['7', '8', '9'],
+    ]
+
+    expect(detectHeaderRow(rows)).toBe(1)
+  })
+
+  it('候选行后面没有行可验证稳不稳定时，保守回退第一行', () => {
+    // 表格很短，唯一看起来像表头的一整行（第 3 行）恰好是全表最后一行，
+    // 没有后续行能验证"下面是不是稳定的数据"。这时不该因为"没有反例"就
+    // 顺水推舟认下它——保守回退到第一行，交给用户自己确认。
+    const rows = [
+      ['a', 'b', 'c'],
+      ['', '', ''],
+      ['e', 'f', 'g'],
+    ]
+
+    expect(detectHeaderRow(rows)).toBe(1)
+  })
+
   it('只有一行时返回第一行', () => {
     expect(detectHeaderRow([['a', 'b']])).toBe(1)
   })
@@ -71,7 +109,8 @@ describe('detectHeaderRow', () => {
   })
 
   it('并列时取最靠上的一行', () => {
-    // 靠上的那一行更可能是表头：表头之后才是数据，数据行长得跟表头一样满。
+    // 第 2 行自己往下看（只剩第 3 行）也符合"稳定"条件，但 detectHeaderRow
+    // 从上往下扫，第一个满足条件的是第 1 行，直接返回，不会继续找"更好"的。
     const rows = [
       ['a', 'b'],
       ['1', '2'],
