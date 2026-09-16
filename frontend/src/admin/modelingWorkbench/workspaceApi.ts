@@ -12,7 +12,14 @@ import type {
  * 保存时撞上"期间有别人存过"。单独一个类型，因为页面对它的处置跟别的错误
  * 不一样：这个要提示刷新后重做，别的要提示重试。
  */
-export class WorkspaceConflictError extends Error {}
+export class WorkspaceConflictError extends Error {
+  constructor(message: string) {
+    super(message)
+    // 显式设置 name：继承 Error 后默认 name 仍是 'Error'，日志打印和按
+    // name 做的判断（而不是 instanceof）都会把它当成普通 Error 漏判。
+    this.name = 'WorkspaceConflictError'
+  }
+}
 
 function base(tenantId: string): string {
   return `/api/admin/ontology/${encodeURIComponent(tenantId)}/modeling-workspace`

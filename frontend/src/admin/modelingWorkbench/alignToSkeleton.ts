@@ -42,6 +42,14 @@ export function alignTable(table: ScannedTable, termTypes: WorkspaceTermType[]):
   const used = new Set<string>()
   const matches: TableMatch[] = []
 
+  // 两遍扫描，不是一遍：字段匹配要排除**所有**实体的键列，不能只排除自己
+  // 的。一遍扫描时后面的实体做字段匹配那一刻，还不知道排在它后面的实体
+  // 会认哪一列做键列，于是实体 A 的字段别名可能抢先认领了实体 B 将来的
+  // 键列——谁抢到谁没抢到，取决于 termTypes 的遍历顺序，是纯粹的巧合。
+  // 第一遍只认键列，把全部键列收集齐；第二遍做字段匹配时才有完整的排除
+  // 集合可用。
+  const keyMatchOf = new Map<string, { column: string; matchedBy: string }>()
+  const allKeyColumns = new Set<string>()
   for (const term of termTypes) {
     if (term.review === 'rejected') continue
     let keyColumn: string | null = null
@@ -55,11 +63,19 @@ export function alignTable(table: ScannedTable, termTypes: WorkspaceTermType[]):
       }
     }
     if (keyColumn === null) continue
+    keyMatchOf.set(term.value, { column: keyColumn, matchedBy })
+    allKeyColumns.add(keyColumn)
+  }
+
+  for (const term of termTypes) {
+    const keyMatch = keyMatchOf.get(term.value)
+    if (!keyMatch) continue
+    const { column: keyColumn, matchedBy } = keyMatch
     const fieldColumns: Record<string, string> = {}
     for (const [fieldName, aliases] of Object.entries(term.field_aliases)) {
       for (const alias of aliases) {
         const hit = columns.find(
-          (name) => name !== keyColumn && normalizeAlias(name) === normalizeAlias(alias),
+          (name) => !allKeyColumns.has(name) && normalizeAlias(name) === normalizeAlias(alias),
         )
         if (hit !== undefined) {
           fieldColumns[fieldName] = hit

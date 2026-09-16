@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   WorkspaceConflictError,
   createWorkspace,
+  deleteWorkspace,
   exportSkill,
+  fetchGrounding,
   fetchSkills,
   fetchWorkspace,
   previewApply,
@@ -120,6 +122,27 @@ describe('workspaceApi', () => {
     })
     expect(diff.added_term_types).toEqual(['SKU'])
     expect(JSON.parse(String(calls[0].init?.body)).term_types[0].value).toBe('SKU')
+  })
+
+  it('删除工作区发 DELETE 到工作区路径', async () => {
+    stubFetch(() => json({}))
+    await deleteWorkspace('t1', 'tok')
+    expect(calls[0].url).toContain('/api/admin/ontology/t1/modeling-workspace')
+    expect(calls[0].init?.method).toBe('DELETE')
+  })
+
+  it('读落地状态走 /grounding，原样返回扁平对象', async () => {
+    const body = {
+      status: 'confirmed',
+      grounded_term_types: ['SKU'],
+      grounded_relation_types: [],
+      source_files: ['sku.csv'],
+      parse_error: null,
+    }
+    stubFetch(() => json(body))
+    const grounding = await fetchGrounding('t1', 'tok')
+    expect(calls[0].url).toContain('/api/admin/ontology/t1/modeling-workspace/grounding')
+    expect(grounding).toEqual(body)
   })
 
   it('导出返回 YAML 文本', async () => {

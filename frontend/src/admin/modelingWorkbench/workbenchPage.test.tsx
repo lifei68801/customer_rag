@@ -20,6 +20,9 @@ const saved: unknown[] = []
 // 只给"点两下按钮之间要不要禁用"这类测试用：PUT 的响应故意拖一拖，好在
 // 它还没回来的那个窗口里断言按钮状态。
 let putDelayMs = 0
+// 只给"apply-preview 只有某一类删除项"这类测试用：固定夹具三类删除项总是
+// 一起给，没法单独验证"只有 removed_constraints 非空"这种边界也会触发确认框。
+let applyPreviewOnlyRemovedConstraints = false
 
 const SKILLS = [
   {
@@ -120,6 +123,17 @@ function stubApi() {
         })
       }
       if (url.includes('/modeling-workspace/apply-preview')) {
+        if (applyPreviewOnlyRemovedConstraints) {
+          return json({
+            added_term_types: [],
+            removed_term_types: [],
+            changed_term_types: [],
+            added_relation_types: [],
+            removed_relation_types: [],
+            added_constraints: [],
+            removed_constraints: ['SKU-SOLD_AT-SKU'],
+          })
+        }
         return json({
           added_term_types: ['SKU'],
           removed_term_types: ['手工加的'],
@@ -159,6 +173,7 @@ beforeEach(() => {
   workspace = null
   saved.length = 0
   putDelayMs = 0
+  applyPreviewOnlyRemovedConstraints = false
   resetAdminSession()
   sessionStorage.clear()
   localStorage.clear()
@@ -333,6 +348,19 @@ describe('建模工作台', () => {
     await waitFor(() => expect(saved).toHaveLength(1))
   })
 
+  it('保存还没落地之前，点了「拒绝 SKU」也会让「接受 SKU」按钮禁用', async () => {
+    // 跟上一条对称：不管先点的是接受还是拒绝，PUT 没回来之前两个按钮都
+    // 得一起禁用，不然另一个按钮还能点，带着同一份旧 updated_at 发第二个
+    // PUT，后端必然 409。
+    signedInRole = 'member'
+    workspace = workspaceWith('pending')
+    putDelayMs = 50
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: '拒绝 SKU' }))
+    expect(await screen.findByRole('button', { name: '接受 SKU' })).toBeDisabled()
+    await waitFor(() => expect(saved).toHaveLength(1))
+  })
+
   it('跳过「看看会改什么」直接点「写入草稿」也会先算差异、弹确认框', async () => {
     signedInRole = 'member'
     workspace = workspaceWith('accepted')
@@ -341,6 +369,25 @@ describe('建模工作台', () => {
     // 故意不点「看看会改什么」：diff 这时还是 null，红框也没出现过。
     await userEvent.click(await screen.findByRole('button', { name: /写入草稿/ }))
     // 确认框必须出现——不能因为没点过预览，删除项就悄悄绕过这层拦截。
+    const confirmButton = await screen.findByRole('button', { name: '继续写入' })
+    const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+    expect(calls.some(([url]) => String(url).includes('/draft/replace'))).toBe(false)
+    await userEvent.click(confirmButton)
+    await waitFor(() => {
+      expect(calls.some(([url]) => String(url).includes('/draft/replace'))).toBe(true)
+    })
+  })
+
+  it('apply-preview 只有 removed_constraints 非空时，点「写入草稿」也会弹确认框', async () => {
+    // 三类删除项（term/relation/constraint）里只有约束这一类非空也要拦，
+    // 不能因为看的是 removed.length（三个数组拼起来）就漏掉只有其中一类
+    // 有内容的情况。
+    signedInRole = 'member'
+    workspace = workspaceWith('accepted')
+    applyPreviewOnlyRemovedConstraints = true
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: /^应用$/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /写入草稿/ }))
     const confirmButton = await screen.findByRole('button', { name: '继续写入' })
     const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
     expect(calls.some(([url]) => String(url).includes('/draft/replace'))).toBe(false)

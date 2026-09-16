@@ -150,6 +150,13 @@ export function ModelingWorkbenchPage() {
 
   const handleRename = (from: string, to: string) => {
     if (!workspace) return
+    // renameTermType 原样返回同一个 state 有三种原因：空名、重名、名字没变。
+    // 单独判断"名字没变"，不然它会跟"重名"共用同一句提示，让用户误以为
+    // 自己打错字重复了，其实只是没改。
+    if (to.trim() === from) {
+      setError('名字没变。')
+      return
+    }
     const next = renameTermType(workspace.state, from, to)
     if (next === workspace.state) {
       setError(`改名没生效：新名字不能为空，也不能跟已有的实体类型重名（${to}）。`)

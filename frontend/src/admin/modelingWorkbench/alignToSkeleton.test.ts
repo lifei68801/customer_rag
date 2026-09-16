@@ -101,6 +101,22 @@ describe('alignTable', () => {
     }
     expect(alignTable(table, [SKU]).unmatchedColumns).toEqual([])
   })
+
+  it('A 的字段别名撞上 B 的键列时，那一列归 B 的键列，不被 A 认领做字段', () => {
+    // SKU 的字段别名 warehouse 恰好写成了 store_cd——跟 Store 的键列别名
+    // 同名。字段匹配要排除全部实体的键列（不只是 SKU 自己的键列 JAN），
+    // 不然 SKU 会抢先把这一列认领成自己的字段，Store 的键列反而对不上。
+    const skuWithClashingFieldAlias = term('SKU', ['jan'], { warehouse: ['store_cd'] })
+    const table: ScannedTable = {
+      file: 'x.csv',
+      roled: [column('JAN', 'identifier'), column('store_cd', 'identifier')],
+    }
+    const alignment = alignTable(table, [skuWithClashingFieldAlias, STORE])
+    const sku = alignment.matches.find((m) => m.termValue === 'SKU')
+    const store = alignment.matches.find((m) => m.termValue === 'Store')
+    expect(store?.keyColumns).toEqual(['store_cd'])
+    expect(sku?.fieldColumns).toEqual({})
+  })
 })
 
 describe('proposeCrossTableRelations', () => {

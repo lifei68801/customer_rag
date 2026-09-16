@@ -1,5 +1,5 @@
-// 跟 GuidedOntologyPage 用的是同一组类名——工作台替换的是那一页，样式不该
-// 在替换过程中发生无关的变化。
+// 沿用的是已下线的单表引导建模页那一套类名——建模工作台接替它时，样式
+// 没有跟着一起换。
 export const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
 
