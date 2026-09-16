@@ -49,8 +49,8 @@ describe('assignColumnAsKey', () => {
       field_columns: {},
       matched_by: 'manual',
     })
-    // 别名追加不覆盖：下次同一客户的表能自动命中，原有的 jan 也还在
-    expect(sku.key_aliases).toEqual(['jan', '商品コード'])
+    // 手动指的别名放最前：下次重扫时它先命中，不会被旧别名 jan 抢先翻回去
+    expect(sku.key_aliases).toEqual(['商品コード', 'jan'])
     expect(next.unmatched_columns['sku.xls']).toEqual(['売価', '色'])
   })
 

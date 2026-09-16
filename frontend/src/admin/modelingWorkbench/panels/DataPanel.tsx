@@ -4,7 +4,7 @@ import { scanTableFile } from '../../guidedOntology/columnStats'
 import { buildProposal, initialDecision } from '../../guidedOntology/draftProposal'
 import { draftFromOptions, optionsFromDraft, type ParseDraft } from '../../schemaEtlConfigBuilder/parseSettingsDraft'
 import { listSheetNames } from '../../schemaEtlConfigBuilder/sourceParser'
-import { alignTable, mergeAlignments, type ScannedTable } from '../alignToSkeleton'
+import { PROMOTABLE_ROLES, alignTable, mergeAlignments, type ScannedTable } from '../alignToSkeleton'
 import { proposalToWorkspace } from '../blankStart'
 import { columnsOf, parseOptionsOf } from '../types'
 import type { WorkspaceState } from '../types'
@@ -199,19 +199,25 @@ export function DataPanel(props: {
                 const info = columnInfo(props.state, fileName, column)
                 const draftKey = `${fileName}::${column}`
                 const candidates = props.state.term_types.filter((t) => t.review !== 'rejected')
+                // info 缺失是 v1 旧工作区（扫描时还没存列角色）：角色未知，不擅自
+                // 隐藏任何选项。info 存在时才按角色决定——度量/文本/日期列提升成
+                // 实体类型没有意义（会给每个金额建一个节点），当键列同理。
+                const canPromote = !info || PROMOTABLE_ROLES.has(info.role)
                 return (
                   <div key={column} className="flex flex-wrap items-center gap-2">
                     <span className="font-mono text-sm font-semibold text-ink">{column}</span>
                     {info && <span className={tagClass}>{ROLE_LABEL[info.role] ?? info.role}</span>}
                     {info && <span className="text-xs text-ink-soft">{info.reason}</span>}
-                    <button
-                      type="button"
-                      className={secondaryButtonClass}
-                      disabled={props.busy}
-                      onClick={() => props.onPromote(fileName, column)}
-                    >
-                      {`把 ${column} 提升为实体类型`}
-                    </button>
+                    {canPromote && (
+                      <button
+                        type="button"
+                        className={secondaryButtonClass}
+                        disabled={props.busy}
+                        onClick={() => props.onPromote(fileName, column)}
+                      >
+                        {`把 ${column} 提升为实体类型`}
+                      </button>
+                    )}
                     <label className="sr-only" htmlFor={`assign-${draftKey}`}>
                       {`把 ${column} 指给`}
                     </label>
@@ -224,7 +230,9 @@ export function DataPanel(props: {
                       <option value="">指给…</option>
                       {candidates.map((t) => (
                         <optgroup key={t.value} label={t.value}>
-                          <option value={`${t.value}:key`}>{`改为用 ${column} 当 ${t.value} 的键列`}</option>
+                          {canPromote && (
+                            <option value={`${t.value}:key`}>{`改为用 ${column} 当 ${t.value} 的键列`}</option>
+                          )}
                           <option value={`${t.value}:field`}>{`当 ${t.value} 的字段`}</option>
                         </optgroup>
                       ))}
@@ -234,13 +242,17 @@ export function DataPanel(props: {
                       className={secondaryButtonClass}
                       disabled={props.busy || !assignDraft[draftKey]}
                       onClick={() => {
-                        const [termValue, as] = (assignDraft[draftKey] ?? '').split(':')
+                        // 用最后一个冒号拆分：实体名是自由文本，含冒号时从头拆会拆错。
+                        const raw = assignDraft[draftKey] ?? ''
+                        const i = raw.lastIndexOf(':')
+                        const termValue = i < 0 ? '' : raw.slice(0, i)
+                        const as = i < 0 ? '' : raw.slice(i + 1)
                         if (!termValue || (as !== 'key' && as !== 'field')) return
                         props.onAssign(fileName, column, termValue, as)
                         setAssignDraft({ ...assignDraft, [draftKey]: '' })
                       }}
                     >
-                      {`指给 ${column}`}
+                      {`把 ${column} 指过去`}
                     </button>
                   </div>
                 )

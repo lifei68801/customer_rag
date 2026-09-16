@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { alignTable, mergeAlignments, proposeCrossTableRelations } from './alignToSkeleton'
+import { PROMOTABLE_ROLES, alignTable, mergeAlignments, proposeCrossTableRelations } from './alignToSkeleton'
 import type { ScannedTable } from './alignToSkeleton'
+import { assignColumnAsKey } from './columnAssign'
 import type { WorkspaceState, WorkspaceTermType } from './types'
 import type { ColumnRole, RoledColumn } from '../guidedOntology/types'
 
@@ -79,7 +80,7 @@ describe('alignTable', () => {
     expect(alignTable(table, [rejected]).matches).toEqual([])
   })
 
-  it('没接住的列只收 identifier 和 dimension', () => {
+  it('所有没接住的列都进 unmatchedColumns', () => {
     const table: ScannedTable = {
       file: 'x.csv',
       roled: [
@@ -90,8 +91,19 @@ describe('alignTable', () => {
         column('创建日期', 'date'),
       ],
     }
-    // 度量/自由文本/日期提升成实体类型没有意义：会给每个金额建一个节点
-    expect(alignTable(table, [SKU]).unmatchedColumns).toEqual(['md_no', 'brand'])
+    // 度量/自由文本/日期命不中骨架时也要能在数据面板里看见、手动指给某个
+    // 实体当字段；能不能提升成实体类型是 PROMOTABLE_ROLES 管的另一件事。
+    expect(alignTable(table, [SKU]).unmatchedColumns).toEqual([
+      'md_no',
+      'brand',
+      'revenue',
+      '备注',
+      '创建日期',
+    ])
+  })
+
+  it('PROMOTABLE_ROLES 只有 identifier 和 dimension 能提升为实体类型', () => {
+    expect(PROMOTABLE_ROLES).toEqual(new Set(['identifier', 'dimension']))
   })
 
   it('已被某个实体当属性用掉的列不算没接住', () => {
@@ -100,6 +112,24 @@ describe('alignTable', () => {
       roled: [column('JAN', 'identifier'), column('现地语色', 'dimension')],
     }
     expect(alignTable(table, [SKU]).unmatchedColumns).toEqual([])
+  })
+
+  it('手动指键把别名塞到最前面后，重扫命中新别名而不是被旧别名翻回去', () => {
+    // 集成验证 F1：columnAssign.assignColumnAsKey 手动指列后把别名放最前，
+    // alignTable 重扫时才会先命中这个别名——不然旧别名 jan 会抢先命中 JAN
+    // 列，把这次手动纠正的 data_match 静默翻回去。
+    const skuJanOnly = term('SKU', ['jan'])
+    const manuallyAssigned = assignColumnAsKey(emptyState([skuJanOnly]), 'sku.xls', '商品コード', 'SKU')
+    const sku = manuallyAssigned.term_types[0]
+    expect(sku.key_aliases).toEqual(['商品コード', 'jan'])
+
+    const table: ScannedTable = {
+      file: 'sku.xls',
+      roled: [column('JAN', 'identifier'), column('商品コード', 'identifier')],
+    }
+    const alignment = alignTable(table, [sku])
+    expect(alignment.matches[0].keyColumns).toEqual(['商品コード'])
+    expect(alignment.matches[0].matchedBy).toBe('alias:商品コード')
   })
 
   it('A 的字段别名撞上 B 的键列时，那一列归 B 的键列，不被 A 认领做字段', () => {

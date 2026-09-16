@@ -30,8 +30,8 @@ function removeUnmatched(state: WorkspaceState, file: string, column: string): R
   }
 }
 
-function appendUnique(list: string[], item: string): string[] {
-  return list.includes(item) ? list : [...list, item]
+function moveToFront(list: string[], item: string): string[] {
+  return [item, ...list.filter((a) => a !== item)]
 }
 
 /**
@@ -51,7 +51,11 @@ export function assignColumnAsKey(
   return {
     ...replaceTerm(state, termValue, (t) => ({
       ...t,
-      key_aliases: appendUnique(t.key_aliases, column),
+      // 手动指的别名放最前，不是追加在末尾：alignTable 按 key_aliases 顺序
+      // 取第一个命中的别名，追加在末尾会让旧别名（比如碰巧先命中另一列的
+      // jan）在下次重扫时抢先命中，把这次手动纠正的 data_match 静默翻回去，
+      // 直接违背"指完一次，下次自动命中"。
+      key_aliases: moveToFront(t.key_aliases, column),
       data_match: {
         source_file: file,
         key_columns: [column],

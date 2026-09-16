@@ -26,8 +26,12 @@ export interface TableAlignment {
   unmatchedColumns: string[]
 }
 
-/** 能被提升成实体类型的列角色。度量/自由文本/日期提上来会给每个金额建一个节点。 */
-const PROMOTABLE_ROLES = new Set(['identifier', 'dimension'])
+/**
+ * 哪些角色能提升为实体类型。度量/自由文本/日期提上来会给每个金额建一个
+ * 节点——export 给 DataPanel 用，那边按这个集合决定要不要显示"提升为实体
+ * 类型"按钮。
+ */
+export const PROMOTABLE_ROLES = new Set(['identifier', 'dimension'])
 
 /**
  * 把一张表的列对齐到骨架。
@@ -38,7 +42,6 @@ const PROMOTABLE_ROLES = new Set(['identifier', 'dimension'])
  */
 export function alignTable(table: ScannedTable, termTypes: WorkspaceTermType[]): TableAlignment {
   const columns = table.roled.map((c) => c.stats.name)
-  const roleOf = new Map(table.roled.map((c) => [c.stats.name, c.role]))
   const used = new Set<string>()
   const matches: TableMatch[] = []
 
@@ -91,9 +94,10 @@ export function alignTable(table: ScannedTable, termTypes: WorkspaceTermType[]):
   return {
     file: table.file,
     matches,
-    unmatchedColumns: columns.filter(
-      (name) => !used.has(name) && PROMOTABLE_ROLES.has(roleOf.get(name) ?? ''),
-    ),
+    // 未被任何实体用作键/字段的列全数返回，不按角色过滤：度量/文本/日期列
+    // 命不中骨架时也要能在数据面板里看见并手动指给某个实体当字段（能不能
+    // 提升为实体类型是 PROMOTABLE_ROLES 管的事，跟"要不要展示"是两回事）。
+    unmatchedColumns: columns.filter((name) => !used.has(name)),
   }
 }
 

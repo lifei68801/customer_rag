@@ -505,13 +505,36 @@ describe('建模工作台', () => {
     expect(screen.getByText('标识')).toBeInTheDocument()
   })
 
+  it('度量列不显示提升为实体类型按钮，指给下拉也不给键列选项；标识列两者都有', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWithUnmatched()
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: '数据' }))
+    await screen.findByText('売価')
+
+    // 売价是 measure：提升为实体类型没有意义（会给每个金额建一个节点），
+    // 当键列同理——两个入口都不该出现。
+    expect(screen.queryByRole('button', { name: '把 売価 提升为实体类型' })).not.toBeInTheDocument()
+    const priceSelect = screen.getByLabelText('把 売価 指给') as HTMLSelectElement
+    const priceValues = Array.from(priceSelect.querySelectorAll('option')).map((o) => o.value)
+    expect(priceValues).not.toContain('SKU:key')
+    expect(priceValues).toContain('SKU:field')
+
+    // 商品コード是 identifier：两个入口都该在。
+    expect(screen.getByRole('button', { name: '把 商品コード 提升为实体类型' })).toBeInTheDocument()
+    const codeSelect = screen.getByLabelText('把 商品コード 指给') as HTMLSelectElement
+    const codeValues = Array.from(codeSelect.querySelectorAll('option')).map((o) => o.value)
+    expect(codeValues).toContain('SKU:key')
+    expect(codeValues).toContain('SKU:field')
+  })
+
   it('把一列指给 SKU 当键列后整份存回，别名跟着写进去', async () => {
     signedInRole = 'member'
     workspace = workspaceWithUnmatched()
     renderWorkbench()
     await userEvent.click(await screen.findByRole('button', { name: '数据' }))
     await userEvent.selectOptions(await screen.findByLabelText('把 商品コード 指给'), 'SKU:key')
-    await userEvent.click(screen.getByRole('button', { name: '指给 商品コード' }))
+    await userEvent.click(screen.getByRole('button', { name: '把 商品コード 指过去' }))
     await waitFor(() => expect(saved).toHaveLength(1))
     const body = saved[0] as {
       state: { term_types: { value: string; key_aliases: string[]; data_match: { key_columns: string[]; matched_by: string } | null }[]; unmatched_columns: Record<string, string[]> }
