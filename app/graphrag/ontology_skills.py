@@ -46,14 +46,17 @@ _ALIAS_SEPARATORS = re.compile(r"[\s_\-]+")
 
 
 def normalize_alias(text: str) -> str:
-    """别名/列名归一化：去掉空白、下划线、连字符，再 casefold。
+    """别名/列名归一化：去掉空白、下划线、连字符，再 lower()。
+
+    用 lower() 不用 casefold()：前端 aliases.ts 是 toLowerCase()，casefold 会把
+    德语 ß 折成 ss 之类，两边对同一个列名会算出不同结果。
 
     对齐规则要求归一化后**精确相等**，所以这里只做无损的大小写与分隔符折叠，
     不做同义词、不做前缀匹配——猜错列会把错误数据写进图谱，比让用户手动指
     一下列贵得多。前端 modelingWorkbench/aliases.ts 有同一条规则的 TS 版本，
     两边任何一边改动都必须同步，否则前端认为对上的列后端算出来是没对上。
     """
-    return _ALIAS_SEPARATORS.sub("", text).casefold()
+    return _ALIAS_SEPARATORS.sub("", text).lower()
 
 
 @dataclass(frozen=True)

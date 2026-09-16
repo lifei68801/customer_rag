@@ -142,6 +142,9 @@ def initial_state_from_skill(skill: OntologySkill | None) -> dict:
             }
             for r in skill.relation_types
         ],
+        # 约束不单独审阅：它进不进草稿由它引用的主语/宾语/关系三个元素的审阅
+        # 决定（前端 projectToDraft 按这条规则过滤）。这里的 pending 只是占位，
+        # rejected 留给 v2 单独拒绝一条约束用。
         "constraints": [
             {
                 "subject": c.subject,
@@ -249,19 +252,25 @@ async def create_workspace(
     if await get_workspace(conn, tenant_id) is not None:
         raise WorkspaceExistsError(f"租户 {tenant_id} 已经有建模工作区了")
     state = initial_state_from_skill(skill)
-    await conn.execute(
-        "INSERT INTO ontology_modeling_workspaces "
-        "(tenant_id, skill_name, skill_version, state_json, updated_at, updated_by) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (
-            tenant_id,
-            None if skill is None else skill.name,
-            None if skill is None else skill.version,
-            json.dumps(state, ensure_ascii=False),
-            now,
-            actor,
-        ),
-    )
+    try:
+        await conn.execute(
+            "INSERT INTO ontology_modeling_workspaces "
+            "(tenant_id, skill_name, skill_version, state_json, updated_at, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                tenant_id,
+                None if skill is None else skill.name,
+                None if skill is None else skill.version,
+                json.dumps(state, ensure_ascii=False),
+                now,
+                actor,
+            ),
+        )
+    except aiosqlite.IntegrityError as exc:
+        # 上面的先查只能给出可读的错误，挡不住两次并发创建：两边都查到"没有"
+        # 之后第二个 INSERT 会撞主键。这里把它翻译成同一个业务错误，路由层
+        # 照常回 409 而不是 500。
+        raise WorkspaceExistsError(f"租户 {tenant_id} 已经有建模工作区了") from exc
     await conn.commit()
     return ModelingWorkspace(
         tenant_id=tenant_id,
@@ -288,31 +297,31 @@ async def save_workspace(
     的两个人同时开着它很正常。无锁覆盖时后点保存的人会静默抹掉前一个人刚
     做完的一批审阅，而两边界面都显示"已保存"。
     """
-    current = await get_workspace(conn, tenant_id)
-    if current is None:
-        raise WorkspaceNotFoundError(f"租户 {tenant_id} 还没有建模工作区")
-    if current.updated_at != expected_updated_at:
+    # 校验放在写之前：校验失败时库里还是上一版，不需要事务回滚（理由同
+    # replace_draft 的 docstring：单例连接上不能用显式事务）。
+    normalized = validate_state(state)
+    # 比对和写入放在同一条 UPDATE 里，而不是"读—比—写"三步：单例连接上两个
+    # 并发保存可以都在对方写入之前读到同一个 updated_at，于是都通过比对、后
+    # 写的静默覆盖先写的——乐观锁形同虚设。把 updated_at 放进 WHERE 后，
+    # 第二个 UPDATE 匹配不到行，rowcount 为 0。
+    cursor = await conn.execute(
+        "UPDATE ontology_modeling_workspaces SET state_json = ?, updated_at = ?, updated_by = ? "
+        "WHERE tenant_id = ? AND updated_at = ?",
+        (json.dumps(normalized, ensure_ascii=False), now, actor, tenant_id, expected_updated_at),
+    )
+    if cursor.rowcount == 0:
+        # 没更新到行有两种原因，调用方要分开处理（404 / 409），只能再读一次。
+        current = await get_workspace(conn, tenant_id)
+        if current is None:
+            raise WorkspaceNotFoundError(f"租户 {tenant_id} 还没有建模工作区")
         raise WorkspaceConflictError(
             f"工作区在 {current.updated_at} 被 {current.updated_by} 改过，"
             f"你手上这份是 {expected_updated_at} 的。刷新后重试。"
         )
-    # 校验放在写之前：校验失败时库里还是上一版，不需要事务回滚（理由同
-    # replace_draft 的 docstring：单例连接上不能用显式事务）。
-    normalized = validate_state(state)
-    await conn.execute(
-        "UPDATE ontology_modeling_workspaces SET state_json = ?, updated_at = ?, updated_by = ? "
-        "WHERE tenant_id = ?",
-        (json.dumps(normalized, ensure_ascii=False), now, actor, tenant_id),
-    )
     await conn.commit()
-    return ModelingWorkspace(
-        tenant_id=tenant_id,
-        skill_name=current.skill_name,
-        skill_version=current.skill_version,
-        state=normalized,
-        updated_at=now,
-        updated_by=actor,
-    )
+    current = await get_workspace(conn, tenant_id)
+    assert current is not None
+    return current
 
 
 async def delete_workspace(conn: aiosqlite.Connection, tenant_id: str) -> None:
