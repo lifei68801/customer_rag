@@ -17,7 +17,7 @@ import { TenantsPage } from './admin/TenantsPage'
 import { OrganizationsPage } from './admin/OrganizationsPage'
 import { SettingsPage } from './admin/SettingsPage'
 import { NotFoundPage } from './admin/NotFoundPage'
-import { GuidedOntologyPage } from './admin/guidedOntology/GuidedOntologyPage'
+import { ModelingWorkbenchPage } from './admin/modelingWorkbench/ModelingWorkbenchPage'
 import { DatabaseImportPage } from './admin/DatabaseImportPage'
 import { DataGraphPage } from './admin/DataGraphPage'
 import { ErrorLogPage } from './admin/ErrorLogPage'
@@ -67,7 +67,7 @@ function App() {
         {/* 本体图和疑似重复此前埋在别人的 tab 里。先给它们自己的 URL，
             页面本体的拆分是下一步的事——先有地址才谈得上被发现。 */}
         <Route path="ontology/graph" element={<OntologyGraphPage />} />
-        <Route path="ontology/guided" element={<GuidedOntologyPage />} />
+        <Route path="ontology/guided" element={<ModelingWorkbenchPage />} />
         <Route path="ontology/persona" element={<PersonaEditorPage />} />
 
         <Route path="import/documents" element={<DocumentsPage />} />

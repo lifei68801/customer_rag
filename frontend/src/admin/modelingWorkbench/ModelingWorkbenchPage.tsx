@@ -1,0 +1,324 @@
+import { useCallback, useEffect, useState } from 'react'
+import { PAGE_TITLES } from '../../adminRoutes'
+import { adminFetch, extractErrorDetail } from '../adminApi'
+import { useAdminAuth } from '../useAdminAuth'
+import { useAdminTenant } from '../TenantContext'
+import { useToast } from '../ToastContext'
+import { nextStepHint } from './nextStep'
+import { projectToDraftPayload, projectToEtlYaml } from './projectToDraft'
+import {
+  WorkspaceConflictError,
+  createWorkspace,
+  exportSkill,
+  fetchGrounding,
+  fetchSkills,
+  fetchWorkspace,
+  previewApply,
+  saveWorkspace,
+} from './workspaceApi'
+import type { DraftDiff, Grounding, ModelingWorkspace, SkillSummary, WorkspaceState } from './types'
+import { ApplyPanel } from './panels/ApplyPanel'
+import { DataPanel } from './panels/DataPanel'
+import { SkeletonPanel } from './panels/SkeletonPanel'
+import { StartPanel } from './panels/StartPanel'
+import { UngroundedPanel } from './panels/UngroundedPanel'
+import { panelClass, secondaryButtonClass } from './ui'
+
+type Tab = 'skeleton' | 'data' | 'ungrounded' | 'apply'
+
+const TAB_LABELS: { id: Tab; label: string }[] = [
+  { id: 'skeleton', label: '骨架' },
+  { id: 'data', label: '数据' },
+  { id: 'ungrounded', label: '未落地' },
+  { id: 'apply', label: '应用' },
+]
+
+/**
+ * 建模工作台。替换原来的「引导建模」页，路由不变。
+ *
+ * 是工作台不是向导（spec 决策 12）：四个面板随时可切，因为真实的建模不是
+ * 一条直线——用户会在"传了一张表、发现骨架少一个概念、回去加一条、再传下
+ * 一张表"之间来回走。顶部一行"下一步建议"负责回答"现在最该做什么"。
+ *
+ * 每次改动立刻整份存回后端（PUT 带 updated_at 乐观锁），不做本地草稿：
+ * 工作区是长期存在的，用户关掉页面一周后回来必须看到自己上次做到哪。
+ */
+export function ModelingWorkbenchPage() {
+  const { sessionToken } = useAdminAuth()
+  const { tenantId } = useAdminTenant()
+  const showToast = useToast()
+  const [workspace, setWorkspace] = useState<ModelingWorkspace | null>(null)
+  const [skills, setSkills] = useState<SkillSummary[]>([])
+  const [grounding, setGrounding] = useState<Grounding | null>(null)
+  const [diff, setDiff] = useState<DraftDiff | null>(null)
+  const [tab, setTab] = useState<Tab>('skeleton')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
+
+  const reportError = useCallback((err: unknown, fallback: string) => {
+    if (err instanceof WorkspaceConflictError) {
+      // 冲突要提示刷新，不是重试——再点一次仍然是旧时间戳
+      setError(`${err.message}`)
+      return
+    }
+    setError(err instanceof Error ? err.message : fallback)
+  }, [])
+
+  useEffect(() => {
+    if (!sessionToken) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [loadedWorkspace, loadedSkills, loadedGrounding] = await Promise.all([
+          fetchWorkspace(tenantId, sessionToken),
+          fetchSkills(tenantId, sessionToken),
+          fetchGrounding(tenantId, sessionToken),
+        ])
+        if (cancelled) return
+        setWorkspace(loadedWorkspace)
+        setSkills(loadedSkills)
+        setGrounding(loadedGrounding)
+      } catch (err) {
+        if (!cancelled) reportError(err, '加载建模工作区失败')
+      } finally {
+        if (!cancelled) setLoaded(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionToken, tenantId, reportError])
+
+  const persist = async (next: WorkspaceState) => {
+    if (!sessionToken || !workspace) return
+    setBusy(true)
+    setError(null)
+    try {
+      setWorkspace(await saveWorkspace(tenantId, sessionToken, next, workspace.updated_at))
+      // 应用之前的任何改动都会让上一次算的 diff 过时；留着它会让用户照着
+      // 一份旧差异点「写入草稿」。
+      setDiff(null)
+    } catch (err) {
+      reportError(err, '保存建模工作区失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleStart = async (skillName: string | null) => {
+    if (!sessionToken) return
+    setBusy(true)
+    setError(null)
+    try {
+      setWorkspace(await createWorkspace(tenantId, sessionToken, skillName))
+      setTab('skeleton')
+    } catch (err) {
+      reportError(err, '创建建模工作区失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleReview = (
+    kind: 'term' | 'relation',
+    key: string,
+    review: 'accepted' | 'rejected',
+  ) => {
+    if (!workspace) return
+    const state = workspace.state
+    void persist(
+      kind === 'term'
+        ? {
+            ...state,
+            term_types: state.term_types.map((t) => (t.value === key ? { ...t, review } : t)),
+          }
+        : {
+            ...state,
+            relation_types: state.relation_types.map((r) =>
+              r.relation_type === key ? { ...r, review } : r,
+            ),
+          },
+    )
+  }
+
+  const handlePromote = (file: string, column: string) => {
+    if (!workspace) return
+    const state = workspace.state
+    if (state.term_types.some((t) => t.value === column)) return
+    void persist({
+      ...state,
+      term_types: [
+        ...state.term_types,
+        {
+          value: column,
+          display_name: column,
+          provenance: 'data',
+          review: 'pending',
+          standard_name_value_type: 'string',
+          extra_fields: [],
+          // 这一列自己就是它的别名——下次扫同一张表还能对上
+          key_aliases: [column],
+          field_aliases: {},
+          clues: [],
+          data_match: {
+            source_file: file,
+            key_columns: [column],
+            field_columns: {},
+            matched_by: 'manual',
+          },
+        },
+      ],
+      unmatched_columns: {
+        ...state.unmatched_columns,
+        [file]: (state.unmatched_columns[file] ?? []).filter((name) => name !== column),
+      },
+    })
+  }
+
+  const handlePreview = async () => {
+    if (!sessionToken || !workspace) return
+    setBusy(true)
+    setError(null)
+    try {
+      setDiff(await previewApply(tenantId, sessionToken, projectToDraftPayload(workspace.state)))
+    } catch (err) {
+      reportError(err, '计算差异失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleApply = async () => {
+    if (!sessionToken || !workspace) return
+    const payload = projectToDraftPayload(workspace.state)
+    if (payload.term_types.length === 0) {
+      setError('工作区里一个已接受的实体类型都没有，写入草稿没有意义。先去「骨架」面板接受几条。')
+      return
+    }
+    // 这里不再用 ConfirmContext 弹一个额外的确认框：ApplyPanel 已经把删除项
+    // 用醒目的错误样式摆在屏幕上（见「看看会改什么」之后的渲染），用户点
+    // 「写入草稿」这个动作本身就是看过那份差异之后做出的决定。再加一层
+    // window.confirm 式的弹窗只是把同一个决定问两遍。
+    setBusy(true)
+    setError(null)
+    try {
+      const mapping = projectToEtlYaml(workspace.state, tenantId)
+      const response = await adminFetch(
+        `/api/admin/ontology/${encodeURIComponent(tenantId)}/draft/replace`,
+        sessionToken,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...payload,
+            etl_mapping: mapping
+              ? { config_yaml: mapping.yaml, source_file_name: mapping.fileName }
+              : null,
+          }),
+        },
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(extractErrorDetail(body, '写入草稿失败'))
+      }
+      showToast('已写入本体草稿')
+      // 刻意不调 /confirm：确认是不可逆的，工作台不替用户做这个决定
+      setGrounding(await fetchGrounding(tenantId, sessionToken))
+      setDiff(null)
+    } catch (err) {
+      reportError(err, '写入草稿失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleExport = async () => {
+    if (!sessionToken) return
+    setBusy(true)
+    setError(null)
+    try {
+      const text = await exportSkill(
+        tenantId,
+        sessionToken,
+        `${tenantId.toLowerCase().replace(/[^a-z0-9_]/g, '_')}_domain`,
+        `${tenantId} 导出的领域模板`,
+      )
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/yaml;charset=utf-8' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${tenantId}-skill.yaml`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      showToast('已导出领域模板，人工审阅后才能提交进代码仓')
+    } catch (err) {
+      reportError(err, '导出领域模板失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-1">
+        <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.guidedOntology}</h1>
+        <p className="text-sm text-ink-soft">{nextStepHint(workspace, diff)}</p>
+      </div>
+
+      {error && (
+        <p role="alert" className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
+          {error}
+        </p>
+      )}
+
+      {!loaded && <p className="text-sm text-ink-soft">加载中…</p>}
+
+      {loaded && workspace === null && (
+        <StartPanel skills={skills} busy={busy} onStart={handleStart} />
+      )}
+
+      {loaded && workspace !== null && (
+        <>
+          <div className={`${panelClass} flex flex-wrap gap-2`}>
+            {TAB_LABELS.map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={tab === id}
+                className={secondaryButtonClass}
+                onClick={() => setTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {tab === 'skeleton' && (
+            <SkeletonPanel state={workspace.state} grounding={grounding} onReview={handleReview} />
+          )}
+          {tab === 'data' && (
+            <DataPanel
+              state={workspace.state}
+              busy={busy}
+              onMerged={(next) => void persist(next)}
+              onPromote={handlePromote}
+            />
+          )}
+          {tab === 'ungrounded' && (
+            <UngroundedPanel state={workspace.state} grounding={grounding} />
+          )}
+          {tab === 'apply' && (
+            <ApplyPanel
+              diff={diff}
+              busy={busy}
+              onPreview={handlePreview}
+              onApply={handleApply}
+              onExport={handleExport}
+            />
+          )}
+        </>
+      )}
+    </div>
+  )
+}
