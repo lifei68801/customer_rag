@@ -230,9 +230,14 @@ describe('引导页第一步', () => {
     expect(alert.textContent).toMatch(new RegExp(String(MAX_XLSX_BYTES)))
   })
 
-  it('member 看到的是无权限提示，不是 404', async () => {
+  it('member 跟 admin 一样能用，不再撞权限墙', async () => {
+    // 引导建模只是辅助工具：它写的是草稿，写谁的草稿由后端的
+    // require_tenant_access 按租户授权决定，跟角色无关。而「本体结构」页
+    // 对 member 一直是开放的——member 能手工建实体类型、建关系，却用不了
+    // 帮他省事的那个工具，是纯粹的不一致。
     signIn('member')
     renderAt(ADMIN_ROUTES.guidedOntology)
-    expect(await screen.findByTestId('no-permission')).toBeTruthy()
+    expect(await screen.findByLabelText(/选择一张表/)).toBeTruthy()
+    expect(screen.queryByTestId('no-permission')).toBeNull()
   })
 })

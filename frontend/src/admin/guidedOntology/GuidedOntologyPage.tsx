@@ -40,7 +40,7 @@ const GUIDED_FILE_ID = 'guided-upload'
 const EMPTY_PAIR_REPORT: PairReport = { skipped: false, violationOf: () => null }
 
 export function GuidedOntologyPage() {
-  const { role, sessionToken } = useAdminAuth()
+  const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const confirm = useConfirm()
   const [step, setStep] = useState<Step>('upload')
@@ -51,17 +51,6 @@ export function GuidedOntologyPage() {
   // 单值预检的结果。扫描失败或还没跑时给一个「检测过、没发现」的空报告：
   // 界面永远拿得到一个可用的对象，不用到处判 null。
   const [pairReport, setPairReport] = useState<PairReport>(EMPTY_PAIR_REPORT)
-
-  if (role !== 'admin') {
-    return (
-      <div data-testid="no-permission" className="flex flex-col gap-2">
-        <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.guidedOntology}</h1>
-        <p className="text-sm text-ink-soft">
-          这个页面只有管理员能用。需要建模，请联系管理员。
-        </p>
-      </div>
-    )
-  }
 
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
