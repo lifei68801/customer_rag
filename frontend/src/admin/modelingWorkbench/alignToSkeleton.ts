@@ -173,6 +173,9 @@ function proposeCrossTable(
         relation: relationType,
         object,
         provenance: 'data',
+        // 约束不单独审阅：进不进草稿由主语/宾语/关系三个元素的审阅决定
+        // （见 projectToDraft）。pending 只是占位，rejected 留给 v2 单独拒绝
+        // 一条约束用。
         review: 'pending',
       })
     }
@@ -196,7 +199,7 @@ export function mergeAlignments(
   for (const alignment of alignments) {
     for (const match of alignment.matches) {
       // 一个实体在多张表里命中时保留第一张：ETL 映射里一个实体一条 entities
-      // 条目，多张表要用户自己选，工作台在「数据」面板列出全部命中供改选。
+      // 条目。改选要去表格导入页手动配——v1 没有改选界面。
       if (!matchOf.has(match.termValue)) matchOf.set(match.termValue, { file: alignment.file, match })
     }
   }

@@ -40,7 +40,7 @@ export function StartPanel(props: {
       <div className={`${panelClass} flex flex-col gap-2`}>
         <h2 className="font-mono text-base font-semibold text-ink">空白起步</h2>
         <p className="text-sm text-ink-soft">
-          没有合适的模板时从零开始：先传数据表，让列名告诉你这里有哪些概念。
+          没有合适的模板时从零开始：传数据表后把认出来的列逐个提升成实体类型。
         </p>
         <button
           type="button"

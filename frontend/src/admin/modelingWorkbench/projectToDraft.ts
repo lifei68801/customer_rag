@@ -6,10 +6,17 @@ import type { DraftPayload, WorkspaceState } from './types'
 /**
  * 工作区 → `/draft/replace` 的 payload。
  *
- * 只取 review === 'accepted' 的元素：pending 是"还没看"，rejected 是"看过不要"，
- * 两者都不该进本体。拒掉的元素**留在工作区里**（spec 决策 2），这里只是不投影。
+ * 实体/关系只取 review === 'accepted' 的：pending 是"还没看"，rejected 是"看过
+ * 不要"，两者都不该进本体。拒掉的元素**留在工作区里**（spec 决策 2），这里只
+ * 是不投影。
  *
- * 约束做引用过滤而不是原样带过去：replace_draft 会对引用未声明类型的约束抛
+ * 约束不单独审阅：骨架面板没有约束区块，它的去留由它引用的主语/宾语/关系
+ * 三个元素的审阅决定——三个都 accepted 就进，任一个没进本体就整条丢掉。
+ * 只排除 review === 'rejected'（v2 单独拒绝一条约束用），pending 照常投影；
+ * 要是也要求约束 accepted，主路径产出的草稿永远没有约束，而且每次应用都会
+ * 把「本体结构」页已有的约束删光。
+ *
+ * 引用过滤而不是原样带过去：replace_draft 会对引用未声明类型的约束抛
  * UnknownCategoryError，整次应用失败，而用户看到的只是一句"引用了未声明的
  * 实体类型"——他并不知道是自己哪一次拒绝造成的。
  */
@@ -33,7 +40,7 @@ export function projectToDraftPayload(state: WorkspaceState): DraftPayload {
     constraints: state.constraints
       .filter(
         (c) =>
-          c.review === 'accepted' &&
+          c.review !== 'rejected' &&
           termValues.has(c.subject) &&
           termValues.has(c.object) &&
           relationNames.has(c.relation),
@@ -87,10 +94,12 @@ export function projectToEtlYaml(
     }
   })
 
+  // 约束的取舍规则同 projectToDraftPayload：只排除 rejected，pending 照常带，
+  // 再看主宾两端是否都接上了数据。
   const relations: BuilderRelation[] = state.constraints
     .filter(
       (c) =>
-        c.review === 'accepted' &&
+        c.review !== 'rejected' &&
         matched.some((t) => t.value === c.subject) &&
         matched.some((t) => t.value === c.object),
     )

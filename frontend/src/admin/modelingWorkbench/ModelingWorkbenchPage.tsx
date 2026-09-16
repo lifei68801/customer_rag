@@ -250,10 +250,15 @@ export function ModelingWorkbenchPage() {
         return
       }
     }
+    const removed = [
+      ...effectiveDiff.removed_term_types,
+      ...effectiveDiff.removed_relation_types,
+      ...effectiveDiff.removed_constraints,
+    ]
     if (
-      effectiveDiff.removed_term_types.length + effectiveDiff.removed_relation_types.length > 0 &&
+      removed.length > 0 &&
       !(await confirm({
-        message: `写入后这些会从草稿里消失：${[...effectiveDiff.removed_term_types, ...effectiveDiff.removed_relation_types].join('、')}。`,
+        message: `写入后这些会从草稿里消失：${removed.join('、')}。`,
         confirmLabel: '继续写入',
       }))
     ) {
@@ -296,12 +301,10 @@ export function ModelingWorkbenchPage() {
     setBusy(true)
     setError(null)
     try {
-      const text = await exportSkill(
-        tenantId,
-        sessionToken,
-        `${tenantId.toLowerCase().replace(/[^a-z0-9_]/g, '_')}_domain`,
-        `${tenantId} 导出的领域模板`,
-      )
+      // skill 名要求 ^[a-z][a-z0-9_]{0,63}$，而租户 ID 允许数字、连字符开头：
+      // 固定的字母前缀保证首字符合法，截断保证长度，否则这类租户导出必 400。
+      const skillName = `domain_${tenantId.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`.slice(0, 64)
+      const text = await exportSkill(tenantId, sessionToken, skillName, `${tenantId} 导出的领域模板`)
       const url = URL.createObjectURL(new Blob([text], { type: 'text/yaml;charset=utf-8' }))
       const link = document.createElement('a')
       link.href = url

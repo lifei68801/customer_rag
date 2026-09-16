@@ -329,10 +329,10 @@ export function OntologySchemaPage() {
         to={ADMIN_ROUTES.guidedOntology}
         title={
           readiness === null
-            ? '从一张业务表开始推导本体'
+            ? '打开建模工作台：从领域模板起步、对齐数据表、看过差异再写入草稿'
             : readiness.termTypes
-              ? '从一张业务表开始重新推导本体——当前草稿会被整份覆盖'
-              : '从一张业务表开始，平台会推荐一套本体草案'
+              ? '打开建模工作台：从领域模板起步、对齐数据表、看过差异再写入草稿——写入是整份替换，会覆盖当前草稿'
+              : '打开建模工作台：从领域模板起步、对齐数据表、看过差异再写入草稿——当前草稿是空的，写入不会覆盖任何东西'
         }
         className={`flex items-center gap-1.5 self-start rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
       >

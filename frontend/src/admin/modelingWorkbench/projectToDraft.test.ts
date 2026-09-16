@@ -98,6 +98,21 @@ describe('projectToDraftPayload', () => {
     expect(payload.relation_types).toEqual([])
     expect(payload.constraints).toEqual([])
   })
+
+  it('三个引用元素都 accepted 时，约束本身还是 pending 也进 payload', () => {
+    // 骨架面板没有约束区块，约束从来不会被点成 accepted。要是这里也要求
+    // accepted，主路径产出的草稿永远没有约束，每次应用还会删光已有的
+    const payload = projectToDraftPayload(
+      state({
+        constraints: [
+          { subject: 'SKU', relation: 'SOLD_AT', object: 'SKU', provenance: 'skill', review: 'pending' },
+        ],
+      }),
+    )
+    expect(payload.constraints).toEqual([
+      { subject_term_type: 'SKU', relation_type: 'SOLD_AT', object_term_type: 'SKU' },
+    ])
+  })
 })
 
 describe('projectToEtlYaml', () => {

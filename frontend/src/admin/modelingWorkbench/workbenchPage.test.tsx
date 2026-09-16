@@ -66,8 +66,21 @@ function workspaceWith(termReview: 'pending' | 'accepted') {
           data_match: null,
         },
       ],
-      relation_types: [],
-      constraints: [],
+      relation_types: [
+        {
+          relation_type: 'SOLD_AT',
+          example_phrase: '某商品在某门店有售',
+          description: '',
+          provenance: 'skill',
+          review: 'accepted',
+          clues: [],
+          data_match: null,
+        },
+      ],
+      // 约束没有审阅入口，永远是 pending；它进不进草稿看引用的三个元素
+      constraints: [
+        { subject: 'SKU', relation: 'SOLD_AT', object: 'SKU', provenance: 'skill', review: 'pending' },
+      ],
       sources: [],
       unmatched_columns: {},
       questions: [],
@@ -188,7 +201,8 @@ describe('建模工作台', () => {
     renderWorkbench()
     await userEvent.click(await screen.findByRole('button', { name: /用这个模板起步/ }))
     expect(await screen.findByText('SKU')).toBeInTheDocument()
-    expect(screen.getByText('来自模板')).toBeInTheDocument()
+    // 夹具里实体和关系各一条都来自模板，两条都要标出来源
+    expect(screen.getAllByText('来自模板')).toHaveLength(2)
     expect(screen.getByText(/审阅骨架/)).toBeInTheDocument()
   })
 
@@ -267,6 +281,28 @@ describe('建模工作台', () => {
     await waitFor(() => {
       const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
       expect(calls.some(([url]) => String(url).includes('/draft/replace'))).toBe(true)
+    })
+  })
+
+  it('接受 SKU 后写入草稿，pending 的约束随它引用的元素一起进 payload', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWith('pending')
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: '接受 SKU' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    await userEvent.click(await screen.findByRole('button', { name: /^应用$/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /写入草稿/ }))
+    await userEvent.click(await screen.findByRole('button', { name: '继续写入' }))
+    await waitFor(() => {
+      const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+      const replace = calls.find(([url]) => String(url).includes('/draft/replace'))
+      expect(replace).toBeDefined()
+      const body = JSON.parse(String(replace![1]?.body)) as {
+        constraints: { subject_term_type: string; relation_type: string; object_term_type: string }[]
+      }
+      expect(body.constraints).toEqual([
+        { subject_term_type: 'SKU', relation_type: 'SOLD_AT', object_term_type: 'SKU' },
+      ])
     })
   })
 
