@@ -1,4 +1,5 @@
 import type { SourceParseOptions } from '../schemaEtlConfigBuilder/sourceParser'
+import type { ColumnRole, InferredType, RoledColumn } from '../guidedOntology/types'
 
 /** 这个元素是谁提出来的。v1 只会出现这三种（llm / document / question 是 v2）。 */
 export type Provenance = 'skill' | 'data' | 'manual'
@@ -61,12 +62,33 @@ export interface WorkspaceConstraint {
   review: ReviewState
 }
 
+/** 扫描时算出的一列：角色、判定依据、推断类型。存下来是为了不重扫就能显示依据、
+ *  投影关系时判断主语表有没有宾语键列、手动指字段时推 value_type。 */
+export interface SourceColumn {
+  name: string
+  role: ColumnRole
+  /** 判定依据，必须带具体数字——用户要能据此推翻它（主 spec 对 reason 的要求）。 */
+  reason: string
+  inferred_type: InferredType
+}
+
 /** 一张表怎么读。跟 SourceParseOptions 同义，只是键名按后端 YAML 的写法。 */
 export interface WorkspaceSource {
   file: string
   sheet?: string | number | null
   header_row?: number
   first_data_row?: number
+  /** v1 存下的旧工作区没有这个键，视为"未知"。 */
+  columns?: SourceColumn[]
+}
+
+export function columnsOf(roled: RoledColumn[]): SourceColumn[] {
+  return roled.map((c) => ({
+    name: c.stats.name,
+    role: c.role,
+    reason: c.reason,
+    inferred_type: c.stats.inferredType,
+  }))
 }
 
 export interface WorkspaceState {

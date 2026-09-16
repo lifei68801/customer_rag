@@ -94,6 +94,21 @@ function workspaceWith(termReview: 'pending' | 'accepted') {
 const json = (body: unknown, status = 200) =>
   Promise.resolve(new Response(JSON.stringify(body), { status }))
 
+/**
+ * 25 行的数据表夹具，给「数据」面板的扫描测试用。跟 guidedOntology/columnRoles.test.ts
+ * 里的判定阈值对齐：订单号 25 个互不相同的值（够格当标识），产品 3 个取值循环
+ * （够格当维度候选），revenue 带小数（够格当度量）。
+ */
+function csvFile(): File {
+  const rows = Array.from({ length: 25 }, (_, i) => {
+    const product = ['连衣裙', '衬衫', '外套'][i % 3]
+    const revenue = (100 + i * 1.5).toFixed(2)
+    return `${1001 + i},${product},${revenue}`
+  })
+  const csv = `订单号,产品,revenue\n${rows.join('\n')}\n`
+  return new File([csv], 'orders.csv', { type: 'text/csv' })
+}
+
 function stubApi() {
   vi.stubGlobal(
     'fetch',
@@ -432,5 +447,24 @@ describe('建模工作台', () => {
     expect(body.state.term_types.some((t) => t.value === '促销活动' && t.provenance === 'manual')).toBe(
       true,
     )
+  })
+
+  it('扫描一张表后把每列的角色和依据存进 sources', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWith('accepted')
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: '数据' }))
+    await userEvent.upload(screen.getByLabelText('选择数据表'), csvFile())
+    await userEvent.click(await screen.findByRole('button', { name: '扫描并对齐' }))
+    await waitFor(() => expect(saved.length).toBeGreaterThan(0))
+    const body = saved[saved.length - 1] as {
+      state: { sources: { file: string; columns?: { name: string; role: string; reason: string }[] }[] }
+    }
+    const source = body.state.sources.find((s) => s.file === 'orders.csv')!
+    expect(source.columns?.map((c) => c.name)).toEqual(['订单号', '产品', 'revenue'])
+    const product = source.columns!.find((c) => c.name === '产品')!
+    expect(product.role).toBe('dimension')
+    // 依据必须带具体数字——用户要能据此推翻判定
+    expect(product.reason).toMatch(/\d/)
   })
 })

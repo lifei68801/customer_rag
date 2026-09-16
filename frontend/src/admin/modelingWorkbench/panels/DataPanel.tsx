@@ -4,7 +4,7 @@ import { scanTableFile } from '../../guidedOntology/columnStats'
 import { draftFromOptions, optionsFromDraft, type ParseDraft } from '../../schemaEtlConfigBuilder/parseSettingsDraft'
 import { listSheetNames } from '../../schemaEtlConfigBuilder/sourceParser'
 import { alignTable, mergeAlignments, type ScannedTable } from '../alignToSkeleton'
-import { parseOptionsOf } from '../types'
+import { columnsOf, parseOptionsOf } from '../types'
 import type { WorkspaceState } from '../types'
 import { panelClass, primaryButtonClass, secondaryButtonClass, tagClass } from '../ui'
 
@@ -61,6 +61,7 @@ export function DataPanel(props: {
             sheet: parsed.options.sheet ?? null,
             header_row: parsed.options.headerRow,
             first_data_row: parsed.options.firstDataRow,
+            columns: columnsOf(table.roled),
           },
         ],
       }

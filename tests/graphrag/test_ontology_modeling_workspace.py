@@ -195,6 +195,27 @@ async def test_delete_workspace_is_idempotent():
     await delete_workspace(conn, "t1")  # 再删一次不报错
 
 
+async def test_save_keeps_extra_keys_inside_sources_entries():
+    """前端会往 sources[] 条目里多放 columns（列角色/依据），后端只校验外形，
+    多出来的键必须原样存取——丢了的话工作台重新打开时未接住列旁的依据全没了。"""
+    conn = await _conn()
+    created = await create_workspace(conn, "t1", skill=None, actor="alice", now="2026-09-17T10:00:00")
+    state = {
+        "sources": [
+            {
+                "file": "a.csv",
+                "header_row": 6,
+                "columns": [{"name": "JAN", "role": "identifier", "reason": "100/100", "inferred_type": "string"}],
+            }
+        ]
+    }
+    saved = await save_workspace(
+        conn, "t1", state=state, expected_updated_at=created.updated_at, actor="alice", now="2026-09-17T10:01:00"
+    )
+    assert saved.state["sources"][0]["columns"][0]["reason"] == "100/100"
+    assert (await get_workspace(conn, "t1")).state["sources"][0]["columns"][0]["role"] == "identifier"
+
+
 async def test_ensure_ontology_schema_creates_the_workspace_table():
     """建表挂进统一入口。不挂的话，真实的 get_review_conn 开出来的连接上没有
     这张表，工作台第一次请求就是 no such table。"""
