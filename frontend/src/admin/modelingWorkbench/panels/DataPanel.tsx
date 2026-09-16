@@ -1,9 +1,11 @@
 import { useState, type ChangeEvent } from 'react'
 import { assignRoles } from '../../guidedOntology/columnRoles'
 import { scanTableFile } from '../../guidedOntology/columnStats'
+import { buildProposal, initialDecision } from '../../guidedOntology/draftProposal'
 import { draftFromOptions, optionsFromDraft, type ParseDraft } from '../../schemaEtlConfigBuilder/parseSettingsDraft'
 import { listSheetNames } from '../../schemaEtlConfigBuilder/sourceParser'
 import { alignTable, mergeAlignments, type ScannedTable } from '../alignToSkeleton'
+import { proposalToWorkspace } from '../blankStart'
 import { columnsOf, parseOptionsOf } from '../types'
 import type { WorkspaceState } from '../types'
 import { panelClass, primaryButtonClass, secondaryButtonClass, tagClass } from '../ui'
@@ -78,6 +80,20 @@ export function DataPanel(props: {
             columns: columnsOf(table.roled),
           },
         ],
+      }
+      if (props.state.term_types.length === 0) {
+        // 骨架为空（空白起步，或 skill 起步后把骨架删光了）：对齐无从谈起，改走
+        // 单表推导——这是被下线的引导页留下的那条路。
+        const proposal = buildProposal(table.roled, initialDecision(table.roled))
+        const derived = proposalToWorkspace(proposal, file.name)
+        props.onMerged({
+          ...withSource,
+          term_types: derived.term_types,
+          relation_types: derived.relation_types,
+          constraints: derived.constraints,
+          unmatched_columns: { ...withSource.unmatched_columns, [file.name]: derived.unmatched },
+        })
+        return
       }
       props.onMerged(
         mergeAlignments(withSource, [alignTable(table, withSource.term_types)], [table]),

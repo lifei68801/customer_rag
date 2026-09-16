@@ -561,4 +561,25 @@ describe('建模工作台', () => {
     expect(await screen.findByText(/没有 Store 的键列 STORE_CD/)).toBeInTheDocument()
     expect(screen.getByText(/表格导入页手动配/)).toBeInTheDocument()
   })
+
+  it('空白起步传表后推出一套待审骨架', async () => {
+    signedInRole = 'member'
+    const ws = workspaceWith('accepted')
+    ws.skill_name = null
+    ws.state.term_types = []
+    ws.state.relation_types = []
+    ws.state.constraints = []
+    workspace = ws
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: '数据' }))
+    await userEvent.upload(screen.getByLabelText('选择数据表'), csvFile())
+    await userEvent.click(await screen.findByRole('button', { name: '扫描并对齐' }))
+    await waitFor(() => expect(saved.length).toBeGreaterThan(0))
+    const body = saved[saved.length - 1] as { state: { term_types: { value: string; provenance: string; review: string }[]; constraints: unknown[] } }
+    const values = body.state.term_types.map((t) => t.value)
+    expect(values).toContain('订单号')
+    expect(values).toContain('产品')
+    expect(body.state.term_types.every((t) => t.provenance === 'data' && t.review === 'pending')).toBe(true)
+    expect(body.state.constraints.length).toBeGreaterThan(0)
+  })
 })
