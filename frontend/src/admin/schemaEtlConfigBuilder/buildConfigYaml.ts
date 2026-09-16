@@ -1,3 +1,4 @@
+import type { SourceParseOptions } from './sourceParser'
 import type { AddedFile, BuilderEntity, BuilderRelation } from './types'
 
 // YAML 双引号字符串的标准转义：反斜杠、双引号、换行、制表符。所有本模块
@@ -54,6 +55,14 @@ function buildRelationYamlLines(relation: BuilderRelation, filenameById: Map<str
   ]
 }
 
+function hasNonDefaultParseOptions(options: SourceParseOptions): boolean {
+  return (
+    options.sheet !== undefined ||
+    (options.headerRow !== undefined && options.headerRow !== 1) ||
+    options.firstDataRow !== undefined
+  )
+}
+
 export function buildConfigYaml(params: {
   tenantId: string
   entities: BuilderEntity[]
@@ -62,6 +71,25 @@ export function buildConfigYaml(params: {
 }): string {
   const filenameById = new Map(params.files.map((f) => [f.id, f.file.name]))
   const lines: string[] = [`tenant_id: ${yamlString(params.tenantId)}`, '']
+
+  // 只写用户真正改过的那些。全是缺省值也写一遍，等于把"第 1 行"固化进配置；
+  // 将来缺省变了，这些配置不会跟着变，而用户从没做过这个选择。
+  const configured = params.files.filter((f) => hasNonDefaultParseOptions(f.parseOptions))
+  if (configured.length > 0) {
+    lines.push('sources:')
+    for (const f of configured) {
+      lines.push(`  - file: ${yamlString(f.file.name)}`)
+      const { sheet, headerRow, firstDataRow } = f.parseOptions
+      if (sheet !== undefined) {
+        // 序号是数字标量，名字是字符串标量——写成 sheet: "1" 的话后端会把它
+        // 当成一张名叫 "1" 的工作表去找，找不到就报错。
+        lines.push(`    sheet: ${typeof sheet === 'number' ? sheet : yamlString(sheet)}`)
+      }
+      if (headerRow !== undefined) lines.push(`    header_row: ${headerRow}`)
+      if (firstDataRow !== undefined) lines.push(`    first_data_row: ${firstDataRow}`)
+    }
+    lines.push('')
+  }
 
   if (params.entities.length === 0) {
     lines.push('entities: []')

@@ -12,7 +12,19 @@ import {
   singleKeyColumns,
   type MappingConflict,
 } from './mappingConflicts'
-import { readTableHeaderColumns } from './tableHeader'
+import {
+  listSheetNames,
+  readSourceHeader,
+  readSourcePreview,
+  type SourceParseOptions,
+} from './sourceParser'
+import { storedParseOptionsFor } from './storedParseOptions'
+import {
+  draftFromOptions,
+  optionsFromDraft,
+  skippedRows,
+  type ParseDraft,
+} from './parseSettingsDraft'
 import { EntityMappingEditor } from './EntityMappingEditor'
 import { RelationMappingEditor } from './RelationMappingEditor'
 import type {
@@ -22,6 +34,29 @@ import type {
   ConfirmedCombination,
   ConfirmedTermType,
 } from './types'
+
+/**
+ * 预览给多少行。表头堆最深的真实样本（MUJI 的 SKU 主数据表）是第 6 行才到
+ * 真表头，20 行足够让用户看清表头之上有什么、数据从哪里开始。
+ */
+const PREVIEW_ROWS = 20
+
+/** 预览表格最多铺几列。113 列的表全铺出来，用户横着找不到边。 */
+const PREVIEW_COLUMNS = 12
+
+/** 一张表的解析设置在界面上的全部状态。 */
+interface FileParseUi {
+  /** 工作表下拉的选项。非 Excel 文件为空数组，那时不显示下拉。 */
+  sheetNames: string[]
+  /** 原始的前若干行，用户对着它挑表头行。 */
+  preview: string[][]
+  /** 输入框里的原样文字，可能是解析器不接受的中间态。 */
+  draft: ParseDraft
+  /** 当前文字翻不成解析选项时的那句话；能翻就为 null。 */
+  error: string | null
+  /** 这份设置是从存着的映射里回填的，不是缺省。 */
+  fromStored: boolean
+}
 
 const focusRing =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink'
@@ -107,10 +142,16 @@ export function TableImportFlow({
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [pairReport, setPairReport] = useState<PairReport | null>(null)
+  const [parseUi, setParseUi] = useState<Record<string, FileParseUi>>({})
   const [checking, setChecking] = useState(false)
 
   /** 预填时的映射快照，用来判断用户有没有改过。 */
   const prefilledRef = useRef<string>('')
+  /**
+   * 每张表最近一次重新解析的序号。用户连着改几下时，先发出的请求可能后回来，
+   * 不按序号丢弃的话界面会停在一个用户已经改掉的列名上。
+   */
+  const parseSeqRef = useRef<Record<string, number>>({})
 
   // 切换租户时上一租户的文件和映射全部作废：留着的话 buildConfigYaml 会拿
   // 新租户的 tenantId 拼上旧租户的实体类型，生成一份看似合法、实际本体不
@@ -123,6 +164,7 @@ export function TableImportFlow({
     setFileError(null)
     setSubmitError(null)
     setPairReport(null)
+    setParseUi({})
   }, [tenantId])
 
   useEffect(() => {
@@ -151,45 +193,132 @@ export function TableImportFlow({
     }
   }, [tenantId, sessionToken])
 
+  /**
+   * 按第一张表把第二步填好。多表时其余表的列不参与预填——猜出来的跨表映射
+   * 比空着更难纠正，那几张表的映射让用户自己加。
+   *
+   * 列名变了就得重跑一遍：表头行一改，存着的映射可能对不上了，这条路径
+   * prefillMapping 已经处理（storedMissingColumns）。
+   */
+  const applyPrefill = (added: AddedFile[], resetExpanded: boolean) => {
+    const prefill = prefillMapping({
+      columns: added[0].columns,
+      summary: mapping?.summary ?? null,
+      termTypes,
+      combinations,
+      fileId: added[0].id,
+    })
+    setEntities(prefill.entities)
+    setRelations(prefill.relations)
+    setSource(prefill.source)
+    setUnusedColumns(prefill.unusedColumns)
+    setUnmatchedTermTypes(prefill.unmatchedTermTypes)
+    setStoredMissingColumns(prefill.storedMissingColumns)
+    setRepairedRelations(prefill.repairedRelations)
+    setDroppedRelations(prefill.droppedRelations)
+    prefilledRef.current = JSON.stringify({
+      entities: prefill.entities,
+      relations: prefill.relations,
+    })
+    // 沿用上次的映射默认折起来（用户已经确认过它一次），现推的建议默认
+    // 展开——那份东西他还没看过。
+    if (resetExpanded) setMappingExpanded(prefill.source === 'suggested')
+  }
+
   const handleChooseFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return
     setFileError(null)
     setReading(true)
     try {
       const added: AddedFile[] = []
+      const ui: Record<string, FileParseUi> = {}
       for (const file of Array.from(fileList)) {
-        added.push({ id: crypto.randomUUID(), file, columns: await readTableHeaderColumns(file) })
+        // 存着的设置是用户自己配的，优先于缺省。没存过就是第 1 行——不猜，
+        // 由用户对着下面的原始预览自己挑（按填充密度猜表头行这条路线已被
+        // 定量证伪，见 2026-09-16-header-row-detection-design.md）。
+        const stored = storedParseOptionsFor(mapping?.summary ?? null, file.name)
+        const parseOptions: SourceParseOptions = stored ?? {}
+        const id = crypto.randomUUID()
+        added.push({
+          id,
+          file,
+          columns: await readSourceHeader(file, parseOptions),
+          parseOptions,
+        })
+        ui[id] = {
+          sheetNames: await listSheetNames(file),
+          preview: await readSourcePreview(file, PREVIEW_ROWS, parseOptions),
+          draft: draftFromOptions(parseOptions),
+          error: null,
+          fromStored: stored !== null,
+        }
       }
       setFiles(added)
-      // 按第一张表预填。多表时其余表的列不参与预填——猜出来的跨表映射比
-      // 空着更难纠正，那几张表的映射让用户自己加。
-      const prefill = prefillMapping({
-        columns: added[0].columns,
-        summary: mapping?.summary ?? null,
-        termTypes,
-        combinations,
-        fileId: added[0].id,
-      })
-      setEntities(prefill.entities)
-      setRelations(prefill.relations)
-      setSource(prefill.source)
-      setUnusedColumns(prefill.unusedColumns)
-      setUnmatchedTermTypes(prefill.unmatchedTermTypes)
-      setStoredMissingColumns(prefill.storedMissingColumns)
-      setRepairedRelations(prefill.repairedRelations)
-      setDroppedRelations(prefill.droppedRelations)
-      prefilledRef.current = JSON.stringify({
-        entities: prefill.entities,
-        relations: prefill.relations,
-      })
-      // 沿用上次的映射默认折起来（用户已经确认过它一次），现推的建议默认
-      // 展开——那份东西他还没看过。
-      setMappingExpanded(prefill.source === 'suggested')
+      setParseUi(ui)
+      parseSeqRef.current = {}
+      applyPrefill(added, true)
     } catch (err) {
       setFileError(err instanceof Error ? err.message : '读取文件表头失败')
     } finally {
       setReading(false)
     }
+  }
+
+  /**
+   * 解析设置改了之后重读列名。
+   *
+   * 中间态不到这里来：输入框里的文字先经过 optionsFromDraft，翻不过去就停在
+   * 上一次的列名并把拒绝的理由显示出来（见 handleDraftChange）。
+   */
+  const reparse = async (target: AddedFile, options: SourceParseOptions, seq: number) => {
+    const sheetChanged = options.sheet !== target.parseOptions.sheet
+    try {
+      const columns = await readSourceHeader(target.file, options)
+      const preview = sheetChanged
+        ? await readSourcePreview(target.file, PREVIEW_ROWS, options)
+        : null
+      if (parseSeqRef.current[target.id] !== seq) return
+      const next = files.map((f) =>
+        f.id === target.id ? { ...f, columns, parseOptions: options } : f,
+      )
+      setFiles(next)
+      if (preview !== null) {
+        setParseUi((prev) => ({ ...prev, [target.id]: { ...prev[target.id], preview } }))
+      }
+      // 列名整批换掉了，等于重新填了一份映射：沿用上次的折起来，现推的
+      // 建议展开——跟刚选完文件时同一条规则。
+      applyPrefill(next, true)
+    } catch (err) {
+      if (parseSeqRef.current[target.id] !== seq) return
+      // 读不出来就说出来。默默留着上一次的列名的话，用户以为自己选的工作表
+      // 生效了，而页面上的列名其实是另一张表的。
+      setParseUi((prev) => ({
+        ...prev,
+        [target.id]: {
+          ...prev[target.id],
+          error: err instanceof Error ? err.message : '按这份设置读不出列名',
+        },
+      }))
+    }
+  }
+
+  const handleDraftChange = (fileId: string, patch: Partial<ParseDraft>) => {
+    const target = files.find((f) => f.id === fileId)
+    const current = parseUi[fileId]
+    if (!target || !current) return
+    const draft = { ...current.draft, ...patch }
+    const result = optionsFromDraft(draft)
+    setParseUi((prev) => ({
+      ...prev,
+      [fileId]: { ...prev[fileId], draft, error: result.ok ? null : result.message },
+    }))
+    // 翻不过去就到此为止：列名保持上一次的，拒绝的理由已经显示出来了。把中间
+    // 态硬喂给解析器只会抛异常，喂一个"猜"出来的替代值则会让用户看到他没选过
+    // 的列名。
+    if (!result.ok) return
+    const seq = (parseSeqRef.current[fileId] ?? 0) + 1
+    parseSeqRef.current[fileId] = seq
+    reparse(target, result.options, seq).catch((err) => console.error(err))
   }
 
   useEffect(() => {
@@ -252,6 +381,13 @@ export function TableImportFlow({
         formData.append('config', new Blob([yamlText], { type: 'text/yaml' }), 'config.yaml')
       }
       for (const f of files) formData.append('data_files', f.file)
+      // 把页面上看到的列名一并发给后端对账。前端本地解析、后端跑批解析，两份
+      // 规则会悄悄分叉——9c71cf9 已经让它们分叉过一次。不对账的话，用户拿到的
+      // 结果跟他在界面上看到的不一样，而且没有任何提示。
+      formData.append(
+        'client_columns',
+        JSON.stringify(Object.fromEntries(files.map((f) => [f.file.name, f.columns]))),
+      )
       formData.append('dry_run', String(dryRun))
       formData.append('allow_large_sweep', String(allowLargeSweep))
       const response = await adminFetch(
@@ -317,6 +453,22 @@ export function TableImportFlow({
       </Step>
 
       <Step index={2} title="字段映射" done={source !== null} hint={mappingHint}>
+        {files.length > 0 && (
+          <div data-testid="parse-settings" className="flex flex-col gap-3">
+            {files.map((f) =>
+              parseUi[f.id] ? (
+                <ParseSettingsPanel
+                  key={f.id}
+                  file={f}
+                  ui={parseUi[f.id]}
+                  showFileName={files.length > 1}
+                  disabled={disabled}
+                  onChange={(patch) => handleDraftChange(f.id, patch)}
+                />
+              ) : null,
+            )}
+          </div>
+        )}
         {source === null ? (
           <p className="text-sm text-ink-soft">还没有选文件。</p>
         ) : (
@@ -569,6 +721,137 @@ export function TableImportFlow({
           {submitting ? '提交中…' : '开始导入'}
         </button>
       </Step>
+    </div>
+  )
+}
+
+/**
+ * 一张表的「解析设置」：选工作表、挑表头行、说明首数据行，旁边摆着这张表
+ * 原始的前 20 行。
+ *
+ * 表头行**不做自动探测**，缺省就是第 1 行。按填充密度找稳定数据块那条路线
+ * 被定量证伪（结论见 docs/superpowers/specs/2026-09-16-header-row-detection-design.md），
+ * 而且猜错的表头行不会被跑批前的列名对账拦住——前后端会一致地用同一个错误
+ * 行号，数据以"成功"导入成垃圾。所以这里给的是原始预览，由用户自己挑；解析
+ * 设置随映射一起存下来，每种文件形状只需要挑一次。
+ */
+function ParseSettingsPanel({
+  file,
+  ui,
+  showFileName,
+  disabled,
+  onChange,
+}: {
+  file: AddedFile
+  ui: FileParseUi
+  showFileName: boolean
+  disabled: boolean
+  onChange: (patch: Partial<ParseDraft>) => void
+}) {
+  const skip = skippedRows(file.parseOptions)
+  // 高亮的是**已经生效**的那一行，不是输入框里的文字：文字非法时列名没有跟着
+  // 变，高亮跟着变的话，预览会指向一行其实没被当成表头的内容。
+  const highlightedRow = file.parseOptions.headerRow ?? 1
+  const width = Math.min(
+    PREVIEW_COLUMNS,
+    ui.preview.reduce((max, row) => Math.max(max, row.length), 0),
+  )
+  const totalWidth = ui.preview.reduce((max, row) => Math.max(max, row.length), 0)
+
+  return (
+    <div className="flex flex-col gap-2 rounded-card border border-subtle bg-paper px-3 py-2 text-sm text-ink">
+      <div className="flex flex-wrap items-end gap-3">
+        <span className="font-bold">
+          解析设置{showFileName ? `：${file.file.name}` : ''}
+        </span>
+        {ui.sheetNames.length > 0 && (
+          <label className="flex flex-col gap-1 text-xs text-ink-soft">
+            <span className="font-bold text-ink">工作表</span>
+            <select
+              value={
+                typeof ui.draft.sheet === 'number'
+                  ? (ui.sheetNames[ui.draft.sheet] ?? '')
+                  : (ui.draft.sheet ?? '')
+              }
+              disabled={disabled}
+              onChange={(e) => onChange({ sheet: e.target.value === '' ? undefined : e.target.value })}
+              className={`min-h-[36px] rounded-control border border-subtle bg-card px-2 text-sm text-ink ${focusRing}`}
+            >
+              <option value="">第一张表（{ui.sheetNames[0]}）</option>
+              {ui.sheetNames.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label className="flex flex-col gap-1 text-xs text-ink-soft">
+          <span className="font-bold text-ink">表头行</span>
+          <input
+            type="number"
+            min={1}
+            value={ui.draft.headerRow}
+            disabled={disabled}
+            onChange={(e) => onChange({ headerRow: e.target.value })}
+            className={`min-h-[36px] w-24 rounded-control border border-subtle bg-card px-2 text-sm text-ink ${focusRing}`}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-ink-soft">
+          <span className="font-bold text-ink">首数据行</span>
+          <input
+            type="number"
+            min={1}
+            placeholder="紧跟表头"
+            value={ui.draft.firstDataRow}
+            disabled={disabled}
+            onChange={(e) => onChange({ firstDataRow: e.target.value })}
+            className={`min-h-[36px] w-24 rounded-control border border-subtle bg-card px-2 text-sm text-ink ${focusRing}`}
+          />
+        </label>
+        <span className="text-xs text-ink-soft">
+          {ui.fromStored ? '沿用上次配置' : '缺省：第 1 行表头'}，读到 {file.columns.length} 列
+        </span>
+      </div>
+
+      {/* 填大了会安静地少读数据，不说出来的话用户看不出自己丢了几行。 */}
+      {skip && (
+        <p className="text-xs text-ink-soft">
+          将跳过第 {skip.from}~{skip.to} 行（表头和数据之间的说明行）。
+        </p>
+      )}
+
+      {ui.error && (
+        <p role="alert" data-testid="parse-settings-error" className="text-xs text-ink">
+          {ui.error}下面的列名还是上一次生效的那一份。
+        </p>
+      )}
+
+      <div className="max-h-56 overflow-auto rounded-card border border-subtle bg-card">
+        <table className="min-w-full text-xs">
+          <tbody>
+            {ui.preview.map((row, index) => (
+              <tr
+                key={index}
+                className={index + 1 === highlightedRow ? 'bg-accent-secondary font-bold' : ''}
+              >
+                <td className="whitespace-nowrap px-2 py-1 text-ink-soft">
+                  {index + 1}
+                  {index + 1 === highlightedRow ? ' 表头' : ''}
+                </td>
+                {Array.from({ length: width }, (_, col) => (
+                  <td key={col} className="max-w-40 truncate px-2 py-1 text-ink">
+                    {row[col] ?? ''}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {totalWidth > width && (
+        <p className="text-xs text-ink-soft">预览只铺了前 {width} 列，这张表共 {totalWidth} 列。</p>
+      )}
     </div>
   )
 }

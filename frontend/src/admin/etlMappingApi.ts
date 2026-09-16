@@ -1,5 +1,13 @@
 import { adminFetch, extractErrorDetail } from './adminApi'
 
+/** 一张表怎么读——后端 staging 层的解析选项，snake_case、null 表示"没设"。 */
+export interface StoredSourceParseOptions {
+  file: string
+  sheet: string | number | null
+  header_row: number
+  first_data_row: number | null
+}
+
 /** 映射会怎么处理一张表——后端从 YAML 解析出来的、给界面看的形状。 */
 export interface EtlMappingSummary {
   entities: {
@@ -22,6 +30,8 @@ export interface EtlMappingSummary {
     attributes: Record<string, string>
   }[]
   relations: { relation_type: string; subject_term_type: string; object_term_type: string }[]
+  /** staging 层的解析选项。存量摘要没有这一段，按缺省解释。 */
+  sources?: StoredSourceParseOptions[]
 }
 
 export interface EtlMapping {

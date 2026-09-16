@@ -184,3 +184,52 @@ describe('解析选项校验', () => {
     await expect(readSourcePreview(file, 1, { sheet: -1 })).rejects.toThrow(/sheet/)
   })
 })
+
+describe('Excel 行形状', () => {
+  /**
+   * 第 3 行中间和行尾都是空格子：不给 sheet_to_json 传 defval 时，SheetJS 会
+   * 截掉行尾的空格子、并在行中间留下稀疏空洞。CSV 路径和后端（xlrd）给出的
+   * 都是满宽行，前端 Excel 路径不一致的话，同一张表在两端会有不同的列数。
+   */
+  function raggedFile(): File {
+    return xlsxFile('ragged.xlsx', {
+      Sheet1: [
+        ['a', 'b', 'c', 'd'],
+        ['1', '2', '3', '4'],
+        ['p', null, 'r', null],
+      ],
+    })
+  }
+
+  /** 满宽且无空洞：稀疏数组的 length 大于它实际拥有的下标个数。 */
+  function isDense(row: unknown[], width: number): boolean {
+    return row.length === width && Object.keys(row).length === width
+  }
+
+  it('表头行取到满宽、无空洞的列名', async () => {
+    const header = await readSourceHeader(raggedFile(), { headerRow: 3 })
+
+    expect(header).toHaveLength(4)
+    expect(header.every((cell) => typeof cell === 'string')).toBe(true)
+  })
+
+  it('预览行是满宽、无空洞的', async () => {
+    const rows = await readSourcePreview(raggedFile(), 3)
+
+    expect(rows.every((row) => isDense(row, 4))).toBe(true)
+  })
+
+  it('数据行是满宽、无空洞的', async () => {
+    const rows: string[][] = []
+
+    await readSourceRows(
+      raggedFile(),
+      { headerRow: 1 },
+      () => {},
+      (r) => rows.push(r),
+    )
+
+    expect(rows).toHaveLength(2)
+    expect(rows.every((row) => isDense(row, 4))).toBe(true)
+  })
+})

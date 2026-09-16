@@ -173,6 +173,20 @@ function sheetNotFoundError(sheet: string | number, available: string[]): Error 
   )
 }
 
+/**
+ * 一张工作表的全部行。
+ *
+ * `defval` 让 SheetJS 给每个空格子发出 `''`：不传的话它会截掉行尾的空格子、
+ * 并在行中间留下稀疏空洞，同一张表在这里拿到的行宽会参差不齐。CSV 路径和
+ * 后端（xlrd）给出的都是满宽行，这里不传就是一处前后端的形状分叉。
+ */
+function sheetRowsOf(
+  XLSX: typeof import('xlsx'),
+  sheet: import('xlsx').WorkSheet,
+): unknown[][] {
+  return XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' })
+}
+
 function cellToString(cell: unknown): string {
   if (cell === undefined || cell === null) return ''
   if (cell instanceof Date) return cell.toISOString().slice(0, 10)
@@ -298,7 +312,7 @@ async function readExcelRows(
     throw sheetNotFoundError(options.sheet, workbook.SheetNames)
   }
   const sheet = workbook.Sheets[sheetName]
-  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 })
+  const rows = sheetRowsOf(XLSX, sheet)
   const headerRow = headerRowOf(options)
   const header = rows[headerRow - 1]
   if (header === undefined) return
@@ -350,7 +364,7 @@ async function readExcelHeader(file: File, options: SourceParseOptions): Promise
     throw sheetNotFoundError(options.sheet, workbook.SheetNames)
   }
   const sheet = workbook.Sheets[sheetName]
-  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 })
+  const rows = sheetRowsOf(XLSX, sheet)
   const header = rows[headerRow - 1]
   if (header === undefined) return []
   return deduplicateHeader(header.map((cell) => cellToString(cell).trim()))
@@ -393,6 +407,6 @@ async function readExcelPreview(
     throw sheetNotFoundError(options.sheet, workbook.SheetNames)
   }
   const sheet = workbook.Sheets[sheetName]
-  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 })
+  const rows = sheetRowsOf(XLSX, sheet)
   return rows.slice(0, rowCount).map((row) => (row ?? []).map((cell) => cellToString(cell).trim()))
 }

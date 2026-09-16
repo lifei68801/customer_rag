@@ -251,6 +251,33 @@ function csv(header: string, name = 'sales_2026.csv') {
   return new File([`${header}\nA,1,张三,100000\n`], name, { type: 'text/csv' })
 }
 
+/** 第 1 行是标题带、第 2 行才是真表头的表——MUJI 那张主数据表的形状。 */
+function layeredCsv(name = 'layered.csv') {
+  return new File([`商品情報,,,
+${DEMO_HEADER}
+A,1,张三,100000
+`], name, {
+    type: 'text/csv',
+  })
+}
+
+/**
+ * 选文件 → 只等解析设置出现。
+ *
+ * chooseFile 等的是 mapping-overview，而那个东西只在映射折起来时才有——表头
+ * 行选错时映射是现推的建议、默认展开，等不到。挑表头行这件事发生在映射填好
+ * 之前，所以这里等的是解析设置。
+ */
+async function chooseFileForParseSettings(
+  user: ReturnType<typeof userEvent.setup>,
+  file: File,
+) {
+  const flow = await screen.findByTestId('table-import-flow')
+  await user.upload(within(flow).getByLabelText(/数据文件/) as HTMLInputElement, file)
+  await screen.findByTestId('parse-settings')
+  return flow
+}
+
 /** 选文件 → 等第二步填好。返回流程容器。 */
 async function chooseFile(user: ReturnType<typeof userEvent.setup>, file: File) {
   const flow = await screen.findByTestId('table-import-flow')
@@ -740,4 +767,130 @@ describe('预演转正式执行', () => {
     await screen.findByText(/已完成/)
     expect(screen.queryByRole('button', { name: '按这次预演正式执行' })).toBeNull()
   })
+})
+
+describe('解析设置', () => {
+  it('缺省是第 1 行表头，并把原始的前几行摆出来让用户自己挑', async () => {
+    // 不做自动探测：按填充密度猜表头行这条路线已被定量证伪，而猜错的行号
+    // 不会被跑批前的列名对账拦住（前后端会一致地用同一个错误行号）。所以
+    // 界面欠用户的是一份看得见的原始预览，不是一个猜测。
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFileForParseSettings(user, layeredCsv())
+
+    const settings = within(flow).getByTestId('parse-settings')
+    expect((within(settings).getByLabelText(/表头行/) as HTMLInputElement).value).toBe('1')
+    expect(settings.textContent).toMatch(/商品情報/)
+    expect(settings.textContent).toMatch(/Customer Zip Code/)
+  })
+
+  it('改了表头行之后列名跟着变', async () => {
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFileForParseSettings(user, layeredCsv())
+    const settings = within(flow).getByTestId('parse-settings')
+    const headerRowInput = within(settings).getByLabelText(/表头行/) as HTMLInputElement
+    await user.clear(headerRowInput)
+    await user.type(headerRowInput, '2')
+
+    await waitFor(() => {
+      // 第 2 行的列名跟存着的映射对得上，第 1 行（标题带）对不上。
+      // 注意不能只匹配「沿用上次配好的映射」——对不上时的提示语是「**没有**
+      // 沿用上次配好的映射：…Order ID…在这张表里不存在」，两条都能匹配到。
+      expect(within(flow).queryByTestId('stored-mapping-not-reused')).toBeNull()
+      expect(within(flow).getByTestId('mapping-overview').textContent).toMatch(/Order ID/)
+    })
+  }, 20000)
+
+  it('表头行清空时说明列名没跟着变，不把空值当成第 1 行', async () => {
+    // 清空输入框那一瞬间值就是空字符串，喂给解析器会被拒。悄悄换成 1 的话，
+    // 用户会看到一份他没选过的列名。
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFileForParseSettings(user, csv(DEMO_HEADER))
+    const headerRowInput = within(
+      within(flow).getByTestId('parse-settings'),
+    ).getByLabelText(/表头行/) as HTMLInputElement
+    await user.clear(headerRowInput)
+
+    await waitFor(() => {
+      expect(within(flow).getByTestId('parse-settings-error').textContent).toMatch(/表头行/)
+    })
+    // 列名没跟着变：存着的映射还沿用得上。
+    expect(within(flow).queryByTestId('stored-mapping-not-reused')).toBeNull()
+    expect(within(flow).getByTestId('mapping-overview').textContent).toMatch(/Order ID/)
+  }, 20000)
+
+  it('首数据行跳过一段时，说清会跳过哪几行', async () => {
+    // 填大了会安静地少读数据。不显示的话用户看不出自己丢了几行。
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFileForParseSettings(user, csv(DEMO_HEADER))
+    const firstDataRow = within(
+      within(flow).getByTestId('parse-settings'),
+    ).getByLabelText(/首数据行/) as HTMLInputElement
+    await user.clear(firstDataRow)
+    await user.type(firstDataRow, '5')
+
+    await waitFor(() => {
+      expect(within(flow).getByTestId('parse-settings').textContent).toMatch(/将跳过第 2~4 行/)
+    })
+  }, 20000)
+
+  it('提交时带上页面上看到的列名', async () => {
+    // 前端本地解析、后端跑批解析，两份规则会悄悄分叉——9c71cf9 已经让它们
+    // 分叉过一次。不把页面看到的列名发过去，后端就无从对账。
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFile(user, csv(DEMO_HEADER))
+    await user.click(within(flow).getByTestId('run-import'))
+
+    await waitFor(() => {
+      const posted = requests.find(
+        (r) => r.url.includes('/schema-etl/runs') && r.init?.method === 'POST',
+      )
+      expect(posted).toBeTruthy()
+      const body = posted!.init!.body as FormData
+      const declared = JSON.parse(body.get('client_columns') as string)
+      expect(declared['sales_2026.csv']).toEqual(DEMO_HEADER.split(','))
+    })
+  }, 20000)
+
+  it('存着的映射带解析设置时，重开页面要回填，而不是退回第 1 行', async () => {
+    // 摘要里存了"表头在第 2 行"，界面却显示第 1 行的话，用户看到的是一份
+    // 他没配过的设置，而且没有任何提示说设置被改了。
+    signIn('admin')
+    stubEtlMapping({
+      config_yaml: 'entities: []',
+      source_file_name: 'layered.csv',
+      created_at: '2026-09-15T00:00:00',
+      summary: {
+        ...DEMO_SUMMARY,
+        sources: [{ file: 'layered.csv', sheet: null, header_row: 2, first_data_row: null }],
+      },
+    })
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFileForParseSettings(user, layeredCsv())
+
+    const settings = within(flow).getByTestId('parse-settings')
+    expect((within(settings).getByLabelText(/表头行/) as HTMLInputElement).value).toBe('2')
+    expect(settings.textContent).toMatch(/沿用上次配置/)
+  }, 20000)
 })

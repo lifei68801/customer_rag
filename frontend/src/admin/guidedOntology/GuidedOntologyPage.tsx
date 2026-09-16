@@ -143,7 +143,14 @@ export function GuidedOntologyPage() {
         entities,
         relations,
         files: [
-          { id: GUIDED_FILE_ID, file: uploadedFile, columns: roled.map((c) => c.stats.name) },
+          {
+            id: GUIDED_FILE_ID,
+            file: uploadedFile,
+            columns: roled.map((c) => c.stats.name),
+            // 引导建本体这条路径还没有解析设置界面，走的是缺省（第一张表、
+            // 第 1 行表头）。
+            parseOptions: {},
+          },
         ],
       }),
       fileName: uploadedFile.name,

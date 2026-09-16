@@ -1,3 +1,5 @@
+import type { SourceParseOptions } from './sourceParser'
+
 export interface ExtraFieldSpec {
   /** 内部名。ETL 配置 YAML 里的字段键用它。 */
   name: string
@@ -21,6 +23,8 @@ export interface AddedFile {
   id: string
   file: File
   columns: string[]
+  /** 这张表怎么读。空对象 = 全用缺省（第一个工作表、第一行表头）。 */
+  parseOptions: SourceParseOptions
 }
 
 export interface ColumnKeyPart {
