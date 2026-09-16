@@ -7,6 +7,7 @@ import { useConfirm } from '../ConfirmContext'
 import { useToast } from '../ToastContext'
 import { nextStepHint } from './nextStep'
 import { projectToDraftPayload, projectToEtlYaml } from './projectToDraft'
+import { addManualClue, addManualTermType, renameTermType } from './skeletonEdits'
 import {
   createWorkspace,
   exportSkill,
@@ -44,7 +45,7 @@ const TAB_LABELS: { id: Tab; label: string }[] = [
  * 工作区是长期存在的，用户关掉页面一周后回来必须看到自己上次做到哪。
  */
 export function ModelingWorkbenchPage() {
-  const { sessionToken } = useAdminAuth()
+  const { sessionToken, username } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const confirm = useConfirm()
   const showToast = useToast()
@@ -145,6 +146,38 @@ export function ModelingWorkbenchPage() {
             ),
           },
     )
+  }
+
+  const handleRename = (from: string, to: string) => {
+    if (!workspace) return
+    const next = renameTermType(workspace.state, from, to)
+    if (next === workspace.state) {
+      setError(`改名没生效：新名字不能为空，也不能跟已有的实体类型重名（${to}）。`)
+      return
+    }
+    void persist(next)
+  }
+
+  const handleAddClue = (termValue: string, note: string) => {
+    if (!workspace) return
+    const next = addManualClue(
+      workspace.state,
+      termValue,
+      note,
+      username ?? '',
+      new Date().toISOString(),
+    )
+    if (next !== workspace.state) void persist(next)
+  }
+
+  const handleAddTerm = (value: string) => {
+    if (!workspace) return
+    const next = addManualTermType(workspace.state, value)
+    if (next === workspace.state) {
+      setError(`没有新增：名字不能为空，也不能跟已有的实体类型重名（${value}）。`)
+      return
+    }
+    void persist(next)
   }
 
   const handlePromote = (file: string, column: string) => {
@@ -325,6 +358,9 @@ export function ModelingWorkbenchPage() {
               grounding={grounding}
               busy={busy}
               onReview={handleReview}
+              onRename={handleRename}
+              onAddClue={handleAddClue}
+              onAddTerm={handleAddTerm}
             />
           )}
           {tab === 'data' && (

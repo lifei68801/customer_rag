@@ -313,4 +313,41 @@ describe('建模工作台', () => {
       expect(calls.some(([url]) => String(url).includes('/draft/replace'))).toBe(true)
     })
   })
+
+  it('改名会连同约束里的引用一起存回去', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWith('pending')
+    renderWorkbench()
+    const input = await screen.findByLabelText('SKU 的新名字')
+    await userEvent.clear(input)
+    await userEvent.type(input, '商品')
+    await userEvent.click(screen.getByRole('button', { name: '改名 SKU' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    const body = saved[0] as { state: { term_types: { value: string }[] } }
+    expect(body.state.term_types[0].value).toBe('商品')
+  })
+
+  it('能给未落地的元素加一条人工旁证', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWith('accepted')
+    renderWorkbench()
+    await userEvent.type(await screen.findByLabelText('给 SKU 加旁证'), '数据下个月接')
+    await userEvent.click(screen.getByRole('button', { name: '加旁证 SKU' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    const body = saved[0] as { state: { term_types: { clues: { note: string }[] }[] } }
+    expect(body.state.term_types[0].clues[0].note).toBe('数据下个月接')
+  })
+
+  it('能手工新增一个实体类型', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWith('accepted')
+    renderWorkbench()
+    await userEvent.type(await screen.findByLabelText('新实体类型名'), '促销活动')
+    await userEvent.click(screen.getByRole('button', { name: '新增实体类型' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    const body = saved[0] as { state: { term_types: { value: string; provenance: string }[] } }
+    expect(body.state.term_types.some((t) => t.value === '促销活动' && t.provenance === 'manual')).toBe(
+      true,
+    )
+  })
 })

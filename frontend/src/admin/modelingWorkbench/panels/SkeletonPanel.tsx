@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { Grounding, WorkspaceState } from '../types'
 import { panelClass, secondaryButtonClass, tagClass } from '../ui'
 
@@ -24,7 +25,13 @@ export function SkeletonPanel(props: {
   grounding: Grounding | null
   busy: boolean
   onReview: (kind: 'term' | 'relation', key: string, review: 'accepted' | 'rejected') => void
+  onRename: (from: string, to: string) => void
+  onAddClue: (termValue: string, note: string) => void
+  onAddTerm: (value: string) => void
 }) {
+  const [renameDraft, setRenameDraft] = useState<Record<string, string>>({})
+  const [clueDraft, setClueDraft] = useState<Record<string, string>>({})
+  const [newTerm, setNewTerm] = useState('')
   const groundedTerms = new Set(props.grounding?.grounded_term_types ?? [])
   const groundedRelations = new Set(props.grounding?.grounded_relation_types ?? [])
   const terms = props.state.term_types
@@ -63,8 +70,69 @@ export function SkeletonPanel(props: {
             >
               {`拒绝 ${term.value}`}
             </button>
+            <label className="sr-only" htmlFor={`rename-${term.value}`}>
+              {`${term.value} 的新名字`}
+            </label>
+            <input
+              id={`rename-${term.value}`}
+              className="w-32 rounded-control border border-subtle bg-paper px-2 py-1 text-sm"
+              value={renameDraft[term.value] ?? term.value}
+              onChange={(e) => setRenameDraft({ ...renameDraft, [term.value]: e.target.value })}
+            />
+            <button
+              type="button"
+              className={secondaryButtonClass}
+              disabled={props.busy}
+              onClick={() => props.onRename(term.value, renameDraft[term.value] ?? term.value)}
+            >
+              {`改名 ${term.value}`}
+            </button>
+            <label className="sr-only" htmlFor={`clue-${term.value}`}>
+              {`给 ${term.value} 加旁证`}
+            </label>
+            <input
+              id={`clue-${term.value}`}
+              className="w-40 rounded-control border border-subtle bg-paper px-2 py-1 text-sm"
+              placeholder="例如：数据下个月接"
+              value={clueDraft[term.value] ?? ''}
+              onChange={(e) => setClueDraft({ ...clueDraft, [term.value]: e.target.value })}
+            />
+            <button
+              type="button"
+              className={secondaryButtonClass}
+              disabled={props.busy}
+              onClick={() => {
+                props.onAddClue(term.value, clueDraft[term.value] ?? '')
+                setClueDraft({ ...clueDraft, [term.value]: '' })
+              }}
+            >
+              {`加旁证 ${term.value}`}
+            </button>
           </div>
         ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="sr-only" htmlFor="new-term">
+            新实体类型名
+          </label>
+          <input
+            id="new-term"
+            className="w-40 rounded-control border border-subtle bg-paper px-2 py-1 text-sm"
+            placeholder="骨架里缺的概念"
+            value={newTerm}
+            onChange={(e) => setNewTerm(e.target.value)}
+          />
+          <button
+            type="button"
+            className={secondaryButtonClass}
+            disabled={props.busy}
+            onClick={() => {
+              props.onAddTerm(newTerm)
+              setNewTerm('')
+            }}
+          >
+            新增实体类型
+          </button>
+        </div>
       </section>
 
       <section className={`${panelClass} flex flex-col gap-3`}>
