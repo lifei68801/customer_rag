@@ -7,6 +7,7 @@ import { useConfirm } from '../ConfirmContext'
 import { useToast } from '../ToastContext'
 import { nextStepHint } from './nextStep'
 import { projectToDraftPayload, projectToEtlYaml } from './projectToDraft'
+import { assignColumnAsField, assignColumnAsKey } from './columnAssign'
 import { addManualClue, addManualTermType, renameTermType } from './skeletonEdits'
 import {
   createWorkspace,
@@ -221,6 +222,23 @@ export function ModelingWorkbenchPage() {
     })
   }
 
+  const handleAssign = (file: string, column: string, termValue: string, as: 'key' | 'field') => {
+    if (!workspace) return
+    const next =
+      as === 'key'
+        ? assignColumnAsKey(workspace.state, file, column, termValue)
+        : assignColumnAsField(workspace.state, file, column, termValue)
+    if (next === workspace.state) {
+      setError(
+        as === 'field'
+          ? `${termValue} 还没在 ${file} 里有键列，先把它的键列指到这张表。`
+          : `没法把 ${column} 指给 ${termValue}：它不存在或已被拒绝。`,
+      )
+      return
+    }
+    void persist(next)
+  }
+
   const handlePreview = async () => {
     if (!sessionToken || !workspace) return
     setBusy(true)
@@ -379,6 +397,7 @@ export function ModelingWorkbenchPage() {
               busy={busy}
               onMerged={(next) => void persist(next)}
               onPromote={handlePromote}
+              onAssign={handleAssign}
             />
           )}
           {tab === 'ungrounded' && (

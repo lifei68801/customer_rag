@@ -8,6 +8,7 @@ import { ConfirmProvider } from '../ConfirmContext'
 import { ToastProvider } from '../ToastContext'
 import { ADMIN_ROUTES } from '../../adminRoutes'
 import { resetAdminSession } from '../useAdminAuth'
+import type { ModelingWorkspace } from './types'
 
 /**
  * 工作台页面的行为测试。跟 guidedPage.test.tsx 同一套搭台方式（whoami 打桩、
@@ -47,7 +48,7 @@ const SKILLS = [
   },
 ]
 
-function workspaceWith(termReview: 'pending' | 'accepted') {
+function workspaceWith(termReview: 'pending' | 'accepted'): ModelingWorkspace {
   return {
     tenant_id: 'demo',
     skill_name: 'consumer_retail',
@@ -89,6 +90,26 @@ function workspaceWith(termReview: 'pending' | 'accepted') {
       questions: [],
     },
   }
+}
+
+/**
+ * 带一张已扫描但没有被骨架接住的表：给「数据」面板"角色/依据显示"和
+ * "指给…"两条测试用。基于 workspaceWith('accepted')，SKU 已接受但还没有
+ * data_match，两列都落在 unmatched_columns 里等着手动指派。
+ */
+function workspaceWithUnmatched() {
+  const ws = workspaceWith('accepted')
+  ws.state.sources = [
+    {
+      file: 'sku.xls',
+      columns: [
+        { name: '商品コード', role: 'identifier', reason: '25 个非空值里 25 个不同（100%）', inferred_type: 'string' },
+        { name: '売価', role: 'measure', reason: '带小数', inferred_type: 'number' },
+      ],
+    },
+  ]
+  ws.state.unmatched_columns = { 'sku.xls': ['商品コード', '売価'] }
+  return ws
 }
 
 const json = (body: unknown, status = 200) =>
@@ -466,5 +487,34 @@ describe('建模工作台', () => {
     expect(product.role).toBe('dimension')
     // 依据必须带具体数字——用户要能据此推翻判定
     expect(product.reason).toMatch(/\d/)
+  })
+
+  it('未接住的列旁显示角色和判定依据', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWithUnmatched()
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: '数据' }))
+    expect(await screen.findByText('商品コード')).toBeInTheDocument()
+    // 依据要能看见——用户据此判断该不该指给 SKU
+    expect(screen.getByText(/25 个非空值里 25 个不同/)).toBeInTheDocument()
+    expect(screen.getByText('标识')).toBeInTheDocument()
+  })
+
+  it('把一列指给 SKU 当键列后整份存回，别名跟着写进去', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWithUnmatched()
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: '数据' }))
+    await userEvent.selectOptions(await screen.findByLabelText('把 商品コード 指给'), 'SKU:key')
+    await userEvent.click(screen.getByRole('button', { name: '指给 商品コード' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    const body = saved[0] as {
+      state: { term_types: { value: string; key_aliases: string[]; data_match: { key_columns: string[]; matched_by: string } | null }[]; unmatched_columns: Record<string, string[]> }
+    }
+    const sku = body.state.term_types.find((t) => t.value === 'SKU')!
+    expect(sku.data_match?.key_columns).toEqual(['商品コード'])
+    expect(sku.data_match?.matched_by).toBe('manual')
+    expect(sku.key_aliases).toContain('商品コード')
+    expect(body.state.unmatched_columns['sku.xls']).toEqual(['売価'])
   })
 })

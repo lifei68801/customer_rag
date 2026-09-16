@@ -14,17 +14,31 @@ import { panelClass, primaryButtonClass, secondaryButtonClass, tagClass } from '
  * 解析选项（工作表、表头行）必须在这里就能填：MUJI 那张表表头在第 6 行，
  * 按缺省第 1 行读出来的列名全是空的，对齐一条都命不中，而界面上看不出原因。
  */
+const ROLE_LABEL: Record<string, string> = {
+  identifier: '标识',
+  dimension: '维度',
+  measure: '度量',
+  freetext: '文本',
+  date: '日期',
+}
+
+function columnInfo(state: WorkspaceState, file: string, column: string) {
+  return state.sources.find((s) => s.file === file)?.columns?.find((c) => c.name === column)
+}
+
 export function DataPanel(props: {
   state: WorkspaceState
   busy: boolean
   onMerged: (next: WorkspaceState) => void
   onPromote: (file: string, column: string) => void
+  onAssign: (file: string, column: string, termValue: string, as: 'key' | 'field') => void
 }) {
   const [file, setFile] = useState<File | null>(null)
   const [sheetNames, setSheetNames] = useState<string[]>([])
   const [draft, setDraft] = useState<ParseDraft>(draftFromOptions({}))
   const [error, setError] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
+  const [assignDraft, setAssignDraft] = useState<Record<string, string>>({})
 
   const handleFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const picked = event.target.files?.[0]
@@ -164,18 +178,57 @@ export function DataPanel(props: {
         {unmatchedEntries.map(([fileName, columns]) => (
           <div key={fileName} className="flex flex-col gap-1">
             <p className="text-sm font-bold text-ink">{fileName}</p>
-            <div className="flex flex-wrap gap-2">
-              {columns.map((column) => (
-                <button
-                  key={column}
-                  type="button"
-                  className={secondaryButtonClass}
-                  disabled={props.busy}
-                  onClick={() => props.onPromote(fileName, column)}
-                >
-                  {`把 ${column} 提升为实体类型`}
-                </button>
-              ))}
+            <div className="flex flex-col gap-2">
+              {columns.map((column) => {
+                const info = columnInfo(props.state, fileName, column)
+                const draftKey = `${fileName}::${column}`
+                const candidates = props.state.term_types.filter((t) => t.review !== 'rejected')
+                return (
+                  <div key={column} className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-sm font-semibold text-ink">{column}</span>
+                    {info && <span className={tagClass}>{ROLE_LABEL[info.role] ?? info.role}</span>}
+                    {info && <span className="text-xs text-ink-soft">{info.reason}</span>}
+                    <button
+                      type="button"
+                      className={secondaryButtonClass}
+                      disabled={props.busy}
+                      onClick={() => props.onPromote(fileName, column)}
+                    >
+                      {`把 ${column} 提升为实体类型`}
+                    </button>
+                    <label className="sr-only" htmlFor={`assign-${draftKey}`}>
+                      {`把 ${column} 指给`}
+                    </label>
+                    <select
+                      id={`assign-${draftKey}`}
+                      className="rounded-control border border-subtle bg-paper px-2 py-1 text-sm"
+                      value={assignDraft[draftKey] ?? ''}
+                      onChange={(e) => setAssignDraft({ ...assignDraft, [draftKey]: e.target.value })}
+                    >
+                      <option value="">指给…</option>
+                      {candidates.map((t) => (
+                        <optgroup key={t.value} label={t.value}>
+                          <option value={`${t.value}:key`}>{`改为用 ${column} 当 ${t.value} 的键列`}</option>
+                          <option value={`${t.value}:field`}>{`当 ${t.value} 的字段`}</option>
+                        </optgroup>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className={secondaryButtonClass}
+                      disabled={props.busy || !assignDraft[draftKey]}
+                      onClick={() => {
+                        const [termValue, as] = (assignDraft[draftKey] ?? '').split(':')
+                        if (!termValue || (as !== 'key' && as !== 'field')) return
+                        props.onAssign(fileName, column, termValue, as)
+                        setAssignDraft({ ...assignDraft, [draftKey]: '' })
+                      }}
+                    >
+                      {`指给 ${column}`}
+                    </button>
+                  </div>
+                )
+              })}
             </div>
           </div>
         ))}
