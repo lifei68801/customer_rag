@@ -297,6 +297,11 @@ async def save_workspace(
     的两个人同时开着它很正常。无锁覆盖时后点保存的人会静默抹掉前一个人刚
     做完的一批审阅，而两边界面都显示"已保存"。
     """
+    # 存在性判断放在校验之前：不存在时客户端要拿到 404 才知道该重新起步
+    # （建工作区），拿到 400 会误以为是自己传的 state 有问题，去改 state
+    # 而不是重新创建。
+    if await get_workspace(conn, tenant_id) is None:
+        raise WorkspaceNotFoundError(f"租户 {tenant_id} 还没有建模工作区")
     # 校验放在写之前：校验失败时库里还是上一版，不需要事务回滚（理由同
     # replace_draft 的 docstring：单例连接上不能用显式事务）。
     normalized = validate_state(state)

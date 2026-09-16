@@ -157,6 +157,21 @@ async def test_save_absent_workspace_raises():
         )
 
 
+async def test_save_absent_workspace_with_invalid_state_still_raises_not_found():
+    # 不存在 + state 也非法时，客户端要拿到 404（该重新起步）而不是 400
+    # （会误以为是自己传的 state 有问题，去改 state 而不是重新创建）。
+    conn = await _conn()
+    with pytest.raises(WorkspaceNotFoundError):
+        await save_workspace(
+            conn,
+            "t1",
+            state={"term_types": [{"value": "SKU", "provenance": "llm", "review": "pending"}]},
+            expected_updated_at="whatever",
+            actor="a",
+            now="b",
+        )
+
+
 async def test_save_rejects_malformed_state_without_writing():
     conn = await _conn()
     created = await create_workspace(conn, "t1", skill=None, actor="alice", now="2026-09-16T10:00:00")
