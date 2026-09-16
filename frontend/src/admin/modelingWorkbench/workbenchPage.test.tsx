@@ -17,6 +17,9 @@ import { resetAdminSession } from '../useAdminAuth'
 let signedInRole: 'admin' | 'member' | null = null
 let workspace: unknown = null
 const saved: unknown[] = []
+// 只给"点两下按钮之间要不要禁用"这类测试用：PUT 的响应故意拖一拖，好在
+// 它还没回来的那个窗口里断言按钮状态。
+let putDelayMs = 0
 
 const SKILLS = [
   {
@@ -123,6 +126,11 @@ function stubApi() {
           const body = JSON.parse(String(init?.body))
           saved.push(body)
           workspace = { ...workspaceWith('pending'), state: body.state, updated_at: 'later' }
+          if (putDelayMs > 0) {
+            return new Promise((resolve) =>
+              setTimeout(() => resolve(new Response(JSON.stringify({ workspace }), { status: 200 })), putDelayMs),
+            )
+          }
           return json({ workspace })
         }
         return json({ workspace })
@@ -137,6 +145,7 @@ beforeEach(() => {
   signedInRole = null
   workspace = null
   saved.length = 0
+  putDelayMs = 0
   resetAdminSession()
   sessionStorage.clear()
   localStorage.clear()
@@ -200,7 +209,10 @@ describe('建模工作台', () => {
     workspace = workspaceWith('pending')
     renderWorkbench()
     await userEvent.click(await screen.findByRole('button', { name: '拒绝 SKU' }))
-    await waitFor(() => expect(saved).toHaveLength(1))
+    // 等状态真的落地（"已拒绝"标签出现）再断言，而不是 saved.length 一到 1
+    // 就看——mock 是同步 push 的，那时 setWorkspace 可能还没把新状态渲染出来，
+    // 看到的会是保存前的 DOM，不能证明"拒绝之后还在"。
+    expect(await screen.findByText('已拒绝')).toBeInTheDocument()
     expect(screen.getByText('SKU')).toBeInTheDocument()
   })
 
@@ -271,5 +283,34 @@ describe('建模工作台', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
     expect(calls.some(([url]) => String(url).includes('/draft/replace'))).toBe(false)
+  })
+
+  it('保存还没落地之前，骨架面板的按钮全部禁用——避免连点两下撞乐观锁', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWith('pending')
+    putDelayMs = 50
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: '接受 SKU' }))
+    // PUT 还没回来：这时点「拒绝 SKU」会带着同一份旧 updated_at 发第二个
+    // PUT，后端必然 409。按钮此刻必须是禁用的。
+    expect(await screen.findByRole('button', { name: '拒绝 SKU' })).toBeDisabled()
+    await waitFor(() => expect(saved).toHaveLength(1))
+  })
+
+  it('跳过「看看会改什么」直接点「写入草稿」也会先算差异、弹确认框', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWith('accepted')
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: /^应用$/ }))
+    // 故意不点「看看会改什么」：diff 这时还是 null，红框也没出现过。
+    await userEvent.click(await screen.findByRole('button', { name: /写入草稿/ }))
+    // 确认框必须出现——不能因为没点过预览，删除项就悄悄绕过这层拦截。
+    const confirmButton = await screen.findByRole('button', { name: '继续写入' })
+    const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+    expect(calls.some(([url]) => String(url).includes('/draft/replace'))).toBe(false)
+    await userEvent.click(confirmButton)
+    await waitFor(() => {
+      expect(calls.some(([url]) => String(url).includes('/draft/replace'))).toBe(true)
+    })
   })
 })

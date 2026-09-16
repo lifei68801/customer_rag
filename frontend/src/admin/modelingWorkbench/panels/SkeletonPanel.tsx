@@ -22,6 +22,7 @@ const REVIEW_LABEL: Record<string, string> = {
 export function SkeletonPanel(props: {
   state: WorkspaceState
   grounding: Grounding | null
+  busy: boolean
   onReview: (kind: 'term' | 'relation', key: string, review: 'accepted' | 'rejected') => void
 }) {
   const groundedTerms = new Set(props.grounding?.grounded_term_types ?? [])
@@ -49,7 +50,7 @@ export function SkeletonPanel(props: {
             <button
               type="button"
               className={secondaryButtonClass}
-              disabled={term.review === 'accepted'}
+              disabled={props.busy || term.review === 'accepted'}
               onClick={() => props.onReview('term', term.value, 'accepted')}
             >
               {`接受 ${term.value}`}
@@ -57,7 +58,7 @@ export function SkeletonPanel(props: {
             <button
               type="button"
               className={secondaryButtonClass}
-              disabled={term.review === 'rejected'}
+              disabled={props.busy || term.review === 'rejected'}
               onClick={() => props.onReview('term', term.value, 'rejected')}
             >
               {`拒绝 ${term.value}`}
@@ -84,7 +85,7 @@ export function SkeletonPanel(props: {
             <button
               type="button"
               className={secondaryButtonClass}
-              disabled={relation.review === 'accepted'}
+              disabled={props.busy || relation.review === 'accepted'}
               onClick={() => props.onReview('relation', relation.relation_type, 'accepted')}
             >
               {`接受 ${relation.relation_type}`}
@@ -92,7 +93,7 @@ export function SkeletonPanel(props: {
             <button
               type="button"
               className={secondaryButtonClass}
-              disabled={relation.review === 'rejected'}
+              disabled={props.busy || relation.review === 'rejected'}
               onClick={() => props.onReview('relation', relation.relation_type, 'rejected')}
             >
               {`拒绝 ${relation.relation_type}`}

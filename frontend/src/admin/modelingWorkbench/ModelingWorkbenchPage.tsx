@@ -8,7 +8,6 @@ import { useToast } from '../ToastContext'
 import { nextStepHint } from './nextStep'
 import { projectToDraftPayload, projectToEtlYaml } from './projectToDraft'
 import {
-  WorkspaceConflictError,
   createWorkspace,
   exportSkill,
   fetchGrounding,
@@ -57,13 +56,11 @@ export function ModelingWorkbenchPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
 
+  // WorkspaceConflictError 不需要单独分支：后端 409 的 detail 本来就带着
+  // "刷新后重试"，跟下面 fallback 分支做的事完全一样。
   const reportError = useCallback((err: unknown, fallback: string) => {
-    if (err instanceof WorkspaceConflictError) {
-      // 冲突要提示刷新，不是重试——再点一次仍然是旧时间戳
-      setError(`${err.message}`)
-      return
-    }
     setError(err instanceof Error ? err.message : fallback)
   }, [])
 
@@ -82,7 +79,13 @@ export function ModelingWorkbenchPage() {
         setSkills(loadedSkills)
         setGrounding(loadedGrounding)
       } catch (err) {
-        if (!cancelled) reportError(err, '加载建模工作区失败')
+        if (!cancelled) {
+          reportError(err, '加载建模工作区失败')
+          // 加载失败跟"还没有工作区"是两回事：不标出来的话，下面的渲染
+          // 条件会把失败呈现成 StartPanel 的空白起步页，用户会以为自己
+          // 从没建过工作区，而不是这次请求没成功。
+          setLoadFailed(true)
+        }
       } finally {
         if (!cancelled) setLoaded(true)
       }
@@ -198,18 +201,32 @@ export function ModelingWorkbenchPage() {
       setError('工作区里一个已接受的实体类型都没有，写入草稿没有意义。先去「骨架」面板接受几条。')
       return
     }
+    setBusy(true)
+    setError(null)
+    // 跳过「看看会改什么」直接点「写入草稿」时 diff 还是 null：这里必须
+    // 现算一份，否则删除项既不会出现在红框里、也不会触发下面的确认框，
+    // 整份替换就静默删掉了草稿里手工加的东西。
+    let effectiveDiff = diff
+    if (effectiveDiff === null) {
+      try {
+        effectiveDiff = await previewApply(tenantId, sessionToken, payload)
+        setDiff(effectiveDiff)
+      } catch (err) {
+        reportError(err, '计算差异失败')
+        setBusy(false)
+        return
+      }
+    }
     if (
-      diff !== null &&
-      diff.removed_term_types.length + diff.removed_relation_types.length > 0 &&
+      effectiveDiff.removed_term_types.length + effectiveDiff.removed_relation_types.length > 0 &&
       !(await confirm({
-        message: `写入后这些会从草稿里消失：${[...diff.removed_term_types, ...diff.removed_relation_types].join('、')}。`,
+        message: `写入后这些会从草稿里消失：${[...effectiveDiff.removed_term_types, ...effectiveDiff.removed_relation_types].join('、')}。`,
         confirmLabel: '继续写入',
       }))
     ) {
+      setBusy(false)
       return
     }
-    setBusy(true)
-    setError(null)
     try {
       const mapping = projectToEtlYaml(workspace.state, tenantId)
       const response = await adminFetch(
@@ -283,7 +300,7 @@ export function ModelingWorkbenchPage() {
 
       {!loaded && <p className="text-sm text-ink-soft">加载中…</p>}
 
-      {loaded && workspace === null && (
+      {loaded && !loadFailed && workspace === null && (
         <StartPanel skills={skills} busy={busy} onStart={handleStart} />
       )}
 
@@ -303,7 +320,12 @@ export function ModelingWorkbenchPage() {
             ))}
           </div>
           {tab === 'skeleton' && (
-            <SkeletonPanel state={workspace.state} grounding={grounding} onReview={handleReview} />
+            <SkeletonPanel
+              state={workspace.state}
+              grounding={grounding}
+              busy={busy}
+              onReview={handleReview}
+            />
           )}
           {tab === 'data' && (
             <DataPanel
