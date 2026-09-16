@@ -1,0 +1,43 @@
+name: consumer_retail
+version: "1"
+display_name: 消费品零售
+description: 面向品牌方/零售商的 SKU 主数据、品类、门店骨架。源自 2026-09 MUJI 商品知识中台项目，别名按该项目实际列名整理。
+
+term_types:
+  - value: SKU
+    display_name: 商品
+    standard_name_value_type: string
+    extra_fields:
+      - { name: color, value_type: string, display_name: 颜色 }
+      - { name: size, value_type: string, display_name: 尺码 }
+      - { name: retail_price, value_type: number, display_name: 零售价 }
+    # 数据发现用的匹配线索。别名归一化后与列名精确相等即对上；命不中就
+    # 命不中，由用户在工作台手动指列（v2 才交给 match_hint 里的提示词）。
+    key_aliases: [jan, jan_cd, sku, sku_code, sku_cd, item_cd, item_code, 商品编码, 品番]
+    field_aliases:
+      color: [color, colour, color_cd, 颜色, 現地語色]
+      size: [size, size_cd, 尺码, サイズ]
+      retail_price: [retail_price, price, sale_price, 零售价, 売価]
+  - value: Category
+    display_name: 品类
+    key_aliases: [category, category_cd, cat_cd, class_cd, 品类, 大分类, 分类]
+  - value: Store
+    display_name: 门店
+    key_aliases: [store, store_cd, store_code, shop, shop_cd, 门店, 店铺, 店舗]
+
+relation_types:
+  - relation_type: BELONGS_TO_CATEGORY
+    example_phrase: 某商品属于某品类
+    description: SKU 到其所属品类
+  - relation_type: SOLD_AT
+    example_phrase: 某商品在某门店有售
+    description: SKU 到有售门店
+
+constraints:
+  - [SKU, BELONGS_TO_CATEGORY, Category]
+  - [SKU, SOLD_AT, Store]
+
+# v2 用；v1 加载但不读。
+questions:
+  - 哪个品类的商品数最多？
+  - 某个 SKU 在哪些门店有售？

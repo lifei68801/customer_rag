@@ -24,6 +24,7 @@ from app.ingestion.ocr_parser import OcrFunction
 from app.ingestion.table_extraction import TableExtractionFunction
 from app.ingestion.table_extraction_factory import build_table_extractor_from_settings
 from app.ingestion.tracking import ensure_tracking_schema
+from app.graphrag.ontology_skills import SkillRegistry, discover_skills
 from app.graphrag.ontology_store import open_ontology_store_conn
 from app.providers.embedding import EmbeddingRegistry
 from app.providers.factory import (
@@ -69,6 +70,7 @@ __all__ = [
     "get_rerank_provider",
     "get_review_conn",
     "get_settings",
+    "get_skill_registry",
     "get_table_extractor",
     "get_tool_registry",
     "get_tts_provider",
@@ -94,6 +96,8 @@ _memory_conn_cache: aiosqlite.Connection | None = None
 _memory_conn_lock = asyncio.Lock()
 _tool_registry_cache: ToolRegistry | None = None
 _tool_registry_lock = asyncio.Lock()
+_skill_registry_cache: SkillRegistry | None = None
+_skill_registry_lock = asyncio.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +302,19 @@ async def get_tool_registry() -> ToolRegistry:
                 tools_dir = Path(__file__).resolve().parent.parent / "agent" / "tools"
                 _tool_registry_cache = discover_tools(tools_dir)
     return _tool_registry_cache
+
+
+async def get_skill_registry() -> SkillRegistry:
+    """进程内单例：首次访问时扫描 app/ontology_skills/*/skill.yaml 构建一次，
+    此后复用——跟 get_tool_registry 同一个双重检查锁定模式，也同样意味着
+    新增/修改 skill 目录后运行中的进程不会感知到，要重启服务才生效。"""
+    global _skill_registry_cache
+    if _skill_registry_cache is None:
+        async with _skill_registry_lock:
+            if _skill_registry_cache is None:
+                skills_dir = Path(__file__).resolve().parent.parent / "ontology_skills"
+                _skill_registry_cache = discover_skills(skills_dir)
+    return _skill_registry_cache
 
 
 def get_asr_provider(
