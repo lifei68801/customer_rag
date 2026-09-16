@@ -60,6 +60,41 @@ export function deduplicateHeader(names: string[]): string[] {
   return result
 }
 
+/**
+ * 砍掉行尾那些名字为空的列。
+ *
+ * 四个读取器对"这张表有几列"的口径本来各不相同：xlrd（.xls）按实际存在的
+ * 单元格记录算，openpyxl 的 read_only 模式按工作表声明的 dimension 算，
+ * 这里的 SheetJS 按 `!ref` 算。手工编辑过的 Excel 里声明范围常常比实际数据
+ * 宽，于是同一张表在两端得到不同的列数——真实的 MUJI .xls 是前端 114 /
+ * 后端 113，而 dimension 被撑宽的 .xlsx 反过来是前端 3 / 后端 6。列数对不上，
+ * 跑批前的逐列对账会直接判 400，这张表根本导不进来。
+ *
+ * 这条规则跟后端 `app/graphrag/etl_staging.py::trim_trailing_empty_names`
+ * 逐字对应：取到表头行之后、去重之前，砍掉**行尾连续的**空名列。
+ *
+ * 只砍尾部：中间的空名列一列都不能动。MUJI 那张表第 52~56 列就是中间的
+ * 空名列，砍掉会让后面所有列的位置整体左移——而列数还是对得上的，对账
+ * 发现不了。
+ *
+ * 代价：行尾那些没有列名、下面却有数据的列会被丢掉。这类列今天本来也无法
+ * 在字段映射里被引用（名字是空的），丢掉它换列数口径一致。
+ */
+export function trimTrailingEmptyNames(names: string[]): string[] {
+  let end = names.length
+  while (end > 0 && names[end - 1].trim() === '') end -= 1
+  return names.slice(0, end)
+}
+
+/**
+ * 原始表头 → 可用作列键的表头。两步的顺序是这一处说了算，四个读取入口都走
+ * 它，免得某一条路径漏掉一步或把顺序做反：先砍尾部空名列，再去重。反过来的
+ * 话 " (2)" 这类后缀是按砍之前的位置算出来的，砍掉之后编号会错乱。
+ */
+function headerFrom(rawNames: string[]): string[] {
+  return deduplicateHeader(trimTrailingEmptyNames(rawNames))
+}
+
 // 按标准 CSV 引号规则（RFC 4180）解析一行，跟后端 Python csv 模块的解析规则
 // 对齐——如果表头列名里本身带分隔符，必须用双引号包裹（如 "A,B"），双引号
 // 内部的字面双引号写成两个连续双引号（""）转义，这里同样处理这两种情况。
@@ -327,7 +362,7 @@ async function readDelimitedRows(
     lineNumber += 1
     if (lineNumber < headerRow) continue
     if (lineNumber === headerRow) {
-      onHeader(deduplicateHeader(parseDelimitedHeaderLine(line, delimiter)))
+      onHeader(headerFrom(parseDelimitedHeaderLine(line, delimiter)))
       continue
     }
     if (lineNumber < firstDataRow) continue
@@ -368,7 +403,7 @@ async function readExcelRows(
   const headerRow = headerRowOf(options)
   const header = rows[headerRow - 1]
   if (header === undefined) return
-  onHeader(deduplicateHeader(header.map((cell) => cellToString(cell).trim())))
+  onHeader(headerFrom(header.map((cell) => cellToString(cell).trim())))
   for (let index = firstDataRowOf(options) - 1; index < rows.length; index++) {
     onRow((rows[index] ?? []).map(cellToString))
   }
@@ -395,7 +430,7 @@ async function readDelimitedHeader(
   for await (const line of readDelimitedLines(file)) {
     lineNumber += 1
     if (lineNumber === headerRow) {
-      return deduplicateHeader(parseDelimitedHeaderLine(line, delimiter))
+      return headerFrom(parseDelimitedHeaderLine(line, delimiter))
     }
   }
   return []
@@ -419,7 +454,7 @@ async function readExcelHeader(file: File, options: SourceParseOptions): Promise
   const rows = sheetRowsOf(XLSX, sheet)
   const header = rows[headerRow - 1]
   if (header === undefined) return []
-  return deduplicateHeader(header.map((cell) => cellToString(cell).trim()))
+  return headerFrom(header.map((cell) => cellToString(cell).trim()))
 }
 
 /**

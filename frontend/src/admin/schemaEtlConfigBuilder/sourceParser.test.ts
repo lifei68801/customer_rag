@@ -5,6 +5,7 @@ import {
   readSourcePreview,
   readSourceRows,
   sameEffectiveParseOptions,
+  trimTrailingEmptyNames,
 } from './sourceParser'
 
 function csvFile(name: string, text: string): File {
@@ -201,7 +202,10 @@ describe('Excel 行形状', () => {
       Sheet1: [
         ['a', 'b', 'c', 'd'],
         ['1', '2', '3', '4'],
-        ['p', null, 'r', null],
+        // 行中间有空洞，行尾有值——尾部留值是故意的：尾部空名列会被
+        // trimTrailingEmptyNames 砍掉，那是另一组用例在管的事，混在一起
+        // 这组就测不出"稀疏空洞"本身了。
+        ['p', null, 'r', 's'],
       ],
     })
   }
@@ -333,4 +337,50 @@ describe('声明范围比实际单元格宽的表', () => {
       })
     })
   }
+})
+
+describe('trimTrailingEmptyNames', () => {
+  it('砍掉行尾连续的空名列', () => {
+    expect(trimTrailingEmptyNames(['a', 'b', 'c', '', ''])).toEqual(['a', 'b', 'c'])
+  })
+
+  it('中间的空名列一列都不动', () => {
+    // 砍掉中间那个，后面所有列的位置会整体左移——而列数还是对得上的，
+    // 跑批前的对账发现不了。
+    expect(trimTrailingEmptyNames(['a', '', 'c'])).toEqual(['a', '', 'c'])
+  })
+
+  it('全是空名时砍成空数组，不报错', () => {
+    expect(trimTrailingEmptyNames(['', '  '])).toEqual([])
+  })
+})
+
+describe('列数口径跟后端对齐', () => {
+  it('CSV 行尾多出来的逗号不算列', async () => {
+    const file = csvFile('trailing.csv', 'a,b,c,,\n1,2,3,,\n')
+
+    expect(await readSourceHeader(file)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('Excel 行尾的空名列不算列', async () => {
+    const file = xlsxFile('trailing.xlsx', {
+      Sheet1: [
+        ['a', 'b', 'c', '', ''],
+        ['1', '2', '3', '', ''],
+      ],
+    })
+
+    expect(await readSourceHeader(file)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('中间的空名列照常参与去重，位置不变', async () => {
+    const file = xlsxFile('middle.xlsx', {
+      Sheet1: [
+        ['a', '', 'c'],
+        ['1', '2', '3'],
+      ],
+    })
+
+    expect(await readSourceHeader(file)).toEqual(['a', '', 'c'])
+  })
 })

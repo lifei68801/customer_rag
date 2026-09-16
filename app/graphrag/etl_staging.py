@@ -49,6 +49,41 @@ def deduplicate_header(names: Sequence[str]) -> list[str]:
     return result
 
 
+
+def trim_trailing_empty_names(names: Sequence[str]) -> list[str]:
+    """砍掉行尾那些名字为空的列。
+
+    四个读取器对"这张表有几列"的口径本来各不相同：xlrd（.xls）按实际存在的
+    单元格记录算，openpyxl 的 read_only 模式按工作表声明的 dimension 算，
+    前端 SheetJS 按 !ref 算。手工编辑过的 Excel 里声明范围常常比实际数据宽，
+    于是同一张表在两端得到不同的列数——真实的 MUJI .xls 是前端 114 / 后端
+    113，而 dimension 被撑宽的 .xlsx 反过来是前端 3 / 后端 6。列数对不上，
+    跑批前的逐列对账会直接判 400，这张表根本导不进来。
+
+    这条规则前后端逐字对应（前端 sourceParser.ts::trimTrailingEmptyNames）：
+    取到表头行之后、去重之前，砍掉**行尾连续的**空名列。
+
+    只砍尾部：中间的空名列一列都不能动。MUJI 那张表第 52~56 列就是中间的
+    空名列，砍掉会让后面所有列的位置整体左移——而列数还是对得上的，对账
+    发现不了。
+
+    必须在 deduplicate_header **之前**砍：反过来的话 " (2)" 这类后缀是按砍
+    之前的位置算出来的，砍掉之后编号会错乱。
+
+    代价：行尾那些没有列名、下面却有数据的列会被丢掉。这类列今天本来也无法
+    在字段映射里被引用（名字是空的），丢掉它换列数口径一致。
+    """
+    end = len(names)
+    while end > 0 and names[end - 1].strip() == "":
+        end -= 1
+    return list(names[:end])
+
+
+def header_from(raw_names: Sequence[str]) -> list[str]:
+    """原始表头 → 可用作列键的表头。两步的顺序是这一处说了算，三个读取器
+    都走它，免得某一条路径漏掉一步或把顺序做反。"""
+    return deduplicate_header(trim_trailing_empty_names(raw_names))
+
 def _detect_text_encoding(path: Path) -> str:
     """CSV/TSV 源文件的编码探测：优先按 UTF-8 严格解码，失败则回退尝试
     GBK（国内 Excel 导出 CSV 最常见的默认编码）——见
@@ -93,7 +128,7 @@ def _read_delimited_rows(
         header: list[str] | None = None
         for record_number, row in enumerate(reader, start=1):
             if record_number == options.header_row:
-                header = deduplicate_header(row)
+                header = header_from(row)
                 break
         if header is None:
             # 表头行号超出文件长度。产出空序列，跟"空文件"同一个终态。
@@ -150,7 +185,7 @@ def _read_xlsx_rows(path: Path, *, options: SourceParseOptions) -> Iterator[dict
                 break
         if header_cells is None:
             return
-        header = deduplicate_header(
+        header = header_from(
             [str(cell).strip() if cell is not None else "" for cell in header_cells]
         )
         first_data_row = options.resolved_first_data_row
@@ -218,7 +253,7 @@ def _read_xls_rows(path: Path, *, options: SourceParseOptions) -> Iterator[dict[
     header_idx = options.header_row - 1
     if worksheet.nrows <= header_idx:
         return
-    header = deduplicate_header(
+    header = header_from(
         [str(worksheet.cell_value(header_idx, col)).strip() for col in range(worksheet.ncols)]
     )
     for row_idx in range(options.resolved_first_data_row - 1, worksheet.nrows):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json as _json
+import re
 from pathlib import Path
 
 import pytest
@@ -211,17 +212,20 @@ def test_read_table_rows_avoids_colliding_with_an_existing_suffixed_name(tmp_pat
 
 def test_read_table_rows_keeps_unnamed_columns_apart(tmp_path: Path):
     """空列名彼此也是重名。MUJI 那张表有几十列表头是空的，全部挤进同一个
-    "" 键的话，它们会互相覆盖成一列。"""
+    "" 键的话，它们会互相覆盖成一列。
+
+    空列名放在**中间**：行尾的空列名会被 _trim_trailing_empty_names 砍掉
+    （前后端同一条规则），那是另一条用例在管的事。"""
     path = tmp_path / "unnamed.xlsx"
     workbook = Workbook()
     sheet = workbook.active
-    sheet.append(["name", None, None])
-    sheet.append(["foo", "x", "y"])
+    sheet.append(["name", None, None, "tail"])
+    sheet.append(["foo", "x", "y", "z"])
     workbook.save(path)
 
     rows = list(read_table_rows(path))
 
-    assert rows == [{"name": "foo", "": "x", " (2)": "y"}]
+    assert rows == [{"name": "foo", "": "x", " (2)": "y", "tail": "z"}]
 
 
 # CSV 路径为了做重名列去重，从 csv.DictReader 换成了 csv.reader + 手工建
@@ -393,3 +397,84 @@ def test_shared_dedup_case_file_is_not_silently_empty():
     """fixture 少了几条或者被清空，两边都会"全绿"——而全绿的原因是没跑用例。
     这条断言是对那种静默失效的唯一防线。"""
     assert len(_load_dedup_cases()) >= 8
+
+
+# ---------------------------------------------------------------------------
+# 行尾空列名的裁剪：前后端列数口径必须一致
+#
+# 四个读取器对"这张表有几列"的口径各不相同：
+#   - xlrd（.xls）按实际存在的单元格记录算
+#   - openpyxl 的 read_only 模式按工作表声明的 dimension 算
+#   - 前端 SheetJS 按 !ref 算
+# 手工编辑过的 Excel 里声明范围常常比实际数据宽，于是同一张表在两端会得到
+# 不同的列数：真实的 MUJI .xls 是前端 114 / 后端 113，而声明范围被撑宽的
+# .xlsx 反过来是前端 3 / 后端 6。列数对不上，跑批前的逐列对账直接判 400。
+#
+# 统一的规则：取到表头行之后、去重之前，砍掉**行尾连续的**空名列。中间的
+# 空名列一列不动——MUJI 第 52~56 列就是中间的空名列，砍掉会让后面所有列的
+# 位置整体左移。
+# ---------------------------------------------------------------------------
+
+
+def _widen_xlsx_dimension(path: Path, ref: str) -> None:
+    """把 xlsx 里声明的 dimension 改宽，模拟手工编辑过的 Excel。
+
+    openpyxl 的 read_only 模式信这个声明，普通模式不信——staging 用的正是
+    read_only。"""
+    import shutil
+    import zipfile
+
+    source = path.with_suffix(".orig.xlsx")
+    shutil.move(str(path), str(source))
+    with zipfile.ZipFile(source) as old, zipfile.ZipFile(path, "w") as new:
+        for item in old.infolist():
+            data = old.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                data = re.sub(rb'<dimension ref="[^"]*"/>', f'<dimension ref="{ref}"/>'.encode(), data)
+            new.writestr(item, data)
+
+
+def test_read_table_rows_trims_trailing_empty_column_names_in_csv(tmp_path: Path):
+    """一行 `a,b,c,,,` 尾部那几个空列同理。"""
+    path = tmp_path / "trailing.csv"
+    path.write_text("a,b,c,,\n1,2,3,,\n", encoding="utf-8")
+
+    rows = list(read_table_rows(path))
+
+    assert rows == [{"a": "1", "b": "2", "c": "3"}]
+
+
+def test_read_table_rows_trims_columns_beyond_declared_dimension_in_xlsx(tmp_path: Path):
+    """声明范围被撑宽的 xlsx：openpyxl 的 read_only 会按声明产出 6 列，
+    后三列没有名字。不砍的话后端 6 列、前端 3 列，对账判 400。"""
+    path = tmp_path / "widened.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["a", "b", "c"])
+    sheet.append(["1", "2", "3"])
+    workbook.save(path)
+    _widen_xlsx_dimension(path, "A1:F2")
+
+    rows = list(read_table_rows(path))
+
+    assert rows == [{"a": "1", "b": "2", "c": "3"}]
+
+
+def test_read_table_rows_trims_trailing_empty_column_names_in_xls(tmp_path: Path):
+    path = tmp_path / "trailing.xls"
+    _write_xls(path, [["a", "b", "c", "", ""], ["1", "2", "3", "", ""]])
+
+    rows = list(read_table_rows(path))
+
+    assert rows == [{"a": "1", "b": "2", "c": "3"}]
+
+
+def test_read_table_rows_keeps_empty_column_names_in_the_middle(tmp_path: Path):
+    """中间的空名列一列都不能少：砍掉它，后面所有列的位置会整体左移，而
+    列数还是对得上的——对账发现不了。"""
+    path = tmp_path / "middle.csv"
+    path.write_text("a,,c\n1,2,3\n", encoding="utf-8")
+
+    rows = list(read_table_rows(path))
+
+    assert rows == [{"a": "1", "": "2", "c": "3"}]
