@@ -28,6 +28,10 @@ from app.graphrag.schema_etl_config import (
     parse_schema_etl_config,
 )
 
+# 与 ontology_skills._SKILL_NAME_PATTERN 用的是同一条规则：skill 名要能直接
+# 当 app/ontology_skills/<name>/ 的目录名用。那边的正则是模块私有名，这里
+# 故意复制一份而不是跨模块 import——代价是两处规则要同步，漂移的后果是
+# 导出这边放行了一个名字，提交进代码仓后 load_skill 却拒绝装载。
 _SKILL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}\Z")
 
 
@@ -63,9 +67,13 @@ async def export_skill_yaml(
             config = parse_schema_etl_config(
                 mapping.config_yaml, origin=f"{tenant_id} 的已确认 ETL 映射"
             )
-        except InvalidSchemaETLConfigError:
+        except (InvalidSchemaETLConfigError, yaml.YAMLError):
             # 映射坏了不该挡住导出：本体本身是完整的，别名空着让人工补，
-            # 比让"导出"这个只读动作报错更有用。
+            # 比让"导出"这个只读动作报错更有用。写入侧（set_draft_etl_mapping）
+            # 不校验 YAML 合法性，所以语法损坏（截断、手改出错）的 config_yaml
+            # 是能落库的可达状态——parse_schema_etl_config 内部的 yaml.safe_load
+            # 没有 try 包裹，语法错误会抛 yaml.YAMLError 而不是
+            # InvalidSchemaETLConfigError，两种都要接住。
             config = None
         if config is not None:
             for entity in config.entities:
@@ -100,7 +108,17 @@ async def export_skill_yaml(
                     for f in t.extra_fields
                 ],
                 "key_aliases": key_aliases.get(t.value, []),
-                "field_aliases": field_aliases.get(t.value, {}),
+                # 按这次导出的 extra_fields 名字集合过滤：本体改了字段但 ETL
+                # 映射没跟着改是系统认可的可达状态（replace_draft 的
+                # etl_mapping 是可选参数），漂移时 field_mappings 里可能还
+                # 留着一个本体已不再声明的字段名。不过滤的话产物会带上一条
+                # 指向未声明字段的 field_aliases，load_skill._parse_term_type
+                # 会因此拒绝装载——导出出来的东西装不回去。
+                "field_aliases": {
+                    field_name: aliases
+                    for field_name, aliases in field_aliases.get(t.value, {}).items()
+                    if field_name in {f.name for f in t.extra_fields}
+                },
             }
             for t in term_types
         ],
