@@ -274,9 +274,27 @@ function sheetRowsOf(
   return XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', range })
 }
 
+/**
+ * 日期格子按**本地**年月日格式化，不用 toISOString()。
+ *
+ * SheetJS 在 cellDates: true 下发出的是本地时区的 Date，而 toISOString() 会先
+ * 折算成 UTC：东八区下 `2026-01-15 00:00` 会变成 `2026-01-14T16:00:00Z`，截出
+ * 来的日期整整差一天。后端 convert_excel_cell_to_string 用的是 strftime，
+ * 拿到的是 `2026-01-15`——同一个格子两端得到不同的字符串，而这正是这条管线
+ * 反复出问题的那一类分叉：日期型的表头格子会让跑批前的逐列对账直接判 400，
+ * 引导建模里的日期样例值则会整体早一天显示。
+ *
+ * 带时分秒的格子这里仍然只给日期（后端给的是 `%Y-%m-%d %H:%M:%S`），那一半
+ * 分叉牵动列类型推断，另开任务处理。
+ */
+function dateToLocalDateString(value: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`
+}
+
 function cellToString(cell: unknown): string {
   if (cell === undefined || cell === null) return ''
-  if (cell instanceof Date) return cell.toISOString().slice(0, 10)
+  if (cell instanceof Date) return dateToLocalDateString(cell)
   return String(cell)
 }
 

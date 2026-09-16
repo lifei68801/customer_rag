@@ -954,3 +954,46 @@ def test_start_run_ignores_client_columns_for_files_it_did_not_receive(client, r
     )
 
     assert response.status_code == 200, response.text
+
+
+def test_start_run_does_not_let_client_columns_escape_the_run_dir(client, review_conn, tmp_path):
+    """declared 的键完全来自请求体。不净化就能用 "../" 走出 run_dir，让对账
+    去读任意一份表，再把那份表的列名回显在 400 报文里。落盘那边一直是过
+    _sanitize_data_filename 的，这里必须走同一条规则。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+    outside = tmp_path / "uploads" / "outside_secret.csv"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(b"secret_col_a,secret_col_b\n1,2\n")
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files=[
+            ("config", ("config.yaml", _EMPTY_MAPPING_CONFIG)),
+            ("data_files", ("ok.csv", b"a,b\n1,2\n")),
+        ],
+        data={
+            "client_columns": json.dumps(
+                {"ok.csv": ["a", "b"], "../../../outside_secret.csv": ["x"]}
+            )
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert "secret_col_a" not in response.text
+
+
+def test_start_run_does_not_call_a_data_less_table_a_column_mismatch(client, review_conn):
+    """只有表头、没有数据行的表读出来是零行，不会写入任何东西。按"服务端
+    0 列"报出去的话，用户看到的是一个跟真实原因毫无关系的说法。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files=[
+            ("config", ("config.yaml", _EMPTY_MAPPING_CONFIG)),
+            ("data_files", ("only_header.csv", b"a,b\n")),
+        ],
+        data={"client_columns": json.dumps({"only_header.csv": ["a", "b"]})},
+    )
+
+    assert response.status_code == 200, response.text

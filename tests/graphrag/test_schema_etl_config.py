@@ -424,3 +424,27 @@ def test_summarize_schema_etl_config_includes_sources():
     assert summary["sources"] == [
         {"file": "a.xls", "sheet": "Master", "header_row": 6, "first_data_row": None}
     ]
+
+
+@pytest.mark.parametrize(
+    "line, expected",
+    [
+        ("    header_row: null\n", "header_row"),
+        ('    header_row: "6"\n', "header_row"),
+        ("    header_row: true\n", "header_row"),
+        ("    header_row: 6.5\n", "header_row"),
+        ("    first_data_row: []\n", "first_data_row"),
+        ("    sheet: 3.5\n", "sheet"),
+        ("    sheet: true\n", "sheet"),
+    ],
+)
+def test_parse_schema_etl_config_rejects_non_integer_parse_options(line, expected):
+    """SourceParseOptions 的检查是拿值去跟整数比大小：header_row: null 会在
+    那里抛 TypeError，最终变成一句 "'<' not supported between instances of
+    'NoneType' and 'int'"——用户手上是一份 YAML，不该收到 Python 内部的类型
+    错误。header_row: true 更糟，isinstance(True, int) 为真，会被当成 1 悄悄
+    通过。"""
+    with pytest.raises(InvalidSchemaETLConfigError, match=expected):
+        parse_schema_etl_config(
+            "tenant_id: muji\nsources:\n  - file: a.xls\n" + line + "entities: []\nrelations: []\n"
+        )

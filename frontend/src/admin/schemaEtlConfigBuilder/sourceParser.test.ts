@@ -384,3 +384,28 @@ describe('列数口径跟后端对齐', () => {
     expect(await readSourceHeader(file)).toEqual(['a', '', 'c'])
   })
 })
+
+describe('日期格子', () => {
+  // 后端 convert_excel_cell_to_string 对午夜的 datetime 给的是 strftime
+  // '%Y-%m-%d'，也就是本地口径的年月日。前端若用 toISOString() 会先折算成
+  // UTC，东八区下整整差一天——日期型的表头格子会让跑批前的逐列对账直接判
+  // 400，引导建模里的日期样例值则会整体早一天显示。
+  it('按本地年月日格式化，不被时区折算掉一天', async () => {
+    const file = xlsxFile('dates.xlsx', {
+      Sheet1: [['ordered_at'], [new Date(2026, 0, 15)]],
+    })
+
+    const rows: string[][] = []
+    await readSourceRows(file, {}, () => {}, (row) => rows.push(row))
+
+    expect(rows[0][0]).toBe('2026-01-15')
+  })
+
+  it('日期当列名时也一样——这一列的名字两端必须是同一个字符串', async () => {
+    const file = xlsxFile('dateheader.xlsx', {
+      Sheet1: [[new Date(2026, 0, 15)], ['x']],
+    })
+
+    expect(await readSourceHeader(file)).toEqual(['2026-01-15'])
+  })
+})

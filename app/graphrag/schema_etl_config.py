@@ -136,6 +136,31 @@ def _parse_sources(raw_list: list) -> dict[str, SourceParseOptions]:
         if file_name in sources:
             # 谁生效取决于 dict 的覆盖顺序，那是掷骰子。
             raise InvalidSchemaETLConfigError(f"sources 里 {file_name!r} 出现了不止一次")
+        # 类型先校验：SourceParseOptions 的检查是拿值去跟整数比大小，
+        # header_row: null 或 header_row: "6" 会在那里抛 TypeError，最终变成
+        # 一句 "'<' not supported between instances of 'NoneType' and 'int'"
+        # ——用户手上是一份 YAML，不该收到一个 Python 内部的类型错误。
+        # bool 单独挡掉：isinstance(True, int) 为真，header_row: true 会被
+        # 当成 1 悄悄通过。
+        #
+        # null 的含义两个字段不同：first_data_row 整个不写、或写成 null，都是
+        # 合法的"没设"（缺省紧跟表头）；header_row 的缺省是 1，只有"整个不写"
+        # 算没设，显式写成 null 是把它设成了空值，照样要拒绝。
+        for key, null_means_unset in (("header_row", False), ("first_data_row", True)):
+            if key not in raw:
+                continue
+            value = raw[key]
+            if value is None and null_means_unset:
+                continue
+            if value is None or isinstance(value, bool) or not isinstance(value, int):
+                raise InvalidSchemaETLConfigError(
+                    f"{file_name} 的 {key} 要填一个行号（整数），收到: {value!r}"
+                )
+        sheet = raw.get("sheet")
+        if sheet is not None and (isinstance(sheet, bool) or not isinstance(sheet, (str, int))):
+            raise InvalidSchemaETLConfigError(
+                f"{file_name} 的 sheet 要填工作表名（字符串）或序号（整数），收到: {sheet!r}"
+            )
         try:
             sources[file_name] = SourceParseOptions(
                 sheet=raw.get("sheet"),

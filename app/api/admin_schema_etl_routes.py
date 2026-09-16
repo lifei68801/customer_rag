@@ -274,15 +274,27 @@ def _find_column_mismatches(
 
     前端声明了、但这次没上传的文件跳过：用户可能在界面上加过又移除，多出来
     的条目不该让跑批失败。
+
+    文件名走跟落盘同一条净化规则：数据文件是按 _sanitize_data_filename 的
+    结果写进 run_dir 的，这里若拿前端原样的名字去拼，含特殊字符的文件会
+    永远找不到、对账被静默跳过——恰恰是最可能分叉的那批。更要紧的是，
+    declared 的键完全来自请求体，不净化就能用 "../" 走出 run_dir，让这个
+    函数去读任意一份表、再把它的列名回显在 400 报文里。
     """
     mismatches: list[tuple[str, list[str], list[str]]] = []
     for file_name, client_side in declared.items():
-        path = run_dir / file_name
+        path = run_dir / _sanitize_data_filename(file_name)
         if not path.exists():
             continue
         options = config.sources.get(file_name) or SourceParseOptions()
         first = next(iter(read_table_rows(path, options)), None)
-        server_side = list(first.keys()) if first is not None else []
+        if first is None:
+            # 一行数据都没有（只有表头，或表头之后全是空行）。这张表读出来
+            # 是零行，不会写入任何东西，列名对不对账都改变不了结果；而按
+            # "服务端 0 列"报出去，用户看到的是一个跟真实原因毫无关系的
+            # 说法——真实原因是这张表没有数据行。
+            continue
+        server_side = list(first.keys())
         # 按顺序逐项比，不比集合：顺序决定哪一列对应哪个位置。
         if server_side != list(client_side):
             mismatches.append((file_name, list(client_side), server_side))
