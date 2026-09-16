@@ -337,7 +337,7 @@ export function OntologySchemaPage() {
         className={`flex items-center gap-1.5 self-start rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
       >
         <Wand2 aria-hidden="true" className="h-4 w-4" />
-        从表格开始引导建模
+        打开建模工作台
       </Link>
 
       {pageError && (

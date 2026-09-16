@@ -132,7 +132,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: ADMIN_ROUTES.ontology, label: '本体结构', icon: Network },
       { path: ADMIN_ROUTES.ontologyGraph, label: '本体图', icon: Waypoints },
-      { path: ADMIN_ROUTES.guidedOntology, label: '引导建模', icon: Wand2 },
+      { path: ADMIN_ROUTES.guidedOntology, label: '建模工作台', icon: Wand2 },
       { path: ADMIN_ROUTES.persona, label: '数字人', icon: UserRound },
     ],
   },
