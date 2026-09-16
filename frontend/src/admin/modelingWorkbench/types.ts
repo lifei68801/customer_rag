@@ -62,6 +62,14 @@ export interface WorkspaceConstraint {
   review: ReviewState
 }
 
+/** 一条约束出不了关系映射时的说明。给应用面板显示，让用户去表格导入页手动配。 */
+export interface SkippedRelation {
+  subject: string
+  relation: string
+  object: string
+  reason: string
+}
+
 /** 扫描时算出的一列：角色、判定依据、推断类型。存下来是为了不重扫就能显示依据、
  *  投影关系时判断主语表有没有宾语键列、手动指字段时推 value_type。 */
 export interface SourceColumn {

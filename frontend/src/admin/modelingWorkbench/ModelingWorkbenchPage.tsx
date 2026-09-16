@@ -6,7 +6,7 @@ import { useAdminTenant } from '../TenantContext'
 import { useConfirm } from '../ConfirmContext'
 import { useToast } from '../ToastContext'
 import { nextStepHint } from './nextStep'
-import { projectToDraftPayload, projectToEtlYaml } from './projectToDraft'
+import { previewSkippedRelations, projectToDraftPayload, projectToEtlYaml } from './projectToDraft'
 import { assignColumnAsField, assignColumnAsKey, setFieldAliases, setKeyAliases } from './columnAssign'
 import { addManualClue, addManualTermType, renameTermType } from './skeletonEdits'
 import {
@@ -420,6 +420,7 @@ export function ModelingWorkbenchPage() {
           {tab === 'apply' && (
             <ApplyPanel
               diff={diff}
+              skippedRelations={previewSkippedRelations(workspace.state)}
               busy={busy}
               onPreview={handlePreview}
               onApply={handleApply}

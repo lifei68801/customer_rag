@@ -546,4 +546,19 @@ describe('建模工作台', () => {
     const body = saved[0] as { state: { term_types: { field_aliases: Record<string, string[]> }[] } }
     expect(body.state.term_types[0].field_aliases.color).toEqual(['色', 'colour'])
   })
+
+  it('应用面板列出出不了关系映射的约束', async () => {
+    signedInRole = 'member'
+    const ws = workspaceWith('accepted')
+    ws.state.term_types[0].data_match = { source_file: 'sku.xls', key_columns: ['JAN'], field_columns: {}, matched_by: 'alias:jan' }
+    ws.state.term_types.push({ ...ws.state.term_types[0], value: 'Store', display_name: 'Store', data_match: { source_file: 'store.csv', key_columns: ['STORE_CD'], field_columns: {}, matched_by: 'alias:store_cd' } })
+    ws.state.constraints = [{ subject: 'SKU', relation: 'SOLD_AT', object: 'Store', provenance: 'skill', review: 'pending' }]
+    ws.state.sources = [{ file: 'sku.xls', columns: [{ name: 'JAN', role: 'identifier', reason: '', inferred_type: 'string' }] }]
+    workspace = ws
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: /^应用$/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /看看会改什么/ }))
+    expect(await screen.findByText(/没有 Store 的键列 STORE_CD/)).toBeInTheDocument()
+    expect(screen.getByText(/表格导入页手动配/)).toBeInTheDocument()
+  })
 })

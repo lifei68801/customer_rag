@@ -1,4 +1,4 @@
-import type { DraftDiff } from '../types'
+import type { DraftDiff, SkippedRelation } from '../types'
 import { panelClass, primaryButtonClass, secondaryButtonClass } from '../ui'
 
 /**
@@ -9,6 +9,7 @@ import { panelClass, primaryButtonClass, secondaryButtonClass } from '../ui'
  */
 export function ApplyPanel(props: {
   diff: DraftDiff | null
+  skippedRelations: SkippedRelation[]
   busy: boolean
   onPreview: () => void
   onApply: () => void
@@ -64,6 +65,14 @@ export function ApplyPanel(props: {
           {Object.values(props.diff).every((items) => items.length === 0) && (
             <p className="text-ink-soft">没有差异，草稿已经是这个样子。</p>
           )}
+        </div>
+      )}
+      {props.skippedRelations.length > 0 && (
+        <div className="flex flex-col gap-1 text-sm text-ink">
+          <p className="font-bold">这些关系出不了映射，要在表格导入页手动配：</p>
+          {props.skippedRelations.map((s) => (
+            <p key={`${s.subject}-${s.relation}-${s.object}`}>{`${s.subject} -${s.relation}-> ${s.object}：${s.reason}`}</p>
+          ))}
         </div>
       )}
     </section>

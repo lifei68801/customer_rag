@@ -1,7 +1,7 @@
 import { buildConfigYaml } from '../schemaEtlConfigBuilder/buildConfigYaml'
 import type { AddedFile, BuilderEntity, BuilderRelation } from '../schemaEtlConfigBuilder/types'
 import { parseOptionsOf } from './types'
-import type { DraftPayload, WorkspaceState } from './types'
+import type { DraftPayload, SkippedRelation, WorkspaceState, WorkspaceTermType } from './types'
 
 /**
  * 工作区 → `/draft/replace` 的 payload。
@@ -68,7 +68,7 @@ export function projectToDraftPayload(state: WorkspaceState): DraftPayload {
 export function projectToEtlYaml(
   state: WorkspaceState,
   tenantId: string,
-): { yaml: string; fileName: string } | null {
+): { yaml: string; fileName: string; skippedRelations: SkippedRelation[] } | null {
   const matched = state.term_types.filter((t) => t.review === 'accepted' && t.data_match !== null)
   if (matched.length === 0) return null
 
@@ -94,26 +94,67 @@ export function projectToEtlYaml(
     }
   })
 
-  // 约束的取舍规则同 projectToDraftPayload：只排除 rejected，pending 照常带，
-  // 再看主宾两端是否都接上了数据。
-  const relations: BuilderRelation[] = state.constraints
-    .filter(
-      (c) =>
-        c.review !== 'rejected' &&
-        matched.some((t) => t.value === c.subject) &&
-        matched.some((t) => t.value === c.object),
-    )
-    .map((c) => ({
-      id: `${c.subject}-${c.relation}-${c.object}`,
-      // 关系从主语所在的那张表出：那张表的每一行都指向一个宾语。
-      fileId: matched.find((t) => t.value === c.subject)!.data_match!.source_file,
-      subjectTermType: c.subject,
-      relationType: c.relation,
-      objectTermType: c.object,
-    }))
+  const { relations, skipped } = pickRelations(state, matched)
 
   return {
     yaml: buildConfigYaml({ tenantId, entities, relations, files }),
     fileName: fileNames[0],
+    skippedRelations: skipped,
   }
+}
+
+/**
+ * 决定哪些约束能出关系映射。
+ *
+ * 既有 ETL 的关系语义：从主语表出，**同一行**用宾语实体的 node_key 列算宾语键
+ * （etl_projection 不接受"宾语键在这张表叫别的名字"）。所以宾语的键列必须原名
+ * 出现在主语表里，否则每一行都因缺列变成 RowFailure——整条关系静默跳过，配置层
+ * 不报错。这里提前判掉，把原因交给应用面板说出来，比让用户跑完批才发现强。
+ *
+ * 主语表没有 columns（v1 存下的旧工作区）时视为未知，同样跳过：宁可让用户重扫
+ * 一次，也不出一条可能整条跑空的映射。
+ *
+ * 约束的取舍规则同 projectToDraftPayload：只排除 rejected，pending 照常带，
+ * 再看主宾两端是否都接上了数据，最后才是这里新加的列存在性检查。
+ */
+function pickRelations(
+  state: WorkspaceState,
+  matched: WorkspaceTermType[],
+): { relations: BuilderRelation[]; skipped: SkippedRelation[] } {
+  const relations: BuilderRelation[] = []
+  const skipped: SkippedRelation[] = []
+  for (const c of state.constraints) {
+    if (c.review === 'rejected') continue
+    const subject = matched.find((t) => t.value === c.subject)
+    const object = matched.find((t) => t.value === c.object)
+    if (!subject || !object) continue
+    const subjectFile = subject.data_match!.source_file
+    const columns = state.sources.find((s) => s.file === subjectFile)?.columns
+    const entry = { subject: c.subject, relation: c.relation, object: c.object }
+    if (columns === undefined) {
+      skipped.push({ ...entry, reason: `主语表 ${subjectFile} 还没重新扫描过，不知道有哪些列` })
+      continue
+    }
+    const names = new Set(columns.map((col) => col.name))
+    const missing = object.data_match!.key_columns.filter((k) => !names.has(k))
+    if (missing.length > 0) {
+      skipped.push({ ...entry, reason: `主语表 ${subjectFile} 里没有 ${c.object} 的键列 ${missing.join('/')}` })
+      continue
+    }
+    relations.push({
+      id: `${c.subject}-${c.relation}-${c.object}`,
+      // 关系从主语所在的那张表出：那张表的每一行都指向一个宾语。
+      fileId: subjectFile,
+      subjectTermType: c.subject,
+      relationType: c.relation,
+      objectTermType: c.object,
+    })
+  }
+  return { relations, skipped }
+}
+
+/** 应用面板预览用：跟 projectToEtlYaml 走同一套判断，不用等真正投影才知道哪些出不了。 */
+export function previewSkippedRelations(state: WorkspaceState): SkippedRelation[] {
+  const matched = state.term_types.filter((t) => t.review === 'accepted' && t.data_match !== null)
+  return pickRelations(state, matched).skipped
 }

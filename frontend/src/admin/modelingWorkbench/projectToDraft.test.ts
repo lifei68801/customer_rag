@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { projectToDraftPayload, projectToEtlYaml } from './projectToDraft'
+import { previewSkippedRelations, projectToDraftPayload, projectToEtlYaml } from './projectToDraft'
 import type { WorkspaceState, WorkspaceTermType } from './types'
 
 function term(overrides: Partial<WorkspaceTermType> & { value: string }): WorkspaceTermType {
@@ -149,5 +149,48 @@ describe('projectToEtlYaml', () => {
       't1',
     )
     expect(built).toBeNull()
+  })
+})
+
+describe('关系映射的列检查', () => {
+  const store = term({
+    value: 'Store',
+    data_match: { source_file: 'store.csv', key_columns: ['STORE_CD'], field_columns: {}, matched_by: 'alias:store_cd' },
+  })
+  const withStore = (subjectColumns: string[] | undefined): WorkspaceState =>
+    state({
+      term_types: [SKU, store],
+      constraints: [
+        { subject: 'SKU', relation: 'SOLD_AT', object: 'Store', provenance: 'skill', review: 'pending' },
+      ],
+      sources: [
+        { file: 'sku.xls', header_row: 6, ...(subjectColumns ? { columns: subjectColumns.map((name) => ({ name, role: 'dimension' as const, reason: '', inferred_type: 'string' as const })) } : {}) },
+        { file: 'store.csv', columns: [{ name: 'STORE_CD', role: 'identifier', reason: '', inferred_type: 'string' }] },
+      ],
+    })
+
+  it('主语表里有宾语键列时出关系映射', () => {
+    const built = projectToEtlYaml(withStore(['JAN', 'STORE_CD']), 't1')!
+    expect(built.yaml).toContain('relation_type: "SOLD_AT"')
+    expect(built.skippedRelations).toEqual([])
+  })
+
+  it('主语表里没有宾语键列时不出关系，并说明原因', () => {
+    // ETL 的关系语义是同一行用宾语的 node_key 列算宾语键；列不在就整条跳过且不报错
+    const built = projectToEtlYaml(withStore(['JAN', 'cat_cd']), 't1')!
+    expect(built.yaml).not.toContain('SOLD_AT')
+    expect(built.skippedRelations).toEqual([
+      { subject: 'SKU', relation: 'SOLD_AT', object: 'Store', reason: '主语表 sku.xls 里没有 Store 的键列 STORE_CD' },
+    ])
+  })
+
+  it('主语表没有 columns（v1 旧工作区）时视为未知，跳过并说明', () => {
+    const built = projectToEtlYaml(withStore(undefined), 't1')!
+    expect(built.skippedRelations[0].reason).toContain('还没重新扫描过')
+  })
+
+  it('previewSkippedRelations 与投影结果一致', () => {
+    expect(previewSkippedRelations(withStore(['JAN', 'cat_cd']))).toHaveLength(1)
+    expect(previewSkippedRelations(withStore(['JAN', 'STORE_CD']))).toEqual([])
   })
 })
