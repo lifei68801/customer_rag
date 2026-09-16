@@ -18,9 +18,11 @@ import type { ModelingWorkspace } from './types'
 let signedInRole: 'admin' | 'member' | null = null
 let workspace: unknown = null
 const saved: unknown[] = []
-// 只给"点两下按钮之间要不要禁用"这类测试用：PUT 的响应故意拖一拖，好在
-// 它还没回来的那个窗口里断言按钮状态。
-let putDelayMs = 0
+// 只给"点两下按钮之间要不要禁用"这类测试用：holdPut 为 true 时 PUT 的
+// 响应会挂起，直到测试手动调用 releasePut() 才落地，好在它还没回来的那个
+// 窗口里断言按钮状态。
+let holdPut = false
+let releasePut: (() => void) | null = null
 // 只给"apply-preview 只有某一类删除项"这类测试用：固定夹具三类删除项总是
 // 一起给，没法单独验证"只有 removed_constraints 非空"这种边界也会触发确认框。
 let applyPreviewOnlyRemovedConstraints = false
@@ -189,10 +191,10 @@ function stubApi() {
           const body = JSON.parse(String(init?.body))
           saved.push(body)
           workspace = { ...workspaceWith('pending'), state: body.state, updated_at: 'later' }
-          if (putDelayMs > 0) {
-            return new Promise((resolve) =>
-              setTimeout(() => resolve(new Response(JSON.stringify({ workspace }), { status: 200 })), putDelayMs),
-            )
+          if (holdPut) {
+            return new Promise<Response>((resolve) => {
+              releasePut = () => resolve(json({ workspace }))
+            })
           }
           return json({ workspace })
         }
@@ -208,7 +210,8 @@ beforeEach(() => {
   signedInRole = null
   workspace = null
   saved.length = 0
-  putDelayMs = 0
+  holdPut = false
+  releasePut = null
   applyPreviewOnlyRemovedConstraints = false
   resetAdminSession()
   sessionStorage.clear()
@@ -375,12 +378,13 @@ describe('建模工作台', () => {
   it('保存还没落地之前，骨架面板的按钮全部禁用——避免连点两下撞乐观锁', async () => {
     signedInRole = 'member'
     workspace = workspaceWith('pending')
-    putDelayMs = 50
+    holdPut = true
     renderWorkbench()
     await userEvent.click(await screen.findByRole('button', { name: '接受 SKU' }))
     // PUT 还没回来：这时点「拒绝 SKU」会带着同一份旧 updated_at 发第二个
     // PUT，后端必然 409。按钮此刻必须是禁用的。
     expect(await screen.findByRole('button', { name: '拒绝 SKU' })).toBeDisabled()
+    releasePut?.()
     await waitFor(() => expect(saved).toHaveLength(1))
   })
 
@@ -390,10 +394,11 @@ describe('建模工作台', () => {
     // PUT，后端必然 409。
     signedInRole = 'member'
     workspace = workspaceWith('pending')
-    putDelayMs = 50
+    holdPut = true
     renderWorkbench()
     await userEvent.click(await screen.findByRole('button', { name: '拒绝 SKU' }))
     expect(await screen.findByRole('button', { name: '接受 SKU' })).toBeDisabled()
+    releasePut?.()
     await waitFor(() => expect(saved).toHaveLength(1))
   })
 
