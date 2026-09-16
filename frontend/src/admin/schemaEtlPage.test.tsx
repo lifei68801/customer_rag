@@ -852,6 +852,74 @@ describe('解析设置', () => {
   it('提交时带上页面上看到的列名', async () => {
     // 前端本地解析、后端跑批解析，两份规则会悄悄分叉——9c71cf9 已经让它们
     // 分叉过一次。不把页面看到的列名发过去，后端就无从对账。
+    //
+    // 用的是表头在第 2 行的表、并且先把表头行改成 2：缺省形状下"界面上那份"
+    // 和"后端按缺省重解析出来那份"本来就相同，那样只测得出"有没有 append"，
+    // 测不出"发的是不是界面上那份"。
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFileForParseSettings(user, layeredCsv())
+    const headerRowInput = within(
+      within(flow).getByTestId('parse-settings'),
+    ).getByLabelText(/表头行/) as HTMLInputElement
+    await user.clear(headerRowInput)
+    await user.type(headerRowInput, '2')
+    await waitFor(() => {
+      expect(within(flow).queryByTestId('stored-mapping-not-reused')).toBeNull()
+    })
+
+    await user.click(within(flow).getByTestId('run-import'))
+
+    await waitFor(() => {
+      const posted = requests.find(
+        (r) => r.url.includes('/schema-etl/runs') && r.init?.method === 'POST',
+      )
+      expect(posted).toBeTruthy()
+      const body = posted!.init!.body as FormData
+      const declared = JSON.parse(body.get('client_columns') as string)
+      // 第 2 行的列名，不是第 1 行标题带那份。
+      expect(declared['layered.csv']).toEqual(DEMO_HEADER.split(','))
+    })
+  }, 30000)
+
+  it('只改了解析设置、列名没变时也要上传 config', async () => {
+    // 这是最容易漏的那条：映射还沿用得上 → 不传 config → 后端拿存着的旧
+    // sources 去读，说明行被当成数据导进去；而列名一致，client_columns
+    // 对账也不会报警，用户看到的是一次"成功"的跑批。
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFile(user, csv(DEMO_HEADER))
+    const firstDataRow = within(
+      within(flow).getByTestId('parse-settings'),
+    ).getByLabelText(/首数据行/) as HTMLInputElement
+    await user.clear(firstDataRow)
+    await user.type(firstDataRow, '5')
+    await waitFor(() => {
+      expect(within(flow).getByTestId('parse-settings').textContent).toMatch(/将跳过第 2~4 行/)
+    })
+    // 列名一个字没变——映射本身仍然是"沿用上次"的那份。
+    expect(within(flow).getByTestId('mapping-overview').textContent).toMatch(/Order ID/)
+
+    await user.click(within(flow).getByTestId('run-import'))
+
+    await waitFor(() => {
+      const posted = requests.find(
+        (r) => r.url.includes('/schema-etl/runs') && r.init?.method === 'POST',
+      )
+      expect(posted).toBeTruthy()
+      expect((posted!.init!.body as FormData).has('config')).toBe(true)
+    })
+  }, 30000)
+
+  it('一个字没改时仍然沿用存着的映射，不平白上传 config', async () => {
+    // 上一条的反面。把"改过"判宽了的话，每次跑批都会带一份 config，而带
+    // config 的跑批会把这份映射记成这个本体的默认映射。
     signIn('admin')
     stubDemoMapping()
     const user = userEvent.setup()
@@ -865,11 +933,63 @@ describe('解析设置', () => {
         (r) => r.url.includes('/schema-etl/runs') && r.init?.method === 'POST',
       )
       expect(posted).toBeTruthy()
-      const body = posted!.init!.body as FormData
-      const declared = JSON.parse(body.get('client_columns') as string)
-      expect(declared['sales_2026.csv']).toEqual(DEMO_HEADER.split(','))
+      expect((posted!.init!.body as FormData).has('config')).toBe(false)
     })
-  }, 20000)
+  }, 30000)
+
+  it('列名没变时不重推映射，也不把打开的编辑器折回去', async () => {
+    // 改首数据行不会改变列名，映射一个字都不用动。照样重推一遍的话，用户在
+    // 编辑器里改过的东西会被悄悄换成预填的那份，编辑器也会被折回去——而他
+    // 只是想跳过几行说明行。
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await chooseFile(user, csv(DEMO_HEADER))
+    await user.click(within(flow).getByTestId('toggle-mapping-editor'))
+    expect(within(flow).getByTestId('toggle-mapping-editor').textContent).toBe('收起')
+
+    const firstDataRow = within(
+      within(flow).getByTestId('parse-settings'),
+    ).getByLabelText(/首数据行/) as HTMLInputElement
+    await user.clear(firstDataRow)
+    await user.type(firstDataRow, '5')
+    await waitFor(() => {
+      expect(within(flow).getByTestId('parse-settings').textContent).toMatch(/将跳过第 2~4 行/)
+    })
+
+    expect(within(flow).getByTestId('toggle-mapping-editor').textContent).toBe('收起')
+  }, 30000)
+
+  it('改第二张表的解析设置，不会把按第一张表填的映射重推一遍', async () => {
+    // 预填永远只看第一张表的列。改第二张表的设置也去重推的话，第一张表的
+    // 映射会被无缘无故换掉。
+    signIn('admin')
+    stubDemoMapping()
+    const user = userEvent.setup()
+    renderAt(ADMIN_ROUTES.etl)
+
+    const flow = await screen.findByTestId('table-import-flow')
+    await user.upload(within(flow).getByLabelText(/数据文件/) as HTMLInputElement, [
+      csv(DEMO_HEADER),
+      layeredCsv(),
+    ])
+    await screen.findByTestId('mapping-overview')
+    await user.click(within(flow).getByTestId('toggle-mapping-editor'))
+    expect(within(flow).getByTestId('toggle-mapping-editor').textContent).toBe('收起')
+
+    const secondHeaderRow = within(within(flow).getByTestId('parse-settings')).getAllByLabelText(
+      /表头行/,
+    )[1] as HTMLInputElement
+    await user.clear(secondHeaderRow)
+    await user.type(secondHeaderRow, '2')
+
+    await waitFor(() => {
+      expect(secondHeaderRow.value).toBe('2')
+    })
+    expect(within(flow).getByTestId('toggle-mapping-editor').textContent).toBe('收起')
+  }, 30000)
 
   it('存着的映射带解析设置时，重开页面要回填，而不是退回第 1 行', async () => {
     // 摘要里存了"表头在第 2 行"，界面却显示第 1 行的话，用户看到的是一份

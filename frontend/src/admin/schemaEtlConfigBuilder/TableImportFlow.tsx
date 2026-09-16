@@ -16,6 +16,7 @@ import {
   listSheetNames,
   readSourceHeader,
   readSourcePreview,
+  sameEffectiveParseOptions,
   type SourceParseOptions,
 } from './sourceParser'
 import { storedParseOptionsFor } from './storedParseOptions'
@@ -195,18 +196,20 @@ export function TableImportFlow({
 
   /**
    * 按第一张表把第二步填好。多表时其余表的列不参与预填——猜出来的跨表映射
-   * 比空着更难纠正，那几张表的映射让用户自己加。
+   * 比空着更难纠正，那几张表的映射让用户自己加。所以这里只收那一张表，而
+   * 不是整个文件列表：收列表的话，改第二张表的解析设置也会把第一张表的
+   * 映射重推一遍。
    *
    * 列名变了就得重跑一遍：表头行一改，存着的映射可能对不上了，这条路径
    * prefillMapping 已经处理（storedMissingColumns）。
    */
-  const applyPrefill = (added: AddedFile[], resetExpanded: boolean) => {
+  const applyPrefill = (primary: AddedFile) => {
     const prefill = prefillMapping({
-      columns: added[0].columns,
+      columns: primary.columns,
       summary: mapping?.summary ?? null,
       termTypes,
       combinations,
-      fileId: added[0].id,
+      fileId: primary.id,
     })
     setEntities(prefill.entities)
     setRelations(prefill.relations)
@@ -222,7 +225,7 @@ export function TableImportFlow({
     })
     // 沿用上次的映射默认折起来（用户已经确认过它一次），现推的建议默认
     // 展开——那份东西他还没看过。
-    if (resetExpanded) setMappingExpanded(prefill.source === 'suggested')
+    setMappingExpanded(prefill.source === 'suggested')
   }
 
   const handleChooseFiles = async (fileList: FileList | null) => {
@@ -256,7 +259,7 @@ export function TableImportFlow({
       setFiles(added)
       setParseUi(ui)
       parseSeqRef.current = {}
-      applyPrefill(added, true)
+      applyPrefill(added[0])
     } catch (err) {
       setFileError(err instanceof Error ? err.message : '读取文件表头失败')
     } finally {
@@ -278,16 +281,19 @@ export function TableImportFlow({
         ? await readSourcePreview(target.file, PREVIEW_ROWS, options)
         : null
       if (parseSeqRef.current[target.id] !== seq) return
-      const next = files.map((f) =>
-        f.id === target.id ? { ...f, columns, parseOptions: options } : f,
-      )
-      setFiles(next)
+      const updated: AddedFile = { ...target, columns, parseOptions: options }
+      // 函数式更新，不拿渲染时那份 files 快照去 map：多表时另一张表的在途
+      // 解析可能正好落在这中间，用快照会把它刚落下的改动盖掉。
+      setFiles((prev) => prev.map((f) => (f.id === target.id ? updated : f)))
       if (preview !== null) {
         setParseUi((prev) => ({ ...prev, [target.id]: { ...prev[target.id], preview } }))
       }
-      // 列名整批换掉了，等于重新填了一份映射：沿用上次的折起来，现推的
-      // 建议展开——跟刚选完文件时同一条规则。
-      applyPrefill(next, true)
+      // 列名没变就不重推映射。重推一遍会把用户在编辑器里改过的东西悄悄换成
+      // 预填的那份，而他只是改了个首数据行；折叠状态跟着被打断也是同一件事。
+      // 只有第一张表的列参与预填，改其余表的解析设置不重推。
+      const isPrefillSource = files[0]?.id === target.id
+      const columnsChanged = columns.join(' ') !== target.columns.join(' ')
+      if (isPrefillSource && columnsChanged) applyPrefill(updated)
     } catch (err) {
       if (parseSeqRef.current[target.id] !== seq) return
       // 读不出来就说出来。默默留着上一次的列名的话，用户以为自己选的工作表
@@ -365,7 +371,19 @@ export function TableImportFlow({
   // config，后端会拿存着的旧映射去跑，界面上改过的东西一条都不生效。这正是
   // 用户连撞两次的那个坑：跑批"成功"，图里一条公司边都没有。
   const repairedByOntology = repairedRelations.length > 0 || droppedRelations.length > 0
-  const usesStoredMapping = source === 'stored' && !edited && !repairedByOntology
+  // 解析设置改过也算改过，哪怕列名一个字没变。改首数据行、换一张列名恰好相同
+  // 的工作表，映射本身还沿用得上，但 sources: 段是新的——走"沿用存着的那份"
+  // 就不上传 config，后端会按存着的旧选项去读，说明行被当成数据导进去；而列名
+  // 一致，提交时的 client_columns 对账也发现不了。
+  const parseOptionsEdited = files.some(
+    (f) =>
+      !sameEffectiveParseOptions(
+        f.parseOptions,
+        storedParseOptionsFor(mapping?.summary ?? null, f.file.name) ?? {},
+      ),
+  )
+  const usesStoredMapping =
+    source === 'stored' && !edited && !repairedByOntology && !parseOptionsEdited
 
   const handleRun = async () => {
     if (files.length === 0) {
@@ -752,11 +770,8 @@ function ParseSettingsPanel({
   // 高亮的是**已经生效**的那一行，不是输入框里的文字：文字非法时列名没有跟着
   // 变，高亮跟着变的话，预览会指向一行其实没被当成表头的内容。
   const highlightedRow = file.parseOptions.headerRow ?? 1
-  const width = Math.min(
-    PREVIEW_COLUMNS,
-    ui.preview.reduce((max, row) => Math.max(max, row.length), 0),
-  )
   const totalWidth = ui.preview.reduce((max, row) => Math.max(max, row.length), 0)
+  const width = Math.min(PREVIEW_COLUMNS, totalWidth)
 
   return (
     <div className="flex flex-col gap-2 rounded-card border border-subtle bg-paper px-3 py-2 text-sm text-ink">

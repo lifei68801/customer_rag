@@ -117,6 +117,21 @@ function firstDataRowOf(options: SourceParseOptions): number {
 }
 
 /**
+ * 两份解析选项读出来的是不是同一批行。
+ *
+ * 比的是**补齐缺省之后**的值，不是字面值：用户在表头行输入框里把 1 原样打
+ * 一遍，选项会从 `{}` 变成 `{ headerRow: 1 }`，可读的还是同一批行。缺省值
+ * 怎么补由 headerRowOf / firstDataRowOf 说了算，跟三个读取入口同一处。
+ */
+export function sameEffectiveParseOptions(a: SourceParseOptions, b: SourceParseOptions): boolean {
+  return (
+    a.sheet === b.sheet &&
+    headerRowOf(a) === headerRowOf(b) &&
+    firstDataRowOf(a) === firstDataRowOf(b)
+  )
+}
+
+/**
  * 选项自身不合法时立刻报错，拒绝规则跟后端
  * `app/graphrag/source_parse_options.py::SourceParseOptions.__post_init__` 逐条对齐。
  *
@@ -174,17 +189,54 @@ function sheetNotFoundError(sheet: string | number, available: string[]): Error 
 }
 
 /**
- * 一张工作表的全部行。
+ * 真正有单元格的范围，从 A1 起算；一个单元格都没有时返回 null。
+ *
+ * 不用工作表自己声明的 `!ref`：手工编辑过的 Excel 里它常常画得比实际数据宽。
+ * 真实的 MUJI `CN_001_SKU_MASTER_121.xls` 的 `!ref` 是 `A1:DJ908`（114 列），
+ * 而第 114 列一个单元格都没有；后端 xlrd 的 `ncols` 是按实际存在的单元格记录
+ * 算的，给出 113。两边列数对不上，跑批前的逐列对账会直接判 400。
+ *
+ * 起点固定在 A1 而不是 `!ref` 的起点：xlrd 的行列下标也从 0 起算，数据从 C 列
+ * 开始的表，两边要对得上就不能把 C 列当成第 0 列。
+ */
+function actualCellBounds(
+  XLSX: typeof import('xlsx'),
+  sheet: import('xlsx').WorkSheet,
+): import('xlsx').Range | null {
+  let maxRow = -1
+  let maxCol = -1
+  for (const address of Object.keys(sheet)) {
+    // '!ref' / '!merges' 这些元数据键不是单元格地址。
+    if (address.startsWith('!')) continue
+    const { r, c } = XLSX.utils.decode_cell(address)
+    if (r > maxRow) maxRow = r
+    if (c > maxCol) maxCol = c
+  }
+  if (maxRow < 0 || maxCol < 0) return null
+  return { s: { r: 0, c: 0 }, e: { r: maxRow, c: maxCol } }
+}
+
+/**
+ * 一张工作表的全部行：满宽、无空洞，宽度按实际有单元格的列算。
  *
  * `defval` 让 SheetJS 给每个空格子发出 `''`：不传的话它会截掉行尾的空格子、
  * 并在行中间留下稀疏空洞，同一张表在这里拿到的行宽会参差不齐。CSV 路径和
- * 后端（xlrd）给出的都是满宽行，这里不传就是一处前后端的形状分叉。
+ * 后端（xlrd）给出的都是满宽行，不传就是一处前后端的形状分叉。
+ *
+ * `range` 把范围收窄到实际单元格——只砍"根本没有任何单元格"的尾列尾行，
+ * 中间那些空列名的列一列不动（它们有单元格，位置也必须保住）。
+ *
+ * 光靠 `sheetRows` 是不够的：xlsx 的读取器在限行时会顺带按实际单元格重算
+ * `!ref`，BIFF8（.xls）的读取器不会——实测同一份内容写成两种格式，
+ * `sheetRows: 1` 时 xlsx 给 `A1:C1`、biff8 给 `A1:E1`。真实的 MUJI 表正是 .xls。
  */
 function sheetRowsOf(
   XLSX: typeof import('xlsx'),
   sheet: import('xlsx').WorkSheet,
 ): unknown[][] {
-  return XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' })
+  const range = actualCellBounds(XLSX, sheet)
+  if (range === null) return []
+  return XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', range })
 }
 
 function cellToString(cell: unknown): string {

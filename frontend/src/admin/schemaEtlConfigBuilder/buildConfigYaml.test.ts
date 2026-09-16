@@ -60,6 +60,8 @@ describe('buildConfigYaml 的 sources 段', () => {
       files: [{ id: 'f1', file: new File([''], 'a.xls'), columns: [], parseOptions: { headerRow: 6 } }],
     })
 
+    // 少了这句的话，sources: 根本没写时 indexOf 返回 -1，下面那条照样通过。
+    expect(yaml).toContain('sources:')
     expect(yaml.indexOf('sources:')).toBeLessThan(yaml.indexOf('entities:'))
   })
 })

@@ -1,6 +1,11 @@
 import * as XLSX from 'xlsx'
 import { describe, expect, it } from 'vitest'
-import { readSourceHeader, readSourcePreview, readSourceRows } from './sourceParser'
+import {
+  readSourceHeader,
+  readSourcePreview,
+  readSourceRows,
+  sameEffectiveParseOptions,
+} from './sourceParser'
 
 function csvFile(name: string, text: string): File {
   return new File([text], name, { type: 'text/csv' })
@@ -232,4 +237,100 @@ describe('Excel 行形状', () => {
     expect(rows).toHaveLength(2)
     expect(rows.every((row) => isDense(row, 4))).toBe(true)
   })
+})
+
+describe('sameEffectiveParseOptions', () => {
+  it('补齐缺省之后一样就算一样——把 1 原样打一遍不算改过', () => {
+    expect(sameEffectiveParseOptions({}, { headerRow: 1 })).toBe(true)
+    expect(sameEffectiveParseOptions({ headerRow: 2 }, { headerRow: 2, firstDataRow: 3 })).toBe(true)
+  })
+
+  it('读的不是同一批行就算改过', () => {
+    // 这三种改法都不会改变列名，因而不会被跑批前的列名对账发现——判不出
+    // 它们改过的话，解析设置不会被发给后端，数据会安静地读错。
+    expect(sameEffectiveParseOptions({ headerRow: 1 }, { headerRow: 1, firstDataRow: 5 })).toBe(false)
+    expect(sameEffectiveParseOptions({}, { sheet: 'Work' })).toBe(false)
+    expect(sameEffectiveParseOptions({ sheet: 'Master' }, { sheet: 1 })).toBe(false)
+  })
+})
+
+describe('声明范围比实际单元格宽的表', () => {
+  /**
+   * 手工编辑过的 Excel 里，工作表声明的范围（`!ref`）常常比真正有单元格的
+   * 范围宽——真实的 MUJI `CN_001_SKU_MASTER_121.xls` 就是这样：`!ref` 是
+   * `A1:DJ908`（114 列），而第 114 列一个单元格都没有，后端 xlrd 的
+   * `ncols` 按实际存在的单元格记录算，给出 113。
+   *
+   * 两边列数对不上，Task 3 的逐列对账会直接判 400，这张表根本导不进去。
+   */
+  function overWideRefFile(bookType: 'xlsx' | 'biff8'): File {
+    const workbook = XLSX.utils.book_new()
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['md_no', 'color', 'size'],
+      ['M1AG702', 'Natural', 'M'],
+      ['M1AG703', 'Black', 'L'],
+    ])
+    // 比实际单元格多两列、多两行。写出去再读回来时这个声明会原样保留
+    // （xlsx 和 BIFF8 都是，实测过）。
+    sheet['!ref'] = 'A1:E5'
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1')
+    const buffer = XLSX.write(workbook, { type: 'array', bookType }) as ArrayBuffer
+    return new File([buffer], bookType === 'xlsx' ? 'overwide.xlsx' : 'overwide.xls')
+  }
+
+  // 两种格式都测：xlsx 的读取器在 sheetRows 限行时会顺带按实际单元格重算
+  // !ref，BIFF8 不会。只测 xlsx 的话，readSourceHeader 会因为这个副作用
+  // 假绿——而真实的 MUJI 表正是 .xls。
+  for (const bookType of ['xlsx', 'biff8'] as const) {
+    describe(bookType, () => {
+      it('列名按实际有单元格的列算，不按声明范围算', async () => {
+        expect(await readSourceHeader(overWideRefFile(bookType))).toEqual([
+          'md_no',
+          'color',
+          'size',
+        ])
+      })
+
+      it('预览不铺出声明范围里那几列空气，也不铺空行', async () => {
+        expect(await readSourcePreview(overWideRefFile(bookType), 10)).toEqual([
+          ['md_no', 'color', 'size'],
+          ['M1AG702', 'Natural', 'M'],
+          ['M1AG703', 'Black', 'L'],
+        ])
+      })
+
+      it('数据行同样按实际单元格算', async () => {
+        const rows: string[][] = []
+
+        await readSourceRows(
+          overWideRefFile(bookType),
+          {},
+          () => {},
+          (r) => rows.push(r),
+        )
+
+        expect(rows).toEqual([
+          ['M1AG702', 'Natural', 'M'],
+          ['M1AG703', 'Black', 'L'],
+        ])
+      })
+
+      it('第一列整列没有单元格时，它仍然占着第一列的位置', async () => {
+        // 范围的起点固定在 A1，不跟着 !ref 走：xlrd 的列下标从 0 起算，A 列
+        // 空着也照样占一个位置。跟着 !ref 走的话，前端会把 B 列当成第 0 列，
+        // 两边的列名整体错开一位，而列数还是一样的——对账发现不了。
+        const workbook = XLSX.utils.book_new()
+        const sheet = XLSX.utils.aoa_to_sheet([
+          [null, 'color', 'size'],
+          [null, 'Natural', 'M'],
+        ])
+        sheet['!ref'] = 'B1:C2'
+        XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1')
+        const buffer = XLSX.write(workbook, { type: 'array', bookType }) as ArrayBuffer
+        const file = new File([buffer], bookType === 'xlsx' ? 'offset.xlsx' : 'offset.xls')
+
+        expect(await readSourceHeader(file)).toEqual(['', 'color', 'size'])
+      })
+    })
+  }
 })
