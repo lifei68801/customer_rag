@@ -20,6 +20,7 @@ from app.api.admin_db_import_routes import redact_validation_error
 from app.api.admin_db_import_routes import router as admin_db_import_router
 from app.api.admin_error_log_routes import router as admin_error_log_router
 from app.api.admin_nav_badges_routes import router as admin_nav_badges_router
+from app.api.admin_modeling_workspace_routes import router as admin_modeling_workspace_router
 from app.api.admin_ontology_routes import router as admin_ontology_router
 from app.api.admin_org_routes import router as admin_org_router
 from app.api.admin_conflicts_routes import router as admin_conflicts_router
@@ -242,6 +243,7 @@ tenant_scoped.include_router(admin_diagnostics_router)
 tenant_scoped.include_router(admin_error_log_router)
 tenant_scoped.include_router(admin_db_import_router)
 tenant_scoped.include_router(admin_ontology_router)
+tenant_scoped.include_router(admin_modeling_workspace_router)
 tenant_scoped.include_router(admin_terms_router)
 tenant_scoped.include_router(admin_schema_etl_router)
 # GET/PUT /api/admin/{tenant_id}/persona + GET .../stale-questions：当前这一个
