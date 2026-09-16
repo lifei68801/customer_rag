@@ -249,9 +249,27 @@ describe('建模工作台', () => {
     await userEvent.click(await screen.findByRole('button', { name: /^应用$/ }))
     await userEvent.click(await screen.findByRole('button', { name: /看看会改什么/ }))
     await userEvent.click(await screen.findByRole('button', { name: /写入草稿/ }))
+    // diff 里有删除项：整份替换会把用户在「本体结构」页手工加的东西删掉，
+    // 这是本项目唯一"点一下就永久删别处数据"的动作，弹一次确认框拦一下。
+    await userEvent.click(await screen.findByRole('button', { name: '继续写入' }))
     await waitFor(() => {
       const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
       expect(calls.some(([url]) => String(url).includes('/draft/replace'))).toBe(true)
     })
+  })
+
+  it('在确认框里点取消，不会写入草稿', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWith('accepted')
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: /^应用$/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /看看会改什么/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /写入草稿/ }))
+    await userEvent.click(await screen.findByRole('button', { name: '取消' }))
+    // 取消之后要给操作留出反应时间，再确认请求确实没有发出去——这条测试
+    // 存在的意义就是证明这层确认框真的拦得住写入，不是摆设。
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+    expect(calls.some(([url]) => String(url).includes('/draft/replace'))).toBe(false)
   })
 })

@@ -3,6 +3,7 @@ import { PAGE_TITLES } from '../../adminRoutes'
 import { adminFetch, extractErrorDetail } from '../adminApi'
 import { useAdminAuth } from '../useAdminAuth'
 import { useAdminTenant } from '../TenantContext'
+import { useConfirm } from '../ConfirmContext'
 import { useToast } from '../ToastContext'
 import { nextStepHint } from './nextStep'
 import { projectToDraftPayload, projectToEtlYaml } from './projectToDraft'
@@ -46,6 +47,7 @@ const TAB_LABELS: { id: Tab; label: string }[] = [
 export function ModelingWorkbenchPage() {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
+  const confirm = useConfirm()
   const showToast = useToast()
   const [workspace, setWorkspace] = useState<ModelingWorkspace | null>(null)
   const [skills, setSkills] = useState<SkillSummary[]>([])
@@ -196,10 +198,16 @@ export function ModelingWorkbenchPage() {
       setError('工作区里一个已接受的实体类型都没有，写入草稿没有意义。先去「骨架」面板接受几条。')
       return
     }
-    // 这里不再用 ConfirmContext 弹一个额外的确认框：ApplyPanel 已经把删除项
-    // 用醒目的错误样式摆在屏幕上（见「看看会改什么」之后的渲染），用户点
-    // 「写入草稿」这个动作本身就是看过那份差异之后做出的决定。再加一层
-    // window.confirm 式的弹窗只是把同一个决定问两遍。
+    if (
+      diff !== null &&
+      diff.removed_term_types.length + diff.removed_relation_types.length > 0 &&
+      !(await confirm({
+        message: `写入后这些会从草稿里消失：${[...diff.removed_term_types, ...diff.removed_relation_types].join('、')}。`,
+        confirmLabel: '继续写入',
+      }))
+    ) {
+      return
+    }
     setBusy(true)
     setError(null)
     try {
