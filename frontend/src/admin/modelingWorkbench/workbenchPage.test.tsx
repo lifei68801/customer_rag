@@ -517,4 +517,33 @@ describe('建模工作台', () => {
     expect(sku.key_aliases).toContain('商品コード')
     expect(body.state.unmatched_columns['sku.xls']).toEqual(['売価'])
   })
+
+  it('改键别名后整份存回', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWith('accepted')
+    renderWorkbench()
+    const input = await screen.findByLabelText('SKU 的键别名')
+    await userEvent.clear(input)
+    await userEvent.type(input, 'jan, 品番，JAN_CD')
+    await userEvent.click(screen.getByRole('button', { name: '保存 SKU 的键别名' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    const body = saved[0] as { state: { term_types: { key_aliases: string[] }[] } }
+    expect(body.state.term_types[0].key_aliases).toEqual(['jan', '品番', 'JAN_CD'])
+  })
+
+  it('每个字段有自己的别名框', async () => {
+    signedInRole = 'member'
+    const ws = workspaceWith('accepted')
+    ws.state.term_types[0].extra_fields = [{ name: 'color', value_type: 'string', label: '颜色' }]
+    ws.state.term_types[0].field_aliases = { color: ['色'] }
+    workspace = ws
+    renderWorkbench()
+    const input = await screen.findByLabelText('SKU 的字段 color 的别名')
+    expect(input).toHaveValue('色')
+    await userEvent.type(input, ', colour')
+    await userEvent.click(screen.getByRole('button', { name: '保存 SKU 的字段 color 的别名' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    const body = saved[0] as { state: { term_types: { field_aliases: Record<string, string[]> }[] } }
+    expect(body.state.term_types[0].field_aliases.color).toEqual(['色', 'colour'])
+  })
 })

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { parseAliasText } from '../columnAssign'
 import type { Grounding, WorkspaceState } from '../types'
 import { panelClass, secondaryButtonClass, tagClass } from '../ui'
 
@@ -28,10 +29,13 @@ export function SkeletonPanel(props: {
   onRename: (from: string, to: string) => void
   onAddClue: (termValue: string, note: string) => void
   onAddTerm: (value: string) => void
+  onSetKeyAliases: (termValue: string, aliases: string[]) => void
+  onSetFieldAliases: (termValue: string, fieldName: string, aliases: string[]) => void
 }) {
   const [renameDraft, setRenameDraft] = useState<Record<string, string>>({})
   const [clueDraft, setClueDraft] = useState<Record<string, string>>({})
   const [newTerm, setNewTerm] = useState('')
+  const [aliasDraft, setAliasDraft] = useState<Record<string, string>>({})
   const groundedTerms = new Set(props.grounding?.grounded_term_types ?? [])
   const groundedRelations = new Set(props.grounding?.grounded_relation_types ?? [])
   const terms = props.state.term_types
@@ -108,6 +112,58 @@ export function SkeletonPanel(props: {
             >
               {`加旁证 ${term.value}`}
             </button>
+            <div className="flex w-full flex-wrap items-center gap-2 pl-4">
+              <label className="sr-only" htmlFor={`alias-key-${term.value}`}>{`${term.value} 的键别名`}</label>
+              <input
+                id={`alias-key-${term.value}`}
+                className="w-64 rounded-control border border-subtle bg-paper px-2 py-1 text-sm"
+                placeholder="键别名，逗号分隔"
+                value={aliasDraft[`key:${term.value}`] ?? term.key_aliases.join(', ')}
+                onChange={(e) => setAliasDraft({ ...aliasDraft, [`key:${term.value}`]: e.target.value })}
+              />
+              <button
+                type="button"
+                className={secondaryButtonClass}
+                disabled={props.busy}
+                onClick={() =>
+                  props.onSetKeyAliases(
+                    term.value,
+                    parseAliasText(aliasDraft[`key:${term.value}`] ?? term.key_aliases.join(', ')),
+                  )
+                }
+              >
+                {`保存 ${term.value} 的键别名`}
+              </button>
+              {term.extra_fields.map((field) => {
+                const draftKey = `field:${term.value}:${field.name}`
+                const current = (term.field_aliases[field.name] ?? []).join(', ')
+                return (
+                  <span key={field.name} className="flex items-center gap-2">
+                    <label className="sr-only" htmlFor={`alias-${draftKey}`}>
+                      {`${term.value} 的字段 ${field.name} 的别名`}
+                    </label>
+                    <input
+                      id={`alias-${draftKey}`}
+                      className="w-48 rounded-control border border-subtle bg-paper px-2 py-1 text-sm"
+                      placeholder={`${field.label || field.name} 的别名`}
+                      value={aliasDraft[draftKey] ?? current}
+                      onChange={(e) => setAliasDraft({ ...aliasDraft, [draftKey]: e.target.value })}
+                    />
+                    <button
+                      type="button"
+                      className={secondaryButtonClass}
+                      disabled={props.busy}
+                      onClick={() =>
+                        props.onSetFieldAliases(term.value, field.name, parseAliasText(aliasDraft[draftKey] ?? current))
+                      }
+                    >
+                      {`保存 ${term.value} 的字段 ${field.name} 的别名`}
+                    </button>
+                  </span>
+                )
+              })}
+              <span className="text-xs text-ink-soft">别名改了要重新扫描数据表才生效。</span>
+            </div>
           </div>
         ))}
         <div className="flex flex-wrap items-center gap-2">

@@ -7,7 +7,7 @@ import { useConfirm } from '../ConfirmContext'
 import { useToast } from '../ToastContext'
 import { nextStepHint } from './nextStep'
 import { projectToDraftPayload, projectToEtlYaml } from './projectToDraft'
-import { assignColumnAsField, assignColumnAsKey } from './columnAssign'
+import { assignColumnAsField, assignColumnAsKey, setFieldAliases, setKeyAliases } from './columnAssign'
 import { addManualClue, addManualTermType, renameTermType } from './skeletonEdits'
 import {
   createWorkspace,
@@ -186,6 +186,18 @@ export function ModelingWorkbenchPage() {
       return
     }
     void persist(next)
+  }
+
+  const handleSetKeyAliases = (termValue: string, aliases: string[]) => {
+    if (!workspace) return
+    const next = setKeyAliases(workspace.state, termValue, aliases)
+    if (next !== workspace.state) void persist(next)
+  }
+
+  const handleSetFieldAliases = (termValue: string, fieldName: string, aliases: string[]) => {
+    if (!workspace) return
+    const next = setFieldAliases(workspace.state, termValue, fieldName, aliases)
+    if (next !== workspace.state) void persist(next)
   }
 
   const handlePromote = (file: string, column: string) => {
@@ -389,6 +401,8 @@ export function ModelingWorkbenchPage() {
               onRename={handleRename}
               onAddClue={handleAddClue}
               onAddTerm={handleAddTerm}
+              onSetKeyAliases={handleSetKeyAliases}
+              onSetFieldAliases={handleSetFieldAliases}
             />
           )}
           {tab === 'data' && (
