@@ -87,11 +87,13 @@ export interface InterviewSession {
   updated_by: string
 }
 
-/** 回答一轮之后的反馈：新一个问题、新增了几条、丢了几条、失败时的说明。 */
+/** 回答一轮之后的反馈：新一个问题、新增了几条、丢了几条、失败时的说明。
+ *  dropped 是后端给的可读理由列表（如"实体类型 X 没有给出理由，丢弃"），
+ *  不是计数——理由本身才是用户要看的，不是"丢了几条"这个数字。 */
 export interface TurnReport {
   question: string | null
   added_count: number
-  dropped: number
+  dropped: string[]
   note: string | null
 }
 

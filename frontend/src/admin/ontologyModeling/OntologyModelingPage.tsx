@@ -1,5 +1,6 @@
+import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { DEFAULT_MODELING_WAY, type ModelingWay } from '../../adminRoutes'
+import { DEFAULT_MODELING_WAY, PAGE_TITLES, type ModelingWay } from '../../adminRoutes'
 import { OntologySchemaPage } from '../OntologySchemaPage'
 import { ModelingWorkbenchPage } from '../modelingWorkbench/ModelingWorkbenchPage'
 import { SmartCreatePanel } from './smart/SmartCreatePanel'
@@ -35,6 +36,12 @@ function parseWay(raw: string | null): ModelingWay {
 export function OntologyModelingPage() {
   const [params, setParams] = useSearchParams()
   const way = parseWay(params.get('way'))
+
+  useEffect(() => {
+    // 标题跟三个 tab 共用一份——它是壳页的标题，不属于任何一个 tab；
+    // 切 tab 不该改标题（三种方式都在"本体建模"这一页里）。
+    document.title = `${PAGE_TITLES.ontologyModeling} · 管理后台`
+  }, [])
 
   const switchTo = (next: ModelingWay) => {
     const updated = new URLSearchParams(params)

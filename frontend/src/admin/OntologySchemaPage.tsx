@@ -141,10 +141,6 @@ export function OntologySchemaPage() {
   const [readinessVersion, setReadinessVersion] = useState(0)
   const bumpReadiness = useCallback(() => setReadinessVersion((v) => v + 1), [])
 
-  useEffect(() => {
-    document.title = '本体管理 · 管理后台'
-  }, [])
-
   const refreshStatus = useCallback(async () => {
     if (!sessionToken) return
     const response = await adminFetch(

@@ -14,12 +14,14 @@ import {
   startInterview,
 } from './interviewApi'
 import { addMissingAsRelation, addMissingAsTerm, projectSkeleton, setReview } from './skeletonEdits'
-import type { DraftDiff, InterviewSession, InterviewState, ReviewState, TurnReport } from './types'
-
-// 关系类型名的校验规则跟后端一致（^[A-Z][A-Z0-9_]{0,63}$）：问题清单里缺的
-// 名字符合这个形状的按关系类型加，否则按实体类型加。这里不 import 后端那份
-// 常量——它在 Python 侧，前端没有现成的 TS 版本可用。
-const RELATION_NAME = /^[A-Z][A-Z0-9_]{0,63}$/
+import type {
+  DraftDiff,
+  InterviewQuestionNeeds,
+  InterviewSession,
+  InterviewState,
+  ReviewState,
+  TurnReport,
+} from './types'
 
 // 样式常量本地声明、不 import `modelingWorkbench/ui.ts`：三种构建方式各自
 // 独立（spec 决策 2），共用一份样式文件会在视觉上悄悄耦合两者。
@@ -162,9 +164,12 @@ export function SmartCreatePanel() {
     }
   }
 
-  const handleAddMissing = (name: string, questionText: string) => {
+  const handleAddMissing = (name: string, questionText: string, needs: InterviewQuestionNeeds) => {
     if (!session) return
-    const next = RELATION_NAME.test(name)
+    // 按问题条目自己记录的归属判断加成实体还是关系——而不是拿名字形状猜
+    // （"SKU""VIP"这类全大写的实体名会被猜成关系类型）。needs 是
+    // infer_needs 反推时就分好类的，比事后用命名规则去猜靠谱。
+    const next = needs.relation_types.includes(name)
       ? addMissingAsRelation(session.state, name, questionText)
       : addMissingAsTerm(session.state, name, questionText)
     if (next !== session.state) void persist(next)
@@ -288,7 +293,7 @@ export function SmartCreatePanel() {
           回答几个问题，让模型先猜一版骨架的实体和关系，再用真实业务问题校准，全程可以审阅每一条。
         </p>
         {error && (
-          <p className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
+          <p role="alert" className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
             {error}
           </p>
         )}
@@ -327,12 +332,20 @@ export function SmartCreatePanel() {
                 {turn.text}
               </div>
             ))}
-            {turnReport && (turnReport.note || turnReport.dropped > 0) && (
-              <p role="status" className="text-sm text-ink-soft">
-                {turnReport.note}
-                {turnReport.dropped > 0 &&
-                  `${turnReport.note ? '，' : ''}有 ${turnReport.dropped} 条建议因不合规被丢弃`}
-              </p>
+            {turnReport && (turnReport.note || turnReport.dropped.length > 0) && (
+              <div role="status" className="text-sm text-ink-soft">
+                {turnReport.note && <p>{turnReport.note}</p>}
+                {turnReport.dropped.length > 0 && (
+                  // 逐条列出后端给的理由——"有 N 条被丢弃"这种计数对用户
+                  // 没用，理由本身（比如"实体类型 X 没有给出理由，丢弃"）
+                  // 才是他要看的。
+                  <ul className="list-disc pl-5">
+                    {turnReport.dropped.map((reason, index) => (
+                      <li key={index}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             )}
           </div>
           {state.done ? (
@@ -554,7 +567,7 @@ export function SmartCreatePanel() {
                         type="button"
                         className={secondaryButtonClass}
                         disabled={busy}
-                        onClick={() => handleAddMissing(name, q.text)}
+                        onClick={() => handleAddMissing(name, q.text, q.needs)}
                       >
                         把 {name} 加进骨架
                       </button>

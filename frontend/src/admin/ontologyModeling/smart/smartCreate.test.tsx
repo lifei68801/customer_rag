@@ -93,7 +93,7 @@ function stubApi() {
         return json(
           answerResult ?? {
             session,
-            turn: { question: null, added_count: 0, dropped: 0, note: null },
+            turn: { question: null, added_count: 0, dropped: [], note: null },
           },
         )
       }
@@ -216,7 +216,7 @@ describe('智能创建', () => {
           done: false,
         },
       },
-      turn: { question: '你们有多少个门店？', added_count: 1, dropped: 0, note: null },
+      turn: { question: '你们有多少个门店？', added_count: 1, dropped: [], note: null },
     }
     renderSmart()
     const input = await screen.findByLabelText('回答')
@@ -241,7 +241,7 @@ describe('智能创建', () => {
       turn: {
         question: '先说说你们主要做什么生意？',
         added_count: 0,
-        dropped: 0,
+        dropped: [],
         note: '这一轮没能从回答里认出新概念，可以换个说法再说一次',
       },
     }
@@ -252,6 +252,28 @@ describe('智能创建', () => {
     expect(await screen.findByRole('status')).toHaveTextContent(
       '这一轮没能从回答里认出新概念，可以换个说法再说一次',
     )
+  })
+
+  it('只有丢弃、没有 note 时，丢弃理由逐条显示在对话流末尾', async () => {
+    // 回归测试：dropped 后端是 string[]，此前前端当 number 用
+    // （`dropped > 0`），note 为 null 时整段 <p role="status"> 都不渲染，
+    // 用户完全看不到被丢弃的建议。
+    signedInRole = 'member'
+    session = openingSession()
+    answerResult = {
+      session,
+      turn: {
+        question: '下一个问题？',
+        added_count: 0,
+        dropped: ['实体类型 X 没有给出理由，丢弃'],
+        note: null,
+      },
+    }
+    renderSmart()
+    const input = await screen.findByLabelText('回答')
+    await userEvent.type(input, '随便说点什么')
+    await userEvent.click(screen.getByRole('button', { name: '回答' }))
+    expect(await screen.findByText('实体类型 X 没有给出理由，丢弃')).toBeInTheDocument()
   })
 
   it('接受一条候选实体会把整份访谈状态存回去', async () => {
@@ -299,6 +321,48 @@ describe('智能创建', () => {
     const values = saved[0].state.skeleton.term_types.map((t) => t.value)
     expect(values).toContain('品类')
     expect(values).toContain('商品')
+  })
+
+  it('缺的名字全大写也按 needs 里的归属加成实体，不按名字形状猜', async () => {
+    // 回归测试：此前用 /^[A-Z][A-Z0-9_]{0,63}$/ 猜 kind，"SKU"这类全大写
+    // 的实体名会被误加成关系类型。needs.term_types 才是权威来源。
+    signedInRole = 'member'
+    session = sessionWithTerm('pending')
+    questionResult = {
+      session: {
+        ...(session as { tenant_id: string; updated_at: string; updated_by: string; state: unknown }),
+        state: {
+          ...(session as { state: { turns: unknown; skeleton: unknown } }).state,
+          questions: [
+            {
+              text: '每个 SKU 卖了多少',
+              needs: { term_types: ['SKU'], relation_types: [] },
+              missing: ['SKU'],
+              at: '2026-09-17T10:10:00',
+            },
+          ],
+        },
+      },
+      question: {
+        text: '每个 SKU 卖了多少',
+        needs: { term_types: ['SKU'], relation_types: [] },
+        missing: ['SKU'],
+        at: '2026-09-17T10:10:00',
+      },
+    }
+    renderSmart()
+    const input = await screen.findByLabelText('业务问题')
+    await userEvent.type(input, '每个 SKU 卖了多少')
+    await userEvent.click(screen.getByRole('button', { name: '加一条' }))
+    const addButton = await screen.findByRole('button', { name: '把 SKU 加进骨架' })
+    await userEvent.click(addButton)
+    await waitFor(() => expect(saved).toHaveLength(1))
+    const skeleton = saved[0].state.skeleton as unknown as {
+      term_types: { value: string }[]
+      relation_types: { relation_type: string }[]
+    }
+    expect(skeleton.term_types.map((t) => t.value)).toContain('SKU')
+    expect(skeleton.relation_types).toHaveLength(0)
   })
 
   it('写入草稿：先看差异、删除项弹确认框，确认后走 draft/replace 且不带 ETL 映射', async () => {

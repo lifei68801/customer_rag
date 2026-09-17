@@ -68,7 +68,7 @@ describe('interviewApi', () => {
   })
 
   it('提交回答走 /interview/answer，body 带 answer 和 updated_at', async () => {
-    stubFetch(() => json({ session: session(), turn: { question: '下一个问题', added_count: 1, dropped: 0, note: null } }))
+    stubFetch(() => json({ session: session(), turn: { question: '下一个问题', added_count: 1, dropped: [], note: null } }))
     const result = await answerInterview('t1', 'tok', '我们卖服装', 'earlier')
     expect(calls[0].url).toContain('/api/admin/ontology/t1/interview/answer')
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({ answer: '我们卖服装', updated_at: 'earlier' })
