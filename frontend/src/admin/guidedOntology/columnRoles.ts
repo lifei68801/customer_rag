@@ -57,7 +57,7 @@ function classify(column: ColumnStats): { role: ColumnRole; reason: string } {
   //
   // 这样分的决定性理由不是"准确率更高"，是**错误的可纠正性**：判成
   // measure 的列在审阅视图里只是一条只读记录（「会成为属性的列」那一节），
-  // 想改得等草稿建完再去本体建模的「手动构建」；而判成 dimension 的列会长出一组
+  // 想改得等草稿建完再去本体建模的「本体结构」；而判成 dimension 的列会长出一组
   // 单选，用户当场就能在「建成实体 / 做成属性」之间二选一。宁可判错成
   // 用户当场能推翻的东西。
   //
@@ -109,7 +109,7 @@ function classify(column: ColumnStats): { role: ColumnRole; reason: string } {
     // 整数列专用文案。通用那句「重复度不足以当分类」对一列整数编号解释力
     // 很弱，对一列整元单价更是指错了方向——那一列的问题不是"不够格当
     // 分类"，是系统没认出它是金额，于是整列没进本体。给一个真能做到的
-    // 动作：建完之后去本体建模的「手动构建」加成属性（那个 tab 常驻，不依赖
+    // 动作：建完之后去本体建模的「本体结构」加成属性（那个 tab 常驻，不依赖
     // 某个建模方式的完成态）。这条 reason 目前没有渲染进建模工作台的任何
     // 面板——「数据」面板「数据里还有这些，骨架里没有」一节只显示列名，
     // 不显示 reason；这段因果眼下只对 columnRoles.test.ts 这层模型单测成立，
@@ -130,7 +130,7 @@ function classify(column: ColumnStats): { role: ColumnRole; reason: string } {
           `${column.nonEmptyCount} 个非空值里有 ${column.distinctCount} 个不同值，几乎每行一个，` +
           `但只有 ${column.nonEmptyCount} 行——样本太小，不能当标识（整数列至少要 ` +
           `${INTEGER_IDENTIFIER_MIN_ROWS} 行）。整数列不会被自动当成度量（只有带小数的` +
-          '数值列才会）——如果它是金额或计数，建完草稿后去本体建模的「手动构建」把它加成属性。',
+          '数值列才会）——如果它是金额或计数，建完草稿后去本体建模的「本体结构」把它加成属性。',
       }
     }
     return {
@@ -138,7 +138,7 @@ function classify(column: ColumnStats): { role: ColumnRole; reason: string } {
       reason:
         `${column.nonEmptyCount} 个非空值里有 ${column.distinctCount} 个不同值：` +
         '重复度不够当分类，也没高到每行一个。整数列不会被自动当成度量（只有带小数的' +
-        '数值列才会）——如果它是金额或计数，建完草稿后去本体建模的「手动构建」把它加成属性。',
+        '数值列才会）——如果它是金额或计数，建完草稿后去本体建模的「本体结构」把它加成属性。',
     }
   }
   return {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import App from '../../App'
@@ -10,10 +10,12 @@ import { ADMIN_ROUTES, modelingWay } from '../../adminRoutes'
 import { resetAdminSession } from '../useAdminAuth'
 
 /**
- * 本体建模页：本体结构与建模工作台并成一页的三个 tab（模板 / 手动 / 智能）。
+ * 本体建模页：本体结构与建模工作台并成一页的三个 tab，顺序即流程——模板构建 /
+ * 智能创建两条初始化思路在前，本体结构（终点，原「手动构建」）排最后。
  *
- * 这里测的是壳——tab 与 URL 的同步、旧地址的落点、侧边栏只剩一项；三个
- * tab 各自的内容由它们原来的测试盖着（ontologyConfirm、workbenchPage 等）。
+ * 这里测的是壳——tab 与 URL 的同步、旧地址的落点、侧边栏只剩一项、写入草稿
+ * 后自动跳到本体结构并提示；三个 tab 各自的内容由它们原来的测试盖着
+ * （ontologyConfirm、workbenchPage 等）。
  */
 
 function whoami() {
@@ -27,13 +29,62 @@ function whoami() {
 
 const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status }))
 
+const EMPTY_DIFF = {
+  added_term_types: [],
+  removed_term_types: [],
+  changed_term_types: [],
+  added_relation_types: [],
+  removed_relation_types: [],
+  added_constraints: [],
+  removed_constraints: [],
+}
+
+// 只给"模板构建写入草稿"那条测试用：默认 null（没有工作区），其余测试都
+// 走这条缺省路径，跟改动前一样。
+let templateWorkspace: unknown = null
+const draftReplaceBodies: unknown[] = []
+
+/** 一个已经有一条 accepted 实体类型的工作区，直接进"应用"面板点写入就够。 */
+function templateWorkspaceWithOneAcceptedTerm() {
+  return {
+    tenant_id: 'demo',
+    skill_name: null,
+    skill_version: null,
+    updated_at: '2026-09-17T10:00:00',
+    updated_by: 'alice',
+    state: {
+      term_types: [
+        {
+          value: 'SKU',
+          display_name: '商品',
+          provenance: 'manual',
+          review: 'accepted',
+          standard_name_value_type: 'string',
+          extra_fields: [],
+          key_aliases: [],
+          field_aliases: {},
+          clues: [],
+          data_match: null,
+        },
+      ],
+      relation_types: [],
+      constraints: [],
+      sources: [],
+      unmatched_columns: {},
+      questions: [],
+    },
+  }
+}
+
 beforeEach(() => {
   resetAdminSession()
   sessionStorage.clear()
   localStorage.clear()
+  templateWorkspace = null
+  draftReplaceBodies.length = 0
   vi.stubGlobal(
     'fetch',
-    vi.fn((input: RequestInfo | URL) => {
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.includes('/auth/whoami')) return whoami()
       if (url.includes('/nav-badges')) return json({ pending_relations: 0, pending_duplicates: 0, total_terms: 0 })
@@ -45,7 +96,14 @@ beforeEach(() => {
       if (url.includes('/modeling-workspace/skills')) return json({ skills: [] })
       if (url.includes('/modeling-workspace/grounding'))
         return json({ status: null, grounded_term_types: [], grounded_relation_types: [], source_files: [], parse_error: null })
-      if (url.includes('/modeling-workspace')) return json({ workspace: null })
+      // apply-preview 的 URL 里也含 '/modeling-workspace'，必须排在那条通用
+      // 分支前面，否则永远走不到这里。
+      if (url.includes('/modeling-workspace/apply-preview')) return json(EMPTY_DIFF)
+      if (url.includes('/modeling-workspace')) return json({ workspace: templateWorkspace })
+      if (url.includes('/draft/replace')) {
+        draftReplaceBodies.push(JSON.parse(String(init?.body)))
+        return json({ replaced: true })
+      }
       if (url.includes('/interview')) return json({ session: null })
       return new Promise(() => {})
     }),
@@ -84,12 +142,23 @@ describe('本体建模页', () => {
     expect(labels).not.toContain('建模工作台')
   })
 
-  it('缺省落在手动构建——多数租户在维护已有本体，不该被扔进空工作区', async () => {
+  it('缺省落在本体结构——多数租户在维护已有本体，不该被扔进空工作区', async () => {
     renderAt(ADMIN_ROUTES.ontologyModeling)
     expect(await screen.findByRole('heading', { name: '本体建模' })).toBeInTheDocument()
-    expect(tabs().getByRole('button', { name: '手动构建' }).getAttribute('aria-pressed')).toBe('true')
-    // 手动构建就是原来的本体结构：三个子 tab 还在
+    expect(tabs().getByRole('button', { name: '本体结构' }).getAttribute('aria-pressed')).toBe('true')
+    // 本体结构就是原来的本体结构页：三个子 tab 还在
     expect(await screen.findByRole('button', { name: '实体类型' })).toBeInTheDocument()
+  })
+
+  it('tab 顺序与名字：两条初始化思路在前，本体结构（终点）排最后', async () => {
+    // 顺序即流程（design 增补决策 13）：模板构建、智能创建只是起个头，
+    // 本体结构才是所有路的终点，排最后提醒用户"这里才是要落地的地方"。
+    renderAt(ADMIN_ROUTES.ontologyModeling)
+    await screen.findByRole('heading', { name: '本体建模' })
+    const labels = tabs()
+      .getAllByRole('button')
+      .map((b) => b.textContent?.trim())
+    expect(labels).toEqual(['模板构建', '智能创建', '本体结构'])
   })
 
   it('切到模板构建改 URL 并渲染工作台', async () => {
@@ -107,7 +176,7 @@ describe('本体建模页', () => {
     expect(screen.getByTestId('url').textContent).toContain('way=template')
   })
 
-  it('版本切换器只在手动构建里', async () => {
+  it('版本切换器只在本体结构里', async () => {
     renderAt(modelingWay('manual'))
     expect(await screen.findByRole('group', { name: '本体版本' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '模板构建' }))
@@ -124,5 +193,35 @@ describe('本体建模页', () => {
     renderAt('/admin/ontology/guided')
     await screen.findByRole('heading', { name: '本体建模' })
     expect(screen.getByTestId('url').textContent).toBe(modelingWay('template'))
+  })
+
+  it('模板构建写入草稿成功后自动切到本体结构，并提示刚写入了什么', async () => {
+    // 走完整条链路（工作区 → 应用面板 → 写入），不只测壳页的回调函数：
+    // design 增补决策 11 要的是"用户点一下写入之后，界面上真的发生了什么"。
+    templateWorkspace = templateWorkspaceWithOneAcceptedTerm()
+    renderAt(modelingWay('template'))
+    await userEvent.click(await screen.findByRole('button', { name: /^应用$/ }))
+    // diff 是空的（EMPTY_DIFF）：没有删除项，点「写入草稿」不会弹确认框，
+    // 一路直接写到 draft/replace。
+    await userEvent.click(await screen.findByRole('button', { name: /写入草稿/ }))
+    await waitFor(() => expect(draftReplaceBodies).toHaveLength(1))
+
+    // 自动跳到本体结构：URL 里的 way 变成 manual（这个取值本身没改）。
+    expect(screen.getByTestId('url').textContent).toBe(modelingWay('manual'))
+    const notice = await screen.findByRole('status')
+    expect(notice.textContent).toContain('刚写入')
+    expect(notice.textContent).toContain('1 个实体类型')
+  })
+
+  it('手动切 tab 会清掉写入草稿留下的提示', async () => {
+    templateWorkspace = templateWorkspaceWithOneAcceptedTerm()
+    renderAt(modelingWay('template'))
+    await userEvent.click(await screen.findByRole('button', { name: /^应用$/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /写入草稿/ }))
+    await screen.findByRole('status')
+
+    // 提示只对刚才那一次写入有效；用户自己点开别的 tab，就已经不是"刚才"了。
+    await userEvent.click(screen.getByRole('button', { name: '模板构建' }))
+    expect(screen.queryByRole('status')).toBeNull()
   })
 })

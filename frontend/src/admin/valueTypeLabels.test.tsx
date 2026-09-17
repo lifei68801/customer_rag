@@ -118,7 +118,7 @@ describe('取值类型的界面文案', () => {
   })
 })
 
-describe('手动构建里的类型下拉', () => {
+describe('本体结构里的类型下拉', () => {
   it('选项文案说人话，提交出去的值仍是存储枚举', async () => {
     const user = userEvent.setup()
     renderAt(modelingWay('manual'))

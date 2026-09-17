@@ -512,7 +512,7 @@ export function DocumentsPage() {
             <p data-testid="graph-unavailable" className="text-xs text-ink-soft">
               该租户本体 schema 尚未确认，抽取不出图谱。文档仍会被摄取并可用于检索，
               先去
-              {/* 链接文字是目的地在导航里的名字（本体建模页的手动构建 tab），
+              {/* 链接文字是目的地在导航里的名字（本体建模页的本体结构 tab），
                   用户点之前就知道去哪。 */}
               <Link to={modelingWay('manual')} className="mx-1 font-bold underline">
                 本体建模

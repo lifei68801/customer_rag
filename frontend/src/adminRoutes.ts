@@ -34,9 +34,10 @@ export const ADMIN_ROUTES = {
   // （见下面的 NON_TENANT_ROUTE_KEYS）。
   dashboard: '/admin/dashboard',
 
-  // 本体建模：模板构建 / 手动构建 / 智能创建三种方式住在同一页的三个 tab
-  // 里，靠 ?way= 区分（见下面的 modelingWay）。此前「本体结构」和「建模
-  // 工作台」各占一条路由，用户得先知道"我要的是哪一页"才找得到入口。
+  // 本体建模：模板构建 / 智能创建两条初始化思路，加终点本体结构，住在
+  // 同一页的三个 tab 里，靠 ?way= 区分（见下面的 modelingWay）。此前
+  // 「本体结构」和「建模工作台」各占一条路由，用户得先知道"我要的是
+  // 哪一页"才找得到入口。
   ontologyModeling: '/admin/ontology/modeling',
   ontologyGraph: '/admin/ontology/graph',
   persona: '/admin/ontology/persona',
@@ -65,7 +66,7 @@ export const ADMIN_ROUTES = {
 
 export type ModelingWay = 'template' | 'manual' | 'smart'
 
-/** 缺省是手动构建：今天多数租户在维护已有本体，首屏不该把他们扔进空工作区。 */
+/** 缺省是本体结构：今天多数租户在维护已有本体，首屏不该把他们扔进空工作区。 */
 export const DEFAULT_MODELING_WAY: ModelingWay = 'manual'
 
 /**
@@ -82,10 +83,10 @@ export function modelingWay(way: ModelingWay): string {
 /**
  * 旧路径 → 新路径。各代都保留，且**每条一跳直达**。
  *
- * 第四代把本体结构与建模工作台并成了本体建模的两个 tab：本体结构 →
- * 手动构建，建模工作台 → 模板构建。所以这里指向的是带 `?way=` 的地址——
- * 落到缺省 tab 的话，收藏了「建模工作台」的人会落在手动构建里，以为
- * 工作台被删了。
+ * 第四代把本体结构与建模工作台并成了本体建模的两个 tab：本体结构页
+ * 仍叫「本体结构」，建模工作台 → 模板构建。所以这里指向的是带 `?way=`
+ * 的地址——落到缺省 tab 的话，收藏了「建模工作台」的人会落在本体结构里，
+ * 以为工作台被删了。
  *
  * 第一代（`/admin/terms` 等）在 2026-08 那次重组时已经改过一次，指向的是
  * 第二代的 `/admin/data-entry/*`；这次如果只改第二代，旧书签会变成两跳
@@ -320,7 +321,7 @@ export const GRAPH_PREVIEW_QUERY_KEY = 'node_key'
 
 /**
  * 报错明细的「去建模」用这个参数把「答不出来的那个问题」带到本体建模页
- * 的手动构建 tab。
+ * 的本体结构 tab。
  *
  * 放在这里而不是任一页面文件里：两边都要用，从对方 import 会把整页组件
  * 拖进另一页的 chunk。

@@ -224,7 +224,7 @@ describe('整数列落进自由文本时的说明', () => {
     // 问题不是"不够格当分类"，是系统没认出它是金额。
     const reason = assignRoles([realStats('unit_price', ['10', '20', '30'])])[0].reason
     expect(reason).toMatch(/只有带小数的数值列才会/)
-    expect(reason).toMatch(/「手动构建」/)
+    expect(reason).toMatch(/「本体结构」/)
   })
 
   it('不同值超过 50 的整数列（数量、单价、以分为单位的金额）也拿得到这段说明', () => {
@@ -242,13 +242,13 @@ describe('整数列落进自由文本时的说明', () => {
     expect(roleOf(column)).toBe('freetext')
     const reason = assignRoles([column])[0].reason
     expect(reason).toMatch(/只有带小数的数值列才会/)
-    expect(reason).toMatch(/「手动构建」/)
+    expect(reason).toMatch(/「本体结构」/)
   })
 
   it('字符串列仍用原来的说明，没有被整数文案顶掉', () => {
     const reason = assignRoles([stats({ name: 'note', distinctCount: 600, nonEmptyCount: 1000 })])[0]
       .reason
     expect(reason).toMatch(/重复度不足以当分类/)
-    expect(reason).not.toMatch(/「手动构建」/)
+    expect(reason).not.toMatch(/「本体结构」/)
   })
 })

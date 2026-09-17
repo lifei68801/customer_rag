@@ -10,7 +10,8 @@ import { modelingWay } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
- * 手动构建（原本体结构页）三张表的批量删除。
+ * 本体结构（本体建模页三个 tab 里的终点，原独立的本体结构页）三张表的
+ * 批量删除。
  *
  * 这三张表跟实体明细页不一样的两点，是这个文件主要钉住的东西：
  *

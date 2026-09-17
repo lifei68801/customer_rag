@@ -38,11 +38,20 @@ function constraintLabel(c: { subject: string; relation: string; object: string 
   return `${c.subject} ${c.relation} ${c.object}`
 }
 
+export interface SmartCreatePanelProps {
+  /**
+   * 写入草稿成功后调用，把这次投影出去的三段数量报给壳页——壳页拿它自动
+   * 切到「本体结构」并提示核实（design 增补，决策 11）。可选：本文件自己
+   * 的测试直接渲染整个 App，不传这个 prop 也要能跑。
+   */
+  onApplied?: (counts: { termTypes: number; relationTypes: number; constraints: number }) => void
+}
+
 /**
  * 智能创建——本体建模页的「智能创建」tab（?way=smart）。
  *
  * 两段式（spec）：左边是访谈对话，右边是随访谈长出的骨架，下面是业务问题
- * 清单，最下面是写入草稿。跟另外两种构建方式（模板构建、手动构建）完全不
+ * 清单，最下面是写入草稿。跟另外两种构建方式（模板构建、本体结构）完全不
  * 共享状态——各自维护自己的会话/工作区，终点都是同一份草稿。
  *
  * 所有会改变审阅决定/骨架内容的动作（接受/拒绝、加进骨架、结束访谈）都走
@@ -50,7 +59,7 @@ function constraintLabel(c: { subject: string; relation: string; object: string 
  * 例外——它们各自的端点会调 LLM、直接返回新会话，没有必要先读一遍再整份
  * 存回去。
  */
-export function SmartCreatePanel() {
+export function SmartCreatePanel({ onApplied }: SmartCreatePanelProps = {}) {
   const { sessionToken } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const confirm = useConfirm()
@@ -250,6 +259,11 @@ export function SmartCreatePanel() {
       }
       showToast('已写入本体草稿')
       setDiff(null)
+      onApplied?.({
+        termTypes: payload.term_types.length,
+        relationTypes: payload.relation_types.length,
+        constraints: payload.constraints.length,
+      })
     } catch (err) {
       reportError(err, '写入草稿失败')
     } finally {

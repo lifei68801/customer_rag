@@ -128,7 +128,7 @@ describe('fieldDisplayName', () => {
   })
 })
 
-describe('手动构建里的属性显示名', () => {
+describe('本体结构里的属性显示名', () => {
   it('编辑已有类型时预填显示名，改完提交时把它一起发出去', async () => {
     const user = userEvent.setup()
     renderAt(modelingWay('manual'))

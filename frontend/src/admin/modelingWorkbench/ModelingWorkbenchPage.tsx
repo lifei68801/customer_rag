@@ -35,6 +35,15 @@ const TAB_LABELS: { id: Tab; label: string }[] = [
   { id: 'apply', label: '应用' },
 ]
 
+export interface ModelingWorkbenchPageProps {
+  /**
+   * 写入草稿成功后调用，把这次投影出去的三段数量报给壳页——壳页拿它自动
+   * 切到「本体结构」并提示核实（design 增补，决策 11）。可选：本文件自己
+   * 的测试直接渲染整个 App，不传这个 prop 也要能跑。
+   */
+  onApplied?: (counts: { termTypes: number; relationTypes: number; constraints: number }) => void
+}
+
 /**
  * 建模工作台——本体建模页的「模板构建」tab（?way=template）。替换原来的
  * 「引导建模」页。
@@ -46,7 +55,7 @@ const TAB_LABELS: { id: Tab; label: string }[] = [
  * 每次改动立刻整份存回后端（PUT 带 updated_at 乐观锁），不做本地草稿：
  * 工作区是长期存在的，用户关掉页面一周后回来必须看到自己上次做到哪。
  */
-export function ModelingWorkbenchPage() {
+export function ModelingWorkbenchPage({ onApplied }: ModelingWorkbenchPageProps = {}) {
   const { sessionToken, username } = useAdminAuth()
   const { tenantId } = useAdminTenant()
   const confirm = useConfirm()
@@ -359,6 +368,11 @@ export function ModelingWorkbenchPage() {
       // 刻意不调 /confirm：确认是不可逆的，工作台不替用户做这个决定
       setGrounding(await fetchGrounding(tenantId, sessionToken))
       setDiff(null)
+      onApplied?.({
+        termTypes: payload.term_types.length,
+        relationTypes: payload.relation_types.length,
+        constraints: payload.constraints.length,
+      })
     } catch (err) {
       reportError(err, '写入草稿失败')
     } finally {

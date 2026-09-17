@@ -48,7 +48,7 @@ describe('新路由表', () => {
   })
 
   it('本体建模的三个 tab 地址：路径同一条，靠 ?way= 区分', () => {
-    // 缺省是手动构建：多数租户在维护已有本体，首屏不该把他们扔进空工作区。
+    // 缺省是本体结构：多数租户在维护已有本体，首屏不该把他们扔进空工作区。
     expect(DEFAULT_MODELING_WAY).toBe('manual')
     expect(modelingWay('manual')).toBe('/admin/ontology/modeling?way=manual')
     expect(modelingWay('template')).toBe('/admin/ontology/modeling?way=template')
@@ -123,8 +123,8 @@ describe('旧路径垫片', () => {
     expect(LEGACY_REDIRECTS['/admin/data-entry/review']).toBe(ADMIN_ROUTES.reviewRelations)
     expect(LEGACY_REDIRECTS['/admin/schema-etl']).toBe(ADMIN_ROUTES.etl)
     expect(LEGACY_REDIRECTS['/admin/data-entry/etl']).toBe(ADMIN_ROUTES.etl)
-    // 本体结构 → 手动构建，建模工作台 → 模板构建：落到缺省 tab 的话，收藏
-    // 了「建模工作台」的人会落在手动构建里，以为工作台被删了。
+    // 本体结构页仍叫「本体结构」，建模工作台 → 模板构建：落到缺省 tab
+    // 的话，收藏了「建模工作台」的人会落在本体结构里，以为工作台被删了。
     expect(LEGACY_REDIRECTS['/admin/ontology']).toBe(modelingWay('manual'))
     expect(LEGACY_REDIRECTS['/admin/model/ontology']).toBe(modelingWay('manual'))
     expect(LEGACY_REDIRECTS['/admin/ontology/ontology']).toBe(modelingWay('manual'))

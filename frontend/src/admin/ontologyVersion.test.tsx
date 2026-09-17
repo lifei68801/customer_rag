@@ -31,11 +31,11 @@ function whoamiResponse() {
  * 草稿/已确认这个轴。
  *
  * 它此前是每个页面自己的一份 useState：在本体结构页（现在是本体建模的
- * 手动构建 tab）切到「已确认版本」，跳到本体图又是草稿——同一件事在两个
+ * 本体结构 tab）切到「已确认版本」，跳到本体图又是草稿——同一件事在两个
  * 页面上答案不一样，而且这个状态没有地址，截图发给同事对方打开看到的是
  * 另一份数据。
  *
- * 状态存在 URL 里（?version=），控件放在手动构建 tab 和本体图页的页头——
+ * 状态存在 URL 里（?version=），控件放在本体结构 tab 和本体图页的页头——
  * 它是"这一页在看哪一版"的上下文，放在几十像素外的侧边栏里没人会去找。
  */
 
@@ -78,7 +78,7 @@ const nav = () => within(screen.getByRole('navigation', { name: '后台导航' }
 const url = () => screen.getByTestId('url').textContent
 
 describe('版本轴在页头', () => {
-  it('本体建模页手动构建 tab 的顶上有它', async () => {
+  it('本体建模页本体结构 tab 的顶上有它', async () => {
     await renderAt(modelingWay('manual'))
     expect(screen.getByRole('group', { name: '本体版本' })).toBeTruthy()
   })
@@ -89,7 +89,7 @@ describe('版本轴在页头', () => {
     expect(page.getByRole('group', { name: '本体版本' })).toBeTruthy()
   })
 
-  it('别的页面没有——这个轴只对手动构建和本体图有意义', async () => {
+  it('别的页面没有——这个轴只对本体结构和本体图有意义', async () => {
     await renderAt(ADMIN_ROUTES.reviewRelations)
     expect(screen.queryByRole('group', { name: '本体版本' })).toBeNull()
   })
@@ -125,7 +125,7 @@ describe('两个页面共用同一份状态', () => {
 })
 
 describe('跨页保持', () => {
-  it('从手动构建切到本体图，仍然看的是已确认', async () => {
+  it('从本体结构切到本体图，仍然看的是已确认', async () => {
     const user = userEvent.setup()
     await renderAt(`${modelingWay('manual')}&version=confirmed`)
     await user.click(nav().getByRole('link', { name: '本体图' }))

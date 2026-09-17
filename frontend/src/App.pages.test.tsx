@@ -103,7 +103,7 @@ describe('宿主页面不再留重复入口', () => {
 })
 
 describe('宿主页面自己仍然完整', () => {
-  it('本体建模的手动构建保留三条 tab', async () => {
+  it('本体建模的本体结构 tab 保留三条子 tab', async () => {
     await renderAt(modelingWay('manual'))
     expect(screen.getByRole('button', { name: '实体类型' })).toBeTruthy()
   })

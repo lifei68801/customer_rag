@@ -5,7 +5,7 @@ import { panelClass, primaryButtonClass, secondaryButtonClass } from '../ui'
  * 应用：先看 diff，再写草稿。
  *
  * 删除项单独醒目列出（spec 决策 10）：replace_draft 是整份替换，草稿里用户
- * 在「手动构建」tab 手工加的东西会被这次替换删掉，不说出来就是静默删数据。
+ * 在「本体结构」tab 手工加的东西会被这次替换删掉，不说出来就是静默删数据。
  */
 export function ApplyPanel(props: {
   diff: DraftDiff | null
@@ -37,7 +37,7 @@ export function ApplyPanel(props: {
         <div className="flex flex-col gap-1 text-sm text-ink">
           {props.diff.removed_term_types.length > 0 && (
             <p role="alert" className="rounded-card border border-status-error bg-card px-3 py-2 text-sm text-ink">
-              {`会删掉：${props.diff.removed_term_types.join('、')}（多半是你在「手动构建」里手工加的）`}
+              {`会删掉：${props.diff.removed_term_types.join('、')}（多半是你在「本体结构」里手工加的）`}
             </p>
           )}
           {props.diff.removed_relation_types.length > 0 && (
