@@ -499,7 +499,7 @@ export function DatabaseImportPage() {
                   )}
                   {termTypeOptions?.length === 0 && (
                     <span className="text-xs text-ink-soft">
-                      这个领域还没有已确认的实体类型。先去「本体结构」建一个并
+                      这个领域还没有已确认的实体类型。先去「本体建模」建一个并
                       确认，再回来配数据源。
                     </span>
                   )}

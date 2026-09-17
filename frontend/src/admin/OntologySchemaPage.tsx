@@ -10,7 +10,7 @@ import { fetchTermsSummary } from './termsApi'
 import { VersionSwitcher } from './VersionSwitcher'
 import { useOntologyVersion } from './useOntologyVersion'
 import { Link, useSearchParams } from 'react-router-dom'
-import { ADMIN_ROUTES, MODEL_FROM_QUESTION_KEY, PAGE_TITLES } from '../adminRoutes'
+import { ADMIN_ROUTES, MODEL_FROM_QUESTION_KEY, modelingWay } from '../adminRoutes'
 import { ConstraintsTab } from './ontologySchema/ConstraintsTab'
 import { RelationTypesTab } from './ontologySchema/RelationTypesTab'
 import { TermTypesTab } from './ontologySchema/TermTypesTab'
@@ -306,10 +306,10 @@ export function OntologySchemaPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* 看的是哪一版，是这一页最要紧的上下文，所以跟标题同一行。控件只有
-          这一个实例（本体图页各有一个），状态在 URL 上，两页共用同一份。 */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.ontology}</h1>
+      {/* 看的是哪一版，是这个 tab 最要紧的上下文，所以放在最顶上、靠右
+          （标题归外层的本体建模页，这里不再有自己的 h1）。控件只有这一个
+          实例（本体图页各有一个），状态在 URL 上，两页共用同一份。 */}
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <VersionSwitcher />
       </div>
 
@@ -322,26 +322,28 @@ export function OntologySchemaPage() {
         </p>
       )}
 
-      {/* 引导负责从零到一；三个 tab 负责后续微调。两条路径都留着，因为它们
-          的用户和场景确实不同。
+      {/* 模板构建负责从零到一；三个 tab 负责后续微调。两条路径都留着，因为
+          它们的用户和场景确实不同。上面的构建方式 tab 已经能切过去，这里
+          再给一条是因为它带着"会不会覆盖当前草稿"的提示——tab 按钮说不了
+          这么多。
 
           replace_draft 是整份替换。readiness 还没查完（null）时不知道草稿
           是不是空的，这时既不能说"安全"也不能说"会覆盖"——猜错的代价是
           用户被白白吓退，或者手工建的东西没了却不知道是这一步干的，所以
           三态各自措辞，未知态用中性文案。 */}
       <Link
-        to={ADMIN_ROUTES.guidedOntology}
+        to={modelingWay('template')}
         title={
           readiness === null
-            ? '打开建模工作台：从领域模板起步、对齐数据表、看过差异再写入草稿'
+            ? '切到模板构建：从领域模板起步、对齐数据表、看过差异再写入草稿'
             : readiness.termTypes
-              ? '打开建模工作台：从领域模板起步、对齐数据表、看过差异再写入草稿——写入是整份替换，会覆盖当前草稿'
-              : '打开建模工作台：从领域模板起步、对齐数据表、看过差异再写入草稿——当前草稿是空的，写入不会覆盖任何东西'
+              ? '切到模板构建：从领域模板起步、对齐数据表、看过差异再写入草稿——写入是整份替换，会覆盖当前草稿'
+              : '切到模板构建：从领域模板起步、对齐数据表、看过差异再写入草稿——当前草稿是空的，写入不会覆盖任何东西'
         }
         className={`flex items-center gap-1.5 self-start rounded-control border border-subtle bg-paper px-3 py-1.5 text-sm font-bold text-ink transition hover:bg-interactive-hover ${focusRing}`}
       >
         <Wand2 aria-hidden="true" className="h-4 w-4" />
-        打开建模工作台
+        切到模板构建
       </Link>
 
       {pageError && (

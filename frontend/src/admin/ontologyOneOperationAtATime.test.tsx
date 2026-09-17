@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { modelingWay } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
@@ -89,7 +89,7 @@ async function renderOntology() {
     <SkinProvider>
       <ConfirmProvider>
         <ToastProvider>
-          <MemoryRouter initialEntries={[ADMIN_ROUTES.ontology]}>
+          <MemoryRouter initialEntries={[modelingWay('manual')]}>
             <App />
           </MemoryRouter>
         </ToastProvider>

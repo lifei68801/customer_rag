@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react'
-import { PAGE_TITLES } from '../../adminRoutes'
 import { adminFetch, extractErrorDetail } from '../adminApi'
 import { useAdminAuth } from '../useAdminAuth'
 import { useAdminTenant } from '../TenantContext'
@@ -37,7 +36,8 @@ const TAB_LABELS: { id: Tab; label: string }[] = [
 ]
 
 /**
- * 建模工作台。替换原来的「引导建模」页，路由不变。
+ * 建模工作台——本体建模页的「模板构建」tab（?way=template）。替换原来的
+ * 「引导建模」页。
  *
  * 是工作台不是向导（spec 决策 12）：四个面板随时可切，因为真实的建模不是
  * 一条直线——用户会在"传了一张表、发现骨架少一个概念、回去加一条、再传下
@@ -393,11 +393,10 @@ export function ModelingWorkbenchPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      {/* 标题归外层的本体建模页（这里是它的「模板构建」tab），这一行只剩
+          "下一步建议"和重新起步。 */}
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="flex flex-col gap-1">
-          <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.guidedOntology}</h1>
-          <p className="text-sm text-ink-soft">{nextStepHint(workspace, diff)}</p>
-        </div>
+        <p className="text-sm text-ink-soft">{nextStepHint(workspace, diff)}</p>
         {workspace !== null && (
           <button
             type="button"

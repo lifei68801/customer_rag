@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   ADMIN_ROUTES,
+  DEFAULT_MODELING_WAY,
   LEGACY_REDIRECTS,
   NAV_GROUPS,
   groupIdForPath,
+  modelingWay,
   routeRequiresTenant,
   NON_TENANT_ROUTE_KEYS,
   TENANT_SCOPED_ROUTE_KEYS,
@@ -18,12 +20,12 @@ import {
  */
 
 describe('新路由表', () => {
-  it('六个模块共十六个目的地，加上账号页、租户页、组织页和设置页', () => {
+  it('六个模块共十五个目的地，加上账号页、租户页、组织页和设置页', () => {
     expect(ADMIN_ROUTES).toEqual({
       dashboard: '/admin/dashboard',
-      ontology: '/admin/ontology/ontology',
+      // 本体结构与建模工作台并成了本体建模的两个 tab（?way=），只剩一条路由。
+      ontologyModeling: '/admin/ontology/modeling',
       ontologyGraph: '/admin/ontology/graph',
-      guidedOntology: '/admin/ontology/guided',
       persona: '/admin/ontology/persona',
       documents: '/admin/import/documents',
       etl: '/admin/import/table',
@@ -45,6 +47,14 @@ describe('新路由表', () => {
     })
   })
 
+  it('本体建模的三个 tab 地址：路径同一条，靠 ?way= 区分', () => {
+    // 缺省是手动构建：多数租户在维护已有本体，首屏不该把他们扔进空工作区。
+    expect(DEFAULT_MODELING_WAY).toBe('manual')
+    expect(modelingWay('manual')).toBe('/admin/ontology/modeling?way=manual')
+    expect(modelingWay('template')).toBe('/admin/ontology/modeling?way=template')
+    expect(modelingWay('smart')).toBe('/admin/ontology/modeling?way=smart')
+  })
+
   it('每个目的地的路径第二段就是它所属模块的 id', () => {
     // 这不是审美：groupIdForPath 靠前缀匹配决定侧边栏默认展开哪一组，
     // 分组和路径脱节的话它会返回 null，展开就失灵了。
@@ -64,7 +74,8 @@ describe('新路由表', () => {
 describe('旧路径垫片', () => {
   it('历史路径全部覆盖', () => {
     // 第一代（data-entry 之前）+ 第二代（data-entry/*）+ 第三代
-    // （按工作阶段分的 model/ingest/review 与两个两段式的孤儿）。
+    // （按工作阶段分的 model/ingest/review 与两个两段式的孤儿）+ 第四代
+    // 合并本体建模之前那两条（ontology/ontology、ontology/guided）。
     //
     // '/admin/browse/terms' 不在这里：它这次回来了，就是实体明细的正式
     // 路径，旧书签直接命中。留一条指向自己的垫片会变成无限重定向。
@@ -81,6 +92,8 @@ describe('旧路径垫片', () => {
       '/admin/model/ontology',
       '/admin/model/persona',
       '/admin/ontology',
+      '/admin/ontology/guided',
+      '/admin/ontology/ontology',
       '/admin/schema-etl',
       '/admin/terms',
     ])
@@ -97,7 +110,9 @@ describe('旧路径垫片', () => {
     // 变得要顺着链子读。每条都必须直接落在新路径上。
     const destinations = new Set<string>(Object.values(ADMIN_ROUTES))
     for (const [from, to] of Object.entries(LEGACY_REDIRECTS)) {
-      expect(destinations.has(to), `${from} 指向了非终点 ${to}`).toBe(true)
+      // 本体建模的垫片带 ?way=（落到哪个 tab），"是不是终点"只看路径部分。
+      const pathOnly = to.split('?')[0]
+      expect(destinations.has(pathOnly), `${from} 指向了非终点 ${to}`).toBe(true)
     }
   })
 
@@ -108,10 +123,14 @@ describe('旧路径垫片', () => {
     expect(LEGACY_REDIRECTS['/admin/data-entry/review']).toBe(ADMIN_ROUTES.reviewRelations)
     expect(LEGACY_REDIRECTS['/admin/schema-etl']).toBe(ADMIN_ROUTES.etl)
     expect(LEGACY_REDIRECTS['/admin/data-entry/etl']).toBe(ADMIN_ROUTES.etl)
-    expect(LEGACY_REDIRECTS['/admin/ontology']).toBe(ADMIN_ROUTES.ontology)
-    expect(LEGACY_REDIRECTS['/admin/model/ontology']).toBe(ADMIN_ROUTES.ontology)
+    // 本体结构 → 手动构建，建模工作台 → 模板构建：落到缺省 tab 的话，收藏
+    // 了「建模工作台」的人会落在手动构建里，以为工作台被删了。
+    expect(LEGACY_REDIRECTS['/admin/ontology']).toBe(modelingWay('manual'))
+    expect(LEGACY_REDIRECTS['/admin/model/ontology']).toBe(modelingWay('manual'))
+    expect(LEGACY_REDIRECTS['/admin/ontology/ontology']).toBe(modelingWay('manual'))
     expect(LEGACY_REDIRECTS['/admin/model/graph']).toBe(ADMIN_ROUTES.ontologyGraph)
-    expect(LEGACY_REDIRECTS['/admin/model/guided']).toBe(ADMIN_ROUTES.guidedOntology)
+    expect(LEGACY_REDIRECTS['/admin/model/guided']).toBe(modelingWay('template'))
+    expect(LEGACY_REDIRECTS['/admin/ontology/guided']).toBe(modelingWay('template'))
     // 数字人页是上一代末尾才加的（阶段二），写这份重排计划时它还不存在
     // ——漏掉的话，刚发出去的那个后台链接立刻变死链。
     expect(LEGACY_REDIRECTS['/admin/model/persona']).toBe(ADMIN_ROUTES.persona)
@@ -189,9 +208,9 @@ describe('当前分组判定（侧边栏自动展开用）', () => {
   })
 
   it('带子路径也能判对', () => {
-    // 页面内部可能还有子路由（比如将来给本体结构加 /term-types 之类），
+    // 页面内部可能还有子路由（比如将来给本体建模加 /term-types 之类），
     // 前缀匹配保证这些也落在正确的组里。
-    expect(groupIdForPath(`${ADMIN_ROUTES.ontology}/term-types`)).toBe('ontology')
+    expect(groupIdForPath(`${ADMIN_ROUTES.ontologyModeling}/term-types`)).toBe('ontology')
   })
 
   it('未知路径返回 null 而不是猜一个组', () => {

@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { ADMIN_ROUTES, modelingWay } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
@@ -196,7 +196,7 @@ async function confirmOntology() {
 describe('前向出口', () => {
   it('本体确认成功后给出去表格导入的入口', async () => {
     signIn('admin')
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     await confirmOntology()
     // 「表格导入」在本页当前是唯一渲染的匹配（本体分组是当前组，展开的
     // 是「建模」而不是「接入数据」，侧边栏那份此时没挂载），但仍然收进

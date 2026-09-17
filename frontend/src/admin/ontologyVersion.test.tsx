@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { ADMIN_ROUTES, modelingWay } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
@@ -30,11 +30,12 @@ function whoamiResponse() {
 /**
  * 草稿/已确认这个轴。
  *
- * 它此前是每个页面自己的一份 useState：在本体结构页切到「已确认版本」，
- * 跳到本体图又是草稿——同一件事在两个页面上答案不一样，而且这个状态没
- * 有地址，截图发给同事对方打开看到的是另一份数据。
+ * 它此前是每个页面自己的一份 useState：在本体结构页（现在是本体建模的
+ * 手动构建 tab）切到「已确认版本」，跳到本体图又是草稿——同一件事在两个
+ * 页面上答案不一样，而且这个状态没有地址，截图发给同事对方打开看到的是
+ * 另一份数据。
  *
- * 状态存在 URL 里（?version=），控件放在本体结构页和本体图页的页头——
+ * 状态存在 URL 里（?version=），控件放在手动构建 tab 和本体图页的页头——
  * 它是"这一页在看哪一版"的上下文，放在几十像素外的侧边栏里没人会去找。
  */
 
@@ -77,8 +78,8 @@ const nav = () => within(screen.getByRole('navigation', { name: '后台导航' }
 const url = () => screen.getByTestId('url').textContent
 
 describe('版本轴在页头', () => {
-  it('本体结构页的页头上有它', async () => {
-    await renderAt(ADMIN_ROUTES.ontology)
+  it('本体建模页手动构建 tab 的顶上有它', async () => {
+    await renderAt(modelingWay('manual'))
     expect(screen.getByRole('group', { name: '本体版本' })).toBeTruthy()
   })
 
@@ -88,25 +89,26 @@ describe('版本轴在页头', () => {
     expect(page.getByRole('group', { name: '本体版本' })).toBeTruthy()
   })
 
-  it('别的页面没有——这个轴只对本体结构和本体图有意义', async () => {
+  it('别的页面没有——这个轴只对手动构建和本体图有意义', async () => {
     await renderAt(ADMIN_ROUTES.reviewRelations)
     expect(screen.queryByRole('group', { name: '本体版本' })).toBeNull()
   })
 
   it('侧边栏里不再有一份——同一个轴两个控件，用户会以为它们管的不是同一件事', async () => {
-    await renderAt(ADMIN_ROUTES.ontology)
+    await renderAt(modelingWay('manual'))
     expect(nav().queryByRole('group', { name: '本体版本' })).toBeNull()
   })
 
   it('切换写进 URL，可以直接分享', async () => {
     const user = userEvent.setup()
-    await renderAt(ADMIN_ROUTES.ontology)
+    await renderAt(modelingWay('manual'))
     await user.click(screen.getByRole('button', { name: '已确认' }))
-    expect(url()).toBe(`${ADMIN_ROUTES.ontology}?version=confirmed`)
+    // way 留在前面：切版本不该把"在哪个 tab"抹掉
+    expect(url()).toBe(`${modelingWay('manual')}&version=confirmed`)
   })
 
   it('URL 带 version 时控件反映它', async () => {
-    await renderAt(`${ADMIN_ROUTES.ontology}?version=confirmed`)
+    await renderAt(`${modelingWay('manual')}&version=confirmed`)
     expect(
       screen.getByRole('button', { name: '已确认' }).getAttribute('aria-pressed'),
     ).toBe('true')
@@ -115,7 +117,7 @@ describe('版本轴在页头', () => {
 
 describe('两个页面共用同一份状态', () => {
   it('页面上没有第二个自己的版本控件', async () => {
-    await renderAt(ADMIN_ROUTES.ontology)
+    await renderAt(modelingWay('manual'))
     // 页内只有这一个「本体版本」组；旧实现里各页还有一份自己的 useState
     expect(screen.queryByRole('group', { name: '查看版本' })).toBeNull()
     expect(screen.getAllByRole('group', { name: '本体版本' })).toHaveLength(1)
@@ -123,10 +125,12 @@ describe('两个页面共用同一份状态', () => {
 })
 
 describe('跨页保持', () => {
-  it('从本体结构切到本体图，仍然看的是已确认', async () => {
+  it('从手动构建切到本体图，仍然看的是已确认', async () => {
     const user = userEvent.setup()
-    await renderAt(`${ADMIN_ROUTES.ontology}?version=confirmed`)
+    await renderAt(`${modelingWay('manual')}&version=confirmed`)
     await user.click(nav().getByRole('link', { name: '本体图' }))
+    // 只带 version，不带 way：哪个构建 tab 是本体建模页自己的事，本体图页
+    // 没有这个概念，带过去只会让 URL 说谎。
     expect(url()).toBe(`${ADMIN_ROUTES.ontologyGraph}?version=confirmed`)
   })
 
@@ -136,7 +140,7 @@ describe('跨页保持', () => {
     //
     // 分组默认全展开，所以不用先点开「数据审核」——点它反而是收起。
     const user = userEvent.setup()
-    await renderAt(`${ADMIN_ROUTES.ontology}?version=confirmed`)
+    await renderAt(`${modelingWay('manual')}&version=confirmed`)
     await user.click(nav().getByRole('link', { name: '关系审核' }))
     expect(url()).toBe(ADMIN_ROUTES.reviewRelations)
   })

@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { ADMIN_ROUTES, modelingWay } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 import { valueTypeLabel, valueTypeOptionLabel } from './extraFieldDisplay'
 
@@ -118,10 +118,10 @@ describe('取值类型的界面文案', () => {
   })
 })
 
-describe('本体结构页的类型下拉', () => {
+describe('手动构建里的类型下拉', () => {
   it('选项文案说人话，提交出去的值仍是存储枚举', async () => {
     const user = userEvent.setup()
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     await user.click(await screen.findByRole('button', { name: '编辑' }))
 
     const fieldType = (await screen.findByLabelText('字段类型')) as HTMLSelectElement
@@ -139,7 +139,7 @@ describe('本体结构页的类型下拉', () => {
 
   it('「自身取值类型」下拉用同一套说法', async () => {
     const user = userEvent.setup()
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     await user.click(await screen.findByRole('button', { name: '编辑' }))
 
     const select = (await screen.findByLabelText('自身取值类型')) as HTMLSelectElement

@@ -69,6 +69,13 @@ function AdminNav() {
   const { pathname, search } = useLocation()
   const { isExpanded, toggle } = useNavGroups(pathname)
   const badges = useNavBadges()
+  // 本体创建组内部只带 version 这一个参数，不是整份 search：本体建模页
+  // 的 ?way=（哪个构建 tab）和 ?question=（从报错明细带来的问题）都是
+  // 那一页自己的上下文，带去本体图页没有意义，还会让 URL 说谎。
+  const versionOnly = (() => {
+    const v = new URLSearchParams(search).get('version')
+    return v ? `?version=${v}` : ''
+  })()
 
   return (
             <nav aria-label="后台导航" className="flex flex-col gap-1">
@@ -104,7 +111,7 @@ function AdminNav() {
                           key={item.path}
                           // 只有本体创建组内部带上 version：它对别的组没有意义，
                           // 带着跑只会让 URL 说谎——看起来那些页面也有版本概念。
-                          to={{ pathname: item.path, search: group.id === 'ontology' ? search : '' }}
+                          to={{ pathname: item.path, search: group.id === 'ontology' ? versionOnly : '' }}
                           className={navLinkClass}
                         >
                           <item.icon aria-hidden="true" className="h-4 w-4 flex-shrink-0" />

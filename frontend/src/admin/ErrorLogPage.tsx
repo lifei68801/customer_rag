@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { CheckCircle2, FileWarning, MessageSquareOff, TableProperties } from 'lucide-react'
-import { ADMIN_ROUTES, MODEL_FROM_QUESTION_KEY, PAGE_TITLES } from '../adminRoutes'
+import { ADMIN_ROUTES, MODEL_FROM_QUESTION_KEY, PAGE_TITLES, modelingWay } from '../adminRoutes'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
@@ -468,9 +468,9 @@ function QaTab({ items, hasError }: { items: QaFailure[]; hasError: boolean }) {
           </span>
           {item.outcome === 'no_match' ? (
             // 带上这个问题跳过去：到了本体页还要自己回忆刚才问的是什么，
-            // 这个入口就白给了。
+            // 这个入口就白给了。modelingWay 已经带了 ?way=，所以这里接 &。
             <Link
-              to={`${ADMIN_ROUTES.ontology}?${MODEL_FROM_QUESTION_KEY}=${encodeURIComponent(item.question)}`}
+              to={`${modelingWay('manual')}&${MODEL_FROM_QUESTION_KEY}=${encodeURIComponent(item.question)}`}
               className={actionClass}
             >
               去建模

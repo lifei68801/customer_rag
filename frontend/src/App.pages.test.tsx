@@ -5,7 +5,7 @@ import App from './App'
 import { SkinProvider } from './admin/SkinContext'
 import { ConfirmProvider } from './admin/ConfirmContext'
 import { ToastProvider } from './admin/ToastContext'
-import { ADMIN_ROUTES } from './adminRoutes'
+import { ADMIN_ROUTES, modelingWay } from './adminRoutes'
 import { resetAdminSession } from './admin/useAdminAuth'
 
 /**
@@ -103,8 +103,8 @@ describe('宿主页面不再留重复入口', () => {
 })
 
 describe('宿主页面自己仍然完整', () => {
-  it('本体页保留三条 tab', async () => {
-    await renderAt(ADMIN_ROUTES.ontology)
+  it('本体建模的手动构建保留三条 tab', async () => {
+    await renderAt(modelingWay('manual'))
     expect(screen.getByRole('button', { name: '实体类型' })).toBeTruthy()
   })
 

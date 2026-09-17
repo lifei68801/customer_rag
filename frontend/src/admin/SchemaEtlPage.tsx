@@ -9,7 +9,7 @@ import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 import { CopyButton } from './CopyButton'
 import { TaskStatusBadge } from './TaskStatusBadge'
-import { ADMIN_ROUTES, PAGE_TITLES } from '../adminRoutes'
+import { ADMIN_ROUTES, PAGE_TITLES, modelingWay } from '../adminRoutes'
 import { fetchEtlMapping, type EtlMapping } from './etlMappingApi'
 
 // etl_runs 表的 status 只有这三种取值（app/graphrag/etl_runs_store.py），
@@ -430,11 +430,11 @@ export function SchemaEtlPage() {
             不是同一批。下面能选的是<strong>已确认</strong>那批——如果你刚走完引导
             建模，那份结果还没生效。去核对并确认：
           </span>
-          {/* 链接文字用目的地的名字（导航里那一页就叫「本体结构」），不是
+          {/* 链接文字用目的地的名字（导航里那一页就叫「本体建模」），不是
               「去核对并确认」这类动作描述——emptyStateLinks.test.tsx 那条守卫
               要的就是"点之前就知道去哪"。要说的动作放在上面那句话里。 */}
-          <Link to={ADMIN_ROUTES.ontology} className="font-bold text-ink underline">
-            本体结构
+          <Link to={modelingWay('manual')} className="font-bold text-ink underline">
+            本体建模
           </Link>
         </div>
       )}

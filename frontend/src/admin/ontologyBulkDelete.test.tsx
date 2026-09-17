@@ -6,11 +6,11 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { modelingWay } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
- * 本体结构页三张表的批量删除。
+ * 手动构建（原本体结构页）三张表的批量删除。
  *
  * 这三张表跟实体明细页不一样的两点，是这个文件主要钉住的东西：
  *
@@ -140,7 +140,7 @@ function renderPage() {
     <SkinProvider>
       <ConfirmProvider>
         <ToastProvider>
-          <MemoryRouter initialEntries={[ADMIN_ROUTES.ontology]}>
+          <MemoryRouter initialEntries={[modelingWay('manual')]}>
             <App />
           </MemoryRouter>
         </ToastProvider>

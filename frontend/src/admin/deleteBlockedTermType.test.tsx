@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { ADMIN_ROUTES, modelingWay } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
@@ -123,7 +123,7 @@ function renderAt(path: string) {
 describe('删除实体类型被占用时的出口', () => {
   it('错误提示里给出一条按该类型筛好的实体明细链接', async () => {
     const user = userEvent.setup()
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     const deleteButton = await screen.findByRole('button', { name: '删除' })
     await user.click(deleteButton)
     const dialog = await screen.findByRole('alertdialog')
@@ -138,7 +138,7 @@ describe('删除实体类型被占用时的出口', () => {
   it('只被关系约束挡住时不给这条链接——实体明细里没东西可处理', async () => {
     deleteBody = CONSTRAINT_ONLY_BODY
     const user = userEvent.setup()
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     await user.click(await screen.findByRole('button', { name: '删除' }))
     const dialog = await screen.findByRole('alertdialog')
     await user.click(within(dialog).getByRole('button', { name: '确认' }))

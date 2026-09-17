@@ -6,7 +6,6 @@ import { DocumentsPage } from './admin/DocumentsPage'
 import { GraphReviewsPage } from './admin/GraphReviewsPage'
 import { TermsPage } from './admin/TermsPage'
 import { SchemaEtlPage } from './admin/SchemaEtlPage'
-import { OntologySchemaPage } from './admin/OntologySchemaPage'
 import { DuplicatesPage } from './admin/DuplicatesPage'
 import { OntologyGraphPage } from './admin/OntologyGraphPage'
 import { PersonaEditorPage } from './admin/PersonaEditorPage'
@@ -17,7 +16,7 @@ import { TenantsPage } from './admin/TenantsPage'
 import { OrganizationsPage } from './admin/OrganizationsPage'
 import { SettingsPage } from './admin/SettingsPage'
 import { NotFoundPage } from './admin/NotFoundPage'
-import { ModelingWorkbenchPage } from './admin/modelingWorkbench/ModelingWorkbenchPage'
+import { OntologyModelingPage } from './admin/ontologyModeling/OntologyModelingPage'
 import { DatabaseImportPage } from './admin/DatabaseImportPage'
 import { DataGraphPage } from './admin/DataGraphPage'
 import { ErrorLogPage } from './admin/ErrorLogPage'
@@ -57,17 +56,18 @@ function App() {
       <Route path="/admin" element={<AdminLayout />}>
         {/* 落地页是看板：它跨领域、不需要"当前租户"，新登录的 admin
             （tenant_id 恒为 None）第一眼就能看到自己有哪些领域。
-            此前这里是 AdminLanding，按本体确认状态在本体结构页和文档上传
+            此前这里是 AdminLanding，按本体确认状态在本体建模页和文档上传
             之间分流——那个分流需要一个当前租户，而登录那一刻没有。 */}
         <Route index element={<Navigate to={ADMIN_ROUTES.dashboard} replace />} />
 
         <Route path="dashboard" element={<DashboardPage />} />
 
-        <Route path="ontology/ontology" element={<OntologySchemaPage />} />
+        {/* 三种建模方式共用一条路由，tab 记在 ?way= 上；本体结构页和建模
+            工作台由 OntologyModelingPage 引入，这里不再各自挂一条。 */}
+        <Route path="ontology/modeling" element={<OntologyModelingPage />} />
         {/* 本体图和疑似重复此前埋在别人的 tab 里。先给它们自己的 URL，
             页面本体的拆分是下一步的事——先有地址才谈得上被发现。 */}
         <Route path="ontology/graph" element={<OntologyGraphPage />} />
-        <Route path="ontology/guided" element={<ModelingWorkbenchPage />} />
         <Route path="ontology/persona" element={<PersonaEditorPage />} />
 
         <Route path="import/documents" element={<DocumentsPage />} />

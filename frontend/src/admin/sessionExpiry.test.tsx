@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { modelingWay } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
@@ -113,7 +113,7 @@ describe('会话与租户由服务端驱动', () => {
     // （adminFetch 的 401），下面单测。
     signInWithCookie()
     stubApi({ whoami: 401 })
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     expect(await screen.findByLabelText(/用户名/)).toBeTruthy()
   })
 
@@ -126,7 +126,7 @@ describe('会话与租户由服务端驱动', () => {
       whoami: { username: 'admin', role: 'admin', tenant_id: null, current_tenant_id: 'demo' },
       switchTenant: 401,
     })
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     // 先真的进到后台里：这条用例要覆盖的是「本来登录着」，不是冷启动。
     expect(await screen.findByTestId('admin-topbar')).toBeTruthy()
     const user = userEvent.setup()
@@ -140,7 +140,7 @@ describe('会话与租户由服务端驱动', () => {
     // 一屏取不到数的界面再被踢走；跳登录页则把还登录着的人一脚踢出去。
     signInWithCookie()
     stubApi({ whoami: 'pending' })
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     // 让挂载后的 effect 和微任务都跑完，再断言「两样都没有」——不等的话
     // 断言只是跑在第一帧上，什么实现都能过。
     await act(async () => {
@@ -155,7 +155,7 @@ describe('会话与租户由服务端驱动', () => {
     const requests = stubApi({
       whoami: { username: 'admin', role: 'admin', tenant_id: null, current_tenant_id: 'demo' },
     })
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: /demo/ }))
     await user.click(await screen.findByRole('menuitemradio', { name: /acme/ }))
@@ -176,7 +176,7 @@ describe('会话与租户由服务端驱动', () => {
     const requests = stubApi({
       whoami: { username: 'admin', role: 'admin', tenant_id: null, current_tenant_id: null },
     })
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     // 先等租户列表真的拉回来——不等的话下面那条会因为压根还没走到那段
     // 逻辑而假绿。
     await waitFor(() => expect(requests.some((r) => r.url.includes('/api/admin/tenants'))).toBe(true))
@@ -193,7 +193,7 @@ describe('会话与租户由服务端驱动', () => {
       whoami: { username: 'admin', role: 'admin', tenant_id: null, current_tenant_id: 'demo' },
       switchTenant: 403,
     })
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: /demo/ }))
     await user.click(await screen.findByRole('menuitemradio', { name: /acme/ }))
@@ -214,7 +214,7 @@ describe('会话与租户由服务端驱动', () => {
       whoami: { username: 'admin', role: 'admin', tenant_id: null, current_tenant_id: 'demo' },
       switchTenant: 'network-error',
     })
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: /demo/ }))
     await user.click(await screen.findByRole('menuitemradio', { name: /acme/ }))

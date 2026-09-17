@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { ADMIN_ROUTES, modelingWay } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
@@ -183,12 +183,14 @@ describe('报错明细页', () => {
     expect(screen.getByText(/价格非数字/)).toBeTruthy()
   })
 
-  it('问答未命中那一行能一键跳到本体结构页', async () => {
+  it('问答未命中那一行能一键跳到本体建模页的手动构建', async () => {
     await renderPage()
 
     await user_clickTab('问答')
     const link = await screen.findByRole('link', { name: /去建模/ })
-    expect(link.getAttribute('href')).toContain(ADMIN_ROUTES.ontology)
+    // 落在手动构建 tab：概念要在实体类型/关系类型表里逐条查，模板和智能
+    // 创建都不是干这个的。
+    expect(link.getAttribute('href')).toContain(modelingWay('manual'))
     // 带上那个问题：到了本体页还要自己回忆刚才问的是什么，这个入口就白给了。
     expect(decodeURIComponent(link.getAttribute('href') ?? '')).toContain('库存多少')
 

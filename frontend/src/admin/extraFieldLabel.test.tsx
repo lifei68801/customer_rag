@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { ADMIN_ROUTES, modelingWay } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 import { fieldDisplayName } from './extraFieldDisplay'
 
@@ -128,10 +128,10 @@ describe('fieldDisplayName', () => {
   })
 })
 
-describe('本体结构页的属性显示名', () => {
+describe('手动构建里的属性显示名', () => {
   it('编辑已有类型时预填显示名，改完提交时把它一起发出去', async () => {
     const user = userEvent.setup()
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
 
     await user.click(await screen.findByRole('button', { name: '编辑' }))
     const labelInput = await screen.findByLabelText('字段显示名')
@@ -152,7 +152,7 @@ describe('本体结构页的属性显示名', () => {
   it('显示名是空的也能保存——后端不强制，存量字段不会因此卡住', async () => {
     termTypesBody = TERM_TYPES_WITHOUT_LABEL
     const user = userEvent.setup()
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
 
     await user.click(await screen.findByRole('button', { name: '编辑' }))
     expect((await screen.findByLabelText('字段显示名')).getAttribute('required')).toBeNull()

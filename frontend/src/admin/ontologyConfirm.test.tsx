@@ -6,7 +6,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { modelingWay } from '../adminRoutes'
 import { resetAdminSession } from './useAdminAuth'
 
 /**
@@ -89,13 +89,13 @@ const confirmButton = () => screen.queryByRole('button', { name: /确认 schema/
 describe('确认 schema 只在草稿视图出现', () => {
   it('草稿视图有这个按钮', async () => {
     stubOntology({ confirmed: false })
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     await waitFor(() => expect(confirmButton()).toBeTruthy())
   })
 
   it('已确认视图没有——那是只读快照，按钮在那儿点不动', async () => {
     stubOntology({ confirmed: true })
-    renderAt(`${ADMIN_ROUTES.ontology}?version=confirmed`)
+    renderAt(`${modelingWay('manual')}&version=confirmed`)
     // 等页面真的渲染出来了再断言"没有"，否则这条在加载中也会绿。
     await waitFor(() => expect(screen.getByTestId('ontology-tabs')).toBeTruthy())
     expect(confirmButton()).toBeNull()
@@ -103,7 +103,7 @@ describe('确认 schema 只在草稿视图出现', () => {
 
   it('排在录入区之后，不在页头', async () => {
     stubOntology({ confirmed: false })
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     const button = await waitFor(() => {
       const found = confirmButton()
       if (!found) throw new Error('还没渲染出来')
@@ -118,7 +118,7 @@ describe('确认 schema 只在草稿视图出现', () => {
 describe('页面里不再有第二处状态显示', () => {
   it('页头没有「已确认 / 草稿中」徽章——那个轴只留在侧边栏', async () => {
     stubOntology({ confirmed: true })
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     await waitFor(() => expect(screen.getByTestId('ontology-tabs')).toBeTruthy())
     expect(screen.queryByTestId('ontology-status-badge')).toBeNull()
     expect(screen.queryByText('草稿中（未确认）')).toBeNull()
@@ -128,21 +128,21 @@ describe('页面里不再有第二处状态显示', () => {
 describe('切到已确认但从没确认过时，说明它为什么是空的', () => {
   it('没确认过：说清楚这份快照还不存在', async () => {
     stubOntology({ confirmed: false })
-    renderAt(`${ADMIN_ROUTES.ontology}?version=confirmed`)
+    renderAt(`${modelingWay('manual')}&version=confirmed`)
     // 三个空列表和「还没确认过」是两回事，不说的话用户会去查数据哪去了。
     await waitFor(() => expect(screen.getByTestId('never-confirmed-notice')).toBeTruthy())
   })
 
   it('确认过：不显示这句话', async () => {
     stubOntology({ confirmed: true })
-    renderAt(`${ADMIN_ROUTES.ontology}?version=confirmed`)
+    renderAt(`${modelingWay('manual')}&version=confirmed`)
     await waitFor(() => expect(screen.getByTestId('ontology-tabs')).toBeTruthy())
     expect(screen.queryByTestId('never-confirmed-notice')).toBeNull()
   })
 
   it('草稿视图不显示——那句话说的是已确认快照', async () => {
     stubOntology({ confirmed: false })
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     await waitFor(() => expect(screen.getByTestId('ontology-tabs')).toBeTruthy())
     expect(screen.queryByTestId('never-confirmed-notice')).toBeNull()
   })
@@ -195,7 +195,7 @@ describe('terms/summary 失败不阻断差异预览', () => {
         return new Promise(() => {})
       }),
     )
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     const button = await screen.findByRole('button', { name: /确认 schema/ })
     await waitFor(() => expect(button).not.toBeDisabled())
     await user.click(button)
@@ -250,7 +250,7 @@ describe('terms/summary 挂起时按钮要有反应', () => {
         return new Promise(() => {})
       }),
     )
-    renderAt(ADMIN_ROUTES.ontology)
+    renderAt(modelingWay('manual'))
     const button = await screen.findByRole('button', { name: /确认 schema/ })
     await waitFor(() => expect(button).not.toBeDisabled())
     await user.click(button)

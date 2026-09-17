@@ -54,7 +54,10 @@ beforeEach(() => {
 // 落点探针。断言"没出现 404 文案"是不够的——在路由还没接线时页面上
 // 本来就没有那段文案，测试会假绿。这里直接把当前 URL 渲染出来断言。
 function LocationProbe() {
-  return <span data-testid="pathname">{useLocation().pathname}</span>
+  // 带上 search：第四代的重定向目标带查询参数（?way=manual 这类），只比
+  // pathname 的话，指向同一个页面的两条垫片看起来会一模一样。
+  const { pathname, search } = useLocation()
+  return <span data-testid="pathname">{pathname + search}</span>
 }
 
 // 会话状态是异步的（身份从 whoami 读），后台外壳要等它回来才画得出来。

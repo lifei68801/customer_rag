@@ -7,7 +7,7 @@ import App from '../App'
 import { SkinProvider } from './SkinContext'
 import { ConfirmProvider } from './ConfirmContext'
 import { ToastProvider } from './ToastContext'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { modelingWay } from '../adminRoutes'
 import { CONFIRM_IRREVERSIBLE_HINT } from './OntologySchemaPage'
 import { resetAdminSession } from './useAdminAuth'
 
@@ -67,7 +67,7 @@ async function renderAt(path: string) {
 }
 
 /**
- * 本体结构页的全部源码——页面外壳加三个 tab。
+ * 手动构建（原本体结构页）的全部源码——页面外壳加三个 tab。
  *
  * 下面两条是源码扫描：约束区里那个图必须已经换成去本体图页的链接。扫源码
  * 而不是查 DOM，是因为约束是第三个 tab、默认不挂载，查 DOM 的话"找不到那个
@@ -87,7 +87,7 @@ function ontologySchemaSource(): string {
 
 describe('确认 schema', () => {
   it('用危险色，不用成功色', async () => {
-    await renderAt(ADMIN_ROUTES.ontology)
+    await renderAt(modelingWay('manual'))
     const button = screen.getByRole('button', { name: /确认 schema/ })
     expect(button.className, '不可逆的动作用了成功色').not.toMatch(/status-success/)
     expect(button.className, '没有用危险色').toMatch(/status-error|danger/)
@@ -99,7 +99,7 @@ describe('确认 schema', () => {
     // title 分两种情况：点不了的时候说为什么点不了，能点的时候说点下去
     // 会发生什么。这里数据还在加载、前置条件不满足，所以是前者——两种
     // 都不能是空的。
-    await renderAt(ADMIN_ROUTES.ontology)
+    await renderAt(modelingWay('manual'))
     const button = screen.getByRole('button', { name: /确认 schema/ })
     expect(button.getAttribute('title')).toBeTruthy()
   })

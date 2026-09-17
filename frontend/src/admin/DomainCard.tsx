@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { ADMIN_ROUTES } from '../adminRoutes'
+import { ADMIN_ROUTES, modelingWay } from '../adminRoutes'
 import { adminFetch, extractErrorDetail } from './adminApi'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
@@ -164,7 +164,7 @@ export function DomainCard({ domain }: { domain: Domain }) {
   // （抽取卡在那儿），一个文档都没有的话下一步才是导入。
   const hasNoEntities = stats.term_count === 0
   const nextStep = stats.document_count > 0
-    ? { label: '去确认本体', to: ADMIN_ROUTES.ontology, why: '传进来的文档还没变成实体——本体没确认时抽取会跳过。' }
+    ? { label: '去确认本体', to: modelingWay('manual'), why: '传进来的文档还没变成实体——本体没确认时抽取会跳过。' }
     : { label: '去导入数据', to: ADMIN_ROUTES.documents, why: '这个领域还没有数据。' }
 
   return shell(

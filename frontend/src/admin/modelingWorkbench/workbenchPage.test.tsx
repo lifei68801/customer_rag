@@ -6,7 +6,7 @@ import App from '../../App'
 import { SkinProvider } from '../SkinContext'
 import { ConfirmProvider } from '../ConfirmContext'
 import { ToastProvider } from '../ToastContext'
-import { ADMIN_ROUTES } from '../../adminRoutes'
+import { modelingWay } from '../../adminRoutes'
 import { resetAdminSession } from '../useAdminAuth'
 import type { ModelingWorkspace } from './types'
 
@@ -228,7 +228,7 @@ function renderWorkbench() {
     <SkinProvider>
       <ConfirmProvider>
         <ToastProvider>
-          <MemoryRouter initialEntries={[ADMIN_ROUTES.guidedOntology]}>
+          <MemoryRouter initialEntries={[modelingWay('template')]}>
             <App />
           </MemoryRouter>
         </ToastProvider>

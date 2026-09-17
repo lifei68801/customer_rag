@@ -86,7 +86,7 @@ describe('返回前台常驻在后台右上角', () => {
   // 每个页面都要在。只在某几个页面出现的话，用户会在缺它的那页以为自己
   // 走进了没有出口的地方。
   for (const [name, path] of [
-    ['本体结构', ADMIN_ROUTES.ontology],
+    ['本体建模', ADMIN_ROUTES.ontologyModeling],
     ['文档', ADMIN_ROUTES.documents],
     ['实体明细', ADMIN_ROUTES.terms],
     ['设置', ADMIN_ROUTES.settings],

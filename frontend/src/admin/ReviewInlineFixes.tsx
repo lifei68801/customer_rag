@@ -130,7 +130,7 @@ export function InlineAllowCombination({
     return (
       <p className="text-xs text-ink-soft">
         这条没识别出两端的类型，没法就地加白名单。先在「一端对不上」那一页把缺的实体
-        建出来（建的时候要选类型），或者直接去本体结构页手工加这条组合。
+        建出来（建的时候要选类型），或者直接去本体建模页的手动构建手工加这条组合。
       </p>
     )
   }
