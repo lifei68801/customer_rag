@@ -191,4 +191,8 @@ async def add_interview_question(
         )
     except InterviewConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except InterviewNotFoundError as exc:
+        # _load_or_404 读到会话之后、infer_needs 调 LLM 的这几十秒窗口里
+        # 会话被删掉，不该裸 500——跟 answer_interview / save_interview 一致处理。
+        raise HTTPException(status_code=404, detail=str(exc))
     return {"session": saved.to_dict(), "question": entry}

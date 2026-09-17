@@ -141,6 +141,17 @@ def test_answer_without_session_is_404(client):
     assert resp.status_code == 404
 
 
+def test_answer_with_blank_answer_is_400_without_calling_the_llm(client, llm):
+    created = client.post("/api/admin/ontology/t1/interview", headers=AUTH).json()["session"]
+    resp = client.post(
+        "/api/admin/ontology/t1/interview/answer",
+        json={"answer": "   ", "updated_at": created["updated_at"]},
+        headers=AUTH,
+    )
+    assert resp.status_code == 400
+    assert llm.calls == 0
+
+
 def test_put_saves_review_decisions(client, llm):
     llm.replies = [_REPLY]
     created = client.post("/api/admin/ontology/t1/interview", headers=AUTH).json()["session"]
@@ -184,6 +195,17 @@ def test_questions_endpoint_records_needs_and_computes_missing(client, llm):
     # 骨架里什么都没有，两个都缺——由后端算，不信模型自报
     assert body["question"]["missing"] == ["品类", "商品"]
     assert body["session"]["state"]["questions"][0]["text"] == "哪个品类卖得最好？"
+
+
+def test_questions_endpoint_with_blank_text_is_400_without_calling_the_llm(client, llm):
+    created = client.post("/api/admin/ontology/t1/interview", headers=AUTH).json()["session"]
+    resp = client.post(
+        "/api/admin/ontology/t1/interview/questions",
+        json={"text": "   ", "updated_at": created["updated_at"]},
+        headers=AUTH,
+    )
+    assert resp.status_code == 400
+    assert llm.calls == 0
 
 
 def test_delete_then_recreate(client):
