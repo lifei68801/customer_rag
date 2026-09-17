@@ -3,6 +3,7 @@ import { Skeleton } from './Skeleton'
 import { useAdminAuth } from './useAdminAuth'
 import { useAdminTenant } from './TenantContext'
 import { useOntologyData } from './useOntologyData'
+import { VersionSwitcher } from './VersionSwitcher'
 import { useOntologyVersion } from './useOntologyVersion'
 
 // 图不在主包里：sigma + graphology 有几百 kB，而大部分会话根本不打开它。
@@ -36,11 +37,15 @@ export function OntologyGraphPage() {
 
   return (
     <div data-testid="ontology-graph-page" className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <h1 className="font-mono text-xl font-semibold text-ink">本体图</h1>
-        <p className="text-sm text-ink-soft">
-          实体类型之间允许存在哪些关系。红边表示图谱里实际数据的扇出超过一对多，做路径统计时会重复计数。
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="flex flex-col gap-1">
+          <h1 className="font-mono text-xl font-semibold text-ink">本体图</h1>
+          <p className="text-sm text-ink-soft">
+            实体类型之间允许存在哪些关系。红边表示图谱里实际数据的扇出超过一对多，做路径统计时会重复计数。
+          </p>
+        </div>
+        {/* 跟本体结构页是同一个控件、同一份状态（URL 上的 ?version=）。 */}
+        <VersionSwitcher />
       </div>
 
       {error && (

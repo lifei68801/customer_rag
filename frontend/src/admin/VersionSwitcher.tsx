@@ -8,10 +8,14 @@ const segmentClass = (active: boolean) =>
   }`
 
 /**
- * 版本轴的唯一控件，挂在侧边栏「建模」组里。
+ * 版本轴的控件，放在本体结构页和本体图页的页头。
  *
- * 放在组里而不是每个页面顶部：它管的是整组页面看哪份数据，不是某一页的
- * 局部开关。跟着组一起收起也是对的——不在建模里的时候，这个轴没有意义。
+ * 曾经挂在侧边栏「建模」组里——理由是"它管的是整组页面"。实际用下来不成
+ * 立：用户在本体结构页上看着一份只读快照，控件却在几十像素外的导航里，
+ * 没人会往那儿找；而看哪一版是这一页最要紧的上下文，它该跟标题在一起。
+ *
+ * 两个页面各放一个实例，状态仍然只有一份（URL 上的 ?version=），所以在
+ * 一边切完跳到另一边看到的还是同一版。
  */
 export function VersionSwitcher() {
   const [version, setVersion] = useOntologyVersion()
@@ -31,7 +35,7 @@ export function VersionSwitcher() {
     <div
       role="group"
       aria-label="本体版本"
-      className="mx-2 flex overflow-hidden rounded-control border border-subtle"
+      className="flex flex-shrink-0 overflow-hidden rounded-control border border-subtle"
     >
       <button
         type="button"

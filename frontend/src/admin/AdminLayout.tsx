@@ -1,14 +1,13 @@
 import { Building2, ChevronDown, Menu, SquareArrowOutUpRight, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
-import { NAV_GROUPS, groupIdForPath, routeRequiresTenant } from '../adminRoutes'
+import { NAV_GROUPS, routeRequiresTenant } from '../adminRoutes'
 import { useAdminAuth } from './useAdminAuth'
 import { DensityProvider } from './DensityContext'
 import { TenantProvider } from './TenantContext'
 import { CommandPalette } from './CommandPalette'
 import { AccountMenu } from './AccountMenu'
 import { useNavGroups } from './useNavGroups'
-import { VersionSwitcher } from './VersionSwitcher'
 import { NavBadge } from './NavBadge'
 import { useNavBadges } from './useNavBadges'
 import { commandPaletteHint } from './shortcutHint'
@@ -69,7 +68,6 @@ function useFocusMainOnNavigate(pathname: string) {
 function AdminNav() {
   const { pathname, search } = useLocation()
   const { isExpanded, toggle } = useNavGroups(pathname)
-  const currentGroup = groupIdForPath(pathname)
   const badges = useNavBadges()
 
   return (
@@ -100,11 +98,6 @@ function AdminNav() {
                         className={`ml-2 h-3.5 w-3.5 flex-shrink-0 transition-transform ${expanded ? '' : '-rotate-90'}`}
                       />
                     </button>
-                    {/* 版本切换器只在**当前就在建模组**时出现，不是"这个组
-                        展开着"就出现——它只对本体结构和本体图有意义。此前
-                        这两件事碰巧等价（只有当前组会展开），分组默认全展开
-                        之后就不再等价了。 */}
-                    {group.id === 'ontology' && currentGroup === 'ontology' && <VersionSwitcher />}
                     {expanded &&
                       group.items.map((item) => (
                         <NavLink

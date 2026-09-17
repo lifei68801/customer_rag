@@ -7,6 +7,7 @@ import { useAdminTenant } from './TenantContext'
 import { useToast } from './ToastContext'
 import { buildOntologyDiff, type OntologyDiff } from './ontologyDiff'
 import { fetchTermsSummary } from './termsApi'
+import { VersionSwitcher } from './VersionSwitcher'
 import { useOntologyVersion } from './useOntologyVersion'
 import { Link, useSearchParams } from 'react-router-dom'
 import { ADMIN_ROUTES, MODEL_FROM_QUESTION_KEY, PAGE_TITLES } from '../adminRoutes'
@@ -305,9 +306,12 @@ export function OntologySchemaPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* 页头只有标题。草稿/已确认这个轴归侧边栏的版本切换器——同一个轴在
-          两个地方各摆一份控件，用户会以为它们管的不是同一件事。 */}
-      <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.ontology}</h1>
+      {/* 看的是哪一版，是这一页最要紧的上下文，所以跟标题同一行。控件只有
+          这一个实例（本体图页各有一个），状态在 URL 上，两页共用同一份。 */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.ontology}</h1>
+        <VersionSwitcher />
+      </div>
 
       {fromQuestion !== null && fromQuestion !== '' && (
         <p

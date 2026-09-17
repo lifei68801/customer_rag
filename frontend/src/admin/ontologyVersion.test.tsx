@@ -34,7 +34,8 @@ function whoamiResponse() {
  * 跳到本体图又是草稿——同一件事在两个页面上答案不一样，而且这个状态没
  * 有地址，截图发给同事对方打开看到的是另一份数据。
  *
- * 现在它挂在「建模」这一组上，存在 URL 里。
+ * 状态存在 URL 里（?version=），控件放在本体结构页和本体图页的页头——
+ * 它是"这一页在看哪一版"的上下文，放在几十像素外的侧边栏里没人会去找。
  */
 
 beforeEach(() => {
@@ -75,42 +76,49 @@ async function renderAt(path: string) {
 const nav = () => within(screen.getByRole('navigation', { name: '后台导航' }))
 const url = () => screen.getByTestId('url').textContent
 
-describe('版本轴挂在建模组上', () => {
-  it('建模组展开时才出现', async () => {
+describe('版本轴在页头', () => {
+  it('本体结构页的页头上有它', async () => {
     await renderAt(ADMIN_ROUTES.ontology)
-    expect(nav().getByRole('group', { name: '本体版本' })).toBeTruthy()
+    expect(screen.getByRole('group', { name: '本体版本' })).toBeTruthy()
   })
 
-  it('不在建模组时不出现——它只对本体结构和本体图有意义', async () => {
+  it('本体图页也有一个——两个页都要能就地切', async () => {
+    await renderAt(ADMIN_ROUTES.ontologyGraph)
+    const page = within(screen.getByTestId('ontology-graph-page'))
+    expect(page.getByRole('group', { name: '本体版本' })).toBeTruthy()
+  })
+
+  it('别的页面没有——这个轴只对本体结构和本体图有意义', async () => {
     await renderAt(ADMIN_ROUTES.reviewRelations)
+    expect(screen.queryByRole('group', { name: '本体版本' })).toBeNull()
+  })
+
+  it('侧边栏里不再有一份——同一个轴两个控件，用户会以为它们管的不是同一件事', async () => {
+    await renderAt(ADMIN_ROUTES.ontology)
     expect(nav().queryByRole('group', { name: '本体版本' })).toBeNull()
   })
 
   it('切换写进 URL，可以直接分享', async () => {
     const user = userEvent.setup()
     await renderAt(ADMIN_ROUTES.ontology)
-    await user.click(nav().getByRole('button', { name: '已确认' }))
+    await user.click(screen.getByRole('button', { name: '已确认' }))
     expect(url()).toBe(`${ADMIN_ROUTES.ontology}?version=confirmed`)
   })
 
   it('URL 带 version 时控件反映它', async () => {
     await renderAt(`${ADMIN_ROUTES.ontology}?version=confirmed`)
     expect(
-      nav().getByRole('button', { name: '已确认' }).getAttribute('aria-pressed'),
+      screen.getByRole('button', { name: '已确认' }).getAttribute('aria-pressed'),
     ).toBe('true')
   })
 })
 
-describe('页面不再各自维护版本', () => {
-  it('本体结构页顶部没有第二个版本控件', async () => {
+describe('两个页面共用同一份状态', () => {
+  it('页面上没有第二个自己的版本控件', async () => {
     await renderAt(ADMIN_ROUTES.ontology)
+    // 页内只有这一个「本体版本」组；旧实现里各页还有一份自己的 useState
     expect(screen.queryByRole('group', { name: '查看版本' })).toBeNull()
-  })
-
-  it('本体图页也没有自己那份', async () => {
-    await renderAt(ADMIN_ROUTES.ontologyGraph)
-    const page = within(screen.getByTestId('ontology-graph-page'))
-    expect(page.queryByRole('group', { name: '本体版本' })).toBeNull()
+    expect(screen.getAllByRole('group', { name: '本体版本' })).toHaveLength(1)
   })
 })
 
