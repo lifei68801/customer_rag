@@ -79,7 +79,7 @@ export function isEntityColumn(column: RoledColumn, decision: GuidedDecision): b
  * `Object.fromEntries` 会把同名映射折叠成一条——后一列的数据永远不会被
  * 加载，而界面上、后端校验里都没有任何异常。
  */
-function uniqueFieldName(base: string, used: Set<string>): string {
+export function uniqueFieldName(base: string, used: Set<string>): string {
   if (!used.has(base)) return base
   for (let n = 2; ; n += 1) {
     const suffix = `_${n}`

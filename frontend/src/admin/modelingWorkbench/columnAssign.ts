@@ -1,4 +1,4 @@
-import { sanitizeFieldName } from '../guidedOntology/draftProposal'
+import { sanitizeFieldName, uniqueFieldName } from '../guidedOntology/draftProposal'
 import type { InferredType } from '../guidedOntology/types'
 import type { WorkspaceState, WorkspaceTermType } from './types'
 
@@ -70,13 +70,6 @@ export function assignColumnAsKey(
 function valueTypeOf(inferred: InferredType | undefined): string {
   if (inferred === 'integer' || inferred === 'number' || inferred === 'date') return inferred
   return 'string'
-}
-
-function uniqueFieldName(base: string, taken: Set<string>): string {
-  if (!taken.has(base)) return base
-  let n = 2
-  while (taken.has(`${base}_${n}`)) n += 1
-  return `${base}_${n}`
 }
 
 /**

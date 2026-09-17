@@ -108,6 +108,19 @@ describe('assignColumnAsField', () => {
     const next = assignColumnAsField(s, 'sku.xls', 'price', 'SKU')
     expect(next.term_types[0].extra_fields.map((f) => f.name)).toEqual(['price', 'price_2'])
   })
+
+  it('超长列名撞名后仍不超过后端的 64 字符上限', () => {
+    // 后端字段名正则是 ^[a-zA-Z_][a-zA-Z0-9_]{0,63}$——拼后缀前不截断的话，
+    // 一个 63 字符的列名撞名后会变成 65 字符，写草稿时被 400 挡下。
+    const longName = 'a'.repeat(63)
+    const s = keyed()
+    s.term_types[0].extra_fields = [{ name: longName, value_type: 'string', label: longName }]
+    s.sources[0].columns!.push({ name: longName, role: 'dimension', reason: '', inferred_type: 'string' })
+    s.unmatched_columns['sku.xls'].push(longName)
+    const added = assignColumnAsField(s, 'sku.xls', longName, 'SKU').term_types[0].extra_fields[1]
+    expect(added.name.length).toBeLessThanOrEqual(64)
+    expect(added.name).not.toBe(longName)
+  })
 })
 
 describe('别名编辑', () => {

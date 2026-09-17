@@ -198,6 +198,10 @@ function stubApi() {
           }
           return json({ workspace })
         }
+        if (method === 'DELETE') {
+          workspace = null
+          return json({ deleted: true })
+        }
         return json({ workspace })
       }
       if (url.includes('/draft/replace')) return json({ replaced: true })
@@ -609,5 +613,49 @@ describe('建模工作台', () => {
     expect(values).toContain('产品')
     expect(body.state.term_types.every((t) => t.provenance === 'data' && t.review === 'pending')).toBe(true)
     expect(body.state.constraints.length).toBeGreaterThan(0)
+  })
+
+  it('重新起步：确认后删掉工作区，回到选模板那一屏', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWith('accepted')
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: '重新起步' }))
+    await userEvent.click(await screen.findByRole('button', { name: '删掉重来' }))
+    await waitFor(() => {
+      const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+      expect(
+        calls.some(
+          ([url, init]) =>
+            String(url).includes('/modeling-workspace') &&
+            (init?.method ?? 'GET').toUpperCase() === 'DELETE',
+        ),
+      ).toBe(true)
+    })
+    // 删完要回到起步面板，否则用户对着一个已经不存在的工作区继续点
+    expect(await screen.findByText('消费品零售')).toBeInTheDocument()
+  })
+
+  it('重新起步：点取消不删', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWith('accepted')
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: '重新起步' }))
+    await userEvent.click(await screen.findByRole('button', { name: '取消' }))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const calls = (fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+    expect(
+      calls.some(([, init]) => (init?.method ?? 'GET').toUpperCase() === 'DELETE'),
+    ).toBe(false)
+  })
+
+  it('对上的概念里用人话说明是怎么对上的', async () => {
+    signedInRole = 'member'
+    workspace = workspaceWithUnmatched()
+    renderWorkbench()
+    await userEvent.click(await screen.findByRole('button', { name: '数据' }))
+    await userEvent.selectOptions(await screen.findByLabelText('把 商品コード 指给'), 'SKU:key')
+    await userEvent.click(screen.getByRole('button', { name: '把 商品コード 指过去' }))
+    // matched_by 原值是 manual 这种 token，界面上要说人话
+    expect(await screen.findByText(/手动指定/)).toBeInTheDocument()
   })
 })

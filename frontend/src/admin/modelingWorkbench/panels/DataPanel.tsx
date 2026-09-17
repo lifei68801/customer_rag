@@ -6,16 +6,10 @@ import { draftFromOptions, optionsFromDraft, type ParseDraft } from '../../schem
 import { listSheetNames } from '../../schemaEtlConfigBuilder/sourceParser'
 import { PROMOTABLE_ROLES, alignTable, mergeAlignments, type ScannedTable } from '../alignToSkeleton'
 import { proposalToWorkspace } from '../blankStart'
-import { columnsOf, parseOptionsOf } from '../types'
+import { columnsOf, matchedByLabel, parseOptionsOf } from '../types'
 import type { WorkspaceState } from '../types'
 import { panelClass, primaryButtonClass, secondaryButtonClass, tagClass } from '../ui'
 
-/**
- * 数据发现：传表 → 扫列 → 按别名对齐 → 把结果合并进工作区。
- *
- * 解析选项（工作表、表头行）必须在这里就能填：MUJI 那张表表头在第 6 行，
- * 按缺省第 1 行读出来的列名全是空的，对齐一条都命不中，而界面上看不出原因。
- */
 const ROLE_LABEL: Record<string, string> = {
   identifier: '标识',
   dimension: '维度',
@@ -28,6 +22,12 @@ function columnInfo(state: WorkspaceState, file: string, column: string) {
   return state.sources.find((s) => s.file === file)?.columns?.find((c) => c.name === column)
 }
 
+/**
+ * 数据发现：传表 → 扫列 → 按别名对齐 → 把结果合并进工作区。
+ *
+ * 解析选项（工作表、表头行）必须在这里就能填：MUJI 那张表表头在第 6 行，
+ * 按缺省第 1 行读出来的列名全是空的，对齐一条都命不中，而界面上看不出原因。
+ */
 export function DataPanel(props: {
   state: WorkspaceState
   busy: boolean
@@ -182,7 +182,7 @@ export function DataPanel(props: {
           <p key={term.value} className="text-sm text-ink">
             <span className="font-mono font-semibold">{term.value}</span>
             <span className={`ml-2 ${tagClass}`}>
-              {`${term.data_match!.source_file} · 键列 ${term.data_match!.key_columns.join('/')} · ${term.data_match!.matched_by}`}
+              {`${term.data_match!.source_file} · 键列 ${term.data_match!.key_columns.join('/')} · ${matchedByLabel(term.data_match!.matched_by)}`}
             </span>
           </p>
         ))}

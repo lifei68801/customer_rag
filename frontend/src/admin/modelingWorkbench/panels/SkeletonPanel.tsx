@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { parseAliasText } from '../columnAssign'
+import { matchedByLabel } from '../types'
 import type { Grounding, WorkspaceState } from '../types'
 import { panelClass, secondaryButtonClass, tagClass } from '../ui'
 
@@ -35,6 +36,17 @@ export function SkeletonPanel(props: {
   const [renameDraft, setRenameDraft] = useState<Record<string, string>>({})
   const [clueDraft, setClueDraft] = useState<Record<string, string>>({})
   const [newTerm, setNewTerm] = useState('')
+
+  /** 保存成功后丢掉这一条草稿，让输入框回到"显示工作区里的当前值"。
+   *  不丢的话，别处（重新扫描、另一个人的改动）更新了别名，这个框还显示着
+   *  旧草稿，再点一次保存就把它整份写回去了。加旁证那两个框也是保存即清。 */
+  const dropAliasDraft = (key: string) => {
+    setAliasDraft((current) => {
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+  }
   const [aliasDraft, setAliasDraft] = useState<Record<string, string>>({})
   const groundedTerms = new Set(props.grounding?.grounded_term_types ?? [])
   const groundedRelations = new Set(props.grounding?.grounded_relation_types ?? [])
@@ -55,7 +67,7 @@ export function SkeletonPanel(props: {
             <span className={tagClass}>{groundedTerms.has(term.value) ? '已落地' : '未落地'}</span>
             {term.data_match && (
               <span className={tagClass}>
-                {`${term.data_match.source_file} · ${term.data_match.key_columns.join('/')} · ${term.data_match.matched_by}`}
+                {`${term.data_match.source_file} · ${term.data_match.key_columns.join('/')} · ${matchedByLabel(term.data_match.matched_by)}`}
               </span>
             )}
             <button
@@ -125,12 +137,13 @@ export function SkeletonPanel(props: {
                 type="button"
                 className={secondaryButtonClass}
                 disabled={props.busy}
-                onClick={() =>
+                onClick={() => {
                   props.onSetKeyAliases(
                     term.value,
                     parseAliasText(aliasDraft[`key:${term.value}`] ?? term.key_aliases.join(', ')),
                   )
-                }
+                  dropAliasDraft(`key:${term.value}`)
+                }}
               >
                 {`保存 ${term.value} 的键别名`}
               </button>
@@ -153,9 +166,10 @@ export function SkeletonPanel(props: {
                       type="button"
                       className={secondaryButtonClass}
                       disabled={props.busy}
-                      onClick={() =>
+                      onClick={() => {
                         props.onSetFieldAliases(term.value, field.name, parseAliasText(aliasDraft[draftKey] ?? current))
-                      }
+                        dropAliasDraft(draftKey)
+                      }}
                     >
                       {`保存 ${term.value} 的字段 ${field.name} 的别名`}
                     </button>

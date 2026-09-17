@@ -11,6 +11,7 @@ import { assignColumnAsField, assignColumnAsKey, setFieldAliases, setKeyAliases 
 import { addManualClue, addManualTermType, renameTermType } from './skeletonEdits'
 import {
   createWorkspace,
+  deleteWorkspace,
   exportSkill,
   fetchGrounding,
   fetchSkills,
@@ -122,6 +123,38 @@ export function ModelingWorkbenchPage() {
       setTab('skeleton')
     } catch (err) {
       reportError(err, '创建建模工作区失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * 重新起步：删掉工作区，回到选模板那一屏。
+   *
+   * 删的只是过程状态——已经应用到草稿的本体不受影响，所以确认框里要把这句
+   * 说出来；不说的话用户会以为"重来"会把已经写进去的本体也撤掉。
+   */
+  const handleRestart = async () => {
+    if (!sessionToken || !workspace) return
+    if (
+      !(await confirm({
+        message:
+          '重新起步会删掉这个租户的建模工作区（审阅决定、别名、对上的列都会丢），已经应用到草稿的本体不受影响。',
+        confirmLabel: '删掉重来',
+      }))
+    ) {
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await deleteWorkspace(tenantId, sessionToken)
+      setWorkspace(null)
+      setDiff(null)
+      setTab('skeleton')
+      showToast('工作区已删除')
+    } catch (err) {
+      reportError(err, '删除建模工作区失败')
     } finally {
       setBusy(false)
     }
@@ -360,9 +393,21 @@ export function ModelingWorkbenchPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.guidedOntology}</h1>
-        <p className="text-sm text-ink-soft">{nextStepHint(workspace, diff)}</p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="flex flex-col gap-1">
+          <h1 className="font-mono text-xl font-semibold text-ink">{PAGE_TITLES.guidedOntology}</h1>
+          <p className="text-sm text-ink-soft">{nextStepHint(workspace, diff)}</p>
+        </div>
+        {workspace !== null && (
+          <button
+            type="button"
+            className={secondaryButtonClass}
+            disabled={busy}
+            onClick={() => void handleRestart()}
+          >
+            重新起步
+          </button>
+        )}
       </div>
 
       {error && (

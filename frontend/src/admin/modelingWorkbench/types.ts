@@ -169,6 +169,17 @@ export interface DraftPayload {
   constraints: { subject_term_type: string; relation_type: string; object_term_type: string }[]
 }
 
+/**
+ * 把 data_match.matched_by 翻成人话。原值是给程序看的 token（`alias:jan` /
+ * `manual` / `column_role`），混在中文界面里读者得先猜它是什么。
+ */
+export function matchedByLabel(matchedBy: string): string {
+  if (matchedBy.startsWith('alias:')) return `按别名 ${matchedBy.slice('alias:'.length)} 命中`
+  if (matchedBy === 'manual') return '手动指定'
+  if (matchedBy === 'column_role') return '按列角色推导'
+  return matchedBy
+}
+
 /** state 里的 sources 条目翻成读表用的解析选项。 */
 export function parseOptionsOf(source: WorkspaceSource | undefined): SourceParseOptions {
   if (!source) return {}
