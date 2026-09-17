@@ -27,8 +27,6 @@ logger = logging.getLogger(__name__)
 # 这里复制一份，两处要同步（取舍同 ontology_skills.py）。
 _RELATION_TYPE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
 
-_EMPTY_ADDED: dict = {"term_types": [], "relation_types": [], "constraints": []}
-
 
 @dataclass(frozen=True)
 class TurnResult:
@@ -232,7 +230,11 @@ async def infer_needs(llm_registry, *, provider_name: str, question: str, skelet
             timeout=timeout_sec,
         )
         payload = json.loads(result.text)
-    except (asyncio.TimeoutError, json.JSONDecodeError):
+    except asyncio.TimeoutError:
+        logger.info("问题清单反推超时")
+        return empty
+    except json.JSONDecodeError:
+        logger.warning("问题清单反推返回非 JSON")
         return empty
     except Exception:
         logger.warning("问题清单反推失败", exc_info=True)

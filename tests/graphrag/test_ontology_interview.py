@@ -173,6 +173,17 @@ async def test_infer_needs_returns_names_and_falls_back_to_empty():
     assert await infer_needs(bad, provider_name="p", question="q", skeleton=_EMPTY) == {"term_types": [], "relation_types": []}
 
 
+async def test_infer_needs_timeout_returns_empty_and_logs(caplog):
+    caplog.set_level("INFO")
+    registry = _FakeRegistry(
+        json.dumps({"needs": {"term_types": ["品类"], "relation_types": []}}, ensure_ascii=False),
+        delay=0.2,
+    )
+    result = await infer_needs(registry, provider_name="p", question="q", skeleton=_EMPTY, timeout_sec=0.05)
+    assert result == {"term_types": [], "relation_types": []}
+    assert "超时" in caplog.text
+
+
 def test_compute_missing_ignores_rejected_and_is_computed_here_not_by_llm():
     skeleton = {
         "term_types": [{"value": "商品", "review": "accepted"}, {"value": "品类", "review": "rejected"}],
