@@ -418,6 +418,16 @@ async def start_schema_etl_run(
             raise HTTPException(
                 status_code=400, detail=f"client_columns 不是合法的 JSON：{e}"
             ) from e
+        # 只校验语法不够：合法 JSON 也可能是数组或字符串，那时下面
+        # declared.items() 抛 AttributeError，外层包成 500 —— 客户端传错了
+        # 形状却拿到一个"服务器错误"，没法自己纠正。
+        if not isinstance(declared, dict):
+            shutil.rmtree(run_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=400,
+                detail="client_columns 要是 {文件名: [列名…]} 这样的映射，"
+                f"收到 {type(declared).__name__}",
+            )
         parsed_config = parse_schema_etl_config(
             config_path.read_text(encoding="utf-8"), origin=str(config_path)
         )

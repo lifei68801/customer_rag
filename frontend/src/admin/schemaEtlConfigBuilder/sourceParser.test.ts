@@ -1,6 +1,8 @@
 import * as XLSX from 'xlsx'
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_XLSX_BYTES,
+  listSheetNames,
   readSourceHeader,
   readSourcePreview,
   readSourceRows,
@@ -118,6 +120,24 @@ describe('工作表选择', () => {
         () => {},
       ),
     ).rejects.toThrow(/Missing/)
+  })
+
+  it('listSheetNames 按顺序列出全部工作表；非 Excel 给空数组', async () => {
+    const file = xlsxFile('book.xlsx', {
+      First: [['a'], ['1']],
+      Second: [['b'], ['2']],
+    })
+
+    expect(await listSheetNames(file)).toEqual(['First', 'Second'])
+    expect(await listSheetNames(new File(['a,b\n'], 'x.csv', { type: 'text/csv' }))).toEqual([])
+  })
+
+  it('三条 Excel 路径都挡住超过体积上限的文件——它们都要把整个工作簿读进内存', async () => {
+    const huge = new File([new Uint8Array(MAX_XLSX_BYTES + 1)], 'big.xlsx')
+
+    await expect(listSheetNames(huge)).rejects.toThrow(/过大/)
+    await expect(readSourceHeader(huge)).rejects.toThrow(/过大/)
+    await expect(readSourcePreview(huge, 3)).rejects.toThrow(/过大/)
   })
 })
 
@@ -247,6 +267,12 @@ describe('sameEffectiveParseOptions', () => {
   it('补齐缺省之后一样就算一样——把 1 原样打一遍不算改过', () => {
     expect(sameEffectiveParseOptions({}, { headerRow: 1 })).toBe(true)
     expect(sameEffectiveParseOptions({ headerRow: 2 }, { headerRow: 2, firstDataRow: 3 })).toBe(true)
+  })
+
+  it('不传工作表和传 0 都是第一张表，不算改过', () => {
+    // 判成改过的话，"解析设置有没有变"永远为真，每次跑批都多传一次 config
+    expect(sameEffectiveParseOptions({}, { sheet: 0 })).toBe(true)
+    expect(sameEffectiveParseOptions({ sheet: 0 }, { headerRow: 1 })).toBe(true)
   })
 
   it('读的不是同一批行就算改过', () => {

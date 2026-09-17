@@ -924,6 +924,24 @@ def test_start_run_rejects_the_same_columns_in_a_different_order(client, review_
     assert response.status_code == 400
 
 
+def test_start_run_rejects_client_columns_that_is_not_a_mapping(client, review_conn):
+    """合法 JSON 但形状不对（数组/字符串）要回 400 说清楚，不能让
+    declared.items() 抛 AttributeError 变成一个没法自己纠正的 500。"""
+    asyncio.run(_confirm_muji_schema(review_conn))
+
+    response = client.post(
+        "/api/admin/muji/schema-etl/runs",
+        files=[
+            ("config", ("config.yaml", _EMPTY_MAPPING_CONFIG)),
+            ("data_files", ("ab.csv", b"a,b\n1,2\n")),
+        ],
+        data={"client_columns": json.dumps([["ab.csv", ["a", "b"]]])},
+    )
+
+    assert response.status_code == 400
+    assert "映射" in response.json()["detail"]
+
+
 def test_start_run_without_client_columns_still_works(client, review_conn):
     """老前端、curl、以及重跑历史 run 都不会带这个字段。缺省必须是"不对账"，
     不能是"对账失败"。"""

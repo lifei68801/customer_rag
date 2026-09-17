@@ -158,9 +158,19 @@ function firstDataRowOf(options: SourceParseOptions): number {
  * 一遍，选项会从 `{}` 变成 `{ headerRow: 1 }`，可读的还是同一批行。缺省值
  * 怎么补由 headerRowOf / firstDataRowOf 说了算，跟三个读取入口同一处。
  */
+/**
+ * 两份选项指的是不是同一张工作表。不传和传 0 都是第一张表（selectSheetName
+ * 里 `undefined` 取 SheetNames[0]、数字按下标取），字面比较会把它们判成改
+ * 过，于是"解析设置有没有变"永远为真，每次跑批都多传一次 config。
+ */
+function sameSheet(a: SourceParseOptions, b: SourceParseOptions): boolean {
+  const normalize = (sheet: string | number | undefined) => (sheet === undefined ? 0 : sheet)
+  return normalize(a.sheet) === normalize(b.sheet)
+}
+
 export function sameEffectiveParseOptions(a: SourceParseOptions, b: SourceParseOptions): boolean {
   return (
-    a.sheet === b.sheet &&
+    sameSheet(a, b) &&
     headerRowOf(a) === headerRowOf(b) &&
     firstDataRowOf(a) === firstDataRowOf(b)
   )
@@ -333,6 +343,7 @@ async function* readDelimitedLines(file: File): AsyncGenerator<string> {
 /** 读一个工作簿里全部工作表的名字。非 Excel 文件没有工作表，返回空数组。 */
 export async function listSheetNames(file: File): Promise<string[]> {
   if (!isExcel(file)) return []
+  assertNotTooLargeForExcel(file)
   const XLSX = await loadXlsx()
   const buffer = await file.arrayBuffer()
   // sheetRows: 1——只要表名，不用把每张表的内容都解析出来。
@@ -391,18 +402,29 @@ async function readDelimitedRows(
   }
 }
 
-async function readExcelRows(
-  file: File,
-  options: SourceParseOptions,
-  onHeader: (columns: string[]) => void,
-  onRow: (row: string[]) => void,
-): Promise<void> {
+/**
+ * 四条 Excel 路径（逐行读、读表头、读预览、列工作表名）共用的体积闸门。
+ *
+ * 每一条都要 `file.arrayBuffer()` 把整个工作簿读进内存——sheetRows 只是让
+ * SheetJS 少解析几行，读盘量一点没少。少一条检查就少一条防线，而超限的
+ * 表现是浏览器直接卡死，不是报错。
+ */
+function assertNotTooLargeForExcel(file: File): void {
   if (file.size > MAX_XLSX_BYTES) {
     throw new Error(
       `xlsx 文件过大（${file.size} 字节，上限 ${MAX_XLSX_BYTES} 字节）：xlsx 是二进制容器格式，` +
         '必须整个读进内存才能解析，文件太大会让浏览器卡死。请换一个更小的文件，或导出为 CSV。',
     )
   }
+}
+
+async function readExcelRows(
+  file: File,
+  options: SourceParseOptions,
+  onHeader: (columns: string[]) => void,
+  onRow: (row: string[]) => void,
+): Promise<void> {
+  assertNotTooLargeForExcel(file)
   const XLSX = await loadXlsx()
   const buffer = await file.arrayBuffer()
   // cellDates: true——不传的话 SheetJS 默认把日期格式的单元格读成 Excel
@@ -455,6 +477,7 @@ async function readDelimitedHeader(
 }
 
 async function readExcelHeader(file: File, options: SourceParseOptions): Promise<string[]> {
+  assertNotTooLargeForExcel(file)
   const XLSX = await loadXlsx()
   const buffer = await file.arrayBuffer()
   const headerRow = headerRowOf(options)
@@ -503,6 +526,7 @@ async function readExcelPreview(
   rowCount: number,
   options: SourceParseOptions,
 ): Promise<string[][]> {
+  assertNotTooLargeForExcel(file)
   const XLSX = await loadXlsx()
   const buffer = await file.arrayBuffer()
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: true, sheetRows: rowCount })

@@ -13,6 +13,7 @@ from typing import Iterator, Sequence
 
 import xlrd
 from openpyxl import load_workbook
+from openpyxl.workbook.workbook import Workbook
 
 from app.graphrag.schema_etl_row_processing import RowProcessingError, convert_excel_cell_to_string
 from app.graphrag.source_parse_options import SourceParseOptions
@@ -147,7 +148,7 @@ def _read_delimited_rows(
             yield values
 
 
-def _select_xlsx_sheet(workbook, sheet: str | int | None):
+def _select_xlsx_sheet(workbook: "Workbook", sheet: str | int | None):
     """选不中就报错，绝不回落到第一张表——回落会让用户拿到一份完全不相干
     的数据，而且不报错。"""
     if sheet is None:
