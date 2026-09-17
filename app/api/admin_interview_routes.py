@@ -13,7 +13,7 @@ from datetime import datetime
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api import deps
 from app.api.admin_session import AdminSession
@@ -35,17 +35,24 @@ router = APIRouter(prefix="/api/admin/ontology", dependencies=[Depends(deps.requ
 
 
 class AnswerRequest(BaseModel):
-    answer: str
+    # 每一轮都把 turns 整段历史送给模型；一条超长回答一旦写进 state，
+    # 之后每一轮都要跟着重新发一遍，且永远留在 state 里删不掉。上限挡在
+    # 入口，比事后清理更省事。
+    answer: str = Field(max_length=4000)
     updated_at: str
 
 
 class SaveInterviewRequest(BaseModel):
+    # state 是整份骨架 + 对话历史的 dict，没有一个简单的长度约束能覆盖
+    # 所有子字段；轮次/骨架规模的上限留后续单独处理，这里不加。
     state: dict
     updated_at: str
 
 
 class QuestionRequest(BaseModel):
-    text: str
+    # 理由同 AnswerRequest.answer：这条文本会被塞进 infer_needs 的 prompt，
+    # 超长文本同样值得在入口挡掉。
+    text: str = Field(max_length=4000)
     updated_at: str
 
 

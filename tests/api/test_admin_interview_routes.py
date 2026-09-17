@@ -208,6 +208,30 @@ def test_questions_endpoint_with_blank_text_is_400_without_calling_the_llm(clien
     assert llm.calls == 0
 
 
+def test_answer_over_max_length_is_422_without_calling_the_llm(client, llm):
+    # 每一轮都把 answer 整段送给模型再写回 state：不挡住超长输入，它会
+    # 永久驻留在 state 里，之后每一轮都跟着重新发一遍。
+    created = client.post("/api/admin/ontology/t1/interview", headers=AUTH).json()["session"]
+    resp = client.post(
+        "/api/admin/ontology/t1/interview/answer",
+        json={"answer": "x" * 4001, "updated_at": created["updated_at"]},
+        headers=AUTH,
+    )
+    assert resp.status_code == 422
+    assert llm.calls == 0
+
+
+def test_questions_endpoint_with_too_long_text_is_422_without_calling_the_llm(client, llm):
+    created = client.post("/api/admin/ontology/t1/interview", headers=AUTH).json()["session"]
+    resp = client.post(
+        "/api/admin/ontology/t1/interview/questions",
+        json={"text": "x" * 4001, "updated_at": created["updated_at"]},
+        headers=AUTH,
+    )
+    assert resp.status_code == 422
+    assert llm.calls == 0
+
+
 def test_delete_then_recreate(client):
     client.post("/api/admin/ontology/t1/interview", headers=AUTH)
     assert client.delete("/api/admin/ontology/t1/interview", headers=AUTH).status_code == 200
