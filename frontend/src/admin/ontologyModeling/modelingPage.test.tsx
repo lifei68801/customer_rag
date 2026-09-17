@@ -42,6 +42,8 @@ const EMPTY_DIFF = {
 // 只给"模板构建写入草稿"那条测试用：默认 null（没有工作区），其余测试都
 // 走这条缺省路径，跟改动前一样。
 let templateWorkspace: unknown = null
+// 同理，只给"智能创建写入草稿"那条测试用。
+let smartSession: unknown = null
 const draftReplaceBodies: unknown[] = []
 
 /** 一个已经有一条 accepted 实体类型的工作区，直接进"应用"面板点写入就够。 */
@@ -76,11 +78,45 @@ function templateWorkspaceWithOneAcceptedTerm() {
   }
 }
 
+/** 一个已经有一条 accepted 候选实体的访谈会话，直接点写入就够。 */
+function smartSessionWithOneAcceptedTerm() {
+  return {
+    tenant_id: 'demo',
+    updated_at: '2026-09-17T10:00:00',
+    updated_by: 'alice',
+    state: {
+      turns: [
+        { role: 'assistant', text: '先说说你们主要做什么生意？' },
+        { role: 'user', text: '我们主要卖服装和家居' },
+      ],
+      skeleton: {
+        term_types: [
+          {
+            value: '商品',
+            display_name: '商品',
+            rationale: '用户说主要卖服装和家居',
+            confidence: 'guess',
+            from_turn: 1,
+            review: 'accepted',
+            extra_fields: [],
+            standard_name_value_type: 'string',
+          },
+        ],
+        relation_types: [],
+        constraints: [],
+      },
+      questions: [],
+      done: false,
+    },
+  }
+}
+
 beforeEach(() => {
   resetAdminSession()
   sessionStorage.clear()
   localStorage.clear()
   templateWorkspace = null
+  smartSession = null
   draftReplaceBodies.length = 0
   vi.stubGlobal(
     'fetch',
@@ -104,7 +140,7 @@ beforeEach(() => {
         draftReplaceBodies.push(JSON.parse(String(init?.body)))
         return json({ replaced: true })
       }
-      if (url.includes('/interview')) return json({ session: null })
+      if (url.includes('/interview')) return json({ session: smartSession })
       return new Promise(() => {})
     }),
   )
@@ -211,6 +247,32 @@ describe('本体建模页', () => {
     const notice = await screen.findByRole('status')
     expect(notice.textContent).toContain('刚写入')
     expect(notice.textContent).toContain('1 个实体类型')
+  })
+
+  it('智能创建写入草稿成功后同样自动切到本体结构', async () => {
+    // 决策 11 说的是两个生成器都要收口。只钉住模板那条的话，智能创建这侧
+    // 的 onApplied 接线断了没人会发现。
+    smartSession = smartSessionWithOneAcceptedTerm()
+    renderAt(modelingWay('smart'))
+    await userEvent.click(await screen.findByRole('button', { name: '写入草稿' }))
+    await waitFor(() => expect(draftReplaceBodies).toHaveLength(1))
+
+    expect(screen.getByTestId('url').textContent).toBe(modelingWay('manual'))
+    const notice = await screen.findByRole('status')
+    expect(notice.textContent).toContain('刚写入')
+  })
+
+  it('点「知道了」提示就消失', async () => {
+    templateWorkspace = templateWorkspaceWithOneAcceptedTerm()
+    renderAt(modelingWay('template'))
+    await userEvent.click(await screen.findByRole('button', { name: /^应用$/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /写入草稿/ }))
+    await screen.findByRole('status')
+
+    await userEvent.click(screen.getByRole('button', { name: '知道了' }))
+    expect(screen.queryByRole('status')).toBeNull()
+    // 清掉的只是提示，人还留在本体结构这一页上
+    expect(screen.getByTestId('url').textContent).toBe(modelingWay('manual'))
   })
 
   it('手动切 tab 会清掉写入草稿留下的提示', async () => {

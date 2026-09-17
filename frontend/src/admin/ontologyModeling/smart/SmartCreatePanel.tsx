@@ -257,7 +257,10 @@ export function SmartCreatePanel({ onApplied }: SmartCreatePanelProps = {}) {
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '写入草稿失败'))
       }
-      showToast('已写入本体草稿')
+      // 不再额外弹 toast：写入成功之后 onApplied 会把壳页切到「本体结构」
+      // 并挂一条常驻的 role="status" 提示（说清楚下一步该核实什么）。toast
+      // 转瞬即逝还要跟那条提示抢同一个 role，两条通知同时存在会让读屏
+      // 重复/交叉播报同一件事；常驻的那条信息量更大，留它就够了。
       setDiff(null)
       onApplied?.({
         termTypes: payload.term_types.length,

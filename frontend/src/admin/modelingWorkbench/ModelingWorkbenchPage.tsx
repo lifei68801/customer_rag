@@ -364,7 +364,10 @@ export function ModelingWorkbenchPage({ onApplied }: ModelingWorkbenchPageProps 
         const body = await response.json().catch(() => ({}))
         throw new Error(extractErrorDetail(body, '写入草稿失败'))
       }
-      showToast('已写入本体草稿')
+      // 不再额外弹 toast：写入成功之后 onApplied 会把壳页切到「本体结构」
+      // 并挂一条常驻的 role="status" 提示（说清下一步该核实什么）。toast
+      // 转瞬即逝还要跟那条提示抢同一个 role，两条通知同时存在会让读屏
+      // 重复播报同一件事；常驻的那条信息量更大，留它就够了。
       // 刻意不调 /confirm：确认是不可逆的，工作台不替用户做这个决定
       setGrounding(await fetchGrounding(tenantId, sessionToken))
       setDiff(null)
