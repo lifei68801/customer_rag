@@ -25,6 +25,7 @@ from app.graphrag.ontology_constraints import (
     ensure_constraints_schema,
 )
 from app.graphrag.ontology_etl_mapping import ensure_etl_mapping_schema, set_draft_etl_mapping
+from app.graphrag.ontology_interview_store import ensure_interview_schema
 from app.graphrag.ontology_modeling_workspace import ensure_modeling_workspace_schema
 from app.graphrag.ontology_relations import (
     InvalidRelationTypeNameError,
@@ -129,11 +130,12 @@ async def _ensure_checkout_state_schema(conn: aiosqlite.Connection) -> None:
 
 async def ensure_ontology_schema(conn: aiosqlite.Connection) -> None:
     """统一入口：分类（按租户）+ 关系类型/约束（按租户）+ 接入模式配置
-    五张表一起建。ensure_ingestion_config_schema 放进来，保证 checkout_draft
+    六张表一起建。ensure_ingestion_config_schema 放进来，保证 checkout_draft
     需要读 ingestion_mode 时这张表一定已经存在，不需要调用方自己记得
     额外建表。建模工作区（ontology_modeling_workspaces）也挂在这里：它跟
     本体同寿（一个租户一份，随本体一起存在），单独让调用方记得建表必然会
-    漏，漏了的表现是工作台首次请求 no such table。
+    漏，漏了的表现是工作台首次请求 no such table。访谈会话
+    （ontology_interview_sessions）跟建模工作区同理，也跟本体同寿。
     """
     await ensure_categories_schema(conn)
     await ensure_relations_schema(conn)
@@ -141,6 +143,7 @@ async def ensure_ontology_schema(conn: aiosqlite.Connection) -> None:
     await ensure_ingestion_config_schema(conn)
     await ensure_etl_mapping_schema(conn)
     await ensure_modeling_workspace_schema(conn)
+    await ensure_interview_schema(conn)
     await _ensure_checkout_state_schema(conn)
 
 
